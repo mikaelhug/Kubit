@@ -28,7 +28,6 @@ internal/api      HTTP JSON API + SPA hosting
 internal/...      talos, config, factory, cluster, k8s, tofu, export, store, pxe (per phase)
 web/              Vite + Preact + TypeScript + Tailwind; dist/ embedded via go:embed
 hack/vm/          vfkit harness: Talos arm64 VMs on Apple Virtualization.framework
-hack/talosver/    throwaway maintenance-mode probe (removed once `kubit discover` exists)
 ```
 
 ## Build
@@ -43,7 +42,7 @@ Requires Go 1.26+, Node 20+ for the UI. Talos machinery pinned to v1.14.0
 
 ## Dev VMs
 
-`brew install vfkit`, then:
+`brew install vfkit socket_vmnet` and `sudo brew services start socket_vmnet`, then:
 
 ```
 hack/vm/vm.sh create 1          # 2 vCPU / 4 GiB / 20 GiB disk, boots Talos ISO (schematic with siderolabs/gvisor)
@@ -52,8 +51,15 @@ hack/vm/vm.sh start 1 --no-iso  # after Talos has installed to disk
 hack/vm/vm.sh destroy all
 ```
 
+Networking: vfkit's plain NAT (`vmnet` shared mode) isolates VMs from each other — a
+peer gets "no route to host" — so etcd never forms a quorum and a Layer-2 VIP is
+unreachable. The harness therefore attaches VMs to `socket_vmnet` (one shared segment,
+192.168.105.0/24) when its socket exists; `NET=nat` forces plain NAT for single-node
+work. Host→VM traffic to MetalLB and VIP addresses works in both modes.
+
 Verified: EFI boot of the Talos v1.14.0 `metal-arm64.iso` under Virtualization.framework
-reaches maintenance mode; the insecure `Version` call on :50000 answers
+reaches maintenance mode and, after install, reboots from disk even with the ISO still
+attached; the insecure `Version` call on :50000 answers
 `tag=v1.14.0 arch=arm64 platform=metal`. The API is flaky for roughly the first two
 minutes after boot (vmnet NAT settling; NTS lookups time out in the same window) and
 stable thereafter — discovery must retry. No serial console output: the arm64 ISO
@@ -62,14 +68,129 @@ uses `ttyAMA0`, not the virtio console.
 Image Factory schematic for `siderolabs/gvisor` (arm64 and amd64):
 `d9ff89777e246792e7642abd3220a616afb4e49822382e4213a2e528ab826fe5`.
 
+## cluster.yaml
+
+```yaml
+apiVersion: kubit.dev/v1
+kind: Cluster
+metadata: { name: dev }
+spec:
+  talosVersion: v1.14.0            # default: machinery's version
+  kubernetesVersion: v1.37.0       # default: machinery's DefaultKubernetesVersion
+  extensions: [siderolabs/gvisor]  # default: derived from platform.gvisor
+  schematicID: ""                  # Image Factory schematic; created from extensions when empty
+  controlPlane:
+    vip: 192.168.64.9              # optional Layer-2 VIP shared by control planes
+    endpoint: https://192.168.64.9:6443   # default: VIP, else first control plane IP
+    allowScheduling: true          # default: true when fewer than 6 nodes
+  network: { podCIDR: 10.244.0.0/16, serviceCIDR: 10.96.0.0/12 }
+  nodes:
+    - hostname: cp-01
+      ip: 192.168.64.2
+      mac: "52:54:00:4b:49:01"     # optional; selects the VIP uplink on multi-NIC hosts
+      role: controlplane           # controlplane | worker
+      arch: arm64                  # amd64 | arm64
+      kvm: true                    # /dev/kvm present → also labelled for runsc-kvm
+      installDisk: { path: /dev/vda }                              # or:
+      # installDisk: { selector: { minSize: 100GB, type: nvme, model: "Samsung*" } }
+  platform:
+    metallb: { enabled: true, range: 192.168.64.200-192.168.64.220 }
+    ingressNginx: { enabled: true }
+    gvisor: { enabled: true }
+    metricsServer: { enabled: true }
+    certManager: { enabled: false }
+    argocd: { enabled: false }
+```
+
+Generated machine configs are Talos 1.14 multi-document: the v1alpha1 core plus
+`UnattendedInstallConfig` (installer image + CEL disk selector), `SysctlConfig`
+(`user.max_user_namespaces=11255` for gVisor), `HostnameConfig`, `KubeNodeConfig`
+(labels `sandbox.runtime/gvisor[-kvm]`, NoSchedule taint when control planes are
+dedicated) and, on control planes with a VIP, `LinkAliasConfig` + `Layer2VIPConfig`.
+
+## Secrets
+
+`~/.kubit/kubit.db` (SQLite, WAL). Secret columns (secrets bundle, talosconfig,
+kubeconfig, per-node machine config) are AES-256-GCM sealed with a 32-byte master key
+kept in the macOS Keychain as service `kubit` / account `master-key`.
+`KUBIT_MASTER_KEY` (base64) overrides the keyring.
+
+## Discovery
+
+`kubit discover 192.168.64.0/24` TCP-probes :50000, then tries the insecure maintenance
+API. Nodes that answer are `maintenance` (inventory recorded: MAC of the link holding the
+IP, arch, CPUs, RAM, disks, `/dev/kvm` presence); nodes that reject the insecure TLS
+handshake are `configured`. Results are upserted into the store, keyed by IP; a rescan
+never clears cluster membership or previously captured hardware.
+
+Verified in maintenance mode on Talos 1.14 (arm64 VM): `Version`, `Memory`, `CPUInfo`,
+`Disks`, `LS`, and the COSI resources `block.Disk`, `hardware.Processor`,
+`hardware.SystemInformation`, `network.LinkStatus`, `network.AddressStatus`,
+`runtime.MachineStatus` all answer.
+
+## Cluster lifecycle
+
+`kubit cluster create -f cluster.yaml` runs: preflight (every node in maintenance mode,
+arch matches) → schematic → secrets + per-node configs stored → apply to all nodes in
+parallel → wait for each node to reboot into the installed system (boot time changes;
+apid accepts cluster credentials *before* the install reboot, so neither a `Version`
+answer nor stage `booting` is proof) → bootstrap etcd on the first control plane → etcd
+healthy with all members → kubeconfig → all nodes Ready → platform apply. Re-running
+`create` on a `provisioning`/`failed` cluster with the same nodes resumes: installed
+nodes are skipped, an already-healthy etcd is not re-bootstrapped.
+
+Kubelet registration takes 2–3 minutes after the API server starts (bootstrap-token
+`Unauthorized` until the controller manager settles); this is normal Talos behaviour.
+
+Other commands: `cluster apply` (regenerate + re-apply every machine config from
+cluster.yaml, then platform), `node add`, `node remove` (drain → delete → graceful
+reset; refuses to drop to 0 or, without `--force`, 2 control planes), `upgrade talos`,
+`upgrade kubernetes` (config re-apply with new component images, control planes first),
+`status`, `cluster export`.
+
+Talos < 1.14 is rejected: Kubit only emits the multi-document config set.
+
+## Platform layer (OpenTofu)
+
+`~/.kubit/clusters/<name>/infra/platform/` is rendered from embedded templates plus a
+`terraform.tfvars.json` from cluster.yaml, then `tofu init/plan/apply` with a pinned
+binary (`internal/tofu.Version`, checksum-verified download into `~/.kubit/bin`). Charts
+are pinned in `variables.tf`. Providers: `hashicorp/helm` 3.x, `hashicorp/kubernetes`
+3.x (`*_v1` data sources), `alekc/kubectl` for CRs.
+
+Findings baked into the templates:
+
+- Talos enforces Pod Security `baseline` cluster-wide; `metallb-system` is created with
+  `pod-security.kubernetes.io/enforce=privileged` or the speaker never starts.
+- Talos labels control planes `node.kubernetes.io/exclude-from-external-load-balancers`,
+  which MetalLB honours: on a cluster whose control planes carry workloads no
+  LoadBalancer IP would ever be announced. The generator drops that label when
+  `controlPlane.allowScheduling` is true.
+- metrics-server runs with `--kubelet-insecure-tls` (Talos kubelets serve self-signed
+  certs unless a serving-cert approver is installed).
+
+Verified on a single-node VM: ingress-nginx reachable from the Mac on its MetalLB IP, a
+`runtimeClassName: gvisor` pod boots gVisor, `kubectl top nodes` works, and a second
+`kubit platform plan` reports no changes.
+
+## Export
+
+`kubit cluster export <name> -o dir` writes native artefacts and `infra/talos/` for the
+`siderolabs/talos` provider (>= 0.11): secrets imported from `secrets.yaml` (with
+`ignore_changes = [talos_version]`, otherwise the provider would regenerate the PKI),
+machine configs fed verbatim via `machine_configuration_input`, kubeconfig read.
+`talos_machine_bootstrap` is gated behind `bootstrap = false` because the provider fails
+with `AlreadyExists` on a bootstrapped node. Verified: `tofu apply` on a live cluster is
+a no-op and the following `tofu plan` reports no changes.
+
 ## Status
 
 - [x] Phase 0 — scaffold, `kubit version`, `kubit serve` (SPA + `/api/v1/version`), VM harness
-- [ ] Phase 1 — store, keyring crypto, `cluster.yaml`, machine config generation
-- [ ] Phase 2 — Talos client, `kubit discover`
-- [ ] Phase 3 — `kubit cluster create`, `kubit node add`
-- [ ] Phase 4 — platform add-ons via OpenTofu
-- [ ] Phase 5 — Day-2: remove node, Talos/K8s upgrades, telemetry
-- [ ] Phase 6 — export
+- [x] Phase 1 — store, keyring crypto, `cluster.yaml`, machine config generation (`kubit config validate|render`)
+- [x] Phase 2 — Talos client, `kubit discover <cidr|ip>...` (subnet scan + hardware inventory)
+- [x] Phase 3 — `kubit cluster create` (resumable), `kubit node add` (HA and add-node runs pending socket_vmnet)
+- [x] Phase 4 — platform add-ons via OpenTofu (`kubit platform plan|apply`)
+- [~] Phase 5 — `node remove`, `upgrade talos|kubernetes`, `status` implemented; remove/Talos-upgrade not yet exercised on VMs
+- [x] Phase 6 — `kubit cluster export`
 - [ ] Phase 7 — web UI
 - [ ] Phase 8 — iPXE

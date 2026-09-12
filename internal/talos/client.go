@@ -1,0 +1,63 @@
+// Package talos wraps the Talos machine API for the two ways Kubit reaches a node:
+// insecure maintenance mode before a config is applied, and mTLS with the cluster's
+// talosconfig afterwards.
+package talos
+
+import (
+	"context"
+	"crypto/tls"
+	"fmt"
+	"net"
+	"time"
+
+	"github.com/siderolabs/talos/pkg/machinery/client"
+	clientconfig "github.com/siderolabs/talos/pkg/machinery/client/config"
+)
+
+const Port = "50000"
+
+type Client struct {
+	*client.Client
+	IP string
+}
+
+// DialMaintenance connects without verifying the server certificate; only a node in
+// maintenance mode accepts such a connection.
+func DialMaintenance(ctx context.Context, ip string) (*Client, error) {
+	c, err := client.New(ctx,
+		client.WithEndpoints(ip),
+		client.WithTLSConfig(&tls.Config{InsecureSkipVerify: true}), //nolint:gosec // maintenance API has no CA yet
+	)
+	if err != nil {
+		return nil, err
+	}
+	return &Client{Client: c, IP: ip}, nil
+}
+
+// Dial connects with the cluster's talosconfig, addressing the node directly.
+func Dial(ctx context.Context, ip string, talosconfig []byte) (*Client, error) {
+	cfg, err := clientconfig.FromBytes(talosconfig)
+	if err != nil {
+		return nil, fmt.Errorf("talosconfig: %w", err)
+	}
+	c, err := client.New(ctx, client.WithConfig(cfg), client.WithEndpoints(ip))
+	if err != nil {
+		return nil, err
+	}
+	return &Client{Client: c, IP: ip}, nil
+}
+
+// Context returns a ctx that targets this node when the call is proxied via apid.
+func (c *Client) Context(ctx context.Context) context.Context {
+	return client.WithNode(ctx, c.IP)
+}
+
+// PortOpen reports whether the Talos API port accepts TCP connections.
+func PortOpen(ip string, timeout time.Duration) bool {
+	conn, err := net.DialTimeout("tcp", net.JoinHostPort(ip, Port), timeout)
+	if err != nil {
+		return false
+	}
+	conn.Close()
+	return true
+}

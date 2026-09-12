@@ -18,6 +18,10 @@ ARCH=arm64
 ISO=$STATE/talos-$TALOS_VERSION-$ARCH.iso
 DISK_GB=${DISK_GB:-20}
 MAC_PREFIX=52:54:00:4b:49  # "KI"
+# vmnet NAT isolates VMs from each other (peers get "no route to host"), which breaks
+# etcd joins and any L2 VIP. socket_vmnet puts all VMs on one shared segment; start it
+# once with `sudo brew services start socket_vmnet`. NET=nat forces plain NAT.
+VMNET_SOCK=${VMNET_SOCK:-/opt/homebrew/var/run/socket_vmnet}
 
 mkdir -p "$STATE"
 
@@ -25,9 +29,17 @@ mac_of()   { printf '%s:%02x' "$MAC_PREFIX" "$1"; }
 dir_of()   { echo "$STATE/vm$1"; }
 port_of()  { echo $((8100 + $1)); }
 
+net_device() {
+  if [ "${NET:-}" != nat ] && [ -S "$VMNET_SOCK" ]; then
+    echo "virtio-net,unixSocketPath=$VMNET_SOCK,mac=$(mac_of "$1")"
+  else
+    echo "virtio-net,nat,mac=$(mac_of "$1")"
+  fi
+}
+
 cmd_iso() {
   [ -f "$ISO" ] && { echo "$ISO"; return; }
-  curl -fSL --progress-bar -o "$ISO.part" \
+  curl -fsSL -o "$ISO.part" \
     "https://factory.talos.dev/image/$SCHEMATIC/$TALOS_VERSION/metal-$ARCH.iso"
   mv "$ISO.part" "$ISO"
   echo "$ISO"
@@ -56,7 +68,7 @@ cmd_start() {
     --cpus "$cpus" --memory "$mem"
     --bootloader "efi,variable-store=$d/efi-vars,create"
     --device "virtio-blk,path=$d/disk.raw"
-    --device "virtio-net,nat,mac=$(mac_of "$n")"
+    --device "$(net_device "$n")"
     --device "virtio-serial,logFilePath=$d/console.log"
     --device virtio-rng
     --restful-uri "tcp://127.0.0.1:$(port_of "$n")"
@@ -72,7 +84,9 @@ cmd_stop() {
   if [ "$n" = all ]; then for d in "$STATE"/vm*; do [ -d "$d" ] && cmd_stop "${d##*/vm}"; done; return; fi
   d=$(dir_of "$n")
   [ -f "$d/pid" ] || return 0
-  kill "$(cat "$d/pid")" 2>/dev/null || true
+  local pid; pid=$(cat "$d/pid")
+  kill "$pid" 2>/dev/null || true
+  while kill -0 "$pid" 2>/dev/null; do sleep 0.2; done
   rm -f "$d/pid"
   echo "vm$n stopped"
 }
