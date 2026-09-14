@@ -31,6 +31,28 @@ func (c *Client) NodeUsages(ctx context.Context) (map[string]NodeUsage, error) {
 	return out, nil
 }
 
+// podUsages returns metrics-server pod readings keyed by namespace/name.
+func (c *Client) podUsages(ctx context.Context) (map[string]NodeUsage, error) {
+	mc, err := metricsclient.NewForConfig(c.rest)
+	if err != nil {
+		return nil, err
+	}
+	list, err := mc.MetricsV1beta1().PodMetricses("").List(ctx, metav1.ListOptions{})
+	if err != nil {
+		return map[string]NodeUsage{}, nil
+	}
+	out := make(map[string]NodeUsage, len(list.Items))
+	for _, m := range list.Items {
+		var u NodeUsage
+		for _, ctr := range m.Containers {
+			u.CPUMilli += ctr.Usage.Cpu().MilliValue()
+			u.MemoryBytes += ctr.Usage.Memory().Value()
+		}
+		out[m.Namespace+"/"+m.Name] = u
+	}
+	return out, nil
+}
+
 // PodCount returns running pods per node.
 func (c *Client) PodCount(ctx context.Context) (map[string]int, error) {
 	pods, err := c.CoreV1().Pods("").List(ctx, metav1.ListOptions{FieldSelector: "status.phase=Running"})

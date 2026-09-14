@@ -7,6 +7,7 @@ import (
 	"io"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/cosi-project/runtime/pkg/safe"
 	"github.com/siderolabs/talos/pkg/machinery/api/machine"
@@ -33,6 +34,27 @@ type Inventory struct {
 	KVM          bool   `json:"kvm"`
 	Disks        []Disk `json:"disks"`
 	Links        []Link `json:"links"`
+	// Fields below are only filled on configured (mTLS) nodes.
+	BootTime   string      `json:"bootTime,omitempty"`
+	Extensions []Extension `json:"extensions,omitempty"`
+	Etcd       *EtcdMember `json:"etcd,omitempty"`
+}
+
+type Extension struct {
+	Name    string `json:"name"`
+	Version string `json:"version"`
+	Author  string `json:"author,omitempty"`
+}
+
+type EtcdMember struct {
+	MemberID     string   `json:"memberId"`
+	Leader       bool     `json:"leader"`
+	Learner      bool     `json:"learner"`
+	DBSizeBytes  int64    `json:"dbSizeBytes"`
+	DBInUseBytes int64    `json:"dbInUseBytes"`
+	RaftIndex    uint64   `json:"raftIndex"`
+	RaftTerm     uint64   `json:"raftTerm"`
+	Errors       []string `json:"errors,omitempty"`
 }
 
 type Disk struct {
@@ -122,7 +144,37 @@ func (c *Client) Inspect(ctx context.Context) (*Inventory, error) {
 		})
 	}
 	sort.Slice(inv.Links, func(i, j int) bool { return inv.Links[i].Name < inv.Links[j].Name })
+
+	if st, err := c.MachineClient.SystemStat(ctx, &emptypb.Empty{}); err == nil && len(st.Messages) > 0 && st.Messages[0].BootTime > 0 {
+		inv.BootTime = time.Unix(int64(st.Messages[0].BootTime), 0).UTC().Format(time.RFC3339)
+	}
+	if exts, err := safe.StateListAll[*runtime.ExtensionStatus](ctx, c.COSI); err == nil {
+		for e := range exts.All() {
+			m := e.TypedSpec().Metadata
+			inv.Extensions = append(inv.Extensions, Extension{Name: m.Name, Version: m.Version, Author: m.Author})
+		}
+		sort.Slice(inv.Extensions, func(i, j int) bool { return inv.Extensions[i].Name < inv.Extensions[j].Name })
+	}
 	return inv, nil
+}
+
+// EtcdMemberInfo reads this node's etcd member status; only control planes answer.
+func (c *Client) EtcdMemberInfo(ctx context.Context) (*EtcdMember, error) {
+	st, err := c.EtcdStatus(c.Context(ctx))
+	if err != nil {
+		return nil, err
+	}
+	for _, m := range st.Messages {
+		ms := m.MemberStatus
+		if ms == nil {
+			continue
+		}
+		return &EtcdMember{
+			MemberID: fmt.Sprintf("%x", ms.MemberId), Leader: ms.Leader == ms.MemberId, Learner: ms.IsLearner,
+			DBSizeBytes: ms.DbSize, DBInUseBytes: ms.DbSizeInUse, RaftIndex: ms.RaftIndex, RaftTerm: ms.RaftTerm, Errors: ms.Errors,
+		}, nil
+	}
+	return nil, errors.New("no etcd member status")
 }
 
 // PrimaryMAC is the MAC of the physical link carrying the node's IP.

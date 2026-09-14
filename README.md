@@ -235,6 +235,18 @@ plan exists. Settings → *Save* only stores cluster.yaml; *Apply node configs* 
 machine configs; platform changes always go through a reviewed plan. The CLI's
 `platform apply` and `cluster create` still converge without review.
 
+## Health watcher
+
+`kubit serve` runs one watcher loop per ready cluster calling `Manager.Status` every
+15 s. Each tick writes capacity samples (cluster totals and per node) and diffs the
+previous status into events with a severity: `talos.unreachable`/`talos.back`,
+`node.notready`/`node.ready`, `node.cordoned`, `api.unreachable`/`api.back`,
+`etcd.unhealthy`/`etcd.members`/`etcd.leader`, `talos.version`/`kubelet.version`,
+`lb.assigned`/`lb.lost`, `node.removed`. A recovery event acknowledges the alert it
+clears. The first observation after a daemon start reports only what is currently
+wrong, so restarts do not replay history. `GET /clusters/{name}/status` serves the
+watcher's latest result; `?fresh=true` forces a live query.
+
 ## Status
 
 - [x] Phase 0 — scaffold, `kubit version`, `kubit serve` (SPA + `/api/v1/version`), VM harness
@@ -255,8 +267,8 @@ back in maintenance mode), quorum guard refusing 3→2 without `--force`.
 Not yet exercised: `kubit pxe` against a physical machine; `runsc-kvm` (no nested
 virtualisation in the VMs); ArgoCD and cert-manager add-ons.
 - [x] M1 — structured operations, Activity drawer, plan review/apply, IA skeleton, component library
-- [ ] M2 — node depth (detail tabs, hardware, node actions)
-- [ ] M3 — health watcher, samples, events, version feed
+- [x] M2 — node page: Overview (Talos + etcd member + Kubernetes requests), Hardware, Kubernetes (conditions, pods with usage, labels), Services, Logs, Actions (cordon/uncordon/drain/reboot[-with-drain]/upgrade node) — verified drain→reboot→uncordon on ha-worker-01
+- [x] M3 — `internal/watch`: per-cluster poll (15 s, `--watch-interval`), `samples` (24 h fine / 30 d hourly) and `events` tables, SSE `status`/`health` pushes (UI no longer polls while connected), alerts with ack and auto-resolve on recovery, Overview capacity sparklines (1h–7d), `/versions` feed (Image Factory releases ≥ 1.14, Kubernetes minors supported by the built machinery) in Settings — verified: VM stop raised `talos.unreachable` within 15 s without reload, `node.notready` after the kubelet grace period, both cleared by `talos.back`/`node.ready` on restart
 - [ ] M4 — workloads / network / storage views
 - [ ] M5 — add-on status and values, ArgoCD/cert-manager verified, cluster settings form
 - [ ] M6 — fleet: inventory detail, PXE page, Kubit settings, backup/restore

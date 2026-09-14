@@ -1,21 +1,222 @@
 import { useEffect, useRef, useState } from 'preact/hooks'
-import { api, logsUrl, type NodeRow, type Service } from '../api'
-import { Breadcrumbs, ErrorBox, Pill, stateTone } from '../components/ui'
+import { api, fmt, logsUrl, type Inventory, type NodeDetail, type NodeRow, type NodeSpec, type PodSummary, type Service } from '../api'
+import { clusters, operations, toast, watch } from '../store'
+import { Tabs } from '../components/Tabs'
+import { DataTable, type Column } from '../components/DataTable'
+import { Breadcrumbs, ConfirmDialog, ErrorBox, KeyValue, Meter, Notice, Pill, Section, StatusDot, stateTone } from '../components/ui'
 
+type TabId = 'overview' | 'hardware' | 'kubernetes' | 'services' | 'logs' | 'actions'
+
+/** One machine: what Talos says, what Kubernetes says, and what can be done to it. */
 export function NodePage({ ip }: { ip: string }) {
   const [node, setNode] = useState<NodeRow | null>(null)
+  const [inv, setInv] = useState<Inventory | null>(null)
+  const [invErr, setInvErr] = useState<string | null>(null)
+  const [k8s, setK8s] = useState<NodeDetail | null>(null)
+  const [k8sErr, setK8sErr] = useState<string | null>(null)
+  const [tab, setTab] = useState<TabId>('overview')
+  const [error, setError] = useState<string | null>(null)
+  const finished = [...operations.value.values()].filter((o) => o.status !== 'running').length
+
+  const load = () => {
+    api.nodes().then((ns) => setNode(ns.find((n) => n.ip === ip) ?? null)).catch((e) => setError(e.message))
+    api.inventory(ip).then((i) => { setInv(i); setInvErr(null) }).catch((e) => setInvErr(e.message))
+    api.nodeKubernetes(ip).then((d) => { setK8s(d); setK8sErr(null) }).catch((e) => setK8sErr(e.message))
+  }
+  useEffect(() => { load() }, [ip, finished]) // eslint-disable-line
+
+  const cluster = node?.cluster ? clusters.value.find((c) => c.name === node.cluster) : undefined
+  const spec: NodeSpec | undefined = cluster?.spec.spec.nodes.find((n) => n.ip === ip)
+  const title = node?.hostname || ip
+  const running = [...operations.value.values()].filter((o) => o.status === 'running' && o.cluster === node?.cluster && (o.request as any)?.hostname === node?.hostname)
+
+  return (
+    <div class="flex flex-col">
+      <header class="px-6 pt-5 border-b border-border bg-panel/60">
+        <Breadcrumbs items={node?.cluster ? [{ label: node.cluster, href: `/clusters/${node.cluster}/overview` }, { label: 'Nodes', href: `/clusters/${node.cluster}/nodes` }, { label: title }] : [{ label: 'Inventory', href: '/fleet/inventory' }, { label: ip }]} />
+        <div class="flex flex-wrap items-center gap-3 mt-2 mb-3">
+          <h1 class="text-xl font-semibold">{title}</h1>
+          {node && !node.cluster && <Pill tone={stateTone(node.state)}>{node.state}</Pill>}
+          {inv ? <Pill tone="good">Talos {inv.talosVersion}</Pill> : invErr ? <Pill tone="bad" title={invErr}>Talos unreachable</Pill> : null}
+          {k8s ? <Pill tone={k8s.ready ? 'good' : 'warn'}>{k8s.ready ? 'Ready' : 'NotReady'}</Pill> : null}
+          {k8s?.unschedulable && <Pill tone="warn">cordoned</Pill>}
+          {running.map((o) => <Pill key={o.id} tone="warn">{fmt.kind(o.kind)} running</Pill>)}
+          <span class="mono text-muted text-[12px]">{ip} · {node?.mac} · {node?.arch}{spec ? ` · ${spec.role}` : ''}</span>
+        </div>
+        <Tabs active={tab} onSelect={(t) => setTab(t as TabId)} tabs={[
+          { id: 'overview', label: 'Overview' }, { id: 'hardware', label: 'Hardware' }, { id: 'kubernetes', label: 'Kubernetes', badge: k8s?.pods?.length },
+          { id: 'services', label: 'Services' }, { id: 'logs', label: 'Logs' }, { id: 'actions', label: 'Actions' },
+        ]} />
+      </header>
+      <div class="p-6 flex flex-col gap-5 max-w-[1300px]">
+        <ErrorBox error={error} />
+        {tab === 'overview' && <OverviewTab inv={inv} invErr={invErr} k8s={k8s} k8sErr={k8sErr} node={node} spec={spec} />}
+        {tab === 'hardware' && <HardwareTab inv={inv} invErr={invErr} />}
+        {tab === 'kubernetes' && <KubernetesTab k8s={k8s} err={k8sErr} />}
+        {tab === 'services' && <ServicesTab ip={ip} />}
+        {tab === 'logs' && <LogsTab ip={ip} />}
+        {tab === 'actions' && <ActionsTab node={node} k8s={k8s} inv={inv} cluster={cluster?.name} talosVersion={cluster?.spec.spec.talosVersion} />}
+      </div>
+    </div>
+  )
+}
+
+function OverviewTab({ inv, invErr, k8s, k8sErr, node, spec }: { inv: Inventory | null; invErr: string | null; k8s: NodeDetail | null; k8sErr: string | null; node: NodeRow | null; spec?: NodeSpec }) {
+  return (
+    <div class="grid grid-cols-1 lg:grid-cols-2 gap-4">
+      <Section title="Talos" help="Read live from the machine over the Talos API.">
+        <div class="panel p-4">
+          {invErr && <Notice tone="bad">{invErr}</Notice>}
+          {inv && <KeyValue rows={[
+            ['Version', <span class="mono">{inv.talosVersion}</span>],
+            ['Stage', <Pill tone={inv.stage === 'running' ? 'good' : 'warn'}>{inv.stage}</Pill>],
+            ['Platform', inv.platform],
+            ['Booted', inv.bootTime ? `${fmt.datetime(inv.bootTime)} (up ${fmt.duration(inv.bootTime)})` : '—'],
+            ['Machine', [inv.manufacturer, inv.product].filter(Boolean).join(' ') || '—'],
+            ['Extensions', inv.extensions?.filter((e) => e.name !== 'schematic').map((e) => `${e.name} ${e.version}`).join(', ') || 'none'],
+            ['Install disk', spec ? <span class="mono">{spec.installDisk.path ?? JSON.stringify(spec.installDisk.selector)}</span> : '—'],
+            ['Last seen', node ? fmt.datetime(node.lastSeen) : '—'],
+          ]} />}
+          {inv?.etcd && (
+            <div class="mt-4 pt-4 border-t border-border">
+              <div class="label mb-2">etcd member</div>
+              <KeyValue rows={[
+                ['Role', inv.etcd.leader ? <Pill tone="good">leader</Pill> : inv.etcd.learner ? <Pill tone="warn">learner</Pill> : <Pill tone="muted">follower</Pill>],
+                ['Member ID', <span class="mono">{inv.etcd.memberId}</span>],
+                ['Database', `${fmt.bytes(inv.etcd.dbInUseBytes)} in use of ${fmt.bytes(inv.etcd.dbSizeBytes)}`],
+                ['Raft', `index ${inv.etcd.raftIndex}, term ${inv.etcd.raftTerm}`],
+                ['Errors', inv.etcd.errors?.length ? <span class="text-bad">{inv.etcd.errors.join('; ')}</span> : 'none'],
+              ]} />
+            </div>
+          )}
+        </div>
+      </Section>
+      <Section title="Kubernetes" help="What the API server knows about this node.">
+        <div class="panel p-4 flex flex-col gap-4">
+          {k8sErr && <Notice tone={k8sErr.includes('not a cluster member') ? 'muted' : 'bad'}>{k8sErr}</Notice>}
+          {k8s && (
+            <>
+              <KeyValue rows={[
+                ['Kubelet', <span class="mono">{k8s.kubeletVersion}</span>],
+                ['Runtime', <span class="mono">{k8s.containerRuntime}</span>],
+                ['Kernel', <span class="mono">{k8s.kernel}</span>],
+                ['Internal IP', <span class="mono">{k8s.internalIP}</span>],
+                ['Taints', k8s.taints?.length ? k8s.taints.map((t) => <span class="mono block">{t}</span>) : 'none'],
+              ]} />
+              <Meter label="CPU requested" used={k8s.requests.cpuMilli} cap={k8s.allocatable.cpuMilli} format={fmt.cores} />
+              <Meter label="Memory requested" used={k8s.requests.memBytes} cap={k8s.allocatable.memBytes} format={fmt.bytes} />
+              <Meter label="Pods" used={k8s.requests.pods} cap={k8s.allocatable.pods} format={String} />
+            </>
+          )}
+        </div>
+      </Section>
+    </div>
+  )
+}
+
+function HardwareTab({ inv, invErr }: { inv: Inventory | null; invErr: string | null }) {
+  if (invErr) return <Notice tone="bad">{invErr}</Notice>
+  if (!inv) return <div class="text-muted">Loading…</div>
+  return (
+    <div class="flex flex-col gap-5">
+      <div class="grid grid-cols-2 lg:grid-cols-4 gap-4">
+        <Stat label="CPUs" value={String(inv.cpus)} sub={inv.arch} />
+        <Stat label="Memory" value={fmt.bytes(inv.memoryBytes)} />
+        <Stat label="KVM" value={inv.kvm ? 'available' : 'absent'} sub={inv.kvm ? 'runsc-kvm eligible' : 'gVisor uses systrap'} />
+        <Stat label="Disks" value={String(inv.disks.length)} sub={fmt.bytes(inv.disks.reduce((a, d) => a + d.sizeBytes, 0)) + ' total'} />
+      </div>
+      <Section title="Disks">
+        <DataTable search={false} columns={[
+          { id: 'dev', header: 'Device', mono: true, sort: (d) => d.devPath, cell: (d) => d.devPath },
+          { id: 'size', header: 'Size', align: 'right', sort: (d) => d.sizeBytes, cell: (d) => fmt.bytes(d.sizeBytes) },
+          { id: 'model', header: 'Model', sort: (d) => d.model ?? '', cell: (d) => d.model || <span class="text-muted">—</span> },
+          { id: 'transport', header: 'Transport', sort: (d) => d.transport ?? '', cell: (d) => d.transport || '—' },
+          { id: 'type', header: 'Type', cell: (d) => d.cdrom ? 'cdrom' : d.rotational ? 'HDD' : 'SSD/flash' },
+          { id: 'flags', header: '', cell: (d) => d.readonly ? <Pill tone="muted">read-only</Pill> : null },
+        ] as Column<Inventory['disks'][number]>[]} rows={inv.disks} rowKey={(d) => d.devPath} />
+      </Section>
+      <Section title="Network links" help="Physical links only; virtual interfaces (bridges, tunnels, CNI) are omitted.">
+        <DataTable search={false} columns={[
+          { id: 'name', header: 'Interface', mono: true, sort: (l) => l.name, cell: (l) => l.name },
+          { id: 'mac', header: 'MAC', mono: true, cell: (l) => l.mac },
+          { id: 'state', header: 'State', cell: (l) => <Pill tone={l.up ? 'good' : 'muted'}>{l.up ? 'up' : 'down'}</Pill> },
+          { id: 'addr', header: 'Addresses', mono: true, cell: (l) => (l.addresses ?? []).join(', ') || '—' },
+        ] as Column<Inventory['links'][number]>[]} rows={inv.links} rowKey={(l) => l.name} />
+      </Section>
+    </div>
+  )
+}
+
+function KubernetesTab({ k8s, err }: { k8s: NodeDetail | null; err: string | null }) {
+  if (err) return <Notice tone={err.includes('not a cluster member') ? 'muted' : 'bad'}>{err}</Notice>
+  if (!k8s) return <div class="text-muted">Loading…</div>
+  const pods = k8s.pods ?? []
+  const columns: Column<PodSummary>[] = [
+    { id: 'ns', header: 'Namespace', sort: (p) => p.namespace, cell: (p) => p.namespace },
+    { id: 'name', header: 'Pod', sort: (p) => p.name, mono: true, cell: (p) => p.name },
+    { id: 'phase', header: 'Phase', sort: (p) => p.phase, cell: (p) => <Pill tone={p.phase === 'Running' || p.phase === 'Succeeded' ? 'good' : p.phase === 'Pending' ? 'warn' : 'bad'}>{p.phase}</Pill> },
+    { id: 'ready', header: 'Ready', cell: (p) => <span class="num">{p.ready}</span> },
+    { id: 'restarts', header: 'Restarts', align: 'right', sort: (p) => p.restarts, cell: (p) => <span class={p.restarts > 3 ? 'text-warn' : ''}>{p.restarts}</span> },
+    { id: 'owner', header: 'Owner', sort: (p) => p.owner ?? '', cell: (p) => p.owner || '—' },
+    { id: 'cpu', header: 'CPU use / req', align: 'right', sort: (p) => p.usageCpuMilli ?? 0, cell: (p) => <>{fmt.cores(p.usageCpuMilli ?? 0)}<span class="text-muted"> / {p.cpuMilli ? fmt.cores(p.cpuMilli) : '—'}</span></> },
+    { id: 'mem', header: 'Mem use / req', align: 'right', sort: (p) => p.usageMemBytes ?? 0, cell: (p) => <>{fmt.bytes(p.usageMemBytes ?? 0)}<span class="text-muted"> / {p.memBytes ? fmt.bytes(p.memBytes) : '—'}</span></> },
+    { id: 'age', header: 'Age', cell: (p) => <span class="num text-muted">{p.age}</span> },
+  ]
+  return (
+    <div class="flex flex-col gap-5">
+      <Section title="Conditions">
+        <div class="panel divide-y divide-border/60">
+          {k8s.conditions.map((c) => {
+            const bad = (c.type === 'Ready') !== (c.status === 'True')
+            return (
+              <div key={c.type} class="flex items-center gap-3 px-4 py-2 text-[13px]">
+                <StatusDot tone={bad ? 'bad' : 'good'} />
+                <span class="w-40 font-medium">{c.type}</span>
+                <span class="mono w-14">{c.status}</span>
+                <span class="text-muted truncate" title={c.message}>{c.message}</span>
+                <span class="ml-auto text-muted num text-[12px]">since {fmt.datetime(c.since ?? '')}</span>
+              </div>
+            )
+          })}
+        </div>
+      </Section>
+      <Section title={`Pods on this node (${pods.length})`} help="Usage from metrics-server; requests from the pod specs. Draining evicts everything not owned by a DaemonSet.">
+        <DataTable id="node-pods" columns={columns} rows={pods} rowKey={(p) => p.namespace + '/' + p.name} defaultSort={{ id: 'ns', dir: 'asc' }} />
+      </Section>
+      <Section title="Labels">
+        <div class="panel p-3 flex flex-wrap gap-1.5">
+          {Object.entries(k8s.labels).sort().map(([k, v]) => <span key={k} class="mono text-[11.5px] rounded bg-panel-2 px-1.5 py-0.5">{k}{v ? `=${v}` : ''}</span>)}
+        </div>
+      </Section>
+    </div>
+  )
+}
+
+function ServicesTab({ ip }: { ip: string }) {
+  const [services, setServices] = useState<Service[]>([])
+  const [error, setError] = useState<string | null>(null)
+  useEffect(() => { api.services(ip).then(setServices).catch((e) => setError(e.message)) }, [ip])
+  return (
+    <Section title="Talos services" help="System services on the machine (apid, etcd, kubelet, containerd…). Unhealthy is reported by the service's own health check.">
+      <ErrorBox error={error} />
+      <DataTable search={false} columns={[
+        { id: 'id', header: 'Service', mono: true, sort: (s) => s.id, cell: (s) => s.id },
+        { id: 'state', header: 'State', sort: (s) => s.state, cell: (s) => <Pill tone={s.healthy ? 'good' : s.state === 'Running' ? 'warn' : stateTone(s.state.toLowerCase())}>{s.state}{s.healthy ? '' : ' · unhealthy'}</Pill> },
+        { id: 'last', header: 'Last event', cell: (s) => <span class="text-muted">{s.last}</span> },
+      ] as Column<Service>[]} rows={services} rowKey={(s) => s.id} />
+    </Section>
+  )
+}
+
+function LogsTab({ ip }: { ip: string }) {
   const [services, setServices] = useState<Service[]>([])
   const [service, setService] = useState('')
   const [follow, setFollow] = useState(false)
   const [log, setLog] = useState('')
+  const [q, setQ] = useState('')
   const [error, setError] = useState<string | null>(null)
   const abort = useRef<AbortController | null>(null)
-
-  useEffect(() => {
-    api.nodes().then((ns) => setNode(ns.find((n) => n.ip === ip) ?? null)).catch((e) => setError(e.message))
-    api.services(ip).then(setServices).catch((e) => setError(e.message))
-  }, [ip])
-
+  useEffect(() => { api.services(ip).then(setServices).catch(() => {}) }, [ip])
   useEffect(() => {
     abort.current?.abort()
     const ac = new AbortController()
@@ -28,45 +229,77 @@ export function NodePage({ ip }: { ip: string }) {
       for (;;) {
         const { value, done } = await reader.read()
         if (done) break
-        setLog((prev) => (prev + dec.decode(value)).slice(-200000))
+        setLog((prev) => (prev + dec.decode(value)).slice(-300000))
       }
     }).catch((e) => { if (e.name !== 'AbortError') setError(e.message) })
     return () => ac.abort()
   }, [ip, service, follow])
-
+  const lines = q ? log.split('\n').filter((l) => l.toLowerCase().includes(q.toLowerCase())).join('\n') : log
   return (
-    <div class="p-6 flex flex-col gap-4 max-w-[1200px]">
-      <Breadcrumbs items={node?.cluster ? [{ label: node.cluster, href: `/clusters/${node.cluster}/overview` }, { label: 'Nodes', href: `/clusters/${node.cluster}/nodes` }, { label: node.hostname || ip }] : [{ label: 'Inventory', href: '/fleet/inventory' }, { label: ip }]} />
-      <header class="flex items-center gap-3">
-        <h1 class="text-xl font-semibold">{node?.hostname || ip}</h1>
-        <span class="mono text-muted">{ip} · {node?.mac} · {node?.arch} · Talos {node?.talosVersion}</span>
-        {node?.cluster && <a href={`/clusters/${node.cluster}`} class="text-accent hover:underline">{node.cluster}</a>}
-        <button class="btn ml-auto" onClick={() => { if (confirm(`Reboot ${node?.hostname || ip}?`)) api.reboot(ip).catch((e) => setError(e.message)) }}>Reboot</button>
-      </header>
+    <Section title={service ? `${service} log` : 'Kernel log (dmesg)'} actions={
+      <>
+        <select class="input !w-48" value={service} onChange={(e) => setService((e.target as HTMLSelectElement).value)}>
+          <option value="">dmesg</option>
+          {services.map((s) => <option key={s.id} value={s.id}>{s.id}</option>)}
+        </select>
+        <input class="input !w-56" placeholder="Search…" value={q} onInput={(e) => setQ((e.target as HTMLInputElement).value)} />
+        <label class="flex items-center gap-2 text-[13px]"><input type="checkbox" checked={follow} onChange={(e) => setFollow((e.target as HTMLInputElement).checked)} /> Follow</label>
+        <button class="btn" onClick={() => navigator.clipboard.writeText(lines).then(() => toast('Copied'))}>Copy</button>
+      </>
+    }>
       <ErrorBox error={error} />
-      <div class="grid grid-cols-1 lg:grid-cols-[320px_1fr] gap-4">
-        <div class="panel overflow-x-auto">
-          <table class="data">
-            <thead><tr><th class="pl-4">Service</th><th>State</th><th class="pr-4"></th></tr></thead>
-            <tbody>
-              {services.map((s) => (
-                <tr key={s.id} class={`cursor-pointer ${service === s.id ? 'bg-panel-2' : ''}`} onClick={() => setService(service === s.id ? '' : s.id)}>
-                  <td class="pl-4 mono">{s.id}</td>
-                  <td><Pill tone={s.healthy ? 'good' : s.state === 'Running' ? 'warn' : stateTone(s.state.toLowerCase())}>{s.state}{s.healthy ? '' : ' · unhealthy'}</Pill></td>
-                  <td class="pr-4 text-muted text-[12px] truncate max-w-[120px]" title={s.last}>{s.last}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-        <div class="panel p-4 flex flex-col gap-3 min-w-0">
-          <div class="flex items-center gap-3">
-            <h2 class="font-semibold">{service ? `${service} log` : 'Kernel log (dmesg)'}</h2>
-            <label class="ml-auto flex items-center gap-2 text-[13px]"><input type="checkbox" checked={follow} onChange={(e) => setFollow((e.target as HTMLInputElement).checked)} /> Follow</label>
-          </div>
-          <pre class="log !max-h-[70vh]" ref={(el) => { if (el && follow) el.scrollTop = el.scrollHeight }}>{log || 'Loading…'}</pre>
-        </div>
+      <pre class="log !max-h-[70vh]" ref={(el) => { if (el && follow) el.scrollTop = el.scrollHeight }}>{lines || 'Loading…'}</pre>
+    </Section>
+  )
+}
+
+function ActionsTab({ node, k8s, inv, cluster, talosVersion }: { node: NodeRow | null; k8s: NodeDetail | null; inv: Inventory | null; cluster?: string; talosVersion?: string }) {
+  const [confirm, setConfirm] = useState<'drain' | 'reboot' | 'reboot-drain' | 'upgrade' | null>(null)
+  if (!node?.cluster || !cluster || !node.hostname) return <Notice tone="muted">This machine is not a cluster member. Adopt it from a cluster's Nodes page.</Notice>
+  const host = node.hostname
+  const pods = (k8s?.pods ?? []).filter((p) => p.owner !== 'DaemonSet' && p.phase === 'Running').length
+  const cp = node.role === 'controlplane'
+  const run = (p: Promise<{ operationId: number }>) => p.then((r) => { setConfirm(null); watch(r) }).catch((e) => toast(e.message, 'error'))
+  const needsUpgrade = inv && talosVersion && inv.talosVersion !== talosVersion
+  return (
+    <div class="flex flex-col gap-3 max-w-3xl">
+      <Action title={k8s?.unschedulable ? 'Uncordon' : 'Cordon'} what={k8s?.unschedulable ? 'Allow new pods to be scheduled here again.' : 'Stop new pods from being scheduled here. Running pods are untouched.'}
+        button={k8s?.unschedulable ? 'Uncordon' : 'Cordon'} disabled={!k8s} onClick={() => run(k8s?.unschedulable ? api.uncordon(cluster, host) : api.cordon(cluster, host))} />
+      <Action title="Drain" what={`Cordon, then evict ${pods} running pod${pods === 1 ? '' : 's'} (DaemonSet pods stay). Use before maintenance; uncordon afterwards.`} button="Drain…" disabled={!k8s} onClick={() => setConfirm('drain')} />
+      <Action title="Reboot" what="Reboot through the Talos API and wait for the node to come back Ready. Pods on it restart elsewhere only if you drain first." button="Reboot…" disabled={!inv} onClick={() => setConfirm('reboot')} secondary={{ label: 'Drain, reboot, uncordon…', onClick: () => setConfirm('reboot-drain') }} />
+      <Action title="Upgrade Talos on this node" what={needsUpgrade ? `This node runs ${inv?.talosVersion}; the cluster declares ${talosVersion}. Upgrades just this node (A/B slot, automatic rollback on boot failure).` : `Already on the cluster's declared version ${talosVersion}. Change the version under the cluster's Settings to upgrade.`} button="Upgrade…" disabled={!needsUpgrade} onClick={() => setConfirm('upgrade')} />
+      <Action title="Remove from cluster" what={`Drain, delete the Node object, and reset Talos to maintenance mode. ${cp ? 'etcd membership is reduced by one.' : ''}`} button="Remove…" href={`/clusters/${cluster}/nodes`} />
+      {confirm === 'drain' && <ConfirmDialog title={`Drain ${host}`} action="Drain" onClose={() => setConfirm(null)} onConfirm={() => run(api.drain(cluster, host))}
+        impact={<ul class="list-disc pl-5"><li>Cordons the node.</li><li>Evicts {pods} pod{pods === 1 ? '' : 's'}; controllers reschedule them on other nodes.</li><li>Waits up to 5 minutes; PodDisruptionBudgets are respected.</li></ul>} />}
+      {(confirm === 'reboot' || confirm === 'reboot-drain') && <ConfirmDialog title={`Reboot ${host}`} action={confirm === 'reboot-drain' ? 'Drain and reboot' : 'Reboot'} tone="danger" onClose={() => setConfirm(null)} onConfirm={() => run(api.rebootNode(cluster, host, confirm === 'reboot-drain'))}
+        impact={<ul class="list-disc pl-5">{confirm === 'reboot-drain' && <li>Drains {pods} pod{pods === 1 ? '' : 's'} first and uncordons afterwards.</li>}{confirm === 'reboot' && <li class="text-warn">Pods on this node go down until it returns (~1–2 min).</li>}{cp && <li>Control plane: etcd loses this member's vote while it is down.</li>}<li>Waits for the machine to answer with a new boot ID, then for Kubernetes Ready.</li></ul>} />}
+      {confirm === 'upgrade' && <ConfirmDialog title={`Upgrade ${host} to Talos ${talosVersion}`} action="Upgrade node" onClose={() => setConfirm(null)} onConfirm={() => run(api.upgradeNode(cluster, host, talosVersion ?? ''))}
+        impact={<ul class="list-disc pl-5"><li>Installs the new image into the inactive slot and reboots.</li><li>Talos rolls back on its own if the new system fails to boot.</li><li>Pods on this node are not drained first.</li></ul>} />}
+    </div>
+  )
+}
+
+function Action({ title, what, button, disabled, onClick, href, secondary }: { title: string; what: string; button: string; disabled?: boolean; onClick?: () => void; href?: string; secondary?: { label: string; onClick: () => void } }) {
+  return (
+    <div class="panel p-4 flex items-center gap-4">
+      <div class="flex-1 min-w-0">
+        <div class="font-medium">{title}</div>
+        <p class="text-[12.5px] text-muted">{what}</p>
       </div>
+      <div class="flex gap-2 shrink-0">
+        {secondary && <button class="btn" disabled={disabled} onClick={secondary.onClick}>{secondary.label}</button>}
+        {href ? <a href={href} class="btn">{button}</a> : <button class="btn btn-primary" disabled={disabled} onClick={onClick}>{button}</button>}
+      </div>
+    </div>
+  )
+}
+
+function Stat({ label, value, sub }: { label: string; value: string; sub?: string }) {
+  return (
+    <div class="panel p-4 flex flex-col gap-1">
+      <span class="label">{label}</span>
+      <span class="text-2xl font-semibold num">{value}</span>
+      {sub && <span class="text-[12px] text-muted">{sub}</span>}
     </div>
   )
 }

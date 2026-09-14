@@ -14,10 +14,13 @@ import (
 // Message is what SSE subscribers receive: an operation event, an operation status
 // change, or (later) cluster status and health events.
 type Message struct {
-	Kind        string              `json:"kind"` // event | operation
-	OperationID int64               `json:"operationId"`
+	Kind        string              `json:"kind"` // event | operation | status | health
+	OperationID int64               `json:"operationId,omitempty"`
 	Event       *cluster.Event      `json:"event,omitempty"`
 	Operation   *store.OperationRow `json:"operation,omitempty"`
+	Cluster     string              `json:"cluster,omitempty"`
+	Status      *cluster.Status     `json:"status,omitempty"`
+	Health      *store.EventRow     `json:"health,omitempty"`
 }
 
 // hub fans messages out to SSE subscribers.

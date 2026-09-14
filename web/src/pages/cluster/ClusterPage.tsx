@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'preact/hooks'
 import { api, type ClusterRow, type Status } from '../../api'
-import { clusters, operations } from '../../store'
+import { clusters, connected, loadHealth, operations, statuses } from '../../store'
 import { Tabs } from '../../components/Tabs'
 import { ErrorBox, Pill, stateTone } from '../../components/ui'
 import { sectionList, type Section } from '../../app'
@@ -16,12 +16,19 @@ export interface ClusterCtx { name: string; cluster: ClusterRow; status: Status 
 
 /** Cluster scope: header + section tabs; sections render below. */
 export function ClusterPage({ name, section = 'overview', sub }: { name: string; section?: string; sub?: string }) {
-  const [status, setStatus] = useState<Status | null>(null)
+  const [fetched, setFetched] = useState<Status | null>(null)
   const [error, setError] = useState<string | null>(null)
   const cluster = clusters.value.find((c) => c.name === name)
-  const refresh = useCallback(() => { api.status(name).then((s) => { setStatus(s); setError(null) }).catch((e) => setError(e.message)) }, [name])
-  useEffect(() => { setStatus(null); refresh(); const t = setInterval(refresh, 10000); return () => clearInterval(t) }, [refresh])
-  // Refresh when an operation on this cluster finishes.
+  const pushed = statuses.value.get(name)
+  const status: Status | null = pushed ?? fetched
+  const refresh = useCallback(() => { api.status(name).then((s) => { setFetched(s); setError(null) }).catch((e) => setError(e.message)) }, [name])
+  useEffect(() => { setFetched(null); refresh(); loadHealth(name) }, [refresh, name])
+  // The watcher pushes status every 15 s over SSE; poll only while disconnected.
+  useEffect(() => {
+    if (connected.value) return
+    const t = setInterval(refresh, 10000)
+    return () => clearInterval(t)
+  }, [refresh, connected.value])
   const finished = [...operations.value.values()].filter((o) => o.cluster === name && o.status !== 'running').length
   useEffect(() => { refresh() }, [finished, refresh])
 

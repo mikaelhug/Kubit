@@ -1,7 +1,7 @@
 // Global state as signals, fed by one SSE connection. Pages read signals and call api.*;
 // the stream keeps operations, their steps and their event logs current.
 import { signal, computed } from '@preact/signals'
-import { api, getToken, type ClusterRow, type Event, type Message, type Operation, type Step } from './api'
+import { api, fmt, getToken, type ClusterRow, type Event, type HealthEvent, type Message, type Operation, type Status, type Step } from './api'
 
 export const clusters = signal<ClusterRow[]>([])
 export const operations = signal<Map<number, Operation>>(new Map())
@@ -11,6 +11,26 @@ export const drawerOpen = signal<boolean>(read('kubit.drawer', false))
 export const drawerHeight = signal<number>(read('kubit.drawerHeight', 260))
 export const drawerTab = signal<number | null>(null)
 export const toasts = signal<{ id: number; text: string; tone: 'info' | 'error' | 'good' }[]>([])
+/** Latest Status per cluster, pushed by the daemon's watcher. */
+export const statuses = signal<Map<string, Status>>(new Map())
+/** Health events per cluster (newest first), seeded from the API and appended live. */
+export const health = signal<Map<string, HealthEvent[]>>(new Map())
+
+export async function loadHealth(name: string) {
+  try {
+    const list = await api.events(name)
+    const m = new Map(health.value)
+    m.set(name, list)
+    health.value = m
+  } catch {}
+}
+
+export async function ack(name: string, id?: number) {
+  if (id === undefined) await api.ackAll(name); else await api.ackEvent(id)
+  const m = new Map(health.value)
+  m.set(name, (m.get(name) ?? []).map((e) => id === undefined || e.id === id ? { ...e, acked: true } : e))
+  health.value = m
+}
 
 export const running = computed(() => [...operations.value.values()].filter((o) => o.status === 'running').sort((a, b) => a.id - b.id))
 export const recent = computed(() => [...operations.value.values()].sort((a, b) => b.id - a.id).slice(0, 100))
@@ -86,17 +106,31 @@ export function connect() {
       upsertOp(m.operation)
       if (m.operation.status !== 'running') {
         reloadClusters()
-        if (prev?.status === 'running') toast(`${fmtKind(m.operation.kind)} ${m.operation.status}`, m.operation.status === 'done' ? 'good' : 'error')
+        if (prev?.status === 'running') toast(`${fmt.kind(m.operation.kind)}${m.operation.cluster ? ' · ' + m.operation.cluster : ''}: ${m.operation.status}`, m.operation.status === 'done' ? 'good' : 'error')
       }
-    } else if (m.kind === 'event' && m.event) {
+    } else if (m.kind === 'status' && m.status && m.cluster) {
+      const sm = new Map(statuses.value)
+      sm.set(m.cluster, m.status)
+      statuses.value = sm
+    } else if (m.kind === 'health' && m.health) {
+      const hm = new Map(health.value)
+      const resolves: Record<string, string> = { 'talos.back': 'talos.unreachable', 'node.ready': 'node.notready', 'api.back': 'api.unreachable', 'etcd.healthy': 'etcd.unhealthy', 'lb.assigned': 'lb.lost' }
+      const cleared = resolves[m.health.kind]
+      const h = m.health
+      const prev = (hm.get(h.cluster) ?? []).map((e) => cleared && e.kind === cleared && (e.node ?? '') === (h.node ?? '') ? { ...e, acked: true } : e)
+      hm.set(h.cluster, [h, ...prev].slice(0, 200))
+      health.value = hm
+      if (m.health.severity !== 'info') toast(`${m.health.cluster}: ${m.health.message}`, 'error')
+    } else if (m.kind === 'event' && m.event && m.operationId !== undefined) {
       const e = m.event
+      const id = m.operationId
       if (e.kind === 'log' || !e.kind) {
         const map = new Map(opEvents.value)
-        const list = map.get(m.operationId) ?? []
-        map.set(m.operationId, list.length > 2000 ? [...list.slice(-1500), e] : [...list, e])
+        const list = map.get(id) ?? []
+        map.set(id, list.length > 2000 ? [...list.slice(-1500), e] : [...list, e])
         opEvents.value = map
       }
-      applyStepEvent(m.operationId, e)
+      applyStepEvent(id, e)
     }
   }
   source.onerror = () => {
@@ -105,10 +139,6 @@ export function connect() {
     source = null
     setTimeout(connect, 3000)
   }
-}
-
-function fmtKind(k: string) {
-  return ({ 'cluster.create': 'Create cluster', 'cluster.apply': 'Apply', 'platform.plan': 'Plan', 'platform.apply': 'Apply add-ons', 'upgrade.talos': 'Talos upgrade', 'upgrade.kubernetes': 'Kubernetes upgrade', 'node.add': 'Add node', 'node.remove': 'Remove node', discover: 'Discovery' } as Record<string, string>)[k] || k
 }
 
 /** Load the persisted log of an operation that finished before this page opened. */

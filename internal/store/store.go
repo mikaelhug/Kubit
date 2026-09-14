@@ -93,6 +93,30 @@ var migrations = []string{
 	`ALTER TABLE operations ADD COLUMN steps TEXT NOT NULL DEFAULT '[]';
 	 ALTER TABLE operations ADD COLUMN artifact TEXT NOT NULL DEFAULT '';
 	 ALTER TABLE operations ADD COLUMN request TEXT NOT NULL DEFAULT '';`,
+	`CREATE TABLE samples (
+		ts        TEXT NOT NULL,
+		cluster   TEXT NOT NULL,
+		node      TEXT NOT NULL DEFAULT '',   -- '' = cluster totals
+		cpu_milli INTEGER NOT NULL DEFAULT 0,
+		cpu_cap   INTEGER NOT NULL DEFAULT 0,
+		mem       INTEGER NOT NULL DEFAULT 0,
+		mem_cap   INTEGER NOT NULL DEFAULT 0,
+		pods      INTEGER NOT NULL DEFAULT 0,
+		ready     INTEGER NOT NULL DEFAULT 0,
+		reachable INTEGER NOT NULL DEFAULT 0
+	);
+	CREATE INDEX samples_cluster_ts ON samples (cluster, node, ts);
+	CREATE TABLE events (
+		id       INTEGER PRIMARY KEY AUTOINCREMENT,
+		ts       TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+		cluster  TEXT NOT NULL,
+		node     TEXT NOT NULL DEFAULT '',
+		severity TEXT NOT NULL,              -- info | warn | critical
+		kind     TEXT NOT NULL,
+		message  TEXT NOT NULL,
+		acked    INTEGER NOT NULL DEFAULT 0
+	);
+	CREATE INDEX events_cluster_ts ON events (cluster, ts);`,
 }
 
 func (s *Store) migrate(ctx context.Context) error {

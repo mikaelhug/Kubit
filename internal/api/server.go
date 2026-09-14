@@ -21,6 +21,7 @@ import (
 	"github.com/mikael/kubit/internal/store"
 	"github.com/mikael/kubit/internal/talos"
 	"github.com/mikael/kubit/internal/tofu"
+	"github.com/mikael/kubit/internal/watch"
 	"github.com/mikael/kubit/web"
 )
 
@@ -32,6 +33,7 @@ type Server struct {
 	hub     *hub
 	locks   clusterLocks
 	cancels sync.Map // operation id → context.CancelFunc
+	watcher *watch.Watcher
 	// token, when set, is required as "Authorization: Bearer" on /api (non-loopback binds).
 	token string
 }
@@ -70,6 +72,8 @@ func New(version string, m *cluster.Manager, token string) *Server {
 	r.HandleFunc("POST /api/v1/nodes/{ip}/reboot", s.handleNodeReboot)
 	r.HandleFunc("POST /api/v1/config/validate", s.handleConfigValidate)
 	r.HandleFunc("POST /api/v1/config/draft", s.handleConfigDraft)
+	s.nodeRoutes()
+	s.healthRoutes()
 	dist, _ := fs.Sub(web.Dist, "dist")
 	r.Handle("/", spaHandler(http.FS(dist)))
 	return s
@@ -263,6 +267,12 @@ func (s *Server) handleCluster(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleClusterStatus(w http.ResponseWriter, r *http.Request) {
+	if s.watcher != nil && r.URL.Query().Get("fresh") != "true" {
+		if st := s.watcher.Latest(r.PathValue("name")); st != nil {
+			writeJSON(w, http.StatusOK, st)
+			return
+		}
+	}
 	st, err := s.manager.Status(r.Context(), r.PathValue("name"))
 	if err != nil {
 		writeErr(w, err)

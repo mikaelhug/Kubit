@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'preact/hooks'
 import { useLocation } from 'preact-iso'
-import { api } from '../../api'
+import { api, type Versions } from '../../api'
 import { reloadClusters, toast, watch } from '../../store'
 import { ConfirmDialog, ErrorBox, Field, KeyValue, Notice, Section } from '../../components/ui'
 import type { ClusterCtx } from './ClusterPage'
@@ -14,7 +14,11 @@ export function Settings({ ctx }: { ctx: ClusterCtx }) {
   const [error, setError] = useState<string | null>(null)
   const [forget, setForget] = useState(false)
   const [upgrade, setUpgrade] = useState<{ talos: string; k8s: string }>({ talos: spec.talosVersion, k8s: spec.kubernetesVersion })
+  const [versions, setVersions] = useState<Versions | null>(null)
+  useEffect(() => { api.versions().then(setVersions).catch(() => {}) }, [])
   useEffect(() => { api.clusterYaml(name).then((y) => { setYaml(y); setDirty(false) }).catch((e) => setError(e.message)) }, [name, cluster.updatedAt])
+  const k8sMinor = spec.kubernetesVersion.split('.').slice(0, 2).join('.')
+  const k8sTargets = (versions?.kubernetesMinors ?? []).filter((m) => m >= k8sMinor)
 
   return (
     <div class="flex flex-col gap-6">
@@ -30,17 +34,19 @@ export function Settings({ ctx }: { ctx: ClusterCtx }) {
         </div>
       </Section>
 
-      <Section title="Versions" help="Rolling, one node at a time, control planes first. Each node must come back Ready before the next starts. A compatibility-checked version picker arrives in M3.">
+      <Section title="Versions" help={`Rolling, one node at a time, control planes first; each node must come back Ready before the next starts. ${versions?.note ?? ''}`}>
         <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
-          <Field label={`Talos (now ${spec.talosVersion})`} hint="A/B partition swap; Talos rolls back on its own if the new system does not boot.">
+          <Field label={`Talos (now ${spec.talosVersion})`} hint={versions ? `Releases from ${versions.talosSource}; A/B partition swap with automatic rollback on boot failure. Pre-releases are listed but not recommended.` : 'A/B partition swap; Talos rolls back on its own if the new system does not boot.'}>
             <div class="flex gap-2">
-              <input class="input mono" value={upgrade.talos} onInput={(e) => setUpgrade({ ...upgrade, talos: (e.target as HTMLInputElement).value })} />
+              <input class="input mono" list="talos-versions" value={upgrade.talos} onInput={(e) => setUpgrade({ ...upgrade, talos: (e.target as HTMLInputElement).value })} />
+              <datalist id="talos-versions">{versions?.talos.map((v) => <option key={v} value={v} />)}</datalist>
               <button class="btn btn-primary shrink-0" disabled={upgrade.talos === spec.talosVersion} onClick={() => api.upgradeTalos(name, upgrade.talos).then(watch).catch((e) => toast(e.message, 'error'))}>Upgrade</button>
             </div>
           </Field>
-          <Field label={`Kubernetes (now ${spec.kubernetesVersion})`} hint="Re-applies machine configs with the new component images, then syncs bootstrap manifests.">
+          <Field label={`Kubernetes (now ${spec.kubernetesVersion})`} hint={`Re-applies machine configs with the new component images, then syncs bootstrap manifests. Supported minors with Talos ${versions?.machinery ?? ''}: ${(versions?.kubernetesMinors ?? []).join(', ')}; downgrades are not offered.`}>
             <div class="flex gap-2">
-              <input class="input mono" value={upgrade.k8s} onInput={(e) => setUpgrade({ ...upgrade, k8s: (e.target as HTMLInputElement).value })} />
+              <input class="input mono" list="k8s-versions" value={upgrade.k8s} onInput={(e) => setUpgrade({ ...upgrade, k8s: (e.target as HTMLInputElement).value })} />
+              <datalist id="k8s-versions">{k8sTargets.map((m) => <option key={m} value={m === versions?.kubernetesLatest.split('.').slice(0, 2).join('.') ? versions.kubernetesLatest : m + '.0'} />)}</datalist>
               <button class="btn btn-primary shrink-0" disabled={upgrade.k8s === spec.kubernetesVersion} onClick={() => api.upgradeKubernetes(name, upgrade.k8s).then(watch).catch((e) => toast(e.message, 'error'))}>Upgrade</button>
             </div>
           </Field>

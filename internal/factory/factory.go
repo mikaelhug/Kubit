@@ -68,6 +68,27 @@ func (c *Client) CreateSchematic(ctx context.Context, extensions []string) (stri
 	return out.ID, nil
 }
 
+// Versions lists the Talos releases the factory can build images for.
+func (c *Client) Versions(ctx context.Context) ([]string, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.BaseURL+"/versions", nil)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := c.HTTP.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("image factory: GET /versions: %s", resp.Status)
+	}
+	var out []string
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *Client) host() string {
 	const p = "https://"
 	if len(c.BaseURL) > len(p) && c.BaseURL[:len(p)] == p {

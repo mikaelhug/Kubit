@@ -8,7 +8,10 @@ export interface Step { id: string; title: string; status: StepStatus; node?: st
 export interface Event { time: string; clock?: string; kind?: 'log' | 'steps' | 'step'; level: Level; step: string; node?: string; message: string; steps?: Step[]; status?: StepStatus }
 export type OpStatus = 'running' | 'done' | 'failed' | 'cancelled'
 export interface Operation { id: number; cluster: string; kind: string; status: OpStatus; log?: string; startedAt: string; finishedAt?: string; steps: Step[]; artifact?: unknown; request?: unknown }
-export interface Message { kind: 'event' | 'operation'; operationId: number; event?: Event; operation?: Operation }
+export interface Message { kind: 'event' | 'operation' | 'status' | 'health'; operationId?: number; event?: Event; operation?: Operation; cluster?: string; status?: Status; health?: HealthEvent }
+export interface HealthEvent { id: number; ts: string; cluster: string; node?: string; severity: 'info' | 'warn' | 'critical'; kind: string; message: string; acked: boolean }
+export interface Sample { ts: string; node?: string; cpuMilli: number; cpuCap: number; memBytes: number; memCap: number; pods: number; ready: boolean; reachable: boolean }
+export interface Versions { talos: string[]; talosSource: string; kubernetesMinors: string[]; kubernetesLatest: string; machinery: string; minTalos: string; note: string }
 
 export interface NodeSpec { hostname: string; ip: string; mac?: string; role: 'controlplane' | 'worker'; arch: string; kvm?: boolean; installDisk: { path?: string; selector?: { minSize?: string; type?: string; model?: string } } }
 export interface PlatformSpec { metallb: { enabled: boolean; range?: string }; ingressNginx: { enabled: boolean }; gvisor: { enabled: boolean }; metricsServer: { enabled: boolean }; certManager: { enabled: boolean }; argocd: { enabled: boolean } }
@@ -24,7 +27,20 @@ export interface ClusterSpec {
 }
 export interface ClusterRow { name: string; state: string; schematicId: string; createdAt: string; updatedAt: string; spec: ClusterSpec }
 
-export interface Inventory { cpus: number; memoryBytes: number; kvm: boolean; arch: string; talosVersion: string; manufacturer?: string; product?: string; disks: { devPath: string; sizeBytes: number; model?: string; transport?: string; readonly: boolean; cdrom: boolean }[]; links: { name: string; mac: string; up: boolean; addresses?: string[] }[] }
+export interface Inventory {
+  ip: string; hostname?: string; cpus: number; memoryBytes: number; kvm: boolean; arch: string; talosVersion: string; platform: string; stage: string; manufacturer?: string; product?: string
+  disks: { devPath: string; sizeBytes: number; model?: string; transport?: string; rotational: boolean; readonly: boolean; cdrom: boolean }[]
+  links: { name: string; mac: string; up: boolean; addresses?: string[] }[]
+  bootTime?: string; extensions?: { name: string; version: string; author?: string }[]
+  etcd?: { memberId: string; leader: boolean; learner: boolean; dbSizeBytes: number; dbInUseBytes: number; raftIndex: number; raftTerm: number; errors?: string[] }
+}
+export interface Resources { cpuMilli: number; memBytes: number; pods: number }
+export interface PodSummary { namespace: string; name: string; phase: string; ready: string; restarts: number; owner?: string; cpuMilli: number; memBytes: number; age: string; usageCpuMilli?: number; usageMemBytes?: number }
+export interface NodeDetail {
+  name: string; ready: boolean; unschedulable: boolean; kubeletVersion: string; containerRuntime: string; kernel: string; osImage: string; internalIP: string
+  conditions: { type: string; status: string; reason?: string; message?: string; since?: string }[]
+  taints: string[] | null; labels: Record<string, string>; capacity: Resources; allocatable: Resources; requests: Resources; pods: PodSummary[] | null
+}
 export interface NodeRow { ip: string; cluster: string; hostname: string; mac: string; arch: string; role: string; source: string; state: string; talosVersion: string; lastSeen: string; inventory?: Inventory }
 
 export interface NodeStatus { hostname: string; ip: string; role: string; arch: string; kvm: boolean; talosVersion: string; kubeletVersion: string; ready: boolean; unschedulable: boolean; talosReachable: boolean; talosError?: string; registered: boolean; stage: string; cpuMilli: number; cpuCapMilli: number; memBytes: number; memCapBytes: number; pods: number; podCap: number; gvisor: boolean }
@@ -70,7 +86,12 @@ export const api = {
   version: () => req<{ kubit: string }>('GET', '/version'),
   clusters: () => req<ClusterRow[]>('GET', '/clusters'),
   cluster: (name: string) => req<ClusterRow>('GET', `/clusters/${name}`),
-  status: (name: string) => req<Status>('GET', `/clusters/${name}/status`),
+  status: (name: string, fresh = false) => req<Status>('GET', `/clusters/${name}/status${fresh ? '?fresh=true' : ''}`),
+  samples: (name: string, range = '24h', node = '') => req<Sample[]>('GET', `/clusters/${name}/samples?range=${range}&node=${encodeURIComponent(node)}`),
+  events: (name: string, unacked = false) => req<HealthEvent[]>('GET', `/clusters/${name}/events?limit=200&unacked=${unacked}`),
+  ackEvent: (id: number) => req<void>('POST', `/events/${id}/ack`),
+  ackAll: (name: string) => req<void>('POST', `/clusters/${name}/events/ack`),
+  versions: () => req<Versions>('GET', '/versions'),
   clusterYaml: (name: string) => req<string>('GET', `/clusters/${name}/yaml`),
   saveClusterYaml: async (name: string, yaml: string): Promise<{ yaml: string }> => {
     const headers: Record<string, string> = { 'Content-Type': 'application/yaml' }
@@ -94,6 +115,13 @@ export const api = {
   nodes: (cluster?: string) => req<NodeRow[]>('GET', '/nodes' + (cluster ? `?cluster=${cluster}` : '')),
   discover: (targets: string[]) => req<OpRef>('POST', '/discover', { targets }),
   services: (ip: string) => req<Service[]>('GET', `/nodes/${ip}/services`),
+  inventory: (ip: string) => req<Inventory>('GET', `/nodes/${ip}/inventory`),
+  nodeKubernetes: (ip: string) => req<NodeDetail>('GET', `/nodes/${ip}/kubernetes`),
+  cordon: (cluster: string, hostname: string) => req<OpRef>('POST', `/clusters/${cluster}/nodes/${hostname}/cordon`),
+  uncordon: (cluster: string, hostname: string) => req<OpRef>('POST', `/clusters/${cluster}/nodes/${hostname}/uncordon`),
+  drain: (cluster: string, hostname: string) => req<OpRef>('POST', `/clusters/${cluster}/nodes/${hostname}/drain`),
+  rebootNode: (cluster: string, hostname: string, drain: boolean) => req<OpRef>('POST', `/clusters/${cluster}/nodes/${hostname}/reboot`, { drain }),
+  upgradeNode: (cluster: string, hostname: string, to: string) => req<OpRef>('POST', `/clusters/${cluster}/nodes/${hostname}/upgrade`, { to }),
   reboot: (ip: string) => req<void>('POST', `/nodes/${ip}/reboot`),
   operations: () => req<Operation[]>('GET', '/operations'),
   operation: (id: number) => req<Operation>('GET', `/operations/${id}`),
@@ -132,6 +160,12 @@ export const fmt = {
   pct(a: number, b: number) { return b ? Math.round((a / b) * 100) : 0 },
   time(iso: string) { return iso ? new Date(iso).toLocaleTimeString() : '' },
   datetime(iso: string) { return iso ? new Date(iso).toLocaleString() : '' },
+  /** Time of day when today, otherwise date and time. */
+  when(iso: string) {
+    if (!iso) return ''
+    const d = new Date(iso)
+    return d.toDateString() === new Date().toDateString() ? d.toLocaleTimeString() : d.toLocaleString()
+  },
   duration(from?: string, to?: string) {
     if (!from) return ''
     const ms = (to ? new Date(to).getTime() : Date.now()) - new Date(from).getTime()
@@ -145,6 +179,7 @@ export const fmt = {
     return ({
       'cluster.create': 'Create cluster', 'cluster.apply': 'Apply cluster.yaml', 'platform.plan': 'Plan add-ons', 'platform.apply': 'Apply add-ons',
       'upgrade.talos': 'Upgrade Talos', 'upgrade.kubernetes': 'Upgrade Kubernetes', 'node.add': 'Add node', 'node.remove': 'Remove node', discover: 'Discover nodes',
+      'node.cordon': 'Cordon node', 'node.uncordon': 'Uncordon node', 'node.drain': 'Drain node', 'node.reboot': 'Reboot node', 'node.upgrade': 'Upgrade node',
     } as Record<string, string>)[kind] || kind
   },
 }
