@@ -20,6 +20,12 @@ type RemoveOptions struct {
 // graceful Talos reset (leaves etcd first on control planes, wipes state, reboots into
 // maintenance mode), then drops it from cluster.yaml.
 func (m *Manager) RemoveNode(ctx context.Context, name, hostname string, opts RemoveOptions, sink Sink) error {
+	sink.plan(Steps(
+		"guard", "Check etcd quorum impact",
+		"drain", "Cordon, drain and delete from Kubernetes",
+		"reset", "Graceful Talos reset back to maintenance mode",
+		"forget", "Remove from cluster.yaml",
+	)...)
 	c, row, err := m.LoadCluster(ctx, name)
 	if err != nil {
 		return err
@@ -34,7 +40,11 @@ func (m *Manager) RemoveNode(ctx context.Context, name, hostname string, opts Re
 		return fmt.Errorf("node %s is not part of cluster %s", hostname, name)
 	}
 	n := c.Spec.Nodes[idx]
-	if n.Role == config.RoleControlPlane {
+	err = sink.run("guard", func() error {
+		if n.Role != config.RoleControlPlane {
+			sink.emit(Info, "guard", hostname, "worker: no quorum impact")
+			return nil
+		}
 		remaining := len(c.ControlPlanes()) - 1
 		switch {
 		case remaining == 0:
@@ -42,53 +52,73 @@ func (m *Manager) RemoveNode(ctx context.Context, name, hostname string, opts Re
 		case remaining == 2 && !opts.Force:
 			return fmt.Errorf("removing %s leaves 2 control planes, which cannot survive another failure; pass --force to accept", hostname)
 		case remaining == 2:
-			sink.emit(Warn, "remove", hostname, "cluster will run with 2 control planes: no fault tolerance")
+			sink.emit(Warn, "guard", hostname, "cluster will run with 2 control planes: no fault tolerance")
+		default:
+			sink.emit(Info, "guard", hostname, "%d control planes remain", remaining)
 		}
+		return nil
+	})
+	if err != nil {
+		return err
 	}
 	sec, err := m.Store.GetClusterSecrets(ctx, name)
 	if err != nil {
 		return err
 	}
 
-	kc, err := m.KubeClient(ctx, name)
-	if err != nil {
-		return err
-	}
-	sink.emit(Info, "drain", hostname, "cordoning and draining")
-	if err := kc.Drain(ctx, hostname, 5*time.Minute, io.Discard); err != nil {
-		if !opts.Force {
+	err = sink.run("drain", func() error {
+		kc, err := m.KubeClient(ctx, name)
+		if err != nil {
 			return err
 		}
-		sink.emit(Warn, "drain", hostname, "drain failed, continuing because --force: %v", err)
-	}
-	if err := kc.DeleteNode(ctx, hostname); err != nil && !opts.Force {
-		return fmt.Errorf("delete node: %w", err)
-	}
-	sink.emit(Info, "drain", hostname, "removed from Kubernetes")
-
-	dial, cancel := context.WithTimeout(ctx, 30*time.Second)
-	tc, err := talos.Dial(dial, n.IP, sec.Talosconfig)
-	cancel()
-	if err == nil {
-		sink.emit(Info, "reset", hostname, "graceful Talos reset (etcd leave, wipe, reboot to maintenance)")
-		err = tc.Reset(tc.Context(ctx), true, true)
-		tc.Close()
-	}
-	if err != nil {
-		if !opts.Force {
-			return fmt.Errorf("reset %s: %w", n.IP, err)
+		sink.emit(Info, "drain", hostname, "cordoning and draining")
+		if err := kc.Drain(ctx, hostname, 5*time.Minute, io.Discard); err != nil {
+			if !opts.Force {
+				return err
+			}
+			sink.emit(Warn, "drain", hostname, "drain failed, continuing because --force: %v", err)
 		}
-		sink.emit(Warn, "reset", hostname, "reset failed, forgetting node anyway: %v", err)
+		if err := kc.DeleteNode(ctx, hostname); err != nil && !opts.Force {
+			return fmt.Errorf("delete node: %w", err)
+		}
+		sink.emit(Info, "drain", hostname, "removed from Kubernetes")
+		return nil
+	})
+	if err != nil {
+		return err
 	}
 
-	c.Spec.Nodes = append(c.Spec.Nodes[:idx], c.Spec.Nodes[idx+1:]...)
-	if err := m.SaveCluster(ctx, c, row.State); err != nil {
+	err = sink.run("reset", func() error {
+		dial, cancel := context.WithTimeout(ctx, 30*time.Second)
+		tc, err := talos.Dial(dial, n.IP, sec.Talosconfig)
+		cancel()
+		if err == nil {
+			sink.emit(Info, "reset", hostname, "graceful Talos reset (etcd leave, wipe, reboot to maintenance)")
+			err = tc.Reset(tc.Context(ctx), true, true)
+			tc.Close()
+		}
+		if err != nil {
+			if !opts.Force {
+				return fmt.Errorf("reset %s: %w", n.IP, err)
+			}
+			sink.emit(Warn, "reset", hostname, "reset failed, forgetting node anyway: %v", err)
+		}
+		return nil
+	})
+	if err != nil {
 		return err
 	}
-	if err := m.Store.UnassignNode(ctx, n.IP, string(talos.StateMaintenance)); err != nil {
-		return err
-	}
-	_ = m.Store.Audit(ctx, name, "node.remove", marshalJSON(n))
-	sink.emit(Done, "remove", hostname, "removed from cluster %s", name)
-	return nil
+
+	return sink.run("forget", func() error {
+		c.Spec.Nodes = append(c.Spec.Nodes[:idx], c.Spec.Nodes[idx+1:]...)
+		if err := m.SaveCluster(ctx, c, row.State); err != nil {
+			return err
+		}
+		if err := m.Store.UnassignNode(ctx, n.IP, string(talos.StateMaintenance)); err != nil {
+			return err
+		}
+		_ = m.Store.Audit(ctx, name, "node.remove", marshalJSON(n))
+		sink.emit(Done, "forget", hostname, "removed from cluster %s", name)
+		return nil
+	})
 }

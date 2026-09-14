@@ -11,6 +11,17 @@ import (
 	"github.com/mikael/kubit/internal/talos"
 )
 
+// nodeStep is the step id for per-node phases of rolling operations.
+func nodeStep(n config.Node) string { return "node:" + n.Hostname }
+
+func nodeSteps(nodes []config.Node, verb string) []Step {
+	out := make([]Step, 0, len(nodes))
+	for _, n := range nodes {
+		out = append(out, Step{ID: nodeStep(n), Title: verb + " " + n.Hostname, Node: n.Hostname, Status: StepPending})
+	}
+	return out
+}
+
 // orderedNodes returns control planes first, then workers: the order every rolling
 // operation uses.
 func orderedNodes(c *config.Cluster) []config.Node {
@@ -45,46 +56,56 @@ func (m *Manager) UpgradeTalos(ctx context.Context, name, version string, sink S
 		return err
 	}
 	image := m.Factory.InstallerImage(c.Spec.SchematicID, version)
-	sink.emit(Info, "upgrade", "", "Talos %s → %s using %s", c.Spec.TalosVersion, version, image)
+	nodes := orderedNodes(c)
+	sink.plan(nodeSteps(nodes, "Upgrade")...)
+	sink.emit(Info, nodeStep(nodes[0]), "", "Talos %s → %s using %s", c.Spec.TalosVersion, version, image)
 	_ = m.Store.Audit(ctx, name, "upgrade.talos", version)
 
-	for _, n := range orderedNodes(c) {
-		dial, cancel := context.WithTimeout(ctx, 30*time.Second)
-		tc, err := talos.Dial(dial, n.IP, sec.Talosconfig)
-		cancel()
-		if err != nil {
-			return fmt.Errorf("%s: %w", n.Hostname, err)
-		}
-		v, err := tc.Version(tc.Context(ctx))
-		if err == nil && len(v.Messages) > 0 && v.Messages[0].Version.Tag == version {
+	for _, n := range nodes {
+		step := nodeStep(n)
+		err := sink.run(step, func() error {
+			dial, cancel := context.WithTimeout(ctx, 30*time.Second)
+			tc, err := talos.Dial(dial, n.IP, sec.Talosconfig)
+			cancel()
+			if err != nil {
+				return err
+			}
+			v, err := tc.Version(tc.Context(ctx))
+			if err == nil && len(v.Messages) > 0 && v.Messages[0].Version.Tag == version {
+				tc.Close()
+				sink.emit(Info, step, n.Hostname, "already on %s", version)
+				return nil
+			}
+			bootID, err := tc.BootID(ctx)
+			if err != nil {
+				tc.Close()
+				return err
+			}
+			sink.emit(Info, step, n.Hostname, "upgrading to %s (A/B slot install, then reboot)", version)
+			_, err = tc.Upgrade(tc.Context(ctx), image, false, false)
 			tc.Close()
-			sink.emit(Info, "upgrade", n.Hostname, "already on %s", version)
-			continue
-		}
-		bootID, err := tc.BootID(ctx)
+			if err != nil {
+				return fmt.Errorf("upgrade: %w", err)
+			}
+			if err := talos.WaitForReboot(ctx, n.IP, sec.Talosconfig, bootID, m.Timeouts.Install); err != nil {
+				return err
+			}
+			sink.emit(Info, step, n.Hostname, "rebooted; waiting for Ready")
+			if err := kc.WaitReady(ctx, []string{n.Hostname}, m.Timeouts.Ready, nil); err != nil {
+				return fmt.Errorf("after upgrade: %w", err)
+			}
+			sink.emit(Info, step, n.Hostname, "back on %s and Ready", version)
+			return nil
+		})
 		if err != nil {
-			tc.Close()
 			return fmt.Errorf("%s: %w", n.Hostname, err)
 		}
-		sink.emit(Info, "upgrade", n.Hostname, "upgrading")
-		_, err = tc.Upgrade(tc.Context(ctx), image, false, false)
-		tc.Close()
-		if err != nil {
-			return fmt.Errorf("%s: upgrade: %w", n.Hostname, err)
-		}
-		if err := talos.WaitForReboot(ctx, n.IP, sec.Talosconfig, bootID, m.Timeouts.Install); err != nil {
-			return fmt.Errorf("%s: %w", n.Hostname, err)
-		}
-		if err := kc.WaitReady(ctx, []string{n.Hostname}, m.Timeouts.Ready, nil); err != nil {
-			return fmt.Errorf("%s after upgrade: %w", n.Hostname, err)
-		}
-		sink.emit(Info, "upgrade", n.Hostname, "back on %s and Ready", version)
 	}
 	c.Spec.TalosVersion = version
 	if err := m.SaveCluster(ctx, c, row.State); err != nil {
 		return err
 	}
-	sink.emit(Done, "upgrade", "", "all nodes on Talos %s", version)
+	sink.emit(Done, nodeStep(nodes[len(nodes)-1]), "", "all nodes on Talos %s", version)
 	return nil
 }
 
@@ -108,18 +129,20 @@ func (m *Manager) UpgradeKubernetes(ctx context.Context, name, version string, s
 	}
 	prev := c.Spec.KubernetesVersion
 	c.Spec.KubernetesVersion = version
-	sink.emit(Info, "upgrade", "", "Kubernetes %s → %s", prev, version)
+	nodes := orderedNodes(c)
+	sink.plan(append(nodeSteps(nodes, "Apply"), Step{ID: "manifests", Title: "Sync bootstrap manifests (kube-proxy, CoreDNS, CNI)"})...)
+	sink.emit(Info, nodeStep(nodes[0]), "", "Kubernetes %s → %s", prev, version)
 	_ = m.Store.Audit(ctx, name, "upgrade.kubernetes", version)
 	if err := m.ApplyConfigs(ctx, c, version, sink); err != nil {
 		return err
 	}
-	if err := m.SyncManifests(ctx, c, sink); err != nil {
+	if err := sink.run("manifests", func() error { return m.SyncManifests(ctx, c, sink) }); err != nil {
 		return err
 	}
 	if err := m.SaveCluster(ctx, c, row.State); err != nil {
 		return err
 	}
-	sink.emit(Done, "upgrade", "", "all nodes on Kubernetes %s", version)
+	sink.emit(Done, "manifests", "", "all nodes on Kubernetes %s", version)
 	return nil
 }
 

@@ -1,15 +1,13 @@
 import { useEffect, useState } from 'preact/hooks'
-import { useLocation } from 'preact-iso'
 import { api, fmt, type NodeRow } from '../api'
-import { useOperationEvents } from '../events'
+import { operations, opEvents, watch } from '../store'
 import { ErrorBox, EventLog, Field, Pill } from '../components/ui'
-import { OperationPanel } from '../components/OperationPanel'
+import { OperationView } from '../components/ActivityDrawer'
 
 type Step = 'discover' | 'declare' | 'create'
 
 /** Create-cluster wizard: discover → pick nodes → edit the drafted cluster.yaml → create. */
 export function NewCluster() {
-  const { route } = useLocation()
   const [step, setStep] = useState<Step>('discover')
   const [targets, setTargets] = useState('192.168.1.0/24')
   const [discoverOp, setDiscoverOp] = useState<number | null>(null)
@@ -21,11 +19,12 @@ export function NewCluster() {
   const [createOp, setCreateOp] = useState<number | null>(null)
   const [skipPlatform, setSkipPlatform] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  const { events: discoverEvents, op: discoverStatus } = useOperationEvents(discoverOp ?? undefined)
+  const discoverStatus = discoverOp !== null ? operations.value.get(discoverOp) : undefined
+  const discoverEvents = discoverOp !== null ? (opEvents.value.get(discoverOp) ?? []) : []
 
   const loadNodes = () => api.nodes().then((ns) => setNodes(ns.filter((n) => n.state === 'maintenance' && !n.cluster))).catch((e) => setError(e.message))
   useEffect(() => { loadNodes() }, [])
-  useEffect(() => { if (discoverStatus && discoverStatus.status !== 'running') loadNodes() }, [discoverStatus])
+  useEffect(() => { if (discoverStatus && discoverStatus.status !== 'running') loadNodes() }, [discoverStatus?.status])
   useEffect(() => {
     // Default the scan target to the subnet of the first known node.
     if (nodes.length > 0 && targets === '192.168.1.0/24') setTargets(nodes[0].ip.replace(/\.\d+$/, '.0/24'))
@@ -39,7 +38,7 @@ export function NewCluster() {
     setStep('declare')
     setError(null)
   }).catch((e) => setError(e.message))
-  const create = () => api.validate(yaml).then((v) => api.createCluster(v.yaml, skipPlatform)).then((r) => { setCreateOp(r.operationId); setStep('create'); setError(null) }).catch((e) => setError(e.message))
+  const create = () => api.validate(yaml).then((v) => api.createCluster(v.yaml, skipPlatform)).then((r) => { setCreateOp(r.operationId); watch(r, false); setStep('create'); setError(null) }).catch((e) => setError(e.message))
 
   return (
     <div class="p-6 max-w-[960px] flex flex-col gap-5">
@@ -108,11 +107,11 @@ export function NewCluster() {
       )}
 
       {step === 'create' && createOp !== null && (
-        <div class="panel p-4">
-          <OperationPanel id={createOp} title={`Creating ${name}`} onDone={(status) => { if (status === 'done') setTimeout(() => route(`/clusters/${name}`), 1500) }} />
-          <div class="mt-3 flex gap-2">
-            <a href={`/clusters/${name}`} class="btn">Open dashboard</a>
-            <span class="text-[12px] text-muted self-center">Provisioning keeps running if you leave; find it under Operations.</span>
+        <div class="flex flex-col gap-3">
+          <div class="panel h-[60vh] flex flex-col overflow-hidden"><OperationView id={createOp} tall /></div>
+          <div class="flex gap-2 items-center">
+            <a href={`/clusters/${name}/overview`} class="btn">Open cluster</a>
+            <span class="text-[12px] text-muted">Provisioning keeps running if you leave; it stays in the Activity drawer.</span>
           </div>
         </div>
       )}

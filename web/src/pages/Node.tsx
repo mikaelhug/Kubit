@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'preact/hooks'
 import { api, logsUrl, type NodeRow, type Service } from '../api'
-import { ErrorBox, Pill, stateTone } from '../components/ui'
+import { Breadcrumbs, ErrorBox, Pill, stateTone } from '../components/ui'
 
 export function NodePage({ ip }: { ip: string }) {
   const [node, setNode] = useState<NodeRow | null>(null)
@@ -36,6 +36,7 @@ export function NodePage({ ip }: { ip: string }) {
 
   return (
     <div class="p-6 flex flex-col gap-4 max-w-[1200px]">
+      <Breadcrumbs items={node?.cluster ? [{ label: node.cluster, href: `/clusters/${node.cluster}/overview` }, { label: 'Nodes', href: `/clusters/${node.cluster}/nodes` }, { label: node.hostname || ip }] : [{ label: 'Inventory', href: '/fleet/inventory' }, { label: ip }]} />
       <header class="flex items-center gap-3">
         <h1 class="text-xl font-semibold">{node?.hostname || ip}</h1>
         <span class="mono text-muted">{ip} · {node?.mac} · {node?.arch} · Talos {node?.talosVersion}</span>

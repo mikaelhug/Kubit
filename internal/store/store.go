@@ -90,6 +90,9 @@ var migrations = []string{
 		detail  TEXT NOT NULL DEFAULT ''
 	);`,
 	`ALTER TABLE clusters ADD COLUMN platform TEXT NOT NULL DEFAULT '{}';`,
+	`ALTER TABLE operations ADD COLUMN steps TEXT NOT NULL DEFAULT '[]';
+	 ALTER TABLE operations ADD COLUMN artifact TEXT NOT NULL DEFAULT '';
+	 ALTER TABLE operations ADD COLUMN request TEXT NOT NULL DEFAULT '';`,
 }
 
 func (s *Store) migrate(ctx context.Context) error {

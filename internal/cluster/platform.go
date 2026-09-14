@@ -42,6 +42,8 @@ func (m *Manager) writeCredentials(ctx context.Context, name string) (kubeconfig
 }
 
 func (m *Manager) platformRunner(ctx context.Context, name string, sink Sink) (*tofu.Runner, error) {
+	sink.plan(platformSteps...)
+	sink.begin("render")
 	c, row, err := m.LoadCluster(ctx, name)
 	if err != nil {
 		return nil, err
@@ -61,60 +63,125 @@ func (m *Manager) platformRunner(ctx context.Context, name string, sink Sink) (*
 	if err != nil {
 		return nil, err
 	}
-	sink.emit(Info, "platform", "", "rendered %s (tofu %s)", dir, bin)
-	r := &tofu.Runner{Bin: bin, Dir: dir, Log: func(l tofu.Line) {
-		switch {
-		case l.Diagnostic != nil && l.Diagnostic.Severity == "error":
-			sink.emit(Error, "tofu", "", "%s: %s", l.Diagnostic.Summary, l.Diagnostic.Detail)
-		case l.Diagnostic != nil:
-			sink.emit(Warn, "tofu", "", "%s", l.Diagnostic.Summary)
-		case l.Type == "planned_change" && l.Change != nil:
-			sink.emit(Info, "tofu", l.Change.Resource.Addr, "will %s", l.Change.Action)
-		case l.Type == "apply_start" && l.Hook != nil:
-			sink.emit(Info, "tofu", l.Hook.Resource.Addr, "%s...", l.Hook.Action)
-		case l.Type == "apply_complete" && l.Hook != nil:
-			sink.emit(Info, "tofu", l.Hook.Resource.Addr, "%s done in %ds", l.Hook.Action, l.Hook.ElapsedSeconds)
-		case l.Type == "apply_errored" && l.Hook != nil:
-			sink.emit(Error, "tofu", l.Hook.Resource.Addr, "%s failed", l.Hook.Action)
-		case l.Type == "change_summary":
-			sink.emit(Info, "tofu", "", "%s", l.Message)
-		}
-	}}
-	if err := r.Init(ctx); err != nil {
+	sink.emit(Info, "render", "", "rendered %s (tofu %s)", dir, bin)
+	sink.end("render")
+	r := &tofu.Runner{Bin: bin, Dir: dir, Log: tofuLogger(sink)}
+	if err := sink.run("init", func() error { return r.Init(ctx) }); err != nil {
 		return nil, err
 	}
 	return r, nil
 }
 
-// PlanPlatform renders and plans without applying; an empty summary means no drift.
-func (m *Manager) PlanPlatform(ctx context.Context, name string, sink Sink) (tofu.Summary, error) {
+var platformSteps = Steps(
+	"render", "Render infra/platform from cluster.yaml",
+	"init", "tofu init (providers)",
+	"plan", "tofu plan",
+	"apply", "tofu apply",
+)
+
+// PlanPlatform renders, initialises and plans; the reviewable diff is returned and
+// plan.tfplan stays in the module directory for ApplyPlan.
+func (m *Manager) PlanPlatform(ctx context.Context, name string, sink Sink) (*tofu.PlanDiff, error) {
 	r, err := m.platformRunner(ctx, name, sink)
 	if err != nil {
-		return tofu.Summary{}, err
+		return nil, err
 	}
-	return r.Plan(ctx)
+	var diff *tofu.PlanDiff
+	err = sink.run("plan", func() error {
+		sum, err := r.Plan(ctx)
+		if err != nil {
+			return err
+		}
+		if diff, err = r.ShowPlan(ctx, r.Warnings()); err != nil {
+			return err
+		}
+		sink.emit(Info, "plan", "", "%s", sum)
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	sink.skip("apply")
+	return diff, nil
 }
 
-// ApplyPlatform converges the in-cluster layer on cluster.yaml's platform section.
+// ErrStalePlan is returned when cluster.yaml changed after the plan was made.
+var ErrStalePlan = fmt.Errorf("plan is stale: cluster.yaml changed since it was made; plan again")
+
+// ApplyPlan executes a previously reviewed plan.tfplan. planTime is the plan's tofu
+// timestamp; the cluster row's updated_at must not be newer.
+func (m *Manager) ApplyPlan(ctx context.Context, name string, planTime string, sink Sink) error {
+	sink.plan(platformSteps...)
+	sink.skip("render")
+	sink.skip("plan")
+	row, err := m.Store.GetCluster(ctx, name)
+	if err != nil {
+		return err
+	}
+	if planTime != "" && row.UpdatedAt > planTime {
+		return ErrStalePlan
+	}
+	dir := filepath.Join(m.ClusterDir(name), "infra", "platform")
+	if _, err := os.Stat(filepath.Join(dir, "plan.tfplan")); err != nil {
+		return fmt.Errorf("no saved plan for %s; plan first", name)
+	}
+	bin, err := tofu.Binary(ctx, filepath.Join(m.Home, "bin"))
+	if err != nil {
+		return err
+	}
+	r := &tofu.Runner{Bin: bin, Dir: dir, Log: tofuLogger(sink)}
+	if err := sink.run("init", func() error { return r.Init(ctx) }); err != nil {
+		return err
+	}
+	return m.applyWith(ctx, name, r, sink)
+}
+
+// ApplyPlatform converges the in-cluster layer on cluster.yaml's platform section in
+// one go (plan and apply without a review), used by the CLI and by cluster creation.
 func (m *Manager) ApplyPlatform(ctx context.Context, name string, sink Sink) error {
 	r, err := m.platformRunner(ctx, name, sink)
 	if err != nil {
 		return err
 	}
-	sum, err := r.Plan(ctx)
-	if err != nil {
-		_ = m.Store.SetPlatformStatus(ctx, name, store.PlatformStatus{Error: err.Error()})
-		return err
-	}
-	if sum.Empty() {
-		sink.emit(Info, "platform", "", "no changes")
-	} else {
-		sink.emit(Info, "platform", "", "applying: %s", sum)
-		if _, err := r.Apply(ctx); err != nil {
+	var sum tofu.Summary
+	err = sink.run("plan", func() error {
+		var err error
+		sum, err = r.Plan(ctx)
+		if err != nil {
 			_ = m.Store.SetPlatformStatus(ctx, name, store.PlatformStatus{Error: err.Error()})
 			return err
 		}
+		sink.emit(Info, "plan", "", "%s", sum)
+		return nil
+	})
+	if err != nil {
+		return err
 	}
+	if sum.Empty() {
+		sink.emit(Info, "apply", "", "no changes")
+		sink.skip("apply")
+		return m.recordPlatform(ctx, name, r, sum, sink)
+	}
+	return m.applyWith(ctx, name, r, sink)
+}
+
+func (m *Manager) applyWith(ctx context.Context, name string, r *tofu.Runner, sink Sink) error {
+	var sum tofu.Summary
+	err := sink.run("apply", func() error {
+		var err error
+		sum, err = r.Apply(ctx)
+		if err != nil {
+			_ = m.Store.SetPlatformStatus(ctx, name, store.PlatformStatus{Error: err.Error()})
+		}
+		return err
+	})
+	if err != nil {
+		return err
+	}
+	return m.recordPlatform(ctx, name, r, sum, sink)
+}
+
+func (m *Manager) recordPlatform(ctx context.Context, name string, r *tofu.Runner, sum tofu.Summary, sink Sink) error {
 	outputs, err := r.Outputs(ctx)
 	if err != nil {
 		return err
@@ -128,9 +195,30 @@ func (m *Manager) ApplyPlatform(ctx context.Context, name string, sink Sink) err
 	_ = m.Store.Audit(ctx, name, "platform.apply", sum.String())
 	for k, v := range outputs {
 		if v != "" && k != "argocd_admin_password" {
-			sink.emit(Info, "platform", "", "%s = %s", k, v)
+			sink.emit(Info, "apply", "", "%s = %s", k, v)
 		}
 	}
-	sink.emit(Done, "platform", "", "platform applied")
+	sink.emit(Done, "apply", "", "platform converged: %s", sum)
 	return nil
+}
+
+// tofuLogger turns tofu's machine-readable lines into operation events.
+func tofuLogger(sink Sink) func(tofu.Line) {
+	return func(l tofu.Line) {
+		step := l.Phase
+		switch {
+		case l.Diagnostic != nil && l.Diagnostic.Severity == "error":
+			sink.emit(Error, step, "", "%s: %s", l.Diagnostic.Summary, l.Diagnostic.Detail)
+		case l.Diagnostic != nil:
+			// Warnings (deprecations) are collected into the plan review instead.
+		case l.Type == "planned_change" && l.Change != nil:
+			sink.emit(Info, step, l.Change.Resource.Addr, "will %s", l.Change.Action)
+		case l.Type == "apply_start" && l.Hook != nil:
+			sink.emit(Info, step, l.Hook.Resource.Addr, "%s...", l.Hook.Action)
+		case l.Type == "apply_complete" && l.Hook != nil:
+			sink.emit(Info, step, l.Hook.Resource.Addr, "%s done in %ds", l.Hook.Action, l.Hook.ElapsedSeconds)
+		case l.Type == "apply_errored" && l.Hook != nil:
+			sink.emit(Error, step, l.Hook.Resource.Addr, "%s failed", l.Hook.Action)
+		}
+	}
 }

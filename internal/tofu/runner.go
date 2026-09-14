@@ -13,6 +13,8 @@ import (
 
 // Line is one record of OpenTofu's machine-readable UI (-json).
 type Line struct {
+	// Phase is the tofu subcommand that produced the line (init, plan, apply).
+	Phase   string `json:"-"`
 	Level   string `json:"@level"`
 	Message string `json:"@message"`
 	Type    string `json:"type"`
@@ -58,6 +60,21 @@ type Runner struct {
 	Dir string
 	// Log receives every -json line; nil is allowed.
 	Log func(Line)
+	// lastWarnings collects warning diagnostics of the last run for the plan review.
+	lastWarnings []string
+}
+
+// Warnings returns the warning diagnostics of the last plan/apply, deduplicated.
+func (r *Runner) Warnings() []string {
+	seen := map[string]bool{}
+	var out []string
+	for _, w := range r.lastWarnings {
+		if !seen[w] {
+			seen[w] = true
+			out = append(out, w)
+		}
+	}
+	return out
 }
 
 func (r *Runner) Init(ctx context.Context) error {
@@ -119,6 +136,7 @@ func (r *Runner) run(ctx context.Context, args ...string) (Summary, error) {
 		diags []string
 		plain strings.Builder
 	)
+	r.lastWarnings = nil
 	sc := bufio.NewScanner(stdout)
 	sc.Buffer(make([]byte, 1024*1024), 16*1024*1024)
 	for sc.Scan() {
@@ -127,15 +145,19 @@ func (r *Runner) run(ctx context.Context, args ...string) (Summary, error) {
 		if err := json.Unmarshal([]byte(text), &l); err != nil {
 			plain.WriteString(text + "\n")
 			if r.Log != nil {
-				r.Log(Line{Level: "info", Message: text, Type: "text"})
+				r.Log(Line{Phase: args[0], Level: "info", Message: text, Type: "text"})
 			}
 			continue
 		}
+		l.Phase = args[0]
 		if l.Changes != nil {
 			sum = Summary{Add: l.Changes.Add, Change: l.Changes.Change, Remove: l.Changes.Remove}
 		}
 		if l.Diagnostic != nil && l.Diagnostic.Severity == "error" {
 			diags = append(diags, strings.TrimSpace(l.Diagnostic.Summary+": "+l.Diagnostic.Detail))
+		}
+		if l.Diagnostic != nil && l.Diagnostic.Severity == "warning" {
+			r.lastWarnings = append(r.lastWarnings, strings.TrimSpace(strings.TrimSpace(l.Diagnostic.Summary)+": "+strings.TrimSpace(l.Diagnostic.Detail)))
 		}
 		if r.Log != nil {
 			r.Log(l)

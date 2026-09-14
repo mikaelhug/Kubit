@@ -213,6 +213,28 @@ downloads them once. iPXE's own DHCP round is recognised (user class / option 17
 pointed at the script instead of the binary. Needs root for UDP 67/69/4011 and a host on
 the machines' L2 segment.
 
+## Console (web UI)
+
+Object tree in the sidebar: each cluster expands into Overview · Nodes · Workloads ·
+Network · Storage · Add-ons · Operations · Settings; Fleet holds Inventory and PXE;
+Activity lists every operation. A bottom **Activity drawer** (`a`) shows running
+operations full-width: stepper on the left, searchable log on the right, Cancel/Retry.
+
+Operations are structured: each declares its steps up front (`Sink.plan`), brackets
+them with `begin/end/fail/skip`, and the API persists steps, log, request and an
+artefact per operation (`operations.steps/artifact/request`). Undeclared steps are
+derived from log attribution so older paths still get a stepper.
+
+**Plan → review → apply.** Add-ons → *Plan changes* runs `tofu plan` and stores
+`tofu show -json` parsed into a per-add-on diff (`internal/tofu/plan.go`). The review
+page (`/clusters/<name>/addons/<planId>`) shows create/update/delete per resource with
+attribute diffs (sensitive and known-after-apply marked, provider deprecation warnings
+folded away) and *Apply these N changes* executes exactly that saved `plan.tfplan`
+(`Manager.ApplyPlan`). A plan is refused when cluster.yaml changed after it or a newer
+plan exists. Settings → *Save* only stores cluster.yaml; *Apply node configs* pushes
+machine configs; platform changes always go through a reviewed plan. The CLI's
+`platform apply` and `cluster create` still converge without review.
+
 ## Status
 
 - [x] Phase 0 — scaffold, `kubit version`, `kubit serve` (SPA + `/api/v1/version`), VM harness
@@ -232,3 +254,10 @@ back in maintenance mode), quorum guard refusing 3→2 without `--force`.
 
 Not yet exercised: `kubit pxe` against a physical machine; `runsc-kvm` (no nested
 virtualisation in the VMs); ArgoCD and cert-manager add-ons.
+- [x] M1 — structured operations, Activity drawer, plan review/apply, IA skeleton, component library
+- [ ] M2 — node depth (detail tabs, hardware, node actions)
+- [ ] M3 — health watcher, samples, events, version feed
+- [ ] M4 — workloads / network / storage views
+- [ ] M5 — add-on status and values, ArgoCD/cert-manager verified, cluster settings form
+- [ ] M6 — fleet: inventory detail, PXE page, Kubit settings, backup/restore
+- [ ] M7 — tests, CI, packaging, docs

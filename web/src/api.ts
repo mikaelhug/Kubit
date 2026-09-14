@@ -1,13 +1,17 @@
 // Thin client for /api/v1. Every mutating call returns an operation id; progress arrives
-// over the SSE stream (see events.ts).
+// over the SSE stream (see store.ts).
 
 export type Level = 'info' | 'warn' | 'error' | 'done'
+export type StepStatus = 'pending' | 'running' | 'done' | 'failed' | 'skipped' | 'cancelled'
 
-export interface Event { time: string; level: Level; step: string; node?: string; message: string }
-export interface Operation { id: number; cluster: string; kind: string; status: 'running' | 'done' | 'failed'; log?: string; startedAt: string; finishedAt?: string }
+export interface Step { id: string; title: string; status: StepStatus; node?: string; startedAt?: string; finishedAt?: string }
+export interface Event { time: string; clock?: string; kind?: 'log' | 'steps' | 'step'; level: Level; step: string; node?: string; message: string; steps?: Step[]; status?: StepStatus }
+export type OpStatus = 'running' | 'done' | 'failed' | 'cancelled'
+export interface Operation { id: number; cluster: string; kind: string; status: OpStatus; log?: string; startedAt: string; finishedAt?: string; steps: Step[]; artifact?: unknown; request?: unknown }
 export interface Message { kind: 'event' | 'operation'; operationId: number; event?: Event; operation?: Operation }
 
 export interface NodeSpec { hostname: string; ip: string; mac?: string; role: 'controlplane' | 'worker'; arch: string; kvm?: boolean; installDisk: { path?: string; selector?: { minSize?: string; type?: string; model?: string } } }
+export interface PlatformSpec { metallb: { enabled: boolean; range?: string }; ingressNginx: { enabled: boolean }; gvisor: { enabled: boolean }; metricsServer: { enabled: boolean }; certManager: { enabled: boolean }; argocd: { enabled: boolean } }
 export interface ClusterSpec {
   apiVersion: string; kind: string; metadata: { name: string }
   spec: {
@@ -15,7 +19,7 @@ export interface ClusterSpec {
     controlPlane: { endpoint: string; vip?: string; allowScheduling?: boolean }
     network: { podCIDR: string; serviceCIDR: string }
     nodes: NodeSpec[]
-    platform: { metallb: { enabled: boolean; range?: string }; ingressNginx: { enabled: boolean }; gvisor: { enabled: boolean }; metricsServer: { enabled: boolean }; certManager: { enabled: boolean }; argocd: { enabled: boolean } }
+    platform: PlatformSpec
   }
 }
 export interface ClusterRow { name: string; state: string; schematicId: string; createdAt: string; updatedAt: string; spec: ClusterSpec }
@@ -23,15 +27,19 @@ export interface ClusterRow { name: string; state: string; schematicId: string; 
 export interface Inventory { cpus: number; memoryBytes: number; kvm: boolean; arch: string; talosVersion: string; manufacturer?: string; product?: string; disks: { devPath: string; sizeBytes: number; model?: string; transport?: string; readonly: boolean; cdrom: boolean }[]; links: { name: string; mac: string; up: boolean; addresses?: string[] }[] }
 export interface NodeRow { ip: string; cluster: string; hostname: string; mac: string; arch: string; role: string; source: string; state: string; talosVersion: string; lastSeen: string; inventory?: Inventory }
 
-export interface NodeStatus { hostname: string; ip: string; role: string; arch: string; kvm: boolean; talosVersion: string; kubeletVersion: string; ready: boolean; unschedulable: boolean; talosReachable: boolean; stage: string; cpuMilli: number; cpuCapMilli: number; memBytes: number; memCapBytes: number; pods: number; podCap: number; gvisor: boolean }
+export interface NodeStatus { hostname: string; ip: string; role: string; arch: string; kvm: boolean; talosVersion: string; kubeletVersion: string; ready: boolean; unschedulable: boolean; talosReachable: boolean; talosError?: string; registered: boolean; stage: string; cpuMilli: number; cpuCapMilli: number; memBytes: number; memCapBytes: number; pods: number; podCap: number; gvisor: boolean }
 export interface Status {
-  name: string; state: string; talosVersion: string; kubernetesVersion: string; endpoint: string; apiReachable: boolean
+  name: string; state: string; talosVersion: string; kubernetesVersion: string; endpoint: string; apiReachable: boolean; apiError?: string
   nodes: NodeStatus[]
   etcd: { members: number; expected: number; healthy: boolean; leader?: string; alarms?: string[] }
   totals: { cpuMilli: number; cpuCapMilli: number; memBytes: number; memCapBytes: number; pods: number; podCap: number; nodesReady: number; nodes: number }
   platform?: { appliedAt?: string; outputs?: Record<string, string>; error?: string }
 }
 export interface Service { id: string; state: string; healthy: boolean; last: string }
+
+export interface AttrDiff { key: string; before?: string; after?: string; unknown?: boolean; sensitive?: boolean }
+export interface PlanChange { address: string; type: string; name: string; action: 'create' | 'update' | 'replace' | 'delete'; attrs?: AttrDiff[] }
+export interface PlanDiff { summary: { Add: number; Change: number; Remove: number }; groups: { addon: string; changes: PlanChange[] }[]; warnings?: string[]; timestamp: string }
 
 export class ApiError extends Error {
   status: number
@@ -48,7 +56,7 @@ async function req<T>(method: string, path: string, body?: unknown): Promise<T> 
   if (token) headers.Authorization = 'Bearer ' + token
   if (body !== undefined) headers['Content-Type'] = 'application/json'
   const res = await fetch('/api/v1' + path, { method, headers, body: body === undefined ? undefined : JSON.stringify(body) })
-  if (res.status === 204) return undefined as T
+  if (res.status === 204 || res.status === 202 && res.headers.get('content-length') === '0') return undefined as T
   const text = await res.text()
   let data: any = text
   try { data = JSON.parse(text) } catch {}
@@ -56,28 +64,41 @@ async function req<T>(method: string, path: string, body?: unknown): Promise<T> 
   return data as T
 }
 
+type OpRef = { operationId: number }
+
 export const api = {
   version: () => req<{ kubit: string }>('GET', '/version'),
   clusters: () => req<ClusterRow[]>('GET', '/clusters'),
   cluster: (name: string) => req<ClusterRow>('GET', `/clusters/${name}`),
   status: (name: string) => req<Status>('GET', `/clusters/${name}/status`),
   clusterYaml: (name: string) => req<string>('GET', `/clusters/${name}/yaml`),
-  createCluster: (yaml: string, skipPlatform = false) => req<{ operationId: number; cluster: string }>('POST', '/clusters', { yaml, skipPlatform }),
+  saveClusterYaml: async (name: string, yaml: string): Promise<{ yaml: string }> => {
+    const headers: Record<string, string> = { 'Content-Type': 'application/yaml' }
+    if (token) headers.Authorization = 'Bearer ' + token
+    const res = await fetch(`/api/v1/clusters/${name}/yaml`, { method: 'PUT', headers, body: yaml })
+    const data = await res.json()
+    if (!res.ok) throw new ApiError(res.status, data.error || res.statusText)
+    return data
+  },
+  createCluster: (yaml: string, skipPlatform = false) => req<OpRef & { cluster: string }>('POST', '/clusters', { yaml, skipPlatform }),
   forgetCluster: (name: string) => req<void>('DELETE', `/clusters/${name}`),
-  applyCluster: (name: string, yaml?: string) => req<{ operationId: number }>('POST', `/clusters/${name}/apply`, { yaml: yaml || '' }),
-  platformPlan: (name: string) => req<{ operationId: number }>('POST', `/clusters/${name}/platform/plan`),
-  platformApply: (name: string) => req<{ operationId: number }>('POST', `/clusters/${name}/platform/apply`),
-  upgradeTalos: (name: string, to: string) => req<{ operationId: number }>('POST', `/clusters/${name}/upgrade/talos`, { to }),
-  upgradeKubernetes: (name: string, to: string) => req<{ operationId: number }>('POST', `/clusters/${name}/upgrade/kubernetes`, { to }),
+  applyCluster: (name: string, yaml?: string) => req<OpRef>('POST', `/clusters/${name}/apply`, { yaml: yaml || '' }),
+  platformPlan: (name: string) => req<OpRef>('POST', `/clusters/${name}/platform/plan`),
+  platformApply: (name: string) => req<OpRef>('POST', `/clusters/${name}/platform/apply`),
+  platformApplyPlan: (name: string, planId: number) => req<OpRef>('POST', `/clusters/${name}/platform/apply/${planId}`),
+  upgradeTalos: (name: string, to: string) => req<OpRef>('POST', `/clusters/${name}/upgrade/talos`, { to }),
+  upgradeKubernetes: (name: string, to: string) => req<OpRef>('POST', `/clusters/${name}/upgrade/kubernetes`, { to }),
   exportCluster: (name: string, dir?: string) => req<{ dir: string }>('POST', `/clusters/${name}/export`, { dir: dir || '' }),
-  addNode: (name: string, node: NodeSpec) => req<{ operationId: number }>('POST', `/clusters/${name}/nodes`, node),
-  removeNode: (name: string, hostname: string, force = false) => req<{ operationId: number }>('DELETE', `/clusters/${name}/nodes/${hostname}?force=${force}`),
+  addNode: (name: string, node: NodeSpec) => req<OpRef>('POST', `/clusters/${name}/nodes`, node),
+  removeNode: (name: string, hostname: string, force = false) => req<OpRef>('DELETE', `/clusters/${name}/nodes/${hostname}?force=${force}`),
   nodes: (cluster?: string) => req<NodeRow[]>('GET', '/nodes' + (cluster ? `?cluster=${cluster}` : '')),
-  discover: (targets: string[]) => req<{ operationId: number }>('POST', '/discover', { targets }),
+  discover: (targets: string[]) => req<OpRef>('POST', '/discover', { targets }),
   services: (ip: string) => req<Service[]>('GET', `/nodes/${ip}/services`),
   reboot: (ip: string) => req<void>('POST', `/nodes/${ip}/reboot`),
   operations: () => req<Operation[]>('GET', '/operations'),
   operation: (id: number) => req<Operation>('GET', `/operations/${id}`),
+  cancelOperation: (id: number) => req<void>('DELETE', `/operations/${id}`),
+  retryOperation: (id: number) => req<OpRef>('POST', `/operations/${id}/retry`),
   validate: async (yaml: string): Promise<{ yaml: string; cluster: ClusterSpec }> => {
     // Posts raw YAML, not JSON.
     const headers: Record<string, string> = { 'Content-Type': 'application/yaml' }
@@ -110,4 +131,20 @@ export const fmt = {
   cores(m: number) { return m >= 1000 ? (m / 1000).toFixed(1) : `${m}m` },
   pct(a: number, b: number) { return b ? Math.round((a / b) * 100) : 0 },
   time(iso: string) { return iso ? new Date(iso).toLocaleTimeString() : '' },
+  datetime(iso: string) { return iso ? new Date(iso).toLocaleString() : '' },
+  duration(from?: string, to?: string) {
+    if (!from) return ''
+    const ms = (to ? new Date(to).getTime() : Date.now()) - new Date(from).getTime()
+    if (ms < 1000) return '<1s'
+    const s = Math.round(ms / 1000)
+    if (s < 60) return `${s}s`
+    const m = Math.floor(s / 60)
+    return `${m}m ${s % 60}s`
+  },
+  kind(kind: string) {
+    return ({
+      'cluster.create': 'Create cluster', 'cluster.apply': 'Apply cluster.yaml', 'platform.plan': 'Plan add-ons', 'platform.apply': 'Apply add-ons',
+      'upgrade.talos': 'Upgrade Talos', 'upgrade.kubernetes': 'Upgrade Kubernetes', 'node.add': 'Add node', 'node.remove': 'Remove node', discover: 'Discover nodes',
+    } as Record<string, string>)[kind] || kind
+  },
 }

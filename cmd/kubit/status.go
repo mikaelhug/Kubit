@@ -52,13 +52,24 @@ func printStatus(cmd *cobra.Command, st *cluster.Status) {
 	}
 	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
 	fmt.Fprintln(tw, "HOSTNAME\tIP\tROLE\tREADY\tSTAGE\tTALOS\tKUBELET\tCPU\tRAM\tPODS\tGVISOR")
+	if st.APIError != "" {
+		fmt.Fprintf(w, "Kubernetes API error: %s\n", st.APIError)
+	}
 	for _, n := range st.Nodes {
 		ready := "NotReady"
-		if n.Ready {
+		switch {
+		case !st.APIReachable:
+			ready = "k8s-unknown"
+		case !n.Registered:
+			ready = "not-registered"
+		case n.Ready:
 			ready = "Ready"
 		}
 		if n.Unschedulable {
 			ready += ",cordoned"
+		}
+		if !n.TalosReachable {
+			n.Stage = "unreachable: " + n.TalosError
 		}
 		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s/%s\t%s/%s\t%d\t%v\n",
 			n.Hostname, n.IP, n.Role, ready, n.Stage, n.TalosVersion, n.KubeletVersion,

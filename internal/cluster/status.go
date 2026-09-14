@@ -2,6 +2,7 @@ package cluster
 
 import (
 	"context"
+	"fmt"
 	"sync"
 	"time"
 
@@ -10,20 +11,23 @@ import (
 	"github.com/mikael/kubit/internal/store"
 	"github.com/mikael/kubit/internal/talos"
 	machineapi "github.com/siderolabs/talos/pkg/machinery/api/machine"
+	"google.golang.org/grpc/status"
 )
 
 // Status is the dashboard view of one cluster.
 type Status struct {
-	Name              string                `json:"name"`
-	State             string                `json:"state"`
-	TalosVersion      string                `json:"talosVersion"`
-	KubernetesVersion string                `json:"kubernetesVersion"`
-	Endpoint          string                `json:"endpoint"`
-	APIReachable      bool                  `json:"apiReachable"`
-	Nodes             []NodeStatus          `json:"nodes"`
-	Etcd              EtcdStatus            `json:"etcd"`
-	Totals            Totals                `json:"totals"`
-	Platform          *store.PlatformStatus `json:"platform,omitempty"`
+	Name              string `json:"name"`
+	State             string `json:"state"`
+	TalosVersion      string `json:"talosVersion"`
+	KubernetesVersion string `json:"kubernetesVersion"`
+	Endpoint          string `json:"endpoint"`
+	APIReachable      bool   `json:"apiReachable"`
+	// APIError says why the Kubernetes API could not be queried.
+	APIError string                `json:"apiError,omitempty"`
+	Nodes    []NodeStatus          `json:"nodes"`
+	Etcd     EtcdStatus            `json:"etcd"`
+	Totals   Totals                `json:"totals"`
+	Platform *store.PlatformStatus `json:"platform,omitempty"`
 }
 
 type NodeStatus struct {
@@ -37,14 +41,18 @@ type NodeStatus struct {
 	Ready          bool   `json:"ready"`
 	Unschedulable  bool   `json:"unschedulable"`
 	TalosReachable bool   `json:"talosReachable"`
-	Stage          string `json:"stage"`
-	CPUMilli       int64  `json:"cpuMilli"`
-	CPUCapMilli    int64  `json:"cpuCapMilli"`
-	MemBytes       int64  `json:"memBytes"`
-	MemCapBytes    int64  `json:"memCapBytes"`
-	Pods           int    `json:"pods"`
-	PodCap         int64  `json:"podCap"`
-	GVisor         bool   `json:"gvisor"`
+	// TalosError is the dial/query failure when the Talos API did not answer.
+	TalosError string `json:"talosError,omitempty"`
+	// Registered is true once the kubelet has created its Node object.
+	Registered  bool   `json:"registered"`
+	Stage       string `json:"stage"`
+	CPUMilli    int64  `json:"cpuMilli"`
+	CPUCapMilli int64  `json:"cpuCapMilli"`
+	MemBytes    int64  `json:"memBytes"`
+	MemCapBytes int64  `json:"memCapBytes"`
+	Pods        int    `json:"pods"`
+	PodCap      int64  `json:"podCap"`
+	GVisor      bool   `json:"gvisor"`
 }
 
 type EtcdStatus struct {
@@ -103,24 +111,20 @@ func (m *Manager) Status(ctx context.Context, name string) (*Status, error) {
 		wg.Add(1)
 		go func(n config.Node) {
 			defer wg.Done()
-			tc, err := talos.Dial(ctx, n.IP, sec.Talosconfig)
-			if err != nil {
-				return
-			}
-			defer tc.Close()
-			v, err := tc.Version(tc.Context(ctx))
-			if err != nil {
-				return
-			}
-			stage, _ := talos.Stage(ctx, n.IP, sec.Talosconfig)
+			// Each node gets its own short deadline so one dead machine cannot starve the rest.
+			nctx, cancel := context.WithTimeout(ctx, 6*time.Second)
+			defer cancel()
+			ver, stage, err := probeNode(nctx, n.IP, sec.Talosconfig)
 			mu.Lock()
+			defer mu.Unlock()
 			ns := byHost[n.Hostname]
+			if err != nil {
+				ns.TalosError = err.Error()
+				return
+			}
 			ns.TalosReachable = true
 			ns.Stage = stage
-			if len(v.Messages) > 0 {
-				ns.TalosVersion = v.Messages[0].Version.Tag
-			}
-			mu.Unlock()
+			ns.TalosVersion = ver
 		}(n)
 	}
 	if cps := c.ControlPlanes(); len(cps) > 0 && sec.Kubeconfig != nil {
@@ -139,10 +143,16 @@ func (m *Manager) Status(ctx context.Context, name string) (*Status, error) {
 			defer wg.Done()
 			kc, err := k8s.New(sec.Kubeconfig)
 			if err != nil {
+				mu.Lock()
+				st.APIError = err.Error()
+				mu.Unlock()
 				return
 			}
 			nodes, err := kc.Nodes(ctx)
 			if err != nil {
+				mu.Lock()
+				st.APIError = err.Error()
+				mu.Unlock()
 				return
 			}
 			usage, _ := kc.NodeUsages(ctx)
@@ -155,6 +165,7 @@ func (m *Manager) Status(ctx context.Context, name string) (*Status, error) {
 				if !ok {
 					continue
 				}
+				ns.Registered = true
 				ns.Ready = kn.Ready
 				ns.Unschedulable = kn.Unschedulable
 				ns.KubeletVersion = kn.KubeletVersion
@@ -184,6 +195,39 @@ func (m *Manager) Status(ctx context.Context, name string) (*Status, error) {
 		st.Totals.PodCap += ns.PodCap
 	}
 	return st, nil
+}
+
+// probeNode asks a node for its version and stage over mTLS, wrapping failures with
+// what was attempted so the UI can show the cause.
+func probeNode(ctx context.Context, ip string, talosconfig []byte) (version, stage string, err error) {
+	if !talos.PortOpen(ip, 2*time.Second) {
+		return "", "", fmt.Errorf("port 50000 closed or host down")
+	}
+	tc, err := talos.Dial(ctx, ip, talosconfig)
+	if err != nil {
+		return "", "", fmt.Errorf("dial: %w", err)
+	}
+	defer tc.Close()
+	v, err := tc.Version(tc.Context(ctx))
+	if err != nil {
+		return "", "", fmt.Errorf("version: %w", shortGRPC(err))
+	}
+	if len(v.Messages) > 0 {
+		version = v.Messages[0].Version.Tag
+	}
+	stage, err = talos.Stage(ctx, ip, talosconfig)
+	if err != nil {
+		return version, "", fmt.Errorf("machine status: %w", shortGRPC(err))
+	}
+	return version, stage, nil
+}
+
+// shortGRPC strips the "rpc error: code = X desc =" prefix that hides the message.
+func shortGRPC(err error) error {
+	if st, ok := status.FromError(err); ok {
+		return fmt.Errorf("%s (%s)", st.Message(), st.Code())
+	}
+	return err
 }
 
 func (m *Manager) etcdStatus(ctx context.Context, cps []config.Node, talosconfig []byte) EtcdStatus {

@@ -20,6 +20,7 @@ import (
 // resumable: calling Create again with the same declaration continues where it stopped.
 func (m *Manager) Create(ctx context.Context, c *config.Cluster, sink Sink) error {
 	name := c.Metadata.Name
+	sink.plan(createSteps...)
 	if row, err := m.Store.GetCluster(ctx, name); err == nil {
 		if row.State == StateReady || row.State == StateBootstrapped {
 			return fmt.Errorf("cluster %q already exists (%s)", name, row.State)
@@ -31,48 +32,70 @@ func (m *Manager) Create(ctx context.Context, c *config.Cluster, sink Sink) erro
 		if !sameNodes(stored, c) {
 			return fmt.Errorf("cluster %q is %s with a different node set; forget it first", name, row.State)
 		}
-		sink.emit(Info, "create", "", "resuming %s cluster %s", row.State, name)
+		sink.emit(Info, "preflight", "", "resuming %s cluster %s", row.State, name)
+		sink.skip("schematic")
+		sink.skip("secrets")
 		return m.resume(ctx, stored, true, sink)
 	} else if !errors.Is(err, store.ErrNotFound) {
 		return err
 	}
-	if err := m.preflight(ctx, c, c.Spec.Nodes, sink); err != nil {
+	if err := sink.run("preflight", func() error { return m.preflight(ctx, c, c.Spec.Nodes, sink) }); err != nil {
 		return err
 	}
 
-	sink.emit(Info, "schematic", "", "resolving Image Factory schematic for %v", c.Spec.Extensions)
-	if err := m.EnsureSchematic(ctx, c); err != nil {
-		return err
-	}
-	sink.emit(Info, "schematic", "", "installer %s", m.installerImage(c))
-
-	gen, err := config.Generate(c, nil, m.installerImage(c))
-	if err != nil {
-		return err
-	}
-	bundle, err := yaml.Marshal(gen.Secrets)
-	if err != nil {
-		return err
-	}
-	talosconfig, err := gen.Talosconfig.Bytes()
-	if err != nil {
-		return err
-	}
-	if err := m.SaveCluster(ctx, c, StateProvisioning); err != nil {
-		return err
-	}
-	if err := m.Store.PutClusterSecrets(ctx, name, store.ClusterSecrets{SecretsBundle: bundle, Talosconfig: talosconfig}); err != nil {
-		return err
-	}
-	for _, n := range c.Spec.Nodes {
-		if err := m.recordNode(ctx, c, n, NodeDiscovered, gen.Nodes[n.Hostname]); err != nil {
+	if err := sink.run("schematic", func() error {
+		sink.emit(Info, "schematic", "", "resolving Image Factory schematic for %v", c.Spec.Extensions)
+		if err := m.EnsureSchematic(ctx, c); err != nil {
 			return err
 		}
+		sink.emit(Info, "schematic", "", "installer %s", m.installerImage(c))
+		return nil
+	}); err != nil {
+		return err
 	}
-	_ = m.Store.Audit(ctx, name, "cluster.create", marshalJSON(c.Spec.Nodes))
-	sink.emit(Info, "secrets", "", "cluster secrets and %d machine configs stored", len(gen.Nodes))
+
+	if err := sink.run("secrets", func() error {
+		gen, err := config.Generate(c, nil, m.installerImage(c))
+		if err != nil {
+			return err
+		}
+		bundle, err := yaml.Marshal(gen.Secrets)
+		if err != nil {
+			return err
+		}
+		talosconfig, err := gen.Talosconfig.Bytes()
+		if err != nil {
+			return err
+		}
+		if err := m.SaveCluster(ctx, c, StateProvisioning); err != nil {
+			return err
+		}
+		if err := m.Store.PutClusterSecrets(ctx, name, store.ClusterSecrets{SecretsBundle: bundle, Talosconfig: talosconfig}); err != nil {
+			return err
+		}
+		for _, n := range c.Spec.Nodes {
+			if err := m.recordNode(ctx, c, n, NodeDiscovered, gen.Nodes[n.Hostname]); err != nil {
+				return err
+			}
+		}
+		_ = m.Store.Audit(ctx, name, "cluster.create", marshalJSON(c.Spec.Nodes))
+		sink.emit(Info, "secrets", "", "cluster secrets and %d machine configs stored", len(gen.Nodes))
+		return nil
+	}); err != nil {
+		return err
+	}
 	return m.resume(ctx, c, false, sink)
 }
+
+var createSteps = Steps(
+	"preflight", "Check nodes are in maintenance mode",
+	"schematic", "Resolve Image Factory schematic",
+	"secrets", "Generate cluster secrets and machine configs",
+	"install", "Apply configs and install to disk",
+	"bootstrap", "Bootstrap etcd",
+	"kubeconfig", "Fetch admin kubeconfig",
+	"ready", "Wait for nodes to become Ready",
+)
 
 // resume drives a provisioning cluster to ready, skipping steps already completed.
 // recheck re-runs preflight on nodes still to install (a fresh Create just did it).
@@ -85,45 +108,54 @@ func (m *Manager) resume(ctx context.Context, c *config.Cluster, recheck bool, s
 	_ = m.Store.SetClusterState(ctx, name, StateProvisioning)
 	fail := func(err error) error {
 		_ = m.Store.SetClusterState(ctx, name, StateFailed)
-		sink.emit(Error, "create", "", "%v", err)
 		return err
 	}
 
-	pending, cfgs, err := m.pendingInstall(ctx, c.Spec.Nodes, sec.Talosconfig, sink)
-	if err != nil {
-		return fail(err)
-	}
-	if recheck && len(pending) > 0 {
-		if err := m.preflight(ctx, c, pending, sink); err != nil {
-			return fail(err)
+	err = sink.run("install", func() error {
+		pending, cfgs, err := m.pendingInstall(ctx, c.Spec.Nodes, sec.Talosconfig, sink)
+		if err != nil {
+			return err
 		}
-	}
-	if err := m.installAll(ctx, c, pending, cfgs, sec.Talosconfig, sink); err != nil {
+		if recheck && len(pending) > 0 {
+			if err := m.preflight(ctx, c, pending, sink); err != nil {
+				return err
+			}
+		}
+		return m.installAll(ctx, c, pending, cfgs, sec.Talosconfig, sink)
+	})
+	if err != nil {
 		return fail(err)
 	}
 
 	cp1 := c.ControlPlanes()[0]
-	if err := m.bootstrap(ctx, cp1, sec.Talosconfig, len(c.ControlPlanes()), sink); err != nil {
+	if err := sink.run("bootstrap", func() error {
+		return m.bootstrap(ctx, cp1, sec.Talosconfig, len(c.ControlPlanes()), sink)
+	}); err != nil {
 		return fail(err)
 	}
 
-	if sec.Kubeconfig == nil {
-		kubeconfig, err := m.fetchKubeconfig(ctx, cp1, sec.Talosconfig, sink)
-		if err != nil {
-			return fail(err)
+	err = sink.run("kubeconfig", func() error {
+		if sec.Kubeconfig == nil {
+			kubeconfig, err := m.fetchKubeconfig(ctx, cp1, sec.Talosconfig, sink)
+			if err != nil {
+				return err
+			}
+			if err := m.Store.SetKubeconfig(ctx, name, kubeconfig); err != nil {
+				return err
+			}
+		} else {
+			sink.emit(Info, "kubeconfig", "", "kubeconfig already stored")
 		}
-		if err := m.Store.SetKubeconfig(ctx, name, kubeconfig); err != nil {
-			return fail(err)
-		}
-	}
-	if err := m.Store.SetClusterState(ctx, name, StateBootstrapped); err != nil {
+		return m.Store.SetClusterState(ctx, name, StateBootstrapped)
+	})
+	if err != nil {
 		return fail(err)
 	}
 
-	if err := m.waitReady(ctx, c, c.Spec.Nodes, sink); err != nil {
+	if err := sink.run("ready", func() error { return m.waitReady(ctx, c, c.Spec.Nodes, sink) }); err != nil {
 		return fail(err)
 	}
-	sink.emit(Done, "create", "", "cluster %s is up: %d control planes, %d workers", name, len(c.ControlPlanes()), len(c.Workers()))
+	sink.emit(Done, "ready", "", "cluster %s is up: %d control planes, %d workers", name, len(c.ControlPlanes()), len(c.Workers()))
 	return nil
 }
 

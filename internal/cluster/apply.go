@@ -28,42 +28,53 @@ func (m *Manager) ApplyConfigs(ctx context.Context, c *config.Cluster, wantKubel
 	if err != nil {
 		return err
 	}
-	for _, n := range orderedNodes(c) {
-		cfg := gen.Nodes[n.Hostname]
-		dial, cancel := context.WithTimeout(ctx, 30*time.Second)
-		tc, err := talos.Dial(dial, n.IP, sec.Talosconfig)
-		cancel()
-		if err != nil {
-			return fmt.Errorf("%s: %w", n.Hostname, err)
-		}
-		details, err := tc.ApplyDryRun(ctx, cfg)
-		if err != nil {
+	nodes := orderedNodes(c)
+	if wantKubelet == "" {
+		sink.plan(nodeSteps(nodes, "Apply")...)
+	}
+	for _, n := range nodes {
+		step := nodeStep(n)
+		err := sink.run(step, func() error {
+			cfg := gen.Nodes[n.Hostname]
+			dial, cancel := context.WithTimeout(ctx, 30*time.Second)
+			tc, err := talos.Dial(dial, n.IP, sec.Talosconfig)
+			cancel()
+			if err != nil {
+				return err
+			}
+			details, err := tc.ApplyDryRun(ctx, cfg)
+			if err != nil {
+				tc.Close()
+				return fmt.Errorf("dry run: %w", err)
+			}
+			bootID, _ := tc.BootID(ctx)
+			err = tc.Apply(ctx, cfg)
 			tc.Close()
-			return fmt.Errorf("%s: dry run: %w", n.Hostname, err)
-		}
-		bootID, _ := tc.BootID(ctx)
-		err = tc.Apply(ctx, cfg)
-		tc.Close()
+			if err != nil {
+				return fmt.Errorf("apply: %w", err)
+			}
+			if err := m.Store.PutNodeMachineConfig(ctx, n.IP, cfg); err != nil {
+				return err
+			}
+			sink.emit(Info, step, n.Hostname, "applied: %s", summarizeDryRun(details))
+			if wantReboot(details) {
+				if err := talos.WaitForReboot(ctx, n.IP, sec.Talosconfig, bootID, m.Timeouts.Install); err != nil {
+					return err
+				}
+			}
+			if wantKubelet != "" {
+				if err := waitKubeletVersion(ctx, kc, n.Hostname, wantKubelet, m.Timeouts.Ready); err != nil {
+					return err
+				}
+			} else if err := kc.WaitReady(ctx, []string{n.Hostname}, m.Timeouts.Ready, nil); err != nil {
+				return err
+			}
+			sink.emit(Info, step, n.Hostname, "Ready")
+			return nil
+		})
 		if err != nil {
-			return fmt.Errorf("%s: apply: %w", n.Hostname, err)
-		}
-		if err := m.Store.PutNodeMachineConfig(ctx, n.IP, cfg); err != nil {
-			return err
-		}
-		sink.emit(Info, "apply", n.Hostname, "applied: %s", summarizeDryRun(details))
-		if wantReboot(details) {
-			if err := talos.WaitForReboot(ctx, n.IP, sec.Talosconfig, bootID, m.Timeouts.Install); err != nil {
-				return fmt.Errorf("%s: %w", n.Hostname, err)
-			}
-		}
-		if wantKubelet != "" {
-			if err := waitKubeletVersion(ctx, kc, n.Hostname, wantKubelet, m.Timeouts.Ready); err != nil {
-				return fmt.Errorf("%s: %w", n.Hostname, err)
-			}
-		} else if err := kc.WaitReady(ctx, []string{n.Hostname}, m.Timeouts.Ready, nil); err != nil {
 			return fmt.Errorf("%s: %w", n.Hostname, err)
 		}
-		sink.emit(Info, "apply", n.Hostname, "Ready")
 	}
 	return nil
 }
