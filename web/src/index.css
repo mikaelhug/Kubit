@@ -78,9 +78,10 @@ body { background: var(--bg); color: var(--text); font-family: var(--font-sans);
 .panel { @apply rounded-lg border border-border bg-panel; }
 .pill { @apply inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[11px] font-medium; }
 table.data { @apply w-full text-[13px]; }
-table.data th { @apply label py-2 text-left font-medium border-b border-border; }
-table.data td { @apply py-2 border-b border-border/60 align-middle; }
+table.data th { @apply py-2 px-2 whitespace-nowrap text-left font-medium border-b border-border text-[11px] uppercase tracking-[0.08em] text-muted; }
+table.data td { @apply py-2 px-2 whitespace-nowrap border-b border-border/60 align-middle; }
 table.data tr:last-child td { @apply border-b-0; }
-.log { @apply mono whitespace-pre-wrap break-words rounded-md border border-border bg-bg p-3 max-h-[420px] overflow-auto leading-5; }
+.log { @apply break-words rounded-md border border-border bg-bg p-3 max-h-[420px] overflow-auto leading-5; font-family: var(--font-mono); font-size: 12.5px; }
+pre.log { white-space: pre-wrap; }
 :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 @media (prefers-reduced-motion: reduce) { * { transition: none !important; animation: none !important; } }

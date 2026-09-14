@@ -1,0 +1,123 @@
+package api_test
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/mikael/kubit/internal/api"
+	"github.com/mikael/kubit/internal/cluster"
+	"github.com/mikael/kubit/internal/store"
+)
+
+func newServer(t *testing.T, token string) (*api.Server, *store.Store) {
+	t.Helper()
+	c, _ := store.NewCrypto(bytes.Repeat([]byte{3}, 32))
+	dir := t.TempDir()
+	s, err := store.Open(dir, c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { s.Close() })
+	return api.New("test", cluster.NewManager(s, dir), token), s
+}
+
+func do(t *testing.T, h http.Handler, method, path string, body string, headers ...string) *httptest.ResponseRecorder {
+	t.Helper()
+	req := httptest.NewRequest(method, path, strings.NewReader(body))
+	for i := 0; i+1 < len(headers); i += 2 {
+		req.Header.Set(headers[i], headers[i+1])
+	}
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	return rec
+}
+
+func TestTokenGuardsAPIOnly(t *testing.T) {
+	srv, _ := newServer(t, "secret")
+	if rec := do(t, srv, "GET", "/api/v1/version", ""); rec.Code != http.StatusUnauthorized {
+		t.Errorf("no token: %d", rec.Code)
+	}
+	if rec := do(t, srv, "GET", "/api/v1/version", "", "Authorization", "Bearer secret"); rec.Code != http.StatusOK {
+		t.Errorf("with token: %d", rec.Code)
+	}
+	// EventSource cannot set headers: the token may come as a query parameter. The stream
+	// only ends with the request context, so give it one.
+	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer cancel()
+	req := httptest.NewRequest("GET", "/api/v1/events?token=secret", nil).WithContext(ctx)
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), ": connected") {
+		t.Errorf("events with query token: %d %q", rec.Code, rec.Body.String())
+	}
+	if rec := do(t, srv, "GET", "/", ""); rec.Code != http.StatusOK {
+		t.Errorf("SPA must not require the token: %d", rec.Code)
+	}
+}
+
+func TestLoopback(t *testing.T) {
+	for addr, want := range map[string]bool{"127.0.0.1:8080": true, "localhost:8080": true, "[::1]:8080": true, "0.0.0.0:8080": false, "192.168.1.5:8080": false, "bad": false} {
+		if got := api.Loopback(addr); got != want {
+			t.Errorf("Loopback(%q) = %v", addr, got)
+		}
+	}
+}
+
+func TestConfigValidateAndDraft(t *testing.T) {
+	srv, s := newServer(t, "")
+	rec := do(t, srv, "POST", "/api/v1/config/validate", "apiVersion: kubit.dev/v1\nkind: Cluster\nmetadata: {name: x}\nspec:\n  nodes: []\n")
+	if rec.Code != http.StatusUnprocessableEntity {
+		t.Errorf("empty nodes should be 422, got %d: %s", rec.Code, rec.Body)
+	}
+	rec = do(t, srv, "POST", "/api/v1/config/validate", "apiVersion: kubit.dev/v1\nkind: Cluster\nmetadata: {name: x}\nspec:\n  nodes:\n    - {hostname: a, ip: 10.0.0.1, role: controlplane, installDisk: {path: /dev/sda}}\n")
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "talosVersion") {
+		t.Errorf("valid: %d %s", rec.Code, rec.Body)
+	}
+
+	for _, n := range []store.NodeRow{
+		{IP: "10.0.0.1", MAC: "aa:aa:aa:aa:aa:aa", Arch: "amd64", State: "maintenance", Hardware: []byte(`{"kvm":true,"disks":[{"devPath":"/dev/nvme0n1","sizeBytes":500000000000,"transport":"nvme"}]}`)},
+		{IP: "10.0.0.2", MAC: "bb:bb:bb:bb:bb:bb", Arch: "amd64", State: "maintenance"},
+		{IP: "10.0.0.3", MAC: "cc:cc:cc:cc:cc:cc", Arch: "amd64", State: "maintenance"},
+	} {
+		if err := s.UpsertNode(t.Context(), n); err != nil {
+			t.Fatal(err)
+		}
+	}
+	rec = do(t, srv, "POST", "/api/v1/config/draft", `{"name":"lab","ips":["10.0.0.1","10.0.0.2","10.0.0.3"]}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("draft: %d %s", rec.Code, rec.Body)
+	}
+	var out struct {
+		YAML     string `json:"yaml"`
+		Topology struct{ ControlPlanes, Workers int }
+	}
+	_ = json.Unmarshal(rec.Body.Bytes(), &out)
+	if out.Topology.ControlPlanes != 3 || out.Topology.Workers != 0 {
+		t.Errorf("3 nodes should draft 3 control planes: %+v", out.Topology)
+	}
+	for _, want := range []string{"lab-cp-01", "lab-cp-03", "/dev/nvme0n1", "kvm: true", "10.0.0.200-10.0.0.220", "mac: aa:aa:aa:aa:aa:aa"} {
+		if !strings.Contains(out.YAML, want) {
+			t.Errorf("draft lacks %q:\n%s", want, out.YAML)
+		}
+	}
+}
+
+func TestClusterCreateRejectsBadYAML(t *testing.T) {
+	srv, _ := newServer(t, "")
+	rec := do(t, srv, "POST", "/api/v1/clusters", `{"yaml":"kind: Nope"}`)
+	if rec.Code != http.StatusBadRequest && rec.Code != http.StatusInternalServerError {
+		t.Errorf("got %d", rec.Code)
+	}
+	if rec := do(t, srv, "GET", "/api/v1/clusters", ""); rec.Code != http.StatusOK || strings.TrimSpace(rec.Body.String()) != "[]" {
+		t.Errorf("clusters: %d %s", rec.Code, rec.Body)
+	}
+	if rec := do(t, srv, "GET", "/api/v1/operations", ""); strings.TrimSpace(rec.Body.String()) != "[]" {
+		t.Errorf("operations: %s", rec.Body)
+	}
+}

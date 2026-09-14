@@ -183,14 +183,44 @@ machine configs fed verbatim via `machine_configuration_input`, kubeconfig read.
 with `AlreadyExists` on a bootstrapped node. Verified: `tofu apply` on a live cluster is
 a no-op and the following `tofu plan` reports no changes.
 
+## Web UI and API
+
+`kubit serve` (default `127.0.0.1:8080`; binding elsewhere requires a bearer token,
+generated at start or `KUBIT_TOKEN`) hosts the SPA and `/api/v1`:
+
+- `GET clusters`, `GET clusters/{n}`, `GET clusters/{n}/status|yaml|kubeconfig`
+- `POST clusters` `{yaml, skipPlatform}` → operation; `POST clusters/{n}/apply|platform/plan|platform/apply|upgrade/talos|upgrade/kubernetes|export|nodes`, `DELETE clusters/{n}[/nodes/{host}]`
+- `GET nodes`, `POST discover {targets}`, `GET nodes/{ip}/services|logs?service=&follow=`, `POST nodes/{ip}/reboot`
+- `POST config/validate` (raw YAML → defaulted YAML), `POST config/draft {name, ips}` (topology recommendation → cluster.yaml)
+- `GET operations[/{id}]`, `GET events` (SSE: every operation event and status change)
+
+Long-running calls return `{operationId}` immediately; the operation's events are
+persisted in the `operations` table and streamed. Operations are serialised per cluster.
+A daemon restart marks operations left `running` as failed.
+
+## PXE
+
+`sudo kubit pxe --iface en0 [--talos-version v1.14.0] [--schematic ID]` answers PXE
+firmware as a proxyDHCP (no addresses handed out; the LAN's DHCP stays authoritative),
+serves iPXE binaries (`undionly.kpxe`, `ipxe.efi`, `ipxe-arm64.efi`, fetched once from
+boot.ipxe.org into `~/.kubit/cache`) over TFTP, and on `:8069` an iPXE script that
+boots the Talos kernel/initramfs of the profile with `talos.platform=metal`. Boot
+assets are proxied from the Image Factory through the same cache, so a rack of machines
+downloads them once. iPXE's own DHCP round is recognised (user class / option 175) and
+pointed at the script instead of the binary. Needs root for UDP 67/69/4011 and a host on
+the machines' L2 segment.
+
 ## Status
 
 - [x] Phase 0 — scaffold, `kubit version`, `kubit serve` (SPA + `/api/v1/version`), VM harness
 - [x] Phase 1 — store, keyring crypto, `cluster.yaml`, machine config generation (`kubit config validate|render`)
 - [x] Phase 2 — Talos client, `kubit discover <cidr|ip>...` (subnet scan + hardware inventory)
-- [x] Phase 3 — `kubit cluster create` (resumable), `kubit node add` (HA and add-node runs pending socket_vmnet)
+- [x] Phase 3 — `kubit cluster create` (resumable), `kubit node add`
 - [x] Phase 4 — platform add-ons via OpenTofu (`kubit platform plan|apply`)
-- [~] Phase 5 — `node remove`, `upgrade talos|kubernetes`, `status` implemented; remove/Talos-upgrade not yet exercised on VMs
+- [x] Phase 5 — `node remove`, `upgrade talos|kubernetes`, `status` (Talos 1.14.0→1.15.0-alpha.0 and Kubernetes 1.36.0→1.37.0 verified on a VM)
 - [x] Phase 6 — `kubit cluster export`
-- [ ] Phase 7 — web UI
-- [ ] Phase 8 — iPXE
+- [x] Phase 7 — web UI (`kubit serve`): dashboard, create wizard, add/remove/upgrade dialogs, node logs, operations
+- [x] Phase 8 — `kubit pxe` (proxyDHCP + TFTP + HTTP; unit-tested, not yet booted a physical machine)
+
+Not yet exercised because vfkit NAT isolates VMs from each other (socket_vmnet needed):
+multi-control-plane create, `node add`, `node remove`, control-plane VIP.

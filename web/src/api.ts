@@ -33,7 +33,10 @@ export interface Status {
 }
 export interface Service { id: string; state: string; healthy: boolean; last: string }
 
-export class ApiError extends Error { constructor(public status: number, message: string) { super(message) } }
+export class ApiError extends Error {
+  status: number
+  constructor(status: number, message: string) { super(message); this.status = status }
+}
 
 let token = ''
 export function setToken(t: string) { token = t; try { localStorage.setItem('kubit.token', t) } catch {} }
@@ -58,6 +61,7 @@ export const api = {
   clusters: () => req<ClusterRow[]>('GET', '/clusters'),
   cluster: (name: string) => req<ClusterRow>('GET', `/clusters/${name}`),
   status: (name: string) => req<Status>('GET', `/clusters/${name}/status`),
+  clusterYaml: (name: string) => req<string>('GET', `/clusters/${name}/yaml`),
   createCluster: (yaml: string, skipPlatform = false) => req<{ operationId: number; cluster: string }>('POST', '/clusters', { yaml, skipPlatform }),
   forgetCluster: (name: string) => req<void>('DELETE', `/clusters/${name}`),
   applyCluster: (name: string, yaml?: string) => req<{ operationId: number }>('POST', `/clusters/${name}/apply`, { yaml: yaml || '' }),
@@ -74,18 +78,16 @@ export const api = {
   reboot: (ip: string) => req<void>('POST', `/nodes/${ip}/reboot`),
   operations: () => req<Operation[]>('GET', '/operations'),
   operation: (id: number) => req<Operation>('GET', `/operations/${id}`),
-  validate: (yaml: string) => req<{ yaml: string; cluster: ClusterSpec }>('POST', '/config/validate', yaml as unknown as undefined).catch(e => { throw e }),
+  validate: async (yaml: string): Promise<{ yaml: string; cluster: ClusterSpec }> => {
+    // Posts raw YAML, not JSON.
+    const headers: Record<string, string> = { 'Content-Type': 'application/yaml' }
+    if (token) headers.Authorization = 'Bearer ' + token
+    const res = await fetch('/api/v1/config/validate', { method: 'POST', headers, body: yaml })
+    const data = await res.json()
+    if (!res.ok) throw new ApiError(res.status, data.error || res.statusText)
+    return data
+  },
   draft: (name: string, ips: string[]) => req<{ yaml: string; topology: { ControlPlanes: number; Workers: number; AllowScheduling: boolean; HA: boolean } }>('POST', '/config/draft', { name, ips }),
-}
-
-// validate posts raw YAML, not JSON.
-api.validate = async (yaml: string) => {
-  const headers: Record<string, string> = { 'Content-Type': 'application/yaml' }
-  if (token) headers.Authorization = 'Bearer ' + token
-  const res = await fetch('/api/v1/config/validate', { method: 'POST', headers, body: yaml })
-  const data = await res.json()
-  if (!res.ok) throw new ApiError(res.status, data.error || res.statusText)
-  return data
 }
 
 export function logsUrl(ip: string, service?: string, follow = false) {

@@ -46,6 +46,7 @@ func New(version string, m *cluster.Manager, token string) *Server {
 	r.HandleFunc("GET /api/v1/clusters/{name}", s.handleCluster)
 	r.HandleFunc("DELETE /api/v1/clusters/{name}", s.handleClusterForget)
 	r.HandleFunc("GET /api/v1/clusters/{name}/status", s.handleClusterStatus)
+	r.HandleFunc("GET /api/v1/clusters/{name}/yaml", s.handleClusterYAML)
 	r.HandleFunc("GET /api/v1/clusters/{name}/kubeconfig", s.handleClusterKubeconfig)
 	r.HandleFunc("POST /api/v1/clusters/{name}/apply", s.handleClusterApply)
 	r.HandleFunc("POST /api/v1/clusters/{name}/platform/plan", s.handlePlatformPlan)
@@ -186,6 +187,16 @@ func (s *Server) handleClusterStatus(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, st)
+}
+
+func (s *Server) handleClusterYAML(w http.ResponseWriter, r *http.Request) {
+	row, err := s.store.GetCluster(r.Context(), r.PathValue("name"))
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+	w.Header().Set("Content-Type", "application/yaml")
+	w.Write(row.Spec)
 }
 
 func (s *Server) handleClusterKubeconfig(w http.ResponseWriter, r *http.Request) {
