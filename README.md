@@ -42,7 +42,8 @@ Requires Go 1.26+, Node 20+ for the UI. Talos machinery pinned to v1.14.0
 
 ## Dev VMs
 
-`brew install vfkit socket_vmnet` and `sudo brew services start socket_vmnet`, then:
+`brew install vfkit` and `brew tap nirs/vmnet-helper && brew trust nirs/vmnet-helper &&
+brew install nirs/vmnet-helper/vmnet-helper` (macOS 26: no root needed), then:
 
 ```
 hack/vm/vm.sh create 1          # 2 vCPU / 4 GiB / 20 GiB disk, boots Talos ISO (schematic with siderolabs/gvisor)
@@ -51,11 +52,13 @@ hack/vm/vm.sh start 1 --no-iso  # after Talos has installed to disk
 hack/vm/vm.sh destroy all
 ```
 
-Networking: vfkit's plain NAT (`vmnet` shared mode) isolates VMs from each other — a
-peer gets "no route to host" — so etcd never forms a quorum and a Layer-2 VIP is
-unreachable. The harness therefore attaches VMs to `socket_vmnet` (one shared segment,
-192.168.105.0/24) when its socket exists; `NET=nat` forces plain NAT for single-node
-work. Host→VM traffic to MetalLB and VIP addresses works in both modes.
+Networking: vfkit's built-in NAT (Virtualization.framework's NAT attachment) isolates
+VMs from each other — a peer gets "no route to host" — so etcd never forms a quorum
+and a Layer-2 VIP is unreachable. The harness therefore starts each VM under
+`vmnet-run` (vmnet-helper), which drives vmnet.framework with isolation off: every VM
+given the same `--start/--end-address` lands on one shared 192.168.105.0/24 segment
+with the host. `NET=nat` forces plain NAT for single-node work. `socket_vmnet` is not
+an option: it exposes a stream socket for QEMU, vfkit needs a datagram socket.
 
 Verified: EFI boot of the Talos v1.14.0 `metal-arm64.iso` under Virtualization.framework
 reaches maintenance mode and, after install, reboots from disk even with the ISO still
@@ -222,5 +225,10 @@ the machines' L2 segment.
 - [x] Phase 7 — web UI (`kubit serve`): dashboard, create wizard, add/remove/upgrade dialogs, node logs, operations
 - [x] Phase 8 — `kubit pxe` (proxyDHCP + TFTP + HTTP; unit-tested, not yet booted a physical machine)
 
-Not yet exercised because vfkit NAT isolates VMs from each other (socket_vmnet needed):
-multi-control-plane create, `node add`, `node remove`, control-plane VIP.
+Verified on vmnet-helper VMs: 3-control-plane create with a VIP (etcd 3/3 in 20 s, API
+via the VIP, platform applied), `node add` worker and control plane, `node remove`
+worker and — with `--force` — a control plane (graceful etcd leave, membership 3→2, node
+back in maintenance mode), quorum guard refusing 3→2 without `--force`.
+
+Not yet exercised: `kubit pxe` against a physical machine; `runsc-kvm` (no nested
+virtualisation in the VMs); ArgoCD and cert-manager add-ons.

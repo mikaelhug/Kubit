@@ -89,11 +89,12 @@ func (m *Manager) Status(ctx context.Context, name string) (*Status, error) {
 	ctx, cancel := context.WithTimeout(ctx, 20*time.Second)
 	defer cancel()
 
+	ordered := orderedNodes(c)
+	st.Nodes = make([]NodeStatus, len(ordered))
 	byHost := map[string]*NodeStatus{}
-	for _, n := range orderedNodes(c) {
-		ns := &NodeStatus{Hostname: n.Hostname, IP: n.IP, Role: string(n.Role), Arch: string(n.Arch), KVM: n.KVM}
-		st.Nodes = append(st.Nodes, *ns)
-		byHost[n.Hostname] = &st.Nodes[len(st.Nodes)-1]
+	for i, n := range ordered {
+		st.Nodes[i] = NodeStatus{Hostname: n.Hostname, IP: n.IP, Role: string(n.Role), Arch: string(n.Arch), KVM: n.KVM}
+		byHost[n.Hostname] = &st.Nodes[i]
 	}
 
 	var wg sync.WaitGroup

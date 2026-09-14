@@ -18,10 +18,14 @@ ARCH=arm64
 ISO=$STATE/talos-$TALOS_VERSION-$ARCH.iso
 DISK_GB=${DISK_GB:-20}
 MAC_PREFIX=52:54:00:4b:49  # "KI"
-# vmnet NAT isolates VMs from each other (peers get "no route to host"), which breaks
-# etcd joins and any L2 VIP. socket_vmnet puts all VMs on one shared segment; start it
-# once with `sudo brew services start socket_vmnet`. NET=nat forces plain NAT.
-VMNET_SOCK=${VMNET_SOCK:-/opt/homebrew/var/run/socket_vmnet}
+# vfkit's built-in NAT isolates VMs from each other (peers get "no route to host"),
+# which breaks etcd joins and any L2 VIP. vmnet-helper (brew tap nirs/vmnet-helper;
+# no root needed on macOS 26) drives vmnet directly with isolation off, so VMs sharing
+# the subnet below reach each other and the host. NET=nat forces plain NAT.
+VMNET_RUN=${VMNET_RUN:-/opt/homebrew/opt/vmnet-helper/libexec/vmnet-run}
+VMNET_START=${VMNET_START:-192.168.105.1}
+VMNET_END=${VMNET_END:-192.168.105.100}
+VMNET_MASK=${VMNET_MASK:-255.255.255.0}
 
 mkdir -p "$STATE"
 
@@ -29,9 +33,11 @@ mac_of()   { printf '%s:%02x' "$MAC_PREFIX" "$1"; }
 dir_of()   { echo "$STATE/vm$1"; }
 port_of()  { echo $((8100 + $1)); }
 
+use_vmnet() { [ "${NET:-}" != nat ] && [ -x "$VMNET_RUN" ]; }
+
 net_device() {
-  if [ "${NET:-}" != nat ] && [ -S "$VMNET_SOCK" ]; then
-    echo "virtio-net,unixSocketPath=$VMNET_SOCK,mac=$(mac_of "$1")"
+  if use_vmnet; then
+    echo "virtio-net,fd=4,mac=$(mac_of "$1")"
   else
     echo "virtio-net,nat,mac=$(mac_of "$1")"
   fi
@@ -74,7 +80,12 @@ cmd_start() {
     --restful-uri "tcp://127.0.0.1:$(port_of "$n")"
   )
   [ "$noiso" = "--no-iso" ] || args+=(--device "usb-mass-storage,path=$ISO,readonly")
-  nohup vfkit "${args[@]}" > "$d/vfkit.log" 2>&1 &
+  if use_vmnet; then
+    nohup "$VMNET_RUN" --operation-mode shared --start-address "$VMNET_START" \
+      --end-address "$VMNET_END" --subnet-mask "$VMNET_MASK" -- vfkit "${args[@]}" > "$d/vfkit.log" 2>&1 &
+  else
+    nohup vfkit "${args[@]}" > "$d/vfkit.log" 2>&1 &
+  fi
   echo $! > "$d/pid"
   echo "vm$n started (pid $!, mac $(mac_of "$n"), rest :$(port_of "$n"))"
 }
