@@ -172,6 +172,8 @@ Findings baked into the templates:
 - metrics-server runs with `--kubelet-insecure-tls` (Talos kubelets serve self-signed
   certs unless a serving-cert approver is installed).
 
+Per-add-on Helm values: `platform.<addon>.values` in cluster.yaml is passed as `values = [yamlencode(...)]` only when non-empty, so declaring nothing never triggers a Helm upgrade.
+
 Verified on a single-node VM: ingress-nginx reachable from the Mac on its MetalLB IP, a
 `runtimeClassName: gvisor` pod boots gVisor, `kubectl top nodes` works, and a second
 `kubit platform plan` reports no changes.
@@ -247,6 +249,16 @@ clears. The first observation after a daemon start reports only what is currentl
 wrong, so restarts do not replay history. `GET /clusters/{name}/status` serves the
 watcher's latest result; `?fresh=true` forces a live query.
 
+## Backup and restore
+
+`kubit backup -o file.kubitbak` (or Settings → Download backup) writes a tar.gz of
+`~/.kubit` minus `bin/`, `cache/` and `.terraform/`, sealed with the master key
+(AES-256-GCM; magic `KUBITBAK1`). The database's WAL is checkpointed first. Cluster
+secrets are therefore double-sealed; kubeconfig/talosconfig files and tofu state are
+sealed once. `kubit restore file` unpacks into an empty `KUBIT_HOME` (`--force` to
+overwrite) and needs the same master key: `kubit key export` prints it for
+`KUBIT_MASTER_KEY` on another machine.
+
 ## Status
 
 - [x] Phase 0 — scaffold, `kubit version`, `kubit serve` (SPA + `/api/v1/version`), VM harness
@@ -269,7 +281,7 @@ virtualisation in the VMs); ArgoCD and cert-manager add-ons.
 - [x] M1 — structured operations, Activity drawer, plan review/apply, IA skeleton, component library
 - [x] M2 — node page: Overview (Talos + etcd member + Kubernetes requests), Hardware, Kubernetes (conditions, pods with usage, labels), Services, Logs, Actions (cordon/uncordon/drain/reboot[-with-drain]/upgrade node) — verified drain→reboot→uncordon on ha-worker-01
 - [x] M3 — `internal/watch`: per-cluster poll (15 s, `--watch-interval`), `samples` (24 h fine / 30 d hourly) and `events` tables, SSE `status`/`health` pushes (UI no longer polls while connected), alerts with ack and auto-resolve on recovery, Overview capacity sparklines (1h–7d), `/versions` feed (Image Factory releases ≥ 1.14, Kubernetes minors supported by the built machinery) in Settings — verified: VM stop raised `talos.unreachable` within 15 s without reload, `node.notready` after the kubelet grace period, both cleared by `talos.back`/`node.ready` on restart
-- [ ] M4 — workloads / network / storage views
-- [ ] M5 — add-on status and values, ArgoCD/cert-manager verified, cluster settings form
-- [ ] M6 — fleet: inventory detail, PXE page, Kubit settings, backup/restore
+- [x] M4 — Workloads (controllers + pods, namespace filter, pod dialog with container logs and events), Network (addressing, MetalLB pool map with per-IP holder, services with endpoint counts, ingress host→service table), Storage (classes/PVCs/PVs, warning when no StorageClass) — verified with a demo Deployment + LoadBalancer + Ingress reachable from the Mac
+- [x] M5 — add-on cards join cluster.yaml, tofu state (Helm release/chart/app version, status) and namespace readiness into one state (disabled/pending/deploying/ready/degraded/failed/orphaned); Configure dialog edits enabled/MetalLB range/Helm `values` (server-validated YAML) into cluster.yaml; `platform.<addon>.values` flows to `helm_release.values` only when set; Settings has a Form tab (endpoint, VIP, CIDRs, extensions, scheduling) beside YAML — verified: enabled ArgoCD with `server.replicas: 1` via UI → plan → reviewed apply → ArgoCD answering on its MetalLB IP; cert-manager verified in M1
+- [~] M6 — Inventory: Adopt… opens the target cluster's add-node dialog preselected; PXE page reads the separate `kubit pxe` process's `/status.json` (server state, per-MAC boot stages dhcp → ipxe → kernel, log) and shows the exact sudo command when it is not running; Kubit Settings (`settings` table: factory URL, poll interval, discovery subnets, default MetalLB range, PXE status URL — applied live); `kubit backup`/`restore`/`key export` and a Download backup button — verified: backup restored into a fresh KUBIT_HOME manages the live cluster. **PXE boot itself is unverified** (see NOTES/backlog.md): pending real hardware
 - [ ] M7 — tests, CI, packaging, docs

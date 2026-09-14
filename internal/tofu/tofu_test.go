@@ -22,7 +22,7 @@ spec:
     ingressNginx: { enabled: true }
     gvisor: { enabled: true }
     metricsServer: { enabled: false }
-    certManager: { enabled: true }
+    certManager: { enabled: true, values: { replicaCount: 2, prometheus: { enabled: false } } }
     argocd: { enabled: false }
 `
 
@@ -51,12 +51,12 @@ func TestRenderWritesModuleAndVars(t *testing.T) {
 	}
 	want := map[string]string{
 		"kubeconfig":     `"/x/kubeconfig"`,
-		"metallb":        `{"enabled":true,"range":"10.0.0.200-10.0.0.210"}`,
-		"ingress_nginx":  `{"enabled":true}`,
-		"gvisor":         `{"enabled":true}`,
-		"metrics_server": `{"enabled":false}`,
-		"cert_manager":   `{"enabled":true}`,
-		"argocd":         `{"enabled":false}`,
+		"metallb":        `{"enabled":true,"range":"10.0.0.200-10.0.0.210","values":{}}`,
+		"ingress_nginx":  `{"enabled":true,"values":{}}`,
+		"gvisor":         `{"enabled":true,"values":{}}`,
+		"metrics_server": `{"enabled":false,"values":{}}`,
+		"cert_manager":   `{"enabled":true,"values":{"prometheus":{"enabled":false},"replicaCount":2}}`,
+		"argocd":         `{"enabled":false,"values":{}}`,
 	}
 	for k, w := range want {
 		var got, exp any

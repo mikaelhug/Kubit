@@ -21,6 +21,7 @@ resource "helm_release" "metallb" {
   repository = "https://metallb.github.io/metallb"
   chart      = "metallb"
   version    = var.chart_versions.metallb
+  values     = length(var.metallb.values) > 0 ? [yamlencode(var.metallb.values)] : []
   wait       = true
   timeout    = 600
 }

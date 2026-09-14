@@ -3,31 +3,34 @@ variable "kubeconfig" {
   type        = string
 }
 
+# Each add-on carries free-form Helm values from cluster.yaml (platform.<addon>.values),
+# merged over Kubit's defaults.
 variable "metallb" {
   type = object({
     enabled = bool
     range   = optional(string, "")
+    values  = optional(any, {})
   })
 }
 
 variable "ingress_nginx" {
-  type = object({ enabled = bool })
+  type = object({ enabled = bool, values = optional(any, {}) })
 }
 
 variable "gvisor" {
-  type = object({ enabled = bool })
+  type = object({ enabled = bool, values = optional(any, {}) })
 }
 
 variable "metrics_server" {
-  type = object({ enabled = bool })
+  type = object({ enabled = bool, values = optional(any, {}) })
 }
 
 variable "cert_manager" {
-  type = object({ enabled = bool })
+  type = object({ enabled = bool, values = optional(any, {}) })
 }
 
 variable "argocd" {
-  type = object({ enabled = bool })
+  type = object({ enabled = bool, values = optional(any, {}) })
 }
 
 # Chart versions are pinned by Kubit and bumped deliberately.

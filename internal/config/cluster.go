@@ -108,11 +108,14 @@ type Platform struct {
 
 type Addon struct {
 	Enabled bool `yaml:"enabled" json:"enabled"`
+	// Values are merged into the add-on's Helm chart values (free-form).
+	Values map[string]any `yaml:"values,omitempty" json:"values,omitempty"`
 }
 
 type MetalLB struct {
-	Enabled bool   `yaml:"enabled" json:"enabled"`
-	Range   string `yaml:"range,omitempty" json:"range,omitempty"` // "a.b.c.d-a.b.c.e"
+	Enabled bool           `yaml:"enabled" json:"enabled"`
+	Range   string         `yaml:"range,omitempty" json:"range,omitempty"` // "a.b.c.d-a.b.c.e"
+	Values  map[string]any `yaml:"values,omitempty" json:"values,omitempty"`
 }
 
 func Load(path string) (*Cluster, error) {

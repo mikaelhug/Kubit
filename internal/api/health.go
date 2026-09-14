@@ -16,8 +16,13 @@ import (
 )
 
 // AttachWatcher connects the background watcher to the SSE stream and starts it.
+func defaultTalosVersion() string { return gendata.VersionTag }
+
 func (s *Server) AttachWatcher(ctx context.Context, w *watch.Watcher) {
 	s.watcher = w
+	if v, err := s.store.GetSettings(ctx); err == nil && v.WatchIntervalSec > 0 {
+		w.Interval = time.Duration(v.WatchIntervalSec) * time.Second
+	}
 	w.OnStatus = func(name string, st *cluster.Status) {
 		s.hub.publish(Message{Kind: "status", Cluster: name, Status: st})
 	}

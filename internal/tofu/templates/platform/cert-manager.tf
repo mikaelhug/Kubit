@@ -7,6 +7,7 @@ resource "helm_release" "cert_manager" {
   repository       = "https://charts.jetstack.io"
   chart            = "cert-manager"
   version          = var.chart_versions.cert_manager
+  values           = length(var.cert_manager.values) > 0 ? [yamlencode(var.cert_manager.values)] : []
   wait             = true
   timeout          = 600
 

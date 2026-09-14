@@ -7,7 +7,8 @@ import type { ClusterCtx } from './ClusterPage'
 
 export function Nodes({ ctx }: { ctx: ClusterCtx }) {
   const { status, cluster, name } = ctx
-  const [add, setAdd] = useState(false)
+  const adoptIP = typeof location !== 'undefined' ? new URLSearchParams(location.search).get('adopt') : null
+  const [add, setAdd] = useState(!!adoptIP)
   const [remove, setRemove] = useState<NodeStatus | null>(null)
   const rows: NodeStatus[] = status?.nodes ?? cluster.spec.spec.nodes.map((n) => ({ ...n, kvm: !!n.kvm, ready: false, unschedulable: false, registered: false, stage: '', talosVersion: '', kubeletVersion: '', cpuMilli: 0, cpuCapMilli: 0, memBytes: 0, memCapBytes: 0, pods: 0, podCap: 0, gvisor: false, talosReachable: false, talosError: 'querying…' }))
   const apiUp = !!status?.apiReachable
@@ -37,7 +38,7 @@ export function Nodes({ ctx }: { ctx: ClusterCtx }) {
         actions={<button class="btn btn-primary" onClick={() => setAdd(true)}>+ Add node</button>}>
         <DataTable id="nodes" columns={columns} rows={rows} rowKey={(n) => n.hostname} defaultSort={{ id: 'role', dir: 'asc' }} />
       </Section>
-      {add && <AddNodeDialog cluster={cluster} onClose={() => setAdd(false)} />}
+      {add && <AddNodeDialog cluster={cluster} preselect={adoptIP ?? undefined} onClose={() => { setAdd(false); if (adoptIP) history.replaceState(null, '', location.pathname) }} />}
       {remove && (
         <ConfirmDialog title={`Remove ${remove.hostname}`} action="Drain and remove" tone="danger" onClose={() => setRemove(null)}
           onConfirm={() => api.removeNode(name, remove.hostname).then((r) => { setRemove(null); watch(r) }).catch((e) => toast(e.message, 'error'))}
@@ -81,9 +82,9 @@ function RemoveImpact({ n, cluster }: { n: NodeStatus; cluster: ClusterRow }) {
   )
 }
 
-function AddNodeDialog({ cluster, onClose }: { cluster: ClusterRow; onClose: () => void }) {
+function AddNodeDialog({ cluster, onClose, preselect }: { cluster: ClusterRow; onClose: () => void; preselect?: string }) {
   const [candidates, setCandidates] = useState<NodeRow[]>([])
-  const [ip, setIp] = useState('')
+  const [ip, setIp] = useState(preselect ?? '')
   const [hostname, setHostname] = useState('')
   const [role, setRole] = useState<'controlplane' | 'worker'>('worker')
   const [disk, setDisk] = useState('')

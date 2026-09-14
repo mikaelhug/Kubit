@@ -34,12 +34,16 @@ type Server struct {
 	locks   clusterLocks
 	cancels sync.Map // operation id → context.CancelFunc
 	watcher *watch.Watcher
+	crypto  *store.Crypto
 	// token, when set, is required as "Authorization: Bearer" on /api (non-loopback binds).
 	token string
 }
 
-func New(version string, m *cluster.Manager, token string) *Server {
-	s := &Server{mux: http.NewServeMux(), version: version, manager: m, store: m.Store, hub: newHub(), token: token}
+func New(version string, m *cluster.Manager, token string, crypto *store.Crypto) *Server {
+	s := &Server{mux: http.NewServeMux(), version: version, manager: m, store: m.Store, hub: newHub(), token: token, crypto: crypto}
+	if v, err := m.Store.GetSettings(contextBackground()); err == nil {
+		m.Factory.BaseURL = v.FactoryURL
+	}
 	_ = s.store.MarkStaleOperations(contextBackground())
 	r := s.mux
 	r.HandleFunc("GET /api/v1/version", s.handleVersion)
@@ -55,8 +59,11 @@ func New(version string, m *cluster.Manager, token string) *Server {
 	r.HandleFunc("GET /api/v1/clusters/{name}/status", s.handleClusterStatus)
 	r.HandleFunc("GET /api/v1/clusters/{name}/yaml", s.handleClusterYAML)
 	r.HandleFunc("PUT /api/v1/clusters/{name}/yaml", s.handleClusterYAMLSave)
+	r.HandleFunc("PUT /api/v1/clusters/{name}/form", s.handleClusterForm)
 	r.HandleFunc("GET /api/v1/clusters/{name}/kubeconfig", s.handleClusterKubeconfig)
 	r.HandleFunc("POST /api/v1/clusters/{name}/apply", s.handleClusterApply)
+	r.HandleFunc("GET /api/v1/clusters/{name}/addons", s.handleAddons)
+	r.HandleFunc("PUT /api/v1/clusters/{name}/addons/{addon}", s.handleAddonUpdate)
 	r.HandleFunc("POST /api/v1/clusters/{name}/platform/plan", s.handlePlatformPlan)
 	r.HandleFunc("POST /api/v1/clusters/{name}/platform/apply", s.handlePlatformApply)
 	r.HandleFunc("POST /api/v1/clusters/{name}/platform/apply/{planId}", s.handlePlatformApplyPlan)
@@ -74,6 +81,8 @@ func New(version string, m *cluster.Manager, token string) *Server {
 	r.HandleFunc("POST /api/v1/config/draft", s.handleConfigDraft)
 	s.nodeRoutes()
 	s.healthRoutes()
+	s.k8sRoutes()
+	s.settingsRoutes()
 	dist, _ := fs.Sub(web.Dist, "dist")
 	r.Handle("/", spaHandler(http.FS(dist)))
 	return s
@@ -418,6 +427,15 @@ func (s *Server) handleClusterApply(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusAccepted, map[string]any{"operationId": id})
+}
+
+func (s *Server) handleAddons(w http.ResponseWriter, r *http.Request) {
+	list, err := s.manager.Addons(r.Context(), r.PathValue("name"))
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, list)
 }
 
 func (s *Server) handlePlatformPlan(w http.ResponseWriter, r *http.Request) {

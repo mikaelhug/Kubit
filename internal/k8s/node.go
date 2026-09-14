@@ -44,17 +44,19 @@ type Resources struct {
 }
 
 type PodSummary struct {
-	Namespace string `json:"namespace"`
-	Name      string `json:"name"`
-	Phase     string `json:"phase"`
-	Ready     string `json:"ready"` // "2/2"
-	Restarts  int32  `json:"restarts"`
-	Owner     string `json:"owner,omitempty"` // DaemonSet/ReplicaSet/...
-	CPUMilli  int64  `json:"cpuMilli"`        // requests
-	MemBytes  int64  `json:"memBytes"`
-	Age       string `json:"age"`
-	UsageCPU  int64  `json:"usageCpuMilli,omitempty"`
-	UsageMem  int64  `json:"usageMemBytes,omitempty"`
+	Namespace  string   `json:"namespace"`
+	Name       string   `json:"name"`
+	Node       string   `json:"node,omitempty"`
+	Containers []string `json:"containers,omitempty"`
+	Phase      string   `json:"phase"`
+	Ready      string   `json:"ready"` // "2/2"
+	Restarts   int32    `json:"restarts"`
+	Owner      string   `json:"owner,omitempty"` // DaemonSet/ReplicaSet/...
+	CPUMilli   int64    `json:"cpuMilli"`        // requests
+	MemBytes   int64    `json:"memBytes"`
+	Age        string   `json:"age"`
+	UsageCPU   int64    `json:"usageCpuMilli,omitempty"`
+	UsageMem   int64    `json:"usageMemBytes,omitempty"`
 }
 
 func (c *Client) NodeDetail(ctx context.Context, name string) (*NodeDetail, error) {
@@ -82,22 +84,7 @@ func (c *Client) NodeDetail(ctx context.Context, name string) (*NodeDetail, erro
 	}
 	usage, _ := c.podUsages(ctx)
 	for _, p := range pods.Items {
-		ps := PodSummary{Namespace: p.Namespace, Name: p.Name, Phase: string(p.Status.Phase), Age: metav1.Now().Sub(p.CreationTimestamp.Time).Truncate(1e9).String()}
-		ready := 0
-		for _, cs := range p.Status.ContainerStatuses {
-			if cs.Ready {
-				ready++
-			}
-			ps.Restarts += cs.RestartCount
-		}
-		ps.Ready = fmt.Sprintf("%d/%d", ready, len(p.Spec.Containers))
-		for _, o := range p.OwnerReferences {
-			ps.Owner = o.Kind
-		}
-		for _, ctr := range p.Spec.Containers {
-			ps.CPUMilli += ctr.Resources.Requests.Cpu().MilliValue()
-			ps.MemBytes += ctr.Resources.Requests.Memory().Value()
-		}
+		ps := podSummary(&p)
 		if p.Status.Phase == corev1.PodRunning {
 			d.Requests.CPUMilli += ps.CPUMilli
 			d.Requests.MemBytes += ps.MemBytes

@@ -43,12 +43,21 @@ func NewCrypto(key []byte) (*Crypto, error) {
 // LoadCrypto returns the master key from $KUBIT_MASTER_KEY or the OS keyring, minting
 // and storing a new one in the keyring on first use.
 func LoadCrypto() (*Crypto, error) {
+	key, err := LoadMasterKey()
+	if err != nil {
+		return nil, err
+	}
+	return NewCrypto(key)
+}
+
+// LoadMasterKey returns the raw 32-byte master key (see LoadCrypto).
+func LoadMasterKey() ([]byte, error) {
 	if v := os.Getenv(EnvMasterKey); v != "" {
 		key, err := base64.StdEncoding.DecodeString(v)
 		if err != nil {
 			return nil, fmt.Errorf("%s: %w", EnvMasterKey, err)
 		}
-		return NewCrypto(key)
+		return key, nil
 	}
 	v, err := keyring.Get(keyringService, keyringUser)
 	switch {
@@ -60,7 +69,7 @@ func LoadCrypto() (*Crypto, error) {
 		if err := keyring.Set(keyringService, keyringUser, base64.StdEncoding.EncodeToString(key)); err != nil {
 			return nil, fmt.Errorf("store master key in keyring: %w", err)
 		}
-		return NewCrypto(key)
+		return key, nil
 	case err != nil:
 		return nil, fmt.Errorf("read master key from keyring: %w", err)
 	}
@@ -68,7 +77,7 @@ func LoadCrypto() (*Crypto, error) {
 	if err != nil {
 		return nil, fmt.Errorf("keyring master key: %w", err)
 	}
-	return NewCrypto(key)
+	return key, nil
 }
 
 func (c *Crypto) Seal(plain []byte) ([]byte, error) {

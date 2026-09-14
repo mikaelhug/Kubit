@@ -27,10 +27,21 @@ type Server struct {
 	Profile Profile
 	Cache   *Cache
 	Factory *factory.Client
+	track   *tracker
+}
+
+// Track installs the boot tracker; Run calls it, tests may call it directly.
+func (s *Server) Track() {
+	if s.track == nil {
+		s.track = newTracker()
+		s.Config.onDHCP = s.track.dhcp
+		s.Config.onLog = s.track.logf
+	}
 }
 
 // Run serves DHCP, TFTP and HTTP until ctx ends. DHCP and TFTP bind privileged ports.
 func (s *Server) Run(ctx context.Context) error {
+	s.Track()
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	errc := make(chan error, 3)
@@ -88,7 +99,9 @@ func archFromIPXE(a string) string {
 
 // Handler serves the iPXE script and the boot-asset cache.
 func (s *Server) Handler() http.Handler {
+	s.Track()
 	mux := http.NewServeMux()
+	mux.HandleFunc("GET /status.json", s.statusHandler)
 	mux.HandleFunc("GET /boot.ipxe", func(w http.ResponseWriter, r *http.Request) {
 		// iPXE substitutes ${buildarch} before requesting; a bare hit gets a chain that
 		// fills it in.
@@ -103,6 +116,8 @@ func (s *Server) Handler() http.Handler {
 		fmt.Fprintf(w, "#!ipxe\nkernel %s/kernel-%s initrd=initramfs-%s.xz %s\ninitrd %s/initramfs-%s.xz\nboot\n",
 			base, arch, arch, strings.Join(args, " "), base, arch)
 		s.Log.Printf("http: boot script for %s (%s)", r.RemoteAddr, arch)
+		s.track.http(hostOf(r.RemoteAddr), arch, "ipxe")
+		s.track.logf(fmt.Sprintf("iPXE on %s fetched the %s boot script", hostOf(r.RemoteAddr), arch))
 	})
 	mux.HandleFunc("GET /assets/{schematic}/{version}/{file}", func(w http.ResponseWriter, r *http.Request) {
 		schematic, version, file := r.PathValue("schematic"), r.PathValue("version"), r.PathValue("file")
@@ -116,6 +131,10 @@ func (s *Server) Handler() http.Handler {
 			s.Log.Printf("http: %s: %v", url, err)
 			http.Error(w, err.Error(), http.StatusBadGateway)
 			return
+		}
+		if strings.HasPrefix(file, "kernel-") {
+			s.track.http(hostOf(r.RemoteAddr), archFromIPXE(strings.TrimSuffix(strings.TrimPrefix(file, "kernel-"), ".xz")), "kernel")
+			s.track.logf(fmt.Sprintf("%s downloading %s %s", hostOf(r.RemoteAddr), version, file))
 		}
 		http.ServeFile(w, r, path)
 	})
@@ -134,6 +153,13 @@ func (s *Server) serveHTTP(ctx context.Context) error {
 		return err
 	}
 	return nil
+}
+
+func hostOf(remote string) string {
+	if h, _, err := net.SplitHostPort(remote); err == nil {
+		return h
+	}
+	return remote
 }
 
 // InterfaceIPv4 returns the first IPv4 address on the named interface.

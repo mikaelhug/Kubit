@@ -2,7 +2,7 @@
 # Dev harness: Talos arm64 VMs on Apple Virtualization.framework via vfkit.
 # Usage:
 #   vm.sh iso                      download Talos ISO for $SCHEMATIC/$TALOS_VERSION
-#   vm.sh create <n> [cpus] [mem]  create VM number n (1..99), boot from ISO, run in background
+#   vm.sh create <n> [cpus] [mem] [--no-iso]  create VM n (1..99); boots the ISO unless --no-iso (then EFI tries PXE)
 #   vm.sh start <n> [--no-iso]     (re)start VM; --no-iso boots from disk after Talos install
 #   vm.sh stop <n> | stop all
 #   vm.sh ip <n>                   IP leased to VM n (from vmnet's dhcpd leases)
@@ -59,7 +59,7 @@ cmd_create() {
   mkdir -p "$d"
   echo "$cpus $mem" > "$d/spec"
   truncate -s "${DISK_GB}G" "$d/disk.raw"
-  cmd_start "$n"
+  cmd_start "$n" "${4:-}"
 }
 
 cmd_start() {

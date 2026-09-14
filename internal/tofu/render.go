@@ -40,13 +40,22 @@ func Render(dir string, c *config.Cluster, kubeconfigPath string) error {
 	return os.WriteFile(filepath.Join(dir, "terraform.tfvars.json"), append(b, '\n'), 0o600)
 }
 
-type enabled struct {
-	Enabled bool `json:"enabled"`
+type addonVars struct {
+	Enabled bool           `json:"enabled"`
+	Values  map[string]any `json:"values"`
 }
 
 type metallbVars struct {
-	Enabled bool   `json:"enabled"`
-	Range   string `json:"range"`
+	Enabled bool           `json:"enabled"`
+	Range   string         `json:"range"`
+	Values  map[string]any `json:"values"`
+}
+
+func vals(m map[string]any) map[string]any {
+	if m == nil {
+		return map[string]any{}
+	}
+	return m
 }
 
 // Vars maps cluster.yaml's platform section onto the module's input variables.
@@ -54,11 +63,11 @@ func Vars(c *config.Cluster, kubeconfigPath string) map[string]any {
 	p := c.Spec.Platform
 	return map[string]any{
 		"kubeconfig":     kubeconfigPath,
-		"metallb":        metallbVars{Enabled: p.MetalLB.Enabled, Range: p.MetalLB.Range},
-		"ingress_nginx":  enabled{p.IngressNginx.Enabled},
-		"gvisor":         enabled{p.GVisor.Enabled},
-		"metrics_server": enabled{p.MetricsServer.Enabled},
-		"cert_manager":   enabled{p.CertManager.Enabled},
-		"argocd":         enabled{p.ArgoCD.Enabled},
+		"metallb":        metallbVars{Enabled: p.MetalLB.Enabled, Range: p.MetalLB.Range, Values: vals(p.MetalLB.Values)},
+		"ingress_nginx":  addonVars{p.IngressNginx.Enabled, vals(p.IngressNginx.Values)},
+		"gvisor":         addonVars{p.GVisor.Enabled, vals(p.GVisor.Values)},
+		"metrics_server": addonVars{p.MetricsServer.Enabled, vals(p.MetricsServer.Values)},
+		"cert_manager":   addonVars{p.CertManager.Enabled, vals(p.CertManager.Values)},
+		"argocd":         addonVars{p.ArgoCD.Enabled, vals(p.ArgoCD.Values)},
 	}
 }

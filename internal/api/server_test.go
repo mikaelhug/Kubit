@@ -24,7 +24,7 @@ func newServer(t *testing.T, token string) (*api.Server, *store.Store) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { s.Close() })
-	return api.New("test", cluster.NewManager(s, dir), token), s
+	return api.New("test", cluster.NewManager(s, dir), token, c), s
 }
 
 func do(t *testing.T, h http.Handler, method, path string, body string, headers ...string) *httptest.ResponseRecorder {

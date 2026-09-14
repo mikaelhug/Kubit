@@ -7,6 +7,7 @@ resource "helm_release" "ingress_nginx" {
   repository       = "https://kubernetes.github.io/ingress-nginx"
   chart            = "ingress-nginx"
   version          = var.chart_versions.ingress_nginx
+  values           = length(var.ingress_nginx.values) > 0 ? [yamlencode(var.ingress_nginx.values)] : []
   wait             = true
   timeout          = 600
 

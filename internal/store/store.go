@@ -43,6 +43,12 @@ func Open(dir string, crypto *Crypto) (*Store, error) {
 
 func (s *Store) Close() error { return s.db.Close() }
 
+// Checkpoint folds the WAL into the main database file so a file-level copy is complete.
+func (s *Store) Checkpoint(ctx context.Context) error {
+	_, err := s.db.ExecContext(ctx, `PRAGMA wal_checkpoint(TRUNCATE)`)
+	return err
+}
+
 var migrations = []string{
 	`CREATE TABLE clusters (
 		name          TEXT PRIMARY KEY,
@@ -117,6 +123,7 @@ var migrations = []string{
 		acked    INTEGER NOT NULL DEFAULT 0
 	);
 	CREATE INDEX events_cluster_ts ON events (cluster, ts);`,
+	`CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);`,
 }
 
 func (s *Store) migrate(ctx context.Context) error {

@@ -11,6 +11,7 @@ import (
 	"log"
 	"net"
 	"strings"
+	"syscall"
 
 	"github.com/insomniacslk/dhcp/dhcpv4"
 	"github.com/insomniacslk/dhcp/dhcpv4/server4"
@@ -25,6 +26,9 @@ const (
 )
 
 type Config struct {
+	// onDHCP and onLog feed the status tracker when set.
+	onDHCP func(mac, arch string)
+	onLog  func(line string)
 	// Interface to answer on; its IPv4 address becomes next-server and the HTTP host.
 	Interface string
 	IP        net.IP
@@ -126,15 +130,55 @@ func (c Config) handle(conn net.PacketConn, peer net.Addr, m *dhcpv4.DHCPv4) {
 		return
 	}
 	c.Log.Printf("pxe: %s (%v) → %s", m.ClientHWAddr, m.ClientArch(), file)
+	if c.onDHCP != nil {
+		arch := ""
+		if !isIPXE(m) {
+			if strings.Contains(strings.ToLower(file), "arm64") {
+				arch = "arm64"
+			} else {
+				arch = "amd64"
+			}
+		}
+		c.onDHCP(m.ClientHWAddr.String(), arch)
+	}
+	if c.onLog != nil {
+		c.onLog(fmt.Sprintf("%s (%v) offered %s", m.ClientHWAddr, m.ClientArch(), file))
+	}
+}
+
+// listenShared binds a UDP port with SO_REUSEADDR/SO_REUSEPORT so the proxy can sit on
+// :67 beside a DHCP server on the same host (macOS's bootpd under vmnet, dnsmasq on a
+// Linux box); broadcasts are delivered to every such socket.
+func listenShared(ctx context.Context, port int) (net.PacketConn, error) {
+	lc := net.ListenConfig{Control: func(_, _ string, c syscall.RawConn) error {
+		var serr error
+		err := c.Control(func(fd uintptr) {
+			serr = setReuse(int(fd))
+		})
+		if err != nil {
+			return err
+		}
+		return serr
+	}}
+	pc, err := lc.ListenPacket(ctx, "udp4", fmt.Sprintf("0.0.0.0:%d", port))
+	if err != nil {
+		return nil, err
+	}
+	return pc, nil
 }
 
 // ServeDHCP runs the proxyDHCP responders on :67 and :4011 until ctx ends.
 func (c Config) ServeDHCP(ctx context.Context) error {
 	var servers []*server4.Server
 	for _, port := range []int{dhcpv4.ServerPort, 4011} {
-		s, err := server4.NewServer(c.Interface, &net.UDPAddr{IP: net.IPv4zero, Port: port}, c.handle)
+		conn, err := listenShared(ctx, port)
 		if err != nil {
 			return fmt.Errorf("listen udp :%d (needs root): %w", port, err)
+		}
+		s, err := server4.NewServer(c.Interface, nil, c.handle, server4.WithConn(conn))
+		if err != nil {
+			conn.Close()
+			return err
 		}
 		servers = append(servers, s)
 	}

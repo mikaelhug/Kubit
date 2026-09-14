@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'preact/hooks'
 import { api, fmt, type NodeRow } from '../../api'
-import { toast, watch } from '../../store'
+import { useLocation } from 'preact-iso'
+import { clusters, toast, watch } from '../../store'
 import { DataTable, type Column } from '../../components/DataTable'
 import { ErrorBox, Pill, Section, stateTone } from '../../components/ui'
 import { operations } from '../../store'
@@ -10,8 +11,15 @@ export function Inventory() {
   const [nodes, setNodes] = useState<NodeRow[]>([])
   const [targets, setTargets] = useState('')
   const [error, setError] = useState<string | null>(null)
-  const load = () => api.nodes().then((ns) => { setNodes(ns); if (!targets && ns[0]) setTargets(ns[0].ip.replace(/\.\d+$/, '.0/24')) }).catch((e) => setError(e.message))
-  useEffect(() => { load() }, []) // eslint-disable-line
+  const { route } = useLocation()
+  const load = () => api.nodes().then((ns) => { setNodes(ns); if (!targets && ns[0]) setTargets((t) => t || ns[0].ip.replace(/\.\d+$/, '.0/24')) }).catch((e) => setError(e.message))
+  useEffect(() => { load(); api.settings().then((v) => { if (v.discoverySubnets.length) setTargets(v.discoverySubnets.join(', ')) }).catch(() => {}) }, []) // eslint-disable-line
+  const adopt = (n: NodeRow) => {
+    const ready = clusters.value.filter((c) => c.state === 'ready' || c.state === 'bootstrapped')
+    if (ready.length === 0) { route('/clusters/new'); return }
+    const target = ready.length === 1 ? ready[0].name : prompt(`Adopt ${n.ip} into which cluster? (${ready.map((c) => c.name).join(', ')})`, ready[0].name)
+    if (target && ready.find((c) => c.name === target)) route(`/clusters/${target}/nodes?adopt=${n.ip}`)
+  }
   const finishedDiscoveries = [...operations.value.values()].filter((o) => o.kind === 'discover' && o.status !== 'running').length
   useEffect(() => { load() }, [finishedDiscoveries]) // eslint-disable-line
   const scanning = [...operations.value.values()].some((o) => o.kind === 'discover' && o.status === 'running')
@@ -29,7 +37,10 @@ export function Inventory() {
     { id: 'ram', header: 'RAM', align: 'right', sort: (n) => n.inventory?.memoryBytes ?? 0, cell: (n) => n.inventory ? fmt.bytes(n.inventory.memoryBytes) : '—' },
     { id: 'disks', header: 'Disks', mono: true, text: (n) => (n.inventory?.disks ?? []).map((d) => d.devPath).join(' '), cell: (n) => (n.inventory?.disks.filter((d) => !d.readonly && !d.cdrom && d.transport !== 'usb').map((d) => `${d.devPath} ${fmt.bytes(d.sizeBytes)}`).join(', ')) || '—' },
     { id: 'kvm', header: 'KVM', sort: (n) => n.inventory?.kvm ? 1 : 0, cell: (n) => n.inventory?.kvm ? 'yes' : 'no' },
-    { id: 'seen', header: 'Last seen', sort: (n) => n.lastSeen, cell: (n) => <span class="num text-muted">{fmt.datetime(n.lastSeen)}</span> },
+    { id: 'seen', header: 'Last seen', sort: (n) => n.lastSeen, cell: (n) => <span class="num text-muted">{fmt.when(n.lastSeen)}</span> },
+    { id: 'actions', header: '', align: 'right', cell: (n) => n.state === 'maintenance' && !n.cluster
+      ? <button class="btn btn-primary !py-1" onClick={() => adopt(n)}>Adopt…</button>
+      : <a href={`/nodes/${n.ip}`} class="btn !py-1">Open</a> },
   ]
 
   return (

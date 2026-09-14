@@ -11,6 +11,9 @@ import { PlanReview } from './PlanReview'
 import { ClusterOperations } from './ClusterOperations'
 import { Settings } from './Settings'
 import { Placeholder } from './Placeholder'
+import { Workloads } from './Workloads'
+import { Network } from './Network'
+import { Storage } from './Storage'
 
 export interface ClusterCtx { name: string; cluster: ClusterRow; status: Status | null; refresh: () => void; error: string | null }
 
@@ -64,9 +67,9 @@ function renderSection(section: Section, sub: string | undefined, ctx: ClusterCt
     case 'addons': return sub ? <PlanReview ctx={ctx} planId={Number(sub)} /> : <Addons ctx={ctx} />
     case 'operations': return <ClusterOperations ctx={ctx} />
     case 'settings': return <Settings ctx={ctx} />
-    case 'workloads': return <Placeholder title="Workloads" milestone="M4">Namespaces, deployments, daemonsets, statefulsets and pods with logs and events.</Placeholder>
-    case 'network': return <Placeholder title="Network" milestone="M4">Services with their LoadBalancer IPs, MetalLB pool usage, ingress hosts, VIP and CIDRs.</Placeholder>
-    case 'storage': return <Placeholder title="Storage" milestone="M4">Storage classes, persistent volumes and claims.</Placeholder>
+    case 'workloads': return <Workloads ctx={ctx} />
+    case 'network': return <Network ctx={ctx} />
+    case 'storage': return <Storage ctx={ctx} />
     default: return <Placeholder title="Not found" milestone="">Unknown section.</Placeholder>
   }
 }

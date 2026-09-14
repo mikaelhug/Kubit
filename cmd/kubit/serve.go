@@ -21,7 +21,7 @@ func serveCmd() *cobra.Command {
 		Use:   "serve",
 		Short: "Run the Kubit daemon and web UI",
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			m, err := openManager()
+			m, crypto, err := openManagerCrypto()
 			if err != nil {
 				return err
 			}
@@ -36,7 +36,7 @@ func serveCmd() *cobra.Command {
 				fmt.Fprintf(cmd.OutOrStdout(), "non-loopback bind: API requires Authorization: Bearer %s\n", token)
 			}
 			fmt.Fprintf(cmd.OutOrStdout(), "kubit %s listening on http://%s\n", version, addr)
-			srv := api.New(version, m, token)
+			srv := api.New(version, m, token, crypto)
 			ctx, cancel := context.WithCancel(cmd.Context())
 			defer cancel()
 			srv.AttachWatcher(ctx, watch.New(m, interval))

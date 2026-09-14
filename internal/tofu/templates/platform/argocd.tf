@@ -7,6 +7,7 @@ resource "helm_release" "argocd" {
   repository       = "https://argoproj.github.io/argo-helm"
   chart            = "argo-cd"
   version          = var.chart_versions.argocd
+  values           = length(var.argocd.values) > 0 ? [yamlencode(var.argocd.values)] : []
   wait             = true
   timeout          = 900
 

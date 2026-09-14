@@ -6,6 +6,7 @@ resource "helm_release" "metrics_server" {
   repository       = "https://kubernetes-sigs.github.io/metrics-server"
   chart            = "metrics-server"
   version          = var.chart_versions.metrics_server
+  values           = length(var.metrics_server.values) > 0 ? [yamlencode(var.metrics_server.values)] : []
   wait             = true
   timeout          = 600
 

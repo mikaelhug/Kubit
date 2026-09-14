@@ -2,6 +2,7 @@ import { useEffect, useState } from 'preact/hooks'
 import { useLocation } from 'preact-iso'
 import { api, type Versions } from '../../api'
 import { reloadClusters, toast, watch } from '../../store'
+import { Tabs } from '../../components/Tabs'
 import { ConfirmDialog, ErrorBox, Field, KeyValue, Notice, Section } from '../../components/ui'
 import type { ClusterCtx } from './ClusterPage'
 
@@ -9,29 +10,62 @@ export function Settings({ ctx }: { ctx: ClusterCtx }) {
   const { route } = useLocation()
   const { name, cluster } = ctx
   const spec = cluster.spec.spec
+  const [tab, setTab] = useState<'form' | 'yaml'>('form')
   const [yaml, setYaml] = useState('')
   const [dirty, setDirty] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [forget, setForget] = useState(false)
-  const [upgrade, setUpgrade] = useState<{ talos: string; k8s: string }>({ talos: spec.talosVersion, k8s: spec.kubernetesVersion })
   const [versions, setVersions] = useState<Versions | null>(null)
+  const [form, setForm] = useState(fromSpec(spec))
+  const [upgrade, setUpgrade] = useState<{ talos: string; k8s: string }>({ talos: spec.talosVersion, k8s: spec.kubernetesVersion })
   useEffect(() => { api.versions().then(setVersions).catch(() => {}) }, [])
-  useEffect(() => { api.clusterYaml(name).then((y) => { setYaml(y); setDirty(false) }).catch((e) => setError(e.message)) }, [name, cluster.updatedAt])
+  useEffect(() => { api.clusterYaml(name).then((y) => { setYaml(y); setDirty(false) }).catch((e) => setError(e.message)); setForm(fromSpec(spec)) }, [name, cluster.updatedAt])
   const k8sMinor = spec.kubernetesVersion.split('.').slice(0, 2).join('.')
   const k8sTargets = (versions?.kubernetesMinors ?? []).filter((m) => m >= k8sMinor)
+  const formDirty = JSON.stringify(form) !== JSON.stringify(fromSpec(spec))
+  const cps = spec.nodes.filter((n) => n.role === 'controlplane').length
+  const saveForm = () => api.saveClusterForm(name, { ...form, extensions: form.extensions.split(/[,\s]+/).filter(Boolean) })
+    .then(() => { setError(null); reloadClusters(); toast('Saved. Apply node configs to push machine changes; add-ons are planned under Add-ons.', 'good') }).catch((e) => setError(e.message))
 
   return (
     <div class="flex flex-col gap-6">
-      <Section title="Declaration" help="cluster.yaml is the source of truth. Save stores it; node changes reach the machines with Apply node configs (Talos applies without a reboot when it can); platform changes are reviewed under Add-ons → Plan.">
+      <Section title="Declaration" help="cluster.yaml is the source of truth. Saving changes only the declaration; Apply node configs pushes machine-level changes (endpoint, VIP, CIDRs, extensions, versions used for new nodes) to every node. Add-ons are reviewed under Add-ons → Plan.">
         <ErrorBox error={error} />
-        <textarea class="input mono !text-[12px] h-[420px]" value={yaml} spellcheck={false} onInput={(e) => { setYaml((e.target as HTMLTextAreaElement).value); setDirty(true) }} />
-        <div class="flex gap-2 items-center">
-          <button class="btn" onClick={() => api.validate(yaml).then((v) => { setYaml(v.yaml); setError(null); toast('Valid') }).catch((e) => setError(e.message))}>Validate</button>
-          <button class="btn btn-primary" disabled={!dirty} onClick={() => api.saveClusterYaml(name, yaml).then((v) => { setYaml(v.yaml); setDirty(false); setError(null); reloadClusters(); toast('Saved. Apply node configs or plan add-ons to make it real.', 'good') }).catch((e) => setError(e.message))}>Save</button>
-          <button class="btn" disabled={dirty} title={dirty ? 'Save first' : 'Regenerate and apply every machine config from the saved declaration'} onClick={() => api.applyCluster(name).then((r) => watch(r)).catch((e) => setError(e.message))}>Apply node configs</button>
-          <a href={`/clusters/${name}/addons`} class="btn">Plan add-ons →</a>
-          {dirty && <span class="text-[12px] text-warn">unsaved changes</span>}
-        </div>
+        <Tabs active={tab} onSelect={(t) => setTab(t as any)} tabs={[{ id: 'form', label: 'Form' }, { id: 'yaml', label: 'YAML' }]} />
+        {tab === 'form' && (
+          <div class="panel p-4 flex flex-col gap-4">
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+              <Field label="API endpoint" hint="What kubeconfig and joining nodes use; normally https://<VIP or first control plane>:6443."><input class="input mono" value={form.endpoint} onInput={(e) => setForm({ ...form, endpoint: (e.target as HTMLInputElement).value })} /></Field>
+              <Field label="Control plane VIP" hint="Layer-2 address shared by control planes; empty = none. Changing it re-applies every control plane."><input class="input mono" value={form.vip} onInput={(e) => setForm({ ...form, vip: (e.target as HTMLInputElement).value })} placeholder="none" /></Field>
+              <Field label="Pod CIDR" hint="Cannot be changed on a running cluster without recreating it."><input class="input mono" value={form.podCIDR} onInput={(e) => setForm({ ...form, podCIDR: (e.target as HTMLInputElement).value })} /></Field>
+              <Field label="Service CIDR" hint="Same: fixed for the cluster's lifetime in practice."><input class="input mono" value={form.serviceCIDR} onInput={(e) => setForm({ ...form, serviceCIDR: (e.target as HTMLInputElement).value })} /></Field>
+              <Field label="System extensions" hint="Image Factory extensions baked into the installer (comma-separated). A new schematic is used by new nodes and upgrades."><input class="input mono" value={form.extensions} onInput={(e) => setForm({ ...form, extensions: (e.target as HTMLInputElement).value })} /></Field>
+              <Field label="Workloads on control planes" hint={`${cps} control plane${cps === 1 ? '' : 's'}; Kubit defaults to schedulable below 6 nodes.`}>
+                <select class="input" value={form.allowScheduling === null ? 'auto' : String(form.allowScheduling)} onChange={(e) => { const v = (e.target as HTMLSelectElement).value; setForm({ ...form, allowScheduling: v === 'auto' ? null : v === 'true' }) }}>
+                  <option value="true">Allowed (control planes also run pods)</option>
+                  <option value="false">Dedicated (NoSchedule taint)</option>
+                </select>
+              </Field>
+            </div>
+            <div class="flex items-center gap-2">
+              <button class="btn btn-primary" disabled={!formDirty} onClick={saveForm}>Save</button>
+              <button class="btn" disabled={formDirty} title={formDirty ? 'Save first' : 'Regenerate and apply every machine config from the saved declaration'} onClick={() => api.applyCluster(name).then((r) => watch(r)).catch((e) => setError(e.message))}>Apply node configs</button>
+              {formDirty && <span class="text-[12px] text-warn">unsaved changes</span>}
+            </div>
+          </div>
+        )}
+        {tab === 'yaml' && (
+          <>
+            <textarea class="input mono !text-[12px] h-[420px]" value={yaml} spellcheck={false} onInput={(e) => { setYaml((e.target as HTMLTextAreaElement).value); setDirty(true) }} />
+            <div class="flex gap-2 items-center">
+              <button class="btn" onClick={() => api.validate(yaml).then((v) => { setYaml(v.yaml); setError(null); toast('Valid') }).catch((e) => setError(e.message))}>Validate</button>
+              <button class="btn btn-primary" disabled={!dirty} onClick={() => api.saveClusterYaml(name, yaml).then((v) => { setYaml(v.yaml); setDirty(false); setError(null); reloadClusters(); toast('Saved.', 'good') }).catch((e) => setError(e.message))}>Save</button>
+              <button class="btn" disabled={dirty} onClick={() => api.applyCluster(name).then((r) => watch(r)).catch((e) => setError(e.message))}>Apply node configs</button>
+              <a href={`/clusters/${name}/addons`} class="btn">Plan add-ons →</a>
+              {dirty && <span class="text-[12px] text-warn">unsaved changes</span>}
+            </div>
+          </>
+        )}
       </Section>
 
       <Section title="Versions" help={`Rolling, one node at a time, control planes first; each node must come back Ready before the next starts. ${versions?.note ?? ''}`}>
@@ -53,15 +87,13 @@ export function Settings({ ctx }: { ctx: ClusterCtx }) {
         </div>
       </Section>
 
-      <Section title="Identity" >
+      <Section title="Identity">
         <div class="panel p-4">
           <KeyValue rows={[
-            ['Endpoint', <span class="mono">{spec.controlPlane.endpoint}</span>],
-            ['VIP', spec.controlPlane.vip ? <span class="mono">{spec.controlPlane.vip}</span> : 'none'],
-            ['Pod / service CIDR', <span class="mono">{spec.network.podCIDR} / {spec.network.serviceCIDR}</span>],
             ['Schematic', <span class="mono text-[12px] break-all">{spec.schematicID}</span>],
-            ['Extensions', (spec.extensions ?? []).join(', ') || 'none'],
+            ['Nodes', `${spec.nodes.length} (${cps} control plane${cps === 1 ? '' : 's'}) — edit under Nodes`],
             ['Created', new Date(cluster.createdAt).toLocaleString()],
+            ['Last changed', new Date(cluster.updatedAt).toLocaleString()],
           ]} />
         </div>
       </Section>
@@ -88,4 +120,11 @@ export function Settings({ ctx }: { ctx: ClusterCtx }) {
       )}
     </div>
   )
+}
+
+function fromSpec(spec: ClusterCtx['cluster']['spec']['spec']) {
+  return {
+    talosVersion: spec.talosVersion, kubernetesVersion: spec.kubernetesVersion, endpoint: spec.controlPlane.endpoint, vip: spec.controlPlane.vip ?? '',
+    allowScheduling: spec.controlPlane.allowScheduling ?? null, podCIDR: spec.network.podCIDR, serviceCIDR: spec.network.serviceCIDR, extensions: (spec.extensions ?? []).join(', '),
+  }
 }

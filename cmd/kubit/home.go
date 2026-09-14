@@ -33,13 +33,22 @@ func openStore() (*store.Store, error) {
 }
 
 func openManager() (*cluster.Manager, error) {
+	m, _, err := openManagerCrypto()
+	return m, err
+}
+
+func openManagerCrypto() (*cluster.Manager, *store.Crypto, error) {
 	dir, err := homeDir()
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	s, err := openStore()
+	crypto, err := store.LoadCrypto()
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	return cluster.NewManager(s, dir), nil
+	s, err := store.Open(dir, crypto)
+	if err != nil {
+		return nil, nil, err
+	}
+	return cluster.NewManager(s, dir), crypto, nil
 }

@@ -11,10 +11,25 @@ export interface Operation { id: number; cluster: string; kind: string; status: 
 export interface Message { kind: 'event' | 'operation' | 'status' | 'health'; operationId?: number; event?: Event; operation?: Operation; cluster?: string; status?: Status; health?: HealthEvent }
 export interface HealthEvent { id: number; ts: string; cluster: string; node?: string; severity: 'info' | 'warn' | 'critical'; kind: string; message: string; acked: boolean }
 export interface Sample { ts: string; node?: string; cpuMilli: number; cpuCap: number; memBytes: number; memCap: number; pods: number; ready: boolean; reachable: boolean }
+export interface Workload { kind: string; namespace: string; name: string; ready: number; desired: number; available: boolean; images: string; age: string; selector?: string }
+export interface KService { namespace: string; name: string; type: string; clusterIP: string; externalIPs?: string[]; ports: string[]; endpoints: number; selector?: string; age: string }
+export interface KIngress { namespace: string; name: string; class?: string; rules: { host: string; path: string; service: string; port: string }[]; addresses?: string[]; tlsHosts?: string[]; age: string }
+export interface NetworkView { services: KService[]; ingresses: KIngress[]; pool?: { range: string; total: number; allocated: { ip: string; service: string }[] }; poolError?: string }
+export interface StorageView { classes: { name: string; provisioner: string; default: boolean; reclaim: string; binding: string; expandable: boolean }[]; volumes: { name: string; capacityBytes: number; phase: string; class: string; claim?: string; accessModes: string; reclaim: string; age: string }[]; claims: { namespace: string; name: string; phase: string; requestedBytes: number; capacityBytes: number; class: string; volume?: string; age: string }[] }
+export interface PodEvent { type: string; status: string; reason?: string; message?: string; since?: string }
+export interface AddonStatus {
+  key: string; enabled: boolean; values?: Record<string, unknown>; pinnedVersion?: string
+  release?: { name: string; namespace: string; chart: string; chartVersion: string; appVersion?: string; status: string; lastDeployed?: number }
+  readiness?: { namespace: string; ready: number; total: number; detail?: string[] }
+  state: 'disabled' | 'pending' | 'deploying' | 'ready' | 'degraded' | 'failed' | 'orphaned'
+}
+export interface Settings { factoryUrl: string; discoverySubnets: string[]; watchIntervalSec: number; pxeStatusUrl: string; defaultMetalLBRange: string }
+export interface PxeStatus { running: boolean; statusUrl: string; error?: string; command?: string; startedAt?: string; interface?: string; ip?: string; httpPort?: number; talosVersion?: string; schematicId?: string; boots?: { mac: string; ip?: string; arch?: string; firstSeen: string; lastSeen: string; stage: string; count: number }[]; log?: string[] }
 export interface Versions { talos: string[]; talosSource: string; kubernetesMinors: string[]; kubernetesLatest: string; machinery: string; minTalos: string; note: string }
 
 export interface NodeSpec { hostname: string; ip: string; mac?: string; role: 'controlplane' | 'worker'; arch: string; kvm?: boolean; installDisk: { path?: string; selector?: { minSize?: string; type?: string; model?: string } } }
-export interface PlatformSpec { metallb: { enabled: boolean; range?: string }; ingressNginx: { enabled: boolean }; gvisor: { enabled: boolean }; metricsServer: { enabled: boolean }; certManager: { enabled: boolean }; argocd: { enabled: boolean } }
+export interface AddonSpec { enabled: boolean; values?: Record<string, unknown> }
+export interface PlatformSpec { metallb: AddonSpec & { range?: string }; ingressNginx: AddonSpec; gvisor: AddonSpec; metricsServer: AddonSpec; certManager: AddonSpec; argocd: AddonSpec }
 export interface ClusterSpec {
   apiVersion: string; kind: string; metadata: { name: string }
   spec: {
@@ -35,7 +50,7 @@ export interface Inventory {
   etcd?: { memberId: string; leader: boolean; learner: boolean; dbSizeBytes: number; dbInUseBytes: number; raftIndex: number; raftTerm: number; errors?: string[] }
 }
 export interface Resources { cpuMilli: number; memBytes: number; pods: number }
-export interface PodSummary { namespace: string; name: string; phase: string; ready: string; restarts: number; owner?: string; cpuMilli: number; memBytes: number; age: string; usageCpuMilli?: number; usageMemBytes?: number }
+export interface PodSummary { namespace: string; name: string; node?: string; containers?: string[]; phase: string; ready: string; restarts: number; owner?: string; cpuMilli: number; memBytes: number; age: string; usageCpuMilli?: number; usageMemBytes?: number }
 export interface NodeDetail {
   name: string; ready: boolean; unschedulable: boolean; kubeletVersion: string; containerRuntime: string; kernel: string; osImage: string; internalIP: string
   conditions: { type: string; status: string; reason?: string; message?: string; since?: string }[]
@@ -92,6 +107,17 @@ export const api = {
   ackEvent: (id: number) => req<void>('POST', `/events/${id}/ack`),
   ackAll: (name: string) => req<void>('POST', `/clusters/${name}/events/ack`),
   versions: () => req<Versions>('GET', '/versions'),
+  saveClusterForm: (name: string, form: { talosVersion: string; kubernetesVersion: string; endpoint: string; vip: string; allowScheduling: boolean | null; podCIDR: string; serviceCIDR: string; extensions: string[] }) => req<{ yaml: string }>('PUT', `/clusters/${name}/form`, form),
+  settings: () => req<Settings>('GET', '/settings'),
+  saveSettings: (v: Settings) => req<Settings>('PUT', '/settings', v),
+  pxe: () => req<PxeStatus>('GET', '/pxe'),
+  addons: (name: string) => req<AddonStatus[]>('GET', `/clusters/${name}/addons`),
+  updateAddon: (name: string, key: string, body: { enabled?: boolean; range?: string; valuesYaml?: string }) => req<AddonStatus[]>('PUT', `/clusters/${name}/addons/${key}`, body),
+  workloads: (name: string) => req<Workload[]>('GET', `/clusters/${name}/workloads`),
+  pods: (name: string, namespace = '', selector = '') => req<PodSummary[]>('GET', `/clusters/${name}/pods?namespace=${encodeURIComponent(namespace)}&selector=${encodeURIComponent(selector)}`),
+  podEvents: (name: string, ns: string, pod: string) => req<PodEvent[]>('GET', `/clusters/${name}/pods/${ns}/${pod}/events`),
+  network: (name: string) => req<NetworkView>('GET', `/clusters/${name}/network`),
+  storage: (name: string) => req<StorageView>('GET', `/clusters/${name}/storage`),
   clusterYaml: (name: string) => req<string>('GET', `/clusters/${name}/yaml`),
   saveClusterYaml: async (name: string, yaml: string): Promise<{ yaml: string }> => {
     const headers: Record<string, string> = { 'Content-Type': 'application/yaml' }
@@ -137,6 +163,13 @@ export const api = {
     return data
   },
   draft: (name: string, ips: string[]) => req<{ yaml: string; topology: { ControlPlanes: number; Workers: number; AllowScheduling: boolean; HA: boolean } }>('POST', '/config/draft', { name, ips }),
+}
+
+export function podLogsUrl(cluster: string, ns: string, pod: string, container: string, follow: boolean, tail = 500) {
+  const p = new URLSearchParams({ container, tail: String(tail) })
+  if (follow) p.set('follow', 'true')
+  if (token) p.set('token', token)
+  return `/api/v1/clusters/${cluster}/pods/${ns}/${pod}/logs?${p}`
 }
 
 export function logsUrl(ip: string, service?: string, follow = false) {

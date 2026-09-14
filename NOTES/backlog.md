@@ -10,3 +10,14 @@
 - Stale mirror pods (`Pending`, old image) linger in kube-system for a while after a
   Kubernetes upgrade; harmless, but the dashboard could surface component versions
   from the API server rather than pod images.
+- ingress-nginx Helm upgrades occasionally fail on the `ingress-nginx-admission-patch`
+  post-upgrade hook (BackoffLimitExceeded); the retry succeeded. Consider disabling the
+  patch job (`controller.admissionWebhooks.patch.enabled=false` with cert-manager
+  issued webhook certs) or an automatic single retry of failed platform applies.
+- Add-on readiness for metrics-server counts all of kube-system; scope by the release's
+  label selector instead.
+- PXE end-to-end is UNVERIFIED. On the Mac harness `kubit pxe` could not bind :67 next
+  to macOS's bootpd (vmnet's DHCP); :67/:4011 now use SO_REUSEPORT but whether
+  Apple's EFI network-boots at all is unknown. Test on the HP EliteDesks (real L2,
+  router DHCP, `sudo kubit pxe --iface <lan-if>`); the PXE page and boot tracker are in
+  place and only need traffic.
