@@ -1,6 +1,8 @@
 import { useEffect, useState } from 'preact/hooks'
 import { useLocation } from 'preact-iso'
-import { api, type Versions } from '../../api'
+import { api, type Pool, type Versions, type Warning } from '../../api'
+import { PoolsEditor } from '../../components/PoolsEditor'
+import { WarningLine } from '../create/steps'
 import { reloadClusters, toast, watch } from '../../store'
 import { Tabs } from '../../components/Tabs'
 import { ConfirmDialog, ErrorBox, Field, KeyValue, Notice, Section } from '../../components/ui'
@@ -24,7 +26,8 @@ export function Settings({ ctx }: { ctx: ClusterCtx }) {
   const k8sTargets = (versions?.kubernetesMinors ?? []).filter((m) => m >= k8sMinor)
   const formDirty = JSON.stringify(form) !== JSON.stringify(fromSpec(spec))
   const cps = spec.nodes.filter((n) => n.role === 'controlplane').length
-  const saveForm = () => api.saveClusterForm(name, { ...form, extensions: form.extensions.split(/[,\s]+/).filter(Boolean) })
+  const list = (s: string) => s.split(/[,\s]+/).filter(Boolean)
+  const saveForm = () => api.saveClusterForm(name, { ...form, extensions: list(form.extensions), nameservers: list(form.nameservers), ntp: list(form.ntp) })
     .then(() => { setError(null); reloadClusters(); toast('Saved. Apply node configs to push machine changes; add-ons are planned under Add-ons.', 'good') }).catch((e) => setError(e.message))
 
   return (
@@ -40,6 +43,8 @@ export function Settings({ ctx }: { ctx: ClusterCtx }) {
               <Field label="Pod CIDR" hint="Cannot be changed on a running cluster without recreating it."><input class="input mono" value={form.podCIDR} onInput={(e) => setForm({ ...form, podCIDR: (e.target as HTMLInputElement).value })} /></Field>
               <Field label="Service CIDR" hint="Same: fixed for the cluster's lifetime in practice."><input class="input mono" value={form.serviceCIDR} onInput={(e) => setForm({ ...form, serviceCIDR: (e.target as HTMLInputElement).value })} /></Field>
               <Field label="System extensions" hint="Image Factory extensions baked into the installer (comma-separated). A new schematic is used by new nodes and upgrades."><input class="input mono" value={form.extensions} onInput={(e) => setForm({ ...form, extensions: (e.target as HTMLInputElement).value })} /></Field>
+              <Field label="Nameservers" hint="Cluster-wide DNS for every node (comma-separated); empty keeps DHCP's."><input class="input mono" value={form.nameservers} placeholder="from DHCP" onInput={(e) => setForm({ ...form, nameservers: (e.target as HTMLInputElement).value })} /></Field>
+              <Field label="NTP servers" hint="Empty uses Talos' default."><input class="input mono" value={form.ntp} placeholder="time.cloudflare.com" onInput={(e) => setForm({ ...form, ntp: (e.target as HTMLInputElement).value })} /></Field>
               <Field label="Workloads on control planes" hint={`${cps} control plane${cps === 1 ? '' : 's'}; Kubit defaults to schedulable below 6 nodes.`}>
                 <select class="input" value={form.allowScheduling === null ? 'auto' : String(form.allowScheduling)} onChange={(e) => { const v = (e.target as HTMLSelectElement).value; setForm({ ...form, allowScheduling: v === 'auto' ? null : v === 'true' }) }}>
                   <option value="true">Allowed (control planes also run pods)</option>
@@ -67,6 +72,8 @@ export function Settings({ ctx }: { ctx: ClusterCtx }) {
           </>
         )}
       </Section>
+
+      <PoolsSection ctx={ctx} />
 
       <Section title="Versions" help={`Rolling, one node at a time, control planes first; each node must come back Ready before the next starts. ${versions?.note ?? ''}`}>
         <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
@@ -126,5 +133,27 @@ function fromSpec(spec: ClusterCtx['cluster']['spec']['spec']) {
   return {
     talosVersion: spec.talosVersion, kubernetesVersion: spec.kubernetesVersion, endpoint: spec.controlPlane.endpoint, vip: spec.controlPlane.vip ?? '',
     allowScheduling: spec.controlPlane.allowScheduling ?? null, podCIDR: spec.network.podCIDR, serviceCIDR: spec.network.serviceCIDR, extensions: (spec.extensions ?? []).join(', '),
+    nameservers: (spec.network.nameservers ?? []).join(', '), ntp: (spec.network.ntp ?? []).join(', '),
   }
+}
+
+/** Pools live in cluster.yaml; saving resolves a schematic per distinct extension set. */
+function PoolsSection({ ctx }: { ctx: ClusterCtx }) {
+  const { name, cluster } = ctx
+  const spec = cluster.spec.spec
+  const [pools, setPools] = useState<Pool[]>(spec.pools ?? [])
+  const [warnings, setWarnings] = useState<Warning[]>([])
+  const [error, setError] = useState<string | null>(null)
+  useEffect(() => { setPools(spec.pools ?? []) }, [cluster.updatedAt])
+  useEffect(() => { api.lint(JSON.stringify(cluster.spec)).then((r) => setWarnings(r.warnings)).catch(() => {}) }, [cluster.updatedAt])
+  const dirty = JSON.stringify(pools) !== JSON.stringify(spec.pools ?? [])
+  const save = () => api.savePools(name, pools).then(() => { setError(null); reloadClusters(); toast('Pools saved. Existing nodes pick up label/taint changes on Apply node configs; a changed extension set applies on the next upgrade or move.', 'good') }).catch((e) => setError(e.message))
+  return (
+    <Section title="Pools" help="A pool is a class of nodes: role, labels, taints, system extensions and disk policy. Nodes reference a pool; move a node between pools from its Actions tab." actions={<button class="btn btn-primary" disabled={!dirty} onClick={save}>Save pools</button>}>
+      <ErrorBox error={error} />
+      {warnings.length > 0 && <div class="flex flex-col gap-1">{warnings.map((w, i) => <WarningLine key={i} w={w} />)}</div>}
+      <PoolsEditor pools={pools} onChange={setPools} inUse={(p) => spec.nodes.filter((n) => n.pool === p).length} defaultExtensions={spec.extensions} />
+      {dirty && <span class="text-[12px] text-warn">unsaved changes</span>}
+    </Section>
+  )
 }

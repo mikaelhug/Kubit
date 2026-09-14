@@ -51,17 +51,34 @@ func NewManager(s *store.Store, home string) *Manager {
 	return &Manager{Store: s, Factory: factory.New(), Timeouts: DefaultTimeouts, Home: home}
 }
 
-// EnsureSchematic resolves spec.schematicID from spec.extensions when unset.
+// EnsureSchematic resolves the cluster schematic and one per pool that declares its
+// own extensions. Schematic IDs are content hashes, so re-running is idempotent.
 func (m *Manager) EnsureSchematic(ctx context.Context, c *config.Cluster) error {
-	if c.Spec.SchematicID != "" {
-		return nil
+	if c.Spec.SchematicID == "" {
+		id, err := m.Factory.CreateSchematic(ctx, c.Spec.Extensions)
+		if err != nil {
+			return err
+		}
+		c.Spec.SchematicID = id
 	}
-	id, err := m.Factory.CreateSchematic(ctx, c.Spec.Extensions)
-	if err != nil {
-		return err
+	for i := range c.Spec.Pools {
+		p := &c.Spec.Pools[i]
+		if len(p.Extensions) > 0 && p.SchematicID == "" {
+			id, err := m.Factory.CreateSchematic(ctx, p.Extensions)
+			if err != nil {
+				return fmt.Errorf("pool %s: %w", p.Name, err)
+			}
+			p.SchematicID = id
+		}
 	}
-	c.Spec.SchematicID = id
 	return nil
+}
+
+// installer maps each pool to its installer image at the cluster's Talos version.
+func (m *Manager) installer(c *config.Cluster) config.Installer {
+	return func(p config.Pool) string {
+		return m.Factory.InstallerImage(c.SchematicFor(p), c.Spec.TalosVersion)
+	}
 }
 
 func (m *Manager) installerImage(c *config.Cluster) string {
@@ -113,8 +130,15 @@ func (m *Manager) KubeClient(ctx context.Context, name string) (*k8s.Client, err
 	return k8s.New(sec.Kubeconfig)
 }
 
+// storeRow is the machine record a declared node maps to.
+func storeRow(c *config.Cluster, n config.Node) store.NodeRow {
+	return store.NodeRow{IP: n.IP, Cluster: c.Metadata.Name, Hostname: n.Hostname, MAC: n.MAC, UUID: n.UUID, Arch: string(n.Arch), Pool: n.Pool, Role: string(n.Role), Source: "manual"}
+}
+
 func (m *Manager) recordNode(ctx context.Context, c *config.Cluster, n config.Node, state string, cfg []byte) error {
-	if err := m.Store.UpsertNode(ctx, store.NodeRow{IP: n.IP, Cluster: c.Metadata.Name, Hostname: n.Hostname, MAC: n.MAC, Arch: string(n.Arch), Role: string(n.Role), Source: "manual", State: state}); err != nil {
+	row := storeRow(c, n)
+	row.State = state
+	if err := m.Store.UpsertNode(ctx, row); err != nil {
 		return err
 	}
 	if cfg != nil {

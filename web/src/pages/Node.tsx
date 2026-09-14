@@ -1,15 +1,18 @@
 import { useEffect, useRef, useState } from 'preact/hooks'
-import { api, fmt, logsUrl, type Inventory, type NodeDetail, type NodeRow, type NodeSpec, type PodSummary, type Service } from '../api'
-import { clusters, operations, toast, watch } from '../store'
+import { api, fmt, logsUrl, type ClusterRow, type Inventory, type NodeDetail, type NodeRow, type NodeSpec, type PodSummary, type Service } from '../api'
+import { useLocation } from 'preact-iso'
+import { clusters, operations, statuses, toast, watch } from '../store'
+import { ReaddressDialog } from './cluster/Nodes'
 import { Tabs } from '../components/Tabs'
 import { DataTable, type Column } from '../components/DataTable'
-import { Breadcrumbs, ConfirmDialog, ErrorBox, KeyValue, Meter, Notice, Pill, Section, StatusDot, stateTone } from '../components/ui'
+import { Breadcrumbs, ConfirmDialog, Dialog, ErrorBox, Field, KeyValue, Meter, Notice, Pill, Section, StatusDot, stateTone } from '../components/ui'
 
 type TabId = 'overview' | 'hardware' | 'kubernetes' | 'services' | 'logs' | 'actions'
 
 /** One machine: what Talos says, what Kubernetes says, and what can be done to it. */
-export function NodePage({ ip }: { ip: string }) {
+export function NodePage({ ip: ipParam, mac }: { ip?: string; mac?: string }) {
   const [node, setNode] = useState<NodeRow | null>(null)
+  const ip = node?.ip ?? ipParam ?? ''
   const [inv, setInv] = useState<Inventory | null>(null)
   const [invErr, setInvErr] = useState<string | null>(null)
   const [k8s, setK8s] = useState<NodeDetail | null>(null)
@@ -19,15 +22,21 @@ export function NodePage({ ip }: { ip: string }) {
   const finished = [...operations.value.values()].filter((o) => o.status !== 'running').length
 
   const load = () => {
-    api.nodes().then((ns) => setNode(ns.find((n) => n.ip === ip) ?? null)).catch((e) => setError(e.message))
-    api.inventory(ip).then((i) => { setInv(i); setInvErr(null) }).catch((e) => setInvErr(e.message))
-    api.nodeKubernetes(ip).then((d) => { setK8s(d); setK8sErr(null) }).catch((e) => setK8sErr(e.message))
+    const row = mac ? api.machine(mac) : api.nodes().then((ns) => ns.find((n) => n.ip === ipParam) ?? null)
+    row.then((n) => {
+      setNode(n)
+      if (n && !mac) history.replaceState(null, '', `/machines/${n.mac}`)
+      const addr = n?.ip ?? ipParam
+      if (!addr) return
+      api.inventory(addr).then((i) => { setInv(i); setInvErr(null) }).catch((e) => setInvErr(e.message))
+      api.nodeKubernetes(addr).then((d) => { setK8s(d); setK8sErr(null) }).catch((e) => setK8sErr(e.message))
+    }).catch((e) => setError(e.message))
   }
-  useEffect(() => { load() }, [ip, finished]) // eslint-disable-line
+  useEffect(() => { load() }, [ipParam, mac, finished]) // eslint-disable-line
 
   const cluster = node?.cluster ? clusters.value.find((c) => c.name === node.cluster) : undefined
-  const spec: NodeSpec | undefined = cluster?.spec.spec.nodes.find((n) => n.ip === ip)
-  const title = node?.hostname || ip
+  const spec: NodeSpec | undefined = cluster?.spec.spec.nodes.find((n) => (node?.mac && n.mac === node.mac) || n.hostname === node?.hostname)
+  const title = node?.hostname || ip || mac || ''
   const running = [...operations.value.values()].filter((o) => o.status === 'running' && o.cluster === node?.cluster && (o.request as any)?.hostname === node?.hostname)
 
   return (
@@ -41,7 +50,7 @@ export function NodePage({ ip }: { ip: string }) {
           {k8s ? <Pill tone={k8s.ready ? 'good' : 'warn'}>{k8s.ready ? 'Ready' : 'NotReady'}</Pill> : null}
           {k8s?.unschedulable && <Pill tone="warn">cordoned</Pill>}
           {running.map((o) => <Pill key={o.id} tone="warn">{fmt.kind(o.kind)} running</Pill>)}
-          <span class="mono text-muted text-[12px]">{ip} · {node?.mac} · {node?.arch}{spec ? ` · ${spec.role}` : ''}</span>
+          <span class="mono text-muted text-[12px]">{ip} · {node?.mac} · {node?.arch}{spec ? ` · pool ${spec.pool}` : ''}{spec?.network ? ' · static' : ''}</span>
         </div>
         <Tabs active={tab} onSelect={(t) => setTab(t as TabId)} tabs={[
           { id: 'overview', label: 'Overview' }, { id: 'hardware', label: 'Hardware' }, { id: 'kubernetes', label: 'Kubernetes', badge: k8s?.pods?.length },
@@ -55,7 +64,7 @@ export function NodePage({ ip }: { ip: string }) {
         {tab === 'kubernetes' && <KubernetesTab k8s={k8s} err={k8sErr} />}
         {tab === 'services' && <ServicesTab ip={ip} />}
         {tab === 'logs' && <LogsTab ip={ip} />}
-        {tab === 'actions' && <ActionsTab node={node} k8s={k8s} inv={inv} cluster={cluster?.name} talosVersion={cluster?.spec.spec.talosVersion} />}
+        {tab === 'actions' && <ActionsTab node={node} k8s={k8s} inv={inv} cluster={cluster} spec={spec} talosVersion={cluster?.spec.spec.talosVersion} />}
       </div>
     </div>
   )
@@ -74,7 +83,9 @@ function OverviewTab({ inv, invErr, k8s, k8sErr, node, spec }: { inv: Inventory 
             ['Booted', inv.bootTime ? `${fmt.datetime(inv.bootTime)} (up ${fmt.duration(inv.bootTime)})` : '—'],
             ['Machine', [inv.manufacturer, inv.product].filter(Boolean).join(' ') || '—'],
             ['Extensions', inv.extensions?.filter((e) => e.name !== 'schematic').map((e) => `${e.name} ${e.version}`).join(', ') || 'none'],
-            ['Install disk', spec ? <span class="mono">{spec.installDisk.path ?? JSON.stringify(spec.installDisk.selector)}</span> : '—'],
+            ['Install disk', spec ? <span class="mono">{spec.installDisk?.path ?? (spec.installDisk?.selector ? JSON.stringify(spec.installDisk.selector) : 'pool policy')}</span> : '—'],
+            ['Identity', node ? <span class="mono text-[12px]">{node.mac}{node.uuid ? ` · ${node.uuid}` : ''}{node.serial ? ` · ${node.serial}` : ''}</span> : '—'],
+            ['Addresses seen', node ? <span class="mono text-[12px]">{[...new Set([...(node.ipsSeen ?? []), node.ip])].join(' → ')}</span> : '—'],
             ['Last seen', node ? fmt.datetime(node.lastSeen) : '—'],
           ]} />}
           {inv?.etcd && (
@@ -253,28 +264,87 @@ function LogsTab({ ip }: { ip: string }) {
   )
 }
 
-function ActionsTab({ node, k8s, inv, cluster, talosVersion }: { node: NodeRow | null; k8s: NodeDetail | null; inv: Inventory | null; cluster?: string; talosVersion?: string }) {
-  const [confirm, setConfirm] = useState<'drain' | 'reboot' | 'reboot-drain' | 'upgrade' | null>(null)
-  if (!node?.cluster || !cluster || !node.hostname) return <Notice tone="muted">This machine is not a cluster member. Adopt it from a cluster's Nodes page.</Notice>
+function ActionsTab({ node, k8s, inv, cluster, spec, talosVersion }: { node: NodeRow | null; k8s: NodeDetail | null; inv: Inventory | null; cluster?: ClusterRow; spec?: NodeSpec; talosVersion?: string }) {
+  const [confirm, setConfirm] = useState<'drain' | 'reboot' | 'reboot-drain' | 'upgrade' | 'rename' | 'pool' | 'readdress' | null>(null)
+  const [to, setTo] = useState('')
+  const [pool, setPool] = useState('')
+  if (!node?.cluster || !cluster || !node.hostname) return <MachineActions node={node} />
+  const name = cluster.name
   const host = node.hostname
   const pods = (k8s?.pods ?? []).filter((p) => p.owner !== 'DaemonSet' && p.phase === 'Running').length
   const cp = node.role === 'controlplane'
   const run = (p: Promise<{ operationId: number }>) => p.then((r) => { setConfirm(null); watch(r) }).catch((e) => toast(e.message, 'error'))
   const needsUpgrade = inv && talosVersion && inv.talosVersion !== talosVersion
+  const pools = (cluster.spec.spec.pools ?? []).filter((p) => p.role === node.role && p.name !== spec?.pool)
+  const target = pools.find((p) => p.name === pool)
+  const current = (cluster.spec.spec.pools ?? []).find((p) => p.name === spec?.pool)
+  const delta = (a?: Record<string, string>, b?: Record<string, string>) => { const out: string[] = []; for (const k of Object.keys(a ?? {})) if (!(k in (b ?? {}))) out.push(`− ${k}`); for (const [k, v] of Object.entries(b ?? {})) if (a?.[k] !== v) out.push(`+ ${k}=${v}`); return out }
+  const status = statuses.value.get(name)?.nodes.find((n) => n.hostname === host)
   return (
     <div class="flex flex-col gap-3 max-w-3xl">
       <Action title={k8s?.unschedulable ? 'Uncordon' : 'Cordon'} what={k8s?.unschedulable ? 'Allow new pods to be scheduled here again.' : 'Stop new pods from being scheduled here. Running pods are untouched.'}
-        button={k8s?.unschedulable ? 'Uncordon' : 'Cordon'} disabled={!k8s} onClick={() => run(k8s?.unschedulable ? api.uncordon(cluster, host) : api.cordon(cluster, host))} />
+        button={k8s?.unschedulable ? 'Uncordon' : 'Cordon'} disabled={!k8s} onClick={() => run(k8s?.unschedulable ? api.uncordon(name, host) : api.cordon(name, host))} />
       <Action title="Drain" what={`Cordon, then evict ${pods} running pod${pods === 1 ? '' : 's'} (DaemonSet pods stay). Use before maintenance; uncordon afterwards.`} button="Drain…" disabled={!k8s} onClick={() => setConfirm('drain')} />
       <Action title="Reboot" what="Reboot through the Talos API and wait for the node to come back Ready. Pods on it restart elsewhere only if you drain first." button="Reboot…" disabled={!inv} onClick={() => setConfirm('reboot')} secondary={{ label: 'Drain, reboot, uncordon…', onClick: () => setConfirm('reboot-drain') }} />
       <Action title="Upgrade Talos on this node" what={needsUpgrade ? `This node runs ${inv?.talosVersion}; the cluster declares ${talosVersion}. Upgrades just this node (A/B slot, automatic rollback on boot failure).` : `Already on the cluster's declared version ${talosVersion}. Change the version under the cluster's Settings to upgrade.`} button="Upgrade…" disabled={!needsUpgrade} onClick={() => setConfirm('upgrade')} />
-      <Action title="Remove from cluster" what={`Drain, delete the Node object, and reset Talos to maintenance mode. ${cp ? 'etcd membership is reduced by one.' : ''}`} button="Remove…" href={`/clusters/${cluster}/nodes`} />
-      {confirm === 'drain' && <ConfirmDialog title={`Drain ${host}`} action="Drain" onClose={() => setConfirm(null)} onConfirm={() => run(api.drain(cluster, host))}
+      <Action title="Rename" what="Change the hostname and the Kubernetes Node name. Pods are drained once and the old Node object is deleted; no reboot." button="Rename…" disabled={!inv || !k8s} onClick={() => { setTo(host); setConfirm('rename') }} />
+      <Action title="Move to another pool" what={pools.length ? `Same-role pools: ${pools.map((p) => p.name).join(', ')}. Labels and taints follow the pool; a different extension set means a re-image.` : `No other ${cp ? 'control-plane' : 'worker'} pool exists. Add one under Settings → Pools.`} button="Move…" disabled={!inv || pools.length === 0} onClick={() => { setPool(pools[0]?.name ?? ''); setConfirm('pool') }} />
+      <Action title="Update address" what={spec?.network ? `Static ${spec.network.addresses.join(', ')}${spec.network.vlan ? ` on VLAN ${spec.network.vlan}` : ''}. Change it or go back to DHCP.` : `DHCP; declared ${node.ip}${status?.seenAt && status.seenAt !== node.ip ? `, last seen at ${status.seenAt}` : ''}. Record a new lease or pin a static address.`} button="Update…" disabled={!inv} onClick={() => setConfirm('readdress')} />
+      <Action title="Remove from cluster" what={`Drain, delete the Node object, and reset Talos to maintenance mode. ${cp ? 'etcd membership is reduced by one.' : ''}`} button="Remove…" href={`/clusters/${name}/nodes`} />
+      {confirm === 'drain' && <ConfirmDialog title={`Drain ${host}`} action="Drain" onClose={() => setConfirm(null)} onConfirm={() => run(api.drain(name, host))}
         impact={<ul class="list-disc pl-5"><li>Cordons the node.</li><li>Evicts {pods} pod{pods === 1 ? '' : 's'}; controllers reschedule them on other nodes.</li><li>Waits up to 5 minutes; PodDisruptionBudgets are respected.</li></ul>} />}
-      {(confirm === 'reboot' || confirm === 'reboot-drain') && <ConfirmDialog title={`Reboot ${host}`} action={confirm === 'reboot-drain' ? 'Drain and reboot' : 'Reboot'} tone="danger" onClose={() => setConfirm(null)} onConfirm={() => run(api.rebootNode(cluster, host, confirm === 'reboot-drain'))}
+      {(confirm === 'reboot' || confirm === 'reboot-drain') && <ConfirmDialog title={`Reboot ${host}`} action={confirm === 'reboot-drain' ? 'Drain and reboot' : 'Reboot'} tone="danger" onClose={() => setConfirm(null)} onConfirm={() => run(api.rebootNode(name, host, confirm === 'reboot-drain'))}
         impact={<ul class="list-disc pl-5">{confirm === 'reboot-drain' && <li>Drains {pods} pod{pods === 1 ? '' : 's'} first and uncordons afterwards.</li>}{confirm === 'reboot' && <li class="text-warn">Pods on this node go down until it returns (~1–2 min).</li>}{cp && <li>Control plane: etcd loses this member's vote while it is down.</li>}<li>Waits for the machine to answer with a new boot ID, then for Kubernetes Ready.</li></ul>} />}
-      {confirm === 'upgrade' && <ConfirmDialog title={`Upgrade ${host} to Talos ${talosVersion}`} action="Upgrade node" onClose={() => setConfirm(null)} onConfirm={() => run(api.upgradeNode(cluster, host, talosVersion ?? ''))}
+      {confirm === 'upgrade' && <ConfirmDialog title={`Upgrade ${host} to Talos ${talosVersion}`} action="Upgrade node" onClose={() => setConfirm(null)} onConfirm={() => run(api.upgradeNode(name, host, talosVersion ?? ''))}
         impact={<ul class="list-disc pl-5"><li>Installs the new image into the inactive slot and reboots.</li><li>Talos rolls back on its own if the new system fails to boot.</li><li>Pods on this node are not drained first.</li></ul>} />}
+      {confirm === 'rename' && (
+        <Dialog title={`Rename ${host}`} onClose={() => setConfirm(null)} footer={<><button class="btn" onClick={() => setConfirm(null)}>Cancel</button><button class="btn btn-primary" disabled={!/^[a-z0-9]([-a-z0-9]*[a-z0-9])?$/.test(to) || to === host || cluster.spec.spec.nodes.some((n) => n.hostname === to)} onClick={() => run(api.renameNode(name, host, to))}>Rename</button></>}>
+          <Field label="New hostname" hint="DNS label, unique in the cluster."><input class="input mono" value={to} onInput={(e) => setTo((e.target as HTMLInputElement).value.trim().toLowerCase())} /></Field>
+          <ul class="list-disc pl-5 text-[13px] flex flex-col gap-1">
+            <li>Drains {pods} pod{pods === 1 ? '' : 's'} (they reschedule elsewhere once), applies the new hostname without a reboot.</li>
+            <li>The kubelet registers as <span class="mono">{to || '…'}</span>; the old Node object is deleted and the node is uncordoned.</li>
+            {cp && <li>etcd is unaffected: members are tracked by ID, verified after the rename.</li>}
+            <li>cluster.yaml, the machine record and the stored machine config are updated.</li>
+          </ul>
+        </Dialog>
+      )}
+      {confirm === 'pool' && (
+        <Dialog title={`Move ${host} to another pool`} onClose={() => setConfirm(null)} footer={<><button class="btn" onClick={() => setConfirm(null)}>Cancel</button><button class="btn btn-primary" disabled={!target} onClick={() => run(api.moveNodePool(name, host, pool))}>Move</button></>}>
+          <Field label="Target pool">
+            <select class="input" value={pool} onChange={(e) => setPool((e.target as HTMLSelectElement).value)}>{pools.map((p) => <option key={p.name} value={p.name}>{p.name}</option>)}</select>
+          </Field>
+          {target && (
+            <ul class="list-disc pl-5 text-[13px] flex flex-col gap-1">
+              <li>Labels: {delta(current?.labels, target.labels).length ? delta(current?.labels, target.labels).map((d) => <span class="mono mr-2">{d}</span>) : 'unchanged'}</li>
+              <li>Taints: {delta(current?.taints, target.taints).length ? delta(current?.taints, target.taints).map((d) => <span class="mono mr-2">{d}</span>) : 'unchanged'}</li>
+              {JSON.stringify(target.extensions ?? cluster.spec.spec.extensions ?? []) !== JSON.stringify(current?.extensions ?? cluster.spec.spec.extensions ?? []) ? <li class="text-warn">Different extensions: the node is re-imaged with the pool's installer (upgrade path, one reboot).</li> : <li>Same installer image: config is re-applied without a reboot.</li>}
+            </ul>
+          )}
+        </Dialog>
+      )}
+      {confirm === 'readdress' && status && <ReaddressDialog cluster={cluster} n={status} spec={spec} onClose={() => setConfirm(null)} />}
+    </div>
+  )
+}
+
+/** Actions on a machine that is not (yet) a cluster member. */
+function MachineActions({ node }: { node: NodeRow | null }) {
+  const { route } = useLocation()
+  const [retire, setRetire] = useState(false)
+  if (!node) return <Notice tone="muted">Loading…</Notice>
+  const ready = clusters.value.filter((c) => c.state === 'ready' || c.state === 'bootstrapped')
+  const refresh = () => api.machine(node.mac).then(() => location.reload()).catch(() => {})
+  return (
+    <div class="flex flex-col gap-3 max-w-3xl">
+      <Notice tone="muted">This machine is not a cluster member.</Notice>
+      <Action title="Adopt into a cluster" what={ready.length ? `Join ${ready.map((c) => c.name).join(', ')} as a new node.` : 'No ready cluster yet; create one with this machine.'} button={ready.length ? 'Adopt…' : 'New cluster'} disabled={node.state !== 'maintenance'}
+        onClick={() => { if (!ready.length) { route('/clusters/new'); return } const t = ready.length === 1 ? ready[0].name : prompt(`Adopt into which cluster? (${ready.map((c) => c.name).join(', ')})`, ready[0].name); if (t && ready.find((c) => c.name === t)) route(`/clusters/${t}/nodes?adopt=${node.ip}`) }} />
+      <Action title="Wake-on-LAN" what={node.wol ? 'Enabled: Kubit can send a magic packet from this host to power the machine on.' : 'Off. Enable when the firmware supports WoL on the uplink NIC.'} button={node.wol ? 'Wake now' : 'Enable'}
+        onClick={() => (node.wol ? api.wake(node.mac).then(() => toast('Magic packet sent', 'good')) : api.setWOL(node.mac, true).then(refresh)).catch((e) => toast(e.message, 'error'))}
+        secondary={node.wol ? { label: 'Disable', onClick: () => api.setWOL(node.mac, false).then(refresh).catch((e) => toast(e.message, 'error')) } : undefined} />
+      <Action title="Retire" what="Forget this machine: its hardware record and address history are deleted. It reappears on the next scan if it is still on the network." button="Retire…" onClick={() => setRetire(true)} />
+      {retire && <ConfirmDialog title={`Retire ${node.hostname || node.mac}`} action="Retire" tone="danger" onClose={() => setRetire(false)} onConfirm={() => api.retireMachine(node.mac).then(() => route('/fleet/inventory')).catch((e) => toast(e.message, 'error'))}
+        impact={<p>Deletes the inventory row for <span class="mono">{node.mac}</span>. Nothing is sent to the machine.</p>} />}
     </div>
   )
 }

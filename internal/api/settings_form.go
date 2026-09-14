@@ -15,6 +15,8 @@ type clusterForm struct {
 	PodCIDR           string   `json:"podCIDR"`
 	ServiceCIDR       string   `json:"serviceCIDR"`
 	Extensions        []string `json:"extensions"`
+	Nameservers       []string `json:"nameservers"`
+	NTP               []string `json:"ntp"`
 }
 
 // handleClusterForm validates and saves the structured fields; versions are only
@@ -39,6 +41,8 @@ func (s *Server) handleClusterForm(w http.ResponseWriter, r *http.Request) {
 	c.Spec.Network.PodCIDR = f.PodCIDR
 	c.Spec.Network.ServiceCIDR = f.ServiceCIDR
 	c.Spec.Extensions = f.Extensions
+	c.Spec.Network.Nameservers = f.Nameservers
+	c.Spec.Network.NTP = f.NTP
 	if err := c.Validate(); err != nil {
 		writeJSON(w, http.StatusUnprocessableEntity, map[string]string{"error": err.Error()})
 		return

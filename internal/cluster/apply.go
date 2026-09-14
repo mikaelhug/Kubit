@@ -24,7 +24,7 @@ func (m *Manager) ApplyConfigs(ctx context.Context, c *config.Cluster, wantKubel
 	if err != nil {
 		return err
 	}
-	gen, err := config.Generate(c, bundle, m.installerImage(c))
+	gen, err := config.Generate(c, bundle, m.installer(c))
 	if err != nil {
 		return err
 	}

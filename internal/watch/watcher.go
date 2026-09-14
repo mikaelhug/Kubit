@@ -164,6 +164,9 @@ func Derive(name string, prev, cur *cluster.Status) []store.EventRow {
 		case n.TalosReachable && had && !p.TalosReachable:
 			ev("info", "talos.back", n.Hostname, fmt.Sprintf("%s: Talos API reachable again", n.Hostname))
 		}
+		if n.SeenAt != "" && (prev == nil || !had || p.SeenAt != n.SeenAt) {
+			ev("warn", "machine.ip-changed", n.Hostname, fmt.Sprintf("%s is declared at %s but was last seen at %s; update its address", n.Hostname, n.IP, n.SeenAt))
+		}
 		if cur.APIReachable {
 			switch {
 			case !n.Ready && n.Registered && (prev == nil || (had && p.Ready)):

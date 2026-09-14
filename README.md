@@ -86,16 +86,38 @@ spec:
     vip: 192.168.64.9              # optional Layer-2 VIP shared by control planes
     endpoint: https://192.168.64.9:6443   # default: VIP, else first control plane IP
     allowScheduling: true          # default: true when fewer than 6 nodes
-  network: { podCIDR: 10.244.0.0/16, serviceCIDR: 10.96.0.0/12 }
+  network:
+    podCIDR: 10.244.0.0/16
+    serviceCIDR: 10.96.0.0/12
+    nameservers: [192.168.64.1]    # optional; ResolverConfig on every node
+    ntp: [time.cloudflare.com]     # optional; TimeSyncConfig on every node
+  pools:                           # default when absent: controlplane + worker, no overrides
+    - { name: controlplane, role: controlplane }
+    - { name: worker, role: worker }
+    - name: gpu                    # a pool owns role, labels, taints, extensions, disk policy
+      role: worker
+      labels: { workload: gpu }
+      taints: { nvidia.com/gpu: "true:NoSchedule" }
+      extensions: [siderolabs/nvidia-open-gpu-kernel-modules-lts]   # → its own schematic/installer
+      installDisk: { selector: { minSize: 100GB, type: nvme } }
   nodes:
     - hostname: cp-01
-      ip: 192.168.64.2
-      mac: "52:54:00:4b:49:01"     # optional; selects the VIP uplink on multi-NIC hosts
-      role: controlplane           # controlplane | worker
+      ip: 192.168.64.2             # where the Talos API answers; follows DHCP unless network: is set
+      mac: "52:54:00:4b:49:01"     # machine identity (uplink MAC); uuid: is recorded too
+      pool: controlplane           # replaces role: (still accepted → mapped to the default pool)
       arch: arm64                  # amd64 | arm64
       kvm: true                    # /dev/kvm present → also labelled for runsc-kvm
-      installDisk: { path: /dev/vda }                              # or:
-      # installDisk: { selector: { minSize: 100GB, type: nvme, model: "Samsung*" } }
+      installDisk: { path: /dev/vda }   # or a selector; empty = pool policy
+      labels: { rack: a1 }         # merged over the pool's; taints:/annotations: likewise
+    - hostname: gpu-01
+      ip: 192.168.64.150
+      mac: "52:54:00:4b:49:07"
+      pool: gpu
+      network:                     # static addressing (absent = DHCPv4Config on the uplink)
+        addresses: [192.168.64.150/24]
+        gateway: 192.168.64.1
+        nameservers: [192.168.64.1]
+        vlan: 0                    # > 0 → VLANConfig on the uplink, addresses move to the VLAN link
   platform:
     metallb: { enabled: true, range: 192.168.64.200-192.168.64.220 }
     ingressNginx: { enabled: true }
@@ -106,10 +128,15 @@ spec:
 ```
 
 Generated machine configs are Talos 1.14 multi-document: the v1alpha1 core plus
-`UnattendedInstallConfig` (installer image + CEL disk selector), `SysctlConfig`
+`UnattendedInstallConfig` (per-pool installer image + CEL disk selector), `SysctlConfig`
 (`user.max_user_namespaces=11255` for gVisor), `HostnameConfig`, `KubeNodeConfig`
-(labels `sandbox.runtime/gvisor[-kvm]`, NoSchedule taint when control planes are
-dedicated) and, on control planes with a VIP, `LinkAliasConfig` + `Layer2VIPConfig`.
+(labels `kubit.dev/pool`, `sandbox.runtime/gvisor[-kvm]`, pool ∪ node labels, taints and
+annotations; NoSchedule taint when control planes are dedicated), `LinkAliasConfig`
+`uplink` (by MAC, else the first physical link), `DHCPv4Config` or `LinkConfig` +
+default `RouteConfig` (+ `VLANConfig`) on the alias, `ResolverConfig`, `TimeSyncConfig`
+and, on control planes with a VIP, `Layer2VIPConfig`. `config.Lint` reports advisory
+findings (even/single control planes, small disks, mixed arch, ranges off-subnet or
+overlapping, VIP or MetalLB range taken by another stored cluster).
 
 ## Secrets
 
@@ -122,9 +149,13 @@ kept in the macOS Keychain as service `kubit` / account `master-key`.
 
 `kubit discover 192.168.64.0/24` TCP-probes :50000, then tries the insecure maintenance
 API. Nodes that answer are `maintenance` (inventory recorded: MAC of the link holding the
-IP, arch, CPUs, RAM, disks, `/dev/kvm` presence); nodes that reject the insecure TLS
-handshake are `configured`. Results are upserted into the store, keyed by IP; a rescan
-never clears cluster membership or previously captured hardware.
+IP, arch, CPUs, RAM, disks, `/dev/kvm` presence, SMBIOS UUID and serial); nodes that
+reject the insecure TLS handshake are `configured`. Results are upserted into the
+`machines` table **keyed by uplink MAC**: a machine that reappears on a new DHCP address
+keeps its row (`ips_seen` history, hardware, cluster membership) and, for cluster
+members, raises a `machine.ip-changed` event; the Nodes page then offers *Update
+address*. A stored cluster's VIP answering on :50000 is skipped. Rows without a MAC
+(foreign `configured` nodes) are keyed `ip:<addr>`.
 
 Verified in maintenance mode on Talos 1.14 (arm64 VM): `Version`, `Memory`, `CPUInfo`,
 `Disks`, `LS`, and the COSI resources `block.Disk`, `hardware.Processor`,
@@ -144,6 +175,19 @@ nodes are skipped, an already-healthy etcd is not re-bootstrapped.
 
 Kubelet registration takes 2–3 minutes after the API server starts (bootstrap-token
 `Unauthorized` until the controller manager settles); this is normal Talos behaviour.
+
+A node with static `network:` is applied on its maintenance-mode lease and awaited on
+the static address; cluster.yaml and the machine row then switch to it. Node
+operations: **rename** (drain → `HostnameConfig` without reboot → kubelet re-registers
+→ old Node deleted → uncordon), **move to pool** (same role; label/taint re-apply, or a
+single-node upgrade to the pool's installer when the extension set differs),
+**re-address** (DHCP↔static; applies via whichever address answers, waits on the new
+one, then restarts the kubelet on workers or reboots control planes — etcd and the
+static pods keep the old address until restart; refused for the no-VIP endpoint node). `PUT
+/clusters/{name}/pools` edits pools; `POST /config/design` proposes a declaration for a
+set of machines (control planes = the most alike, smallest, non-KVM machines; VIP
+`.250` and MetalLB `.200-.220` in the nodes' /24) and `POST /config/lint` returns
+warnings for any declaration.
 
 Other commands: `cluster apply` (regenerate + re-apply every machine config from
 cluster.yaml, then platform), `node add`, `node remove` (drain → delete → graceful
@@ -284,4 +328,5 @@ virtualisation in the VMs); ArgoCD and cert-manager add-ons.
 - [x] M4 — Workloads (controllers + pods, namespace filter, pod dialog with container logs and events), Network (addressing, MetalLB pool map with per-IP holder, services with endpoint counts, ingress host→service table), Storage (classes/PVCs/PVs, warning when no StorageClass) — verified with a demo Deployment + LoadBalancer + Ingress reachable from the Mac
 - [x] M5 — add-on cards join cluster.yaml, tofu state (Helm release/chart/app version, status) and namespace readiness into one state (disabled/pending/deploying/ready/degraded/failed/orphaned); Configure dialog edits enabled/MetalLB range/Helm `values` (server-validated YAML) into cluster.yaml; `platform.<addon>.values` flows to `helm_release.values` only when set; Settings has a Form tab (endpoint, VIP, CIDRs, extensions, scheduling) beside YAML — verified: enabled ArgoCD with `server.replicas: 1` via UI → plan → reviewed apply → ArgoCD answering on its MetalLB IP; cert-manager verified in M1
 - [~] M6 — Inventory: Adopt… opens the target cluster's add-node dialog preselected; PXE page reads the separate `kubit pxe` process's `/status.json` (server state, per-MAC boot stages dhcp → ipxe → kernel, log) and shows the exact sudo command when it is not running; Kubit Settings (`settings` table: factory URL, poll interval, discovery subnets, default MetalLB range, PXE status URL — applied live); `kubit backup`/`restore`/`key export` and a Download backup button — verified: backup restored into a fresh KUBIT_HOME manages the live cluster. **PXE boot itself is unverified** (see NOTES/backlog.md): pending real hardware
+- [x] M8 — Onboarding & identity: machines keyed by MAC (migration v7, `ips_seen`, UUID/serial, WoL flag), node pools (role/labels/taints/extensions/disk policy → per-pool schematic), per-node DHCP or static addressing (+VLAN), cluster nameservers/NTP, `config.Design`/`Lint`, 5-step create wizard (Machines → Design → Network → Platform → Review), rename / move-to-pool / re-address operations, Inventory by machine with Retire and Wake-on-LAN, `/machines/<mac>` pages. Verified on 4 VMs: wizard with a `sandbox` pool (label + taint, static `.150`), rename, DHCP→static re-address of a control plane (reboot path) and static→static of a worker (kubelet-restart path). **Not exercised:** the `machine.ip-changed` path with a real DHCP lease change (vmnet leases are sticky; unit-tested in `internal/watch`), pool moves with a different extension set (re-image path shares `UpgradeNode`)
 - [ ] M7 — tests, CI, packaging, docs

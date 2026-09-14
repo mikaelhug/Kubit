@@ -21,3 +21,13 @@
   Apple's EFI network-boots at all is unknown. Test on the HP EliteDesks (real L2,
   router DHCP, `sudo kubit pxe --iface <lan-if>`); the PXE page and boot tracker are in
   place and only need traffic.
+- Re-address flow: `machine.ip-changed` after a real DHCP lease change is only
+  unit-tested; vmnet-helper leases are sticky per MAC. Verify on hardware (release the
+  lease on the router) and confirm the Nodes page offers *Update address*.
+- Wizard pool editor offers a static list of common Image Factory extensions; fetch
+  `/extensions` (or the schematic API's official list) per Talos version instead.
+- Wizard Design step lints only on Review; live per-cell warnings (disk too small for
+  the pool's selector, hostname collisions) would be friendlier.
+- Re-addressing a control plane reboots it (etcd/static pods bind the old address); a
+  gentler path would restart etcd + kubelet services only, if Talos updates the etcd
+  peer URL on service restart. Not investigated.

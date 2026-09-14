@@ -5,7 +5,7 @@ import { Pill, stateTone } from './components/ui'
 import { ActivityDrawer } from './components/ActivityDrawer'
 import { Toasts } from './components/Toasts'
 import { ClusterPage } from './pages/cluster/ClusterPage'
-import { NewCluster } from './pages/NewCluster'
+import { NewCluster } from './pages/create/NewCluster'
 import { NodePage } from './pages/Node'
 import { Operations } from './pages/Operations'
 import { Inventory } from './pages/fleet/Inventory'
@@ -79,6 +79,7 @@ function Shell() {
           <Route path="/clusters/:name/:section" component={ClusterPage} />
           <Route path="/clusters/:name/:section/:sub" component={ClusterPage} />
           <Route path="/nodes/:ip" component={NodePage} />
+          <Route path="/machines/:mac" component={NodePage} />
           <Route path="/fleet/inventory" component={Inventory} />
           <Route path="/fleet/pxe" component={Pxe} />
           <Route path="/operations" component={Operations} />

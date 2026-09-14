@@ -49,14 +49,31 @@ type Metadata struct {
 }
 
 type Spec struct {
-	TalosVersion      string       `yaml:"talosVersion,omitempty" json:"talosVersion,omitempty"`
-	KubernetesVersion string       `yaml:"kubernetesVersion,omitempty" json:"kubernetesVersion,omitempty"`
-	Extensions        []string     `yaml:"extensions,omitempty" json:"extensions,omitempty"`
-	SchematicID       string       `yaml:"schematicID,omitempty" json:"schematicID,omitempty"`
-	ControlPlane      ControlPlane `yaml:"controlPlane" json:"controlPlane"`
-	Network           Network      `yaml:"network" json:"network"`
-	Nodes             []Node       `yaml:"nodes" json:"nodes"`
-	Platform          Platform     `yaml:"platform" json:"platform"`
+	TalosVersion      string `yaml:"talosVersion,omitempty" json:"talosVersion,omitempty"`
+	KubernetesVersion string `yaml:"kubernetesVersion,omitempty" json:"kubernetesVersion,omitempty"`
+	// Extensions and SchematicID are the cluster default; a pool may override them.
+	Extensions   []string     `yaml:"extensions,omitempty" json:"extensions,omitempty"`
+	SchematicID  string       `yaml:"schematicID,omitempty" json:"schematicID,omitempty"`
+	ControlPlane ControlPlane `yaml:"controlPlane" json:"controlPlane"`
+	Network      Network      `yaml:"network" json:"network"`
+	// Pools group nodes that share role, labels, taints, extensions and disk policy.
+	// Absent pools are synthesised: "controlplane" and "worker".
+	Pools    []Pool   `yaml:"pools,omitempty" json:"pools,omitempty"`
+	Nodes    []Node   `yaml:"nodes" json:"nodes"`
+	Platform Platform `yaml:"platform" json:"platform"`
+}
+
+// Pool is a node class in the sense of Omni machine classes or CAPI machine pools.
+type Pool struct {
+	Name        string            `yaml:"name" json:"name"`
+	Role        Role              `yaml:"role" json:"role"`
+	Labels      map[string]string `yaml:"labels,omitempty" json:"labels,omitempty"`
+	Taints      map[string]string `yaml:"taints,omitempty" json:"taints,omitempty"` // key: "value:Effect"
+	Annotations map[string]string `yaml:"annotations,omitempty" json:"annotations,omitempty"`
+	// Extensions, when set, replace the cluster default and give the pool its own schematic.
+	Extensions  []string     `yaml:"extensions,omitempty" json:"extensions,omitempty"`
+	SchematicID string       `yaml:"schematicID,omitempty" json:"schematicID,omitempty"`
+	InstallDisk *InstallDisk `yaml:"installDisk,omitempty" json:"installDisk,omitempty"`
 }
 
 type ControlPlane struct {
@@ -69,18 +86,52 @@ type ControlPlane struct {
 type Network struct {
 	PodCIDR     string `yaml:"podCIDR,omitempty" json:"podCIDR,omitempty"`
 	ServiceCIDR string `yaml:"serviceCIDR,omitempty" json:"serviceCIDR,omitempty"`
+	// Nameservers and NTP apply to every node (Talos defaults otherwise).
+	Nameservers []string `yaml:"nameservers,omitempty" json:"nameservers,omitempty"`
+	NTP         []string `yaml:"ntp,omitempty" json:"ntp,omitempty"`
 }
 
 type Node struct {
 	Hostname string `yaml:"hostname" json:"hostname"`
-	IP       string `yaml:"ip" json:"ip"`
-	// MAC of the uplink; filled by discovery. Selects the VIP interface on multi-NIC hosts.
-	MAC         string      `yaml:"mac,omitempty" json:"mac,omitempty"`
-	Role        Role        `yaml:"role" json:"role"`
+	// IP is where the machine is reachable now (its lease, or the static address).
+	IP string `yaml:"ip" json:"ip"`
+	// MAC of the uplink is the machine's identity; UUID (SMBIOS) is a second one.
+	MAC  string `yaml:"mac,omitempty" json:"mac,omitempty"`
+	UUID string `yaml:"uuid,omitempty" json:"uuid,omitempty"`
+	// Pool names the node class; Role is derived from it (kept for legacy declarations).
+	Pool        string      `yaml:"pool,omitempty" json:"pool,omitempty"`
+	Role        Role        `yaml:"role,omitempty" json:"role,omitempty"`
 	Arch        Arch        `yaml:"arch,omitempty" json:"arch,omitempty"`
-	InstallDisk InstallDisk `yaml:"installDisk" json:"installDisk"`
+	InstallDisk InstallDisk `yaml:"installDisk,omitempty" json:"installDisk,omitempty"`
 	// KVM marks nodes where /dev/kvm exists, enabling the runsc-kvm RuntimeClass.
 	KVM bool `yaml:"kvm,omitempty" json:"kvm,omitempty"`
+	// Network, when set, replaces DHCP on the uplink with static addressing.
+	Network     *NodeNetwork      `yaml:"network,omitempty" json:"network,omitempty"`
+	Labels      map[string]string `yaml:"labels,omitempty" json:"labels,omitempty"`
+	Taints      map[string]string `yaml:"taints,omitempty" json:"taints,omitempty"`
+	Annotations map[string]string `yaml:"annotations,omitempty" json:"annotations,omitempty"`
+}
+
+// TargetIP is where the node answers once its config is applied: the first static
+// address when one is declared, otherwise the address it was discovered on.
+func (n Node) TargetIP() string {
+	if n.Network != nil && len(n.Network.Addresses) > 0 {
+		if pfx, err := netip.ParsePrefix(n.Network.Addresses[0]); err == nil {
+			return pfx.Addr().String()
+		}
+		if a, err := netip.ParseAddr(n.Network.Addresses[0]); err == nil {
+			return a.String()
+		}
+	}
+	return n.IP
+}
+
+type NodeNetwork struct {
+	Addresses   []string `yaml:"addresses" json:"addresses"` // CIDR notation
+	Gateway     string   `yaml:"gateway,omitempty" json:"gateway,omitempty"`
+	Nameservers []string `yaml:"nameservers,omitempty" json:"nameservers,omitempty"`
+	VLAN        uint16   `yaml:"vlan,omitempty" json:"vlan,omitempty"`
+	MTU         uint32   `yaml:"mtu,omitempty" json:"mtu,omitempty"`
 }
 
 // InstallDisk selects the target disk either by explicit device path or by a selector;
@@ -170,9 +221,24 @@ func (c *Cluster) applyDefaults() {
 		v := len(c.Spec.Nodes) < 6
 		c.Spec.ControlPlane.AllowScheduling = &v
 	}
+	c.defaultPools()
 	for i := range c.Spec.Nodes {
-		if c.Spec.Nodes[i].Arch == "" {
-			c.Spec.Nodes[i].Arch = ArchAMD64
+		n := &c.Spec.Nodes[i]
+		if n.Arch == "" {
+			n.Arch = ArchAMD64
+		}
+		if n.Pool == "" {
+			// Legacy declaration: role names the default pool.
+			if n.Role == "" {
+				n.Role = RoleWorker
+			}
+			n.Pool = string(n.Role)
+		}
+		if p := c.poolByName(n.Pool); p != nil {
+			n.Role = p.Role
+			if n.InstallDisk.Path == "" && n.InstallDisk.Selector == nil && p.InstallDisk != nil {
+				n.InstallDisk = *p.InstallDisk
+			}
 		}
 	}
 	if c.Spec.ControlPlane.Endpoint == "" {
@@ -186,6 +252,85 @@ func (c *Cluster) applyDefaults() {
 			c.Spec.ControlPlane.Endpoint = "https://" + net.JoinHostPort(host, "6443")
 		}
 	}
+}
+
+// defaultPools guarantees a "controlplane" and a "worker" pool exist so declarations
+// that only use role: keep working and every node has a pool.
+func (c *Cluster) defaultPools() {
+	have := map[string]bool{}
+	for _, p := range c.Spec.Pools {
+		have[p.Name] = true
+	}
+	if !have["controlplane"] {
+		c.Spec.Pools = append([]Pool{{Name: "controlplane", Role: RoleControlPlane}}, c.Spec.Pools...)
+	}
+	if !have["worker"] {
+		c.Spec.Pools = append(c.Spec.Pools, Pool{Name: "worker", Role: RoleWorker})
+	}
+	for i := range c.Spec.Pools {
+		if c.Spec.Pools[i].Role == "" {
+			c.Spec.Pools[i].Role = RoleWorker
+		}
+	}
+}
+
+func (c *Cluster) poolByName(name string) *Pool {
+	for i := range c.Spec.Pools {
+		if c.Spec.Pools[i].Name == name {
+			return &c.Spec.Pools[i]
+		}
+	}
+	return nil
+}
+
+// PoolOf returns the node's pool (always resolvable after Parse).
+func (c *Cluster) PoolOf(n Node) Pool {
+	if p := c.poolByName(n.Pool); p != nil {
+		return *p
+	}
+	return Pool{Name: n.Pool, Role: n.Role}
+}
+
+// ExtensionsFor is the extension set a pool installs: its own, else the cluster default.
+func (c *Cluster) ExtensionsFor(p Pool) []string {
+	if len(p.Extensions) > 0 {
+		return p.Extensions
+	}
+	return c.Spec.Extensions
+}
+
+// SchematicFor is the schematic a pool installs from; pools without their own
+// extensions share the cluster schematic.
+func (c *Cluster) SchematicFor(p Pool) string {
+	if len(p.Extensions) > 0 && p.SchematicID != "" {
+		return p.SchematicID
+	}
+	if len(p.Extensions) > 0 {
+		return ""
+	}
+	return c.Spec.SchematicID
+}
+
+// NodeLabels merges pool labels under node labels.
+func (c *Cluster) NodeLabels(n Node) map[string]string {
+	return merge(c.PoolOf(n).Labels, n.Labels)
+}
+
+func (c *Cluster) NodeTaints(n Node) map[string]string { return merge(c.PoolOf(n).Taints, n.Taints) }
+
+func (c *Cluster) NodeAnnotations(n Node) map[string]string {
+	return merge(c.PoolOf(n).Annotations, n.Annotations)
+}
+
+func merge(base, over map[string]string) map[string]string {
+	out := map[string]string{}
+	for k, v := range base {
+		out[k] = v
+	}
+	for k, v := range over {
+		out[k] = v
+	}
+	return out
 }
 
 var hostnameRE = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$`)
@@ -224,9 +369,89 @@ func (c *Cluster) Validate() error {
 			errs = append(errs, fmt.Errorf("network CIDR %q: %w", cidr, err))
 		}
 	}
-	seenHost, seenIP := map[string]bool{}, map[string]bool{}
+	poolNames := map[string]bool{}
+	cpPools := 0
+	for i, pl := range c.Spec.Pools {
+		pp := fmt.Sprintf("pools[%d]", i)
+		if !hostnameRE.MatchString(pl.Name) {
+			errs = append(errs, fmt.Errorf("%s.name %q must be a DNS label", pp, pl.Name))
+		}
+		if poolNames[pl.Name] {
+			errs = append(errs, fmt.Errorf("%s.name %q duplicated", pp, pl.Name))
+		}
+		poolNames[pl.Name] = true
+		if pl.Role != RoleControlPlane && pl.Role != RoleWorker {
+			errs = append(errs, fmt.Errorf("%s.role %q must be controlplane or worker", pp, pl.Role))
+		}
+		if pl.Role == RoleControlPlane {
+			cpPools++
+		}
+		for k, v := range pl.Taints {
+			if err := validTaint(k, v); err != nil {
+				errs = append(errs, fmt.Errorf("%s.taints: %w", pp, err))
+			}
+		}
+	}
+	if cpPools != 1 {
+		errs = append(errs, fmt.Errorf("exactly one pool must have role controlplane, found %d", cpPools))
+	}
+	var staticAddrs []netip.Prefix
+	seenHost, seenIP, seenMAC := map[string]bool{}, map[string]bool{}, map[string]bool{}
 	for i, n := range c.Spec.Nodes {
 		p := fmt.Sprintf("nodes[%d]", i)
+		if !poolNames[n.Pool] {
+			errs = append(errs, fmt.Errorf("%s.pool %q is not declared in spec.pools", p, n.Pool))
+		}
+		if n.MAC != "" {
+			if seenMAC[strings.ToLower(n.MAC)] {
+				errs = append(errs, fmt.Errorf("%s.mac %q duplicated", p, n.MAC))
+			}
+			seenMAC[strings.ToLower(n.MAC)] = true
+		}
+		for k, v := range n.Taints {
+			if err := validTaint(k, v); err != nil {
+				errs = append(errs, fmt.Errorf("%s.taints: %w", p, err))
+			}
+		}
+		if nn := n.Network; nn != nil {
+			if len(nn.Addresses) == 0 {
+				errs = append(errs, fmt.Errorf("%s.network.addresses must not be empty", p))
+			}
+			for _, a := range nn.Addresses {
+				pfx, err := netip.ParsePrefix(a)
+				if err != nil {
+					errs = append(errs, fmt.Errorf("%s.network.addresses %q: must be CIDR notation", p, a))
+					continue
+				}
+				for _, other := range staticAddrs {
+					if other.Addr() == pfx.Addr() {
+						errs = append(errs, fmt.Errorf("%s.network.addresses %q used by another node", p, a))
+					}
+				}
+				staticAddrs = append(staticAddrs, pfx)
+				if v := c.Spec.ControlPlane.VIP; v != "" && v == pfx.Addr().String() {
+					errs = append(errs, fmt.Errorf("%s.network.addresses %q collides with the control plane VIP", p, a))
+				}
+				if m := c.Spec.Platform.MetalLB; m.Enabled {
+					if lo, hi, err := ParseIPRange(m.Range); err == nil && !pfx.Addr().Less(lo) && !hi.Less(pfx.Addr()) {
+						errs = append(errs, fmt.Errorf("%s.network.addresses %q lies inside the MetalLB range", p, a))
+					}
+				}
+			}
+			if nn.Gateway != "" {
+				if _, err := netip.ParseAddr(nn.Gateway); err != nil {
+					errs = append(errs, fmt.Errorf("%s.network.gateway: %w", p, err))
+				}
+			}
+			for _, ns := range nn.Nameservers {
+				if _, err := netip.ParseAddr(ns); err != nil {
+					errs = append(errs, fmt.Errorf("%s.network.nameservers %q: %w", p, ns, err))
+				}
+			}
+			if nn.VLAN > 4094 {
+				errs = append(errs, fmt.Errorf("%s.network.vlan %d out of range", p, nn.VLAN))
+			}
+		}
 		if !hostnameRE.MatchString(n.Hostname) {
 			errs = append(errs, fmt.Errorf("%s.hostname %q must be a DNS label", p, n.Hostname))
 		}
@@ -246,9 +471,6 @@ func (c *Cluster) Validate() error {
 			errs = append(errs, fmt.Errorf("%s.ip %q duplicated", p, n.IP))
 		}
 		seenIP[n.IP] = true
-		if n.Role != RoleControlPlane && n.Role != RoleWorker {
-			errs = append(errs, fmt.Errorf("%s.role %q must be controlplane or worker", p, n.Role))
-		}
 		if n.Arch != ArchAMD64 && n.Arch != ArchARM64 {
 			errs = append(errs, fmt.Errorf("%s.arch %q must be amd64 or arm64", p, n.Arch))
 		}
@@ -261,7 +483,25 @@ func (c *Cluster) Validate() error {
 			errs = append(errs, fmt.Errorf("platform.metallb.range: %w", err))
 		}
 	}
+	for _, ns := range c.Spec.Network.Nameservers {
+		if _, err := netip.ParseAddr(ns); err != nil {
+			errs = append(errs, fmt.Errorf("network.nameservers %q: %w", ns, err))
+		}
+	}
 	return errors.Join(errs...)
+}
+
+// validTaint accepts Kubernetes taints written as key: "value:Effect" or key: "Effect".
+func validTaint(key, value string) error {
+	effect := value
+	if i := strings.LastIndexByte(value, ':'); i >= 0 {
+		effect = value[i+1:]
+	}
+	switch effect {
+	case "NoSchedule", "PreferNoSchedule", "NoExecute":
+		return nil
+	}
+	return fmt.Errorf("%s=%q: effect must be NoSchedule, PreferNoSchedule or NoExecute (write value:Effect)", key, value)
 }
 
 func (c *Cluster) ControlPlanes() []Node { return c.nodesWithRole(RoleControlPlane) }

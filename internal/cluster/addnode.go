@@ -45,7 +45,10 @@ func (m *Manager) AddNode(ctx context.Context, name string, n config.Node, sink 
 		if sec, bundle, err = m.loadSecrets(ctx, name); err != nil {
 			return err
 		}
-		if gen, err = config.Generate(c, bundle, m.installerImage(c)); err != nil {
+		if err := m.EnsureSchematic(ctx, c); err != nil {
+			return err
+		}
+		if gen, err = config.Generate(c, bundle, m.installer(c)); err != nil {
 			return err
 		}
 		if err := m.recordNode(ctx, c, n, NodeDiscovered, gen.Nodes[n.Hostname]); err != nil {

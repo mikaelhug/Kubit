@@ -2,6 +2,7 @@ package config
 
 import (
 	"fmt"
+	"net/netip"
 	"strings"
 	"time"
 
@@ -15,6 +16,7 @@ import (
 	"github.com/siderolabs/talos/pkg/machinery/config/generate/secrets"
 	"github.com/siderolabs/talos/pkg/machinery/config/machine"
 	"github.com/siderolabs/talos/pkg/machinery/config/types/k8s"
+	"github.com/siderolabs/talos/pkg/machinery/config/types/meta"
 	"github.com/siderolabs/talos/pkg/machinery/config/types/network"
 	"github.com/siderolabs/talos/pkg/machinery/config/types/runtime"
 	"github.com/siderolabs/talos/pkg/machinery/constants"
@@ -28,6 +30,8 @@ const (
 
 	LabelGVisor    = "sandbox.runtime/gvisor"
 	LabelGVisorKVM = "sandbox.runtime/gvisor-kvm"
+	// LabelPool records the node's pool on the Kubernetes Node object.
+	LabelPool = "kubit.dev/pool"
 
 	// vipLinkAlias names the physical interface the control plane VIP floats on.
 	vipLinkAlias = "uplink"
@@ -40,9 +44,15 @@ type Generated struct {
 	Nodes map[string][]byte
 }
 
+// Installer resolves the installer image for a pool (schematic differs per pool).
+type Installer func(p Pool) string
+
+// FixedInstaller uses one image for every pool.
+func FixedInstaller(image string) Installer { return func(Pool) string { return image } }
+
 // Generate renders one machine config per node. Pass a nil bundle to mint new cluster
 // secrets; pass the stored bundle when adding nodes to an existing cluster.
-func Generate(c *Cluster, bundle *secrets.Bundle, installerImage string) (*Generated, error) {
+func Generate(c *Cluster, bundle *secrets.Bundle, installer Installer) (*Generated, error) {
 	contract, err := talosconfig.ParseContractFromVersion(c.Spec.TalosVersion)
 	if err != nil {
 		return nil, fmt.Errorf("talosVersion: %w", err)
@@ -61,7 +71,7 @@ func Generate(c *Cluster, bundle *secrets.Bundle, installerImage string) (*Gener
 		generate.WithVersionContract(contract),
 		generate.WithSecretsBundle(bundle),
 		generate.WithEndpointList(cpIPs),
-		generate.WithInstallImage(installerImage),
+		generate.WithInstallImage(installer(c.PoolOf(Node{Pool: "controlplane"}))),
 		generate.WithAllowSchedulingOnControlPlanes(*c.Spec.ControlPlane.AllowScheduling),
 		generate.WithSkipUnattendedInstallConfig(true),
 	}
@@ -80,7 +90,7 @@ func Generate(c *Cluster, bundle *secrets.Bundle, installerImage string) (*Gener
 
 	out := &Generated{Secrets: bundle, Nodes: make(map[string][]byte, len(c.Spec.Nodes))}
 	for _, n := range c.Spec.Nodes {
-		b, err := generateNode(c, in, n, installerImage)
+		b, err := generateNode(c, in, n, installer(c.PoolOf(n)))
 		if err != nil {
 			return nil, fmt.Errorf("node %s: %w", n.Hostname, err)
 		}
@@ -125,6 +135,21 @@ func generateNode(c *Cluster, in *generate.Input, n Node, installerImage string)
 			node.LabelsConfig[LabelGVisorKVM] = "true"
 		}
 	}
+	node.LabelsConfig[LabelPool] = n.Pool
+	for k, v := range c.NodeLabels(n) {
+		node.LabelsConfig[k] = v
+	}
+	if taints := c.NodeTaints(n); len(taints) > 0 {
+		if node.TaintsConfig == nil {
+			node.TaintsConfig = map[string]string{}
+		}
+		for k, v := range taints {
+			node.TaintsConfig[k] = v
+		}
+	}
+	if ann := c.NodeAnnotations(n); len(ann) > 0 {
+		node.AnnotationsConfig = ann
+	}
 	// Talos excludes control planes from external load balancers; MetalLB honours that
 	// label and would never announce from a cluster whose control planes also carry
 	// workloads (1–5 nodes), leaving every LoadBalancer IP dark.
@@ -132,14 +157,51 @@ func generateNode(c *Cluster, in *generate.Input, n Node, installerImage string)
 		delete(node.LabelsConfig, constants.LabelExcludeFromExternalLB)
 	}
 
-	if vip := c.Spec.ControlPlane.VIP; vip != "" && n.Role == RoleControlPlane {
-		alias := network.NewLinkAliasConfigV1Alpha1(vipLinkAlias)
-		if alias.Selector.Match, err = uplinkSelector(n.MAC); err != nil {
+	// The uplink alias names the physical interface every network document hangs off:
+	// the VIP, static addressing, or the explicit DHCP choice.
+	alias := network.NewLinkAliasConfigV1Alpha1(vipLinkAlias)
+	if alias.Selector.Match, err = uplinkSelector(n.MAC); err != nil {
+		return nil, err
+	}
+	docs = append(docs, alias)
+	linkName := vipLinkAlias
+	if n.Network != nil && n.Network.VLAN > 0 {
+		vlan := network.NewVLANConfigV1Alpha1(fmt.Sprintf("%s.%d", vipLinkAlias, n.Network.VLAN))
+		vlan.VLANIDConfig = n.Network.VLAN
+		vlan.ParentLinkConfig = vipLinkAlias
+		linkName = vlan.MetaName
+		if err := fillLink(&vlan.CommonLinkConfig, n.Network); err != nil {
 			return nil, err
 		}
+		docs = append(docs, vlan)
+	} else if n.Network != nil {
+		link := network.NewLinkConfigV1Alpha1(vipLinkAlias)
+		if err := fillLink(&link.CommonLinkConfig, n.Network); err != nil {
+			return nil, err
+		}
+		docs = append(docs, link)
+	} else {
+		docs = append(docs, network.NewDHCPv4ConfigV1Alpha1(vipLinkAlias))
+	}
+	if vip := c.Spec.ControlPlane.VIP; vip != "" && n.Role == RoleControlPlane {
 		v := network.NewLayer2VIPConfigV1Alpha1(vip)
-		v.LinkName = vipLinkAlias
-		docs = append(docs, alias, v)
+		v.LinkName = linkName
+		docs = append(docs, v)
+	}
+	if nameservers := firstNonEmpty(nodeNameservers(n), c.Spec.Network.Nameservers); len(nameservers) > 0 {
+		resolver := findOrAppend(&docs, network.NewResolverConfigV1Alpha1)
+		resolver.ResolverNameservers = nil
+		for _, ns := range nameservers {
+			addr, err := netip.ParseAddr(ns)
+			if err != nil {
+				return nil, fmt.Errorf("nameserver %q: %w", ns, err)
+			}
+			resolver.ResolverNameservers = append(resolver.ResolverNameservers, network.NameserverConfig{Address: meta.Addr{Addr: addr}})
+		}
+	}
+	if len(c.Spec.Network.NTP) > 0 {
+		ts := findOrAppend(&docs, network.NewTimeSyncConfigV1Alpha1)
+		ts.TimeNTP = &network.NTPConfig{Servers: c.Spec.Network.NTP}
 	}
 
 	cfg, err := container.New(docs...)
@@ -147,6 +209,45 @@ func generateNode(c *Cluster, in *generate.Input, n Node, installerImage string)
 		return nil, err
 	}
 	return cfg.Bytes()
+}
+
+// fillLink sets static addresses and the default route on a link document.
+func fillLink(l *network.CommonLinkConfig, nn *NodeNetwork) error {
+	up := true
+	l.LinkUp = &up
+	if nn.MTU > 0 {
+		l.LinkMTU = nn.MTU
+	}
+	for _, a := range nn.Addresses {
+		pfx, err := netip.ParsePrefix(a)
+		if err != nil {
+			return fmt.Errorf("address %q: %w", a, err)
+		}
+		l.LinkAddresses = append(l.LinkAddresses, network.AddressConfig{AddressAddress: pfx})
+	}
+	if nn.Gateway != "" {
+		gw, err := netip.ParseAddr(nn.Gateway)
+		if err != nil {
+			return fmt.Errorf("gateway: %w", err)
+		}
+		// An empty destination is Talos' spelling of the default route.
+		l.LinkRoutes = append(l.LinkRoutes, network.RouteConfig{RouteGateway: meta.Addr{Addr: gw}})
+	}
+	return nil
+}
+
+func nodeNameservers(n Node) []string {
+	if n.Network == nil {
+		return nil
+	}
+	return n.Network.Nameservers
+}
+
+func firstNonEmpty(a, b []string) []string {
+	if len(a) > 0 {
+		return a
+	}
+	return b
 }
 
 // findOrAppend returns the generator's existing document of type T, or appends a new one;

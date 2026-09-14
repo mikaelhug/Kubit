@@ -44,7 +44,11 @@ type NodeStatus struct {
 	// TalosError is the dial/query failure when the Talos API did not answer.
 	TalosError string `json:"talosError,omitempty"`
 	// Registered is true once the kubelet has created its Node object.
-	Registered  bool   `json:"registered"`
+	Registered bool `json:"registered"`
+	// Pool is the node's pool; SeenAt is set when discovery last saw the machine on a
+	// different address than the one declared (DHCP lease moved).
+	Pool        string `json:"pool"`
+	SeenAt      string `json:"seenAt,omitempty"`
 	Stage       string `json:"stage"`
 	CPUMilli    int64  `json:"cpuMilli"`
 	CPUCapMilli int64  `json:"cpuCapMilli"`
@@ -101,7 +105,12 @@ func (m *Manager) Status(ctx context.Context, name string) (*Status, error) {
 	st.Nodes = make([]NodeStatus, len(ordered))
 	byHost := map[string]*NodeStatus{}
 	for i, n := range ordered {
-		st.Nodes[i] = NodeStatus{Hostname: n.Hostname, IP: n.IP, Role: string(n.Role), Arch: string(n.Arch), KVM: n.KVM}
+		st.Nodes[i] = NodeStatus{Hostname: n.Hostname, IP: n.IP, Role: string(n.Role), Pool: n.Pool, Arch: string(n.Arch), KVM: n.KVM}
+		if n.MAC != "" {
+			if mach, err := m.Store.GetMachine(ctx, n.MAC); err == nil && mach.IP != "" && mach.IP != n.IP {
+				st.Nodes[i].SeenAt = mach.IP
+			}
+		}
 		byHost[n.Hostname] = &st.Nodes[i]
 	}
 

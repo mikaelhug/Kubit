@@ -143,3 +143,31 @@ func TestReopenKeepsData(t *testing.T) {
 		t.Errorf("after reopen: %v", rows)
 	}
 }
+
+func TestMachineIdentityFollowsMAC(t *testing.T) {
+	s := open(t)
+	ctx := context.Background()
+	// First lease.
+	if err := s.UpsertNode(ctx, store.NodeRow{IP: "10.0.0.5", MAC: "AA:BB:CC:DD:EE:01", Source: "scan", State: "maintenance"}); err != nil {
+		t.Fatal(err)
+	}
+	// Same machine, new lease; another machine takes the old address.
+	if err := s.UpsertNode(ctx, store.NodeRow{IP: "10.0.0.9", MAC: "aa:bb:cc:dd:ee:01", Source: "scan", State: "maintenance"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.UpsertNode(ctx, store.NodeRow{IP: "10.0.0.5", MAC: "aa:bb:cc:dd:ee:02", Source: "scan", State: "maintenance"}); err != nil {
+		t.Fatal(err)
+	}
+	list, _ := s.ListNodes(ctx, "")
+	if len(list) != 2 {
+		t.Fatalf("expected 2 machines, got %d: %+v", len(list), list)
+	}
+	m1, err := s.GetMachine(ctx, "aa:bb:cc:dd:ee:01")
+	if err != nil || m1.IP != "10.0.0.9" || len(m1.IPsSeen) != 1 || m1.IPsSeen[0] != "10.0.0.5" {
+		t.Errorf("machine 1 should have moved to .9 remembering .5: %+v %v", m1, err)
+	}
+	m2, _ := s.GetNode(ctx, "10.0.0.5")
+	if m2.MAC != "aa:bb:cc:dd:ee:02" {
+		t.Errorf(".5 must now belong to machine 2, got %s", m2.MAC)
+	}
+}

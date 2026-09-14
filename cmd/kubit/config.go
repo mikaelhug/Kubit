@@ -59,7 +59,7 @@ func configRenderCmd() *cobra.Command {
 				}
 				fmt.Fprintf(cmd.ErrOrStderr(), "schematic %s\n", schematic)
 			}
-			g, err := config.Generate(c, nil, f.InstallerImage(schematic, c.Spec.TalosVersion))
+			g, err := config.Generate(c, nil, config.FixedInstaller(f.InstallerImage(schematic, c.Spec.TalosVersion)))
 			if err != nil {
 				return err
 			}

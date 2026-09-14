@@ -42,6 +42,7 @@ func discoverCmd() *cobra.Command {
 					row := store.NodeRow{IP: r.IP, Source: "scan", State: string(r.State)}
 					if inv := r.Inventory; inv != nil {
 						row.MAC = inv.PrimaryMAC()
+						row.UUID, row.Serial = inv.UUID, inv.Serial
 						row.Arch = inv.Arch
 						row.TalosVersion = inv.TalosVersion
 						row.Hardware, _ = json.Marshal(inv)

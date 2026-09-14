@@ -46,6 +46,12 @@ func (c *Client) BootstrapEtcd(ctx context.Context) error {
 	return c.Bootstrap(c.Context(ctx), &machineapi.BootstrapRequest{})
 }
 
+// RestartService restarts a Talos system service (e.g. "kubelet").
+func (c *Client) RestartService(ctx context.Context, id string) error {
+	_, err := c.ServiceRestart(c.Context(ctx), id)
+	return err
+}
+
 // ServiceHealthy reports whether a Talos service is running and passing health checks.
 func (c *Client) ServiceHealthy(ctx context.Context, id string) (bool, error) {
 	infos, err := c.ServiceInfo(c.Context(ctx), id)

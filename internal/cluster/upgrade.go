@@ -55,10 +55,13 @@ func (m *Manager) UpgradeTalos(ctx context.Context, name, version string, sink S
 	if err != nil {
 		return err
 	}
-	image := m.Factory.InstallerImage(c.Spec.SchematicID, version)
+	if err := m.EnsureSchematic(ctx, c); err != nil {
+		return err
+	}
+	imageFor := func(n config.Node) string { return m.Factory.InstallerImage(c.SchematicFor(c.PoolOf(n)), version) }
 	nodes := orderedNodes(c)
 	sink.plan(nodeSteps(nodes, "Upgrade")...)
-	sink.emit(Info, nodeStep(nodes[0]), "", "Talos %s → %s using %s", c.Spec.TalosVersion, version, image)
+	sink.emit(Info, nodeStep(nodes[0]), "", "Talos %s → %s", c.Spec.TalosVersion, version)
 	_ = m.Store.Audit(ctx, name, "upgrade.talos", version)
 
 	for _, n := range nodes {
@@ -81,7 +84,8 @@ func (m *Manager) UpgradeTalos(ctx context.Context, name, version string, sink S
 				tc.Close()
 				return err
 			}
-			sink.emit(Info, step, n.Hostname, "upgrading to %s (A/B slot install, then reboot)", version)
+			image := imageFor(n)
+			sink.emit(Info, step, n.Hostname, "upgrading to %s from %s (A/B slot install, then reboot)", version, image)
 			_, err = tc.Upgrade(tc.Context(ctx), image, false, false)
 			tc.Close()
 			if err != nil {

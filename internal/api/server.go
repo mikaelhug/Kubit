@@ -83,6 +83,7 @@ func New(version string, m *cluster.Manager, token string, crypto *store.Crypto)
 	s.healthRoutes()
 	s.k8sRoutes()
 	s.settingsRoutes()
+	s.machineRoutes()
 	dist, _ := fs.Sub(web.Dist, "dist")
 	r.Handle("/", spaHandler(http.FS(dist)))
 	return s
@@ -636,14 +637,28 @@ func (s *Server) handleDiscover(w http.ResponseWriter, r *http.Request) {
 		}
 		sink(clusterEvent{Time: time.Now(), Kind: "step", Step: "scan", Status: cluster.StepDone})
 		sink(clusterEvent{Time: time.Now(), Kind: "step", Step: "record", Status: cluster.StepRunning})
+		// A control-plane VIP answers on :50000 too, but it is an address, not a machine.
+		vips := map[string]string{}
+		if rows, err := s.store.ListClusters(ctx); err == nil {
+			for _, row := range rows {
+				if c, err := config.Parse(row.Spec); err == nil && c.Spec.ControlPlane.VIP != "" {
+					vips[c.Spec.ControlPlane.VIP] = row.Name
+				}
+			}
+		}
 		found := 0
 		for _, res := range results {
 			if res.Err != nil {
 				continue
 			}
+			if name, ok := vips[res.IP]; ok {
+				sink(clusterEvent{Time: time.Now(), Kind: "log", Level: cluster.Info, Step: "record", Node: res.IP, Message: "VIP of cluster " + name + ", skipped"})
+				continue
+			}
 			row := store.NodeRow{IP: res.IP, Source: "scan", State: string(res.State)}
 			if inv := res.Inventory; inv != nil {
 				row.MAC, row.Arch, row.TalosVersion = inv.PrimaryMAC(), inv.Arch, inv.TalosVersion
+				row.UUID, row.Serial = inv.UUID, inv.Serial
 				row.Hardware, _ = json.Marshal(inv)
 			}
 			if err := s.store.UpsertNode(ctx, row); err != nil {
@@ -665,6 +680,12 @@ func (s *Server) handleDiscover(w http.ResponseWriter, r *http.Request) {
 func (s *Server) nodeClient(r *http.Request) (*talos.Client, error) {
 	ip := r.PathValue("ip")
 	row, err := s.store.GetNode(r.Context(), ip)
+	if err != nil {
+		// Accept a MAC in place of the IP so machine pages can address by identity.
+		if m, merr := s.store.GetMachine(r.Context(), ip); merr == nil && m.IP != "" {
+			row, ip, err = m, m.IP, nil
+		}
+	}
 	if err != nil {
 		return nil, err
 	}

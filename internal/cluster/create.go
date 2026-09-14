@@ -55,7 +55,7 @@ func (m *Manager) Create(ctx context.Context, c *config.Cluster, sink Sink) erro
 	}
 
 	if err := sink.run("secrets", func() error {
-		gen, err := config.Generate(c, nil, m.installerImage(c))
+		gen, err := config.Generate(c, nil, m.installer(c))
 		if err != nil {
 			return err
 		}
@@ -112,7 +112,7 @@ func (m *Manager) resume(ctx context.Context, c *config.Cluster, recheck bool, s
 	}
 
 	err = sink.run("install", func() error {
-		pending, cfgs, err := m.pendingInstall(ctx, c.Spec.Nodes, sec.Talosconfig, sink)
+		pending, cfgs, err := m.pendingInstall(ctx, c, sec.Talosconfig, sink)
 		if err != nil {
 			return err
 		}
@@ -161,15 +161,22 @@ func (m *Manager) resume(ctx context.Context, c *config.Cluster, recheck bool, s
 
 // pendingInstall splits nodes into those still needing a config applied (in maintenance
 // mode) and those already running the installed system, and loads the stored configs.
-func (m *Manager) pendingInstall(ctx context.Context, nodes []config.Node, talosconfig []byte, sink Sink) ([]config.Node, map[string][]byte, error) {
+func (m *Manager) pendingInstall(ctx context.Context, c *config.Cluster, talosconfig []byte, sink Sink) ([]config.Node, map[string][]byte, error) {
 	var pending []config.Node
 	cfgs := map[string][]byte{}
-	for _, n := range nodes {
+	moved := false
+	for i, n := range c.Spec.Nodes {
 		probe, cancel := context.WithTimeout(ctx, 10*time.Second)
-		stage, err := talos.Stage(probe, n.IP, talosconfig)
+		stage, err := talos.Stage(probe, n.TargetIP(), talosconfig)
 		cancel()
 		if err == nil && stage != "maintenance" {
 			sink.emit(Info, "install", n.Hostname, "already installed (stage %s)", stage)
+			if target := n.TargetIP(); target != n.IP {
+				c.Spec.Nodes[i].IP = target
+				n.IP = target
+				_ = m.Store.UpsertNode(ctx, storeRow(c, n))
+				moved = true
+			}
 			_ = m.Store.SetNodeState(ctx, n.IP, NodeJoined)
 			continue
 		}
@@ -179,6 +186,11 @@ func (m *Manager) pendingInstall(ctx context.Context, nodes []config.Node, talos
 		}
 		cfgs[n.Hostname] = cfg
 		pending = append(pending, n)
+	}
+	if moved {
+		if _, row, err := m.LoadCluster(ctx, c.Metadata.Name); err == nil {
+			_ = m.SaveCluster(ctx, c, row.State)
+		}
 	}
 	return pending, cfgs, nil
 }
@@ -215,9 +227,10 @@ func (m *Manager) preflight(ctx context.Context, c *config.Cluster, nodes []conf
 // installAll applies configs in parallel and waits for each node to return over mTLS.
 func (m *Manager) installAll(ctx context.Context, c *config.Cluster, nodes []config.Node, cfgs map[string][]byte, talosconfig []byte, sink Sink) error {
 	var (
-		wg   sync.WaitGroup
-		mu   sync.Mutex
-		errs []error
+		wg    sync.WaitGroup
+		mu    sync.Mutex
+		errs  []error
+		moved bool
 	)
 	for _, n := range nodes {
 		wg.Add(1)
@@ -230,11 +243,31 @@ func (m *Manager) installAll(ctx context.Context, c *config.Cluster, nodes []con
 				mu.Lock()
 				errs = append(errs, fmt.Errorf("%s: %w", n.Hostname, err))
 				mu.Unlock()
+			} else if target := n.TargetIP(); target != n.IP {
+				// A static node leaves its maintenance-mode lease behind; from here on
+				// the declaration and the machine row point at the pinned address.
+				mu.Lock()
+				for i := range c.Spec.Nodes {
+					if c.Spec.Nodes[i].Hostname == n.Hostname {
+						c.Spec.Nodes[i].IP = target
+					}
+				}
+				moved = true
+				mu.Unlock()
+				n.IP = target
+				_ = m.Store.UpsertNode(ctx, storeRow(c, n))
 			}
 			_ = m.Store.SetNodeState(ctx, n.IP, state)
 		}(n)
 	}
 	wg.Wait()
+	if moved {
+		if _, row, err := m.LoadCluster(ctx, c.Metadata.Name); err == nil {
+			if err := m.SaveCluster(ctx, c, row.State); err != nil {
+				errs = append(errs, err)
+			}
+		}
+	}
 	return errors.Join(errs...)
 }
 
@@ -256,11 +289,16 @@ func (m *Manager) installOne(ctx context.Context, n config.Node, cfg []byte, tal
 	if err != nil {
 		return fmt.Errorf("apply: %w", err)
 	}
-	sink.emit(Info, "install", n.Hostname, "config applied, installing to disk and rebooting")
-	if err := talos.WaitForReboot(ctx, n.IP, talosconfig, bootID, m.Timeouts.Install); err != nil {
+	target := n.TargetIP()
+	if target != n.IP {
+		sink.emit(Info, "install", n.Hostname, "config applied, installing to disk and rebooting; expecting it on static %s", target)
+	} else {
+		sink.emit(Info, "install", n.Hostname, "config applied, installing to disk and rebooting")
+	}
+	if err := talos.WaitForReboot(ctx, target, talosconfig, bootID, m.Timeouts.Install); err != nil {
 		return err
 	}
-	sink.emit(Info, "install", n.Hostname, "rebooted into the installed system")
+	sink.emit(Info, "install", n.Hostname, "rebooted into the installed system at %s", target)
 	return nil
 }
 

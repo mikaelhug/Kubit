@@ -169,7 +169,10 @@ func (m *Manager) UpgradeNode(ctx context.Context, name, hostname, version strin
 	if err != nil {
 		return err
 	}
-	image := m.Factory.InstallerImage(c.Spec.SchematicID, version)
+	if err := m.EnsureSchematic(ctx, c); err != nil {
+		return err
+	}
+	image := m.Factory.InstallerImage(c.SchematicFor(c.PoolOf(n)), version)
 	_ = m.Store.Audit(ctx, name, "node.upgrade", hostname+" "+version)
 	return sink.run(step, func() error {
 		dial, cancel := context.WithTimeout(ctx, 30*time.Second)

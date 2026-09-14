@@ -1,0 +1,230 @@
+package store
+
+import (
+	"context"
+	"database/sql"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"strings"
+)
+
+// Machine is a physical or virtual computer Kubit knows, keyed by the MAC of its
+// uplink. The IP is only where it was last reachable.
+type Machine struct {
+	MAC          string   `json:"mac"`
+	UUID         string   `json:"uuid,omitempty"`
+	Serial       string   `json:"serial,omitempty"`
+	IP           string   `json:"ip"`
+	IPsSeen      []string `json:"ipsSeen,omitempty"`
+	Cluster      string   `json:"cluster"` // "" when unassigned
+	Hostname     string   `json:"hostname"`
+	Pool         string   `json:"pool"`
+	Role         string   `json:"role"`
+	Arch         string   `json:"arch"`
+	Source       string   `json:"source"`
+	State        string   `json:"state"`
+	Hardware     []byte   `json:"-"`
+	TalosVersion string   `json:"talosVersion"`
+	WOL          bool     `json:"wol"`
+	FirstSeen    string   `json:"firstSeen"`
+	LastSeen     string   `json:"lastSeen"`
+	UpdatedAt    string   `json:"updatedAt"`
+}
+
+// NodeRow is the pre-M8 name; discovery and the API still speak in these terms.
+type NodeRow = Machine
+
+// MachineKey returns the identity used as primary key: the MAC, or a placeholder
+// derived from the IP for declarations that never recorded one.
+func MachineKey(mac, ip string) string {
+	if mac != "" {
+		return strings.ToLower(mac)
+	}
+	return "ip:" + ip
+}
+
+const machineCols = `mac, uuid, serial, COALESCE(ip,''), ips_seen, COALESCE(cluster,''), hostname, pool, role, arch, source, state, hardware, talos_version, wol, first_seen, COALESCE(last_seen,''), updated_at`
+
+func scanMachine(sc interface{ Scan(...any) error }) (*Machine, error) {
+	var m Machine
+	var hw, seen string
+	var wol int
+	if err := sc.Scan(&m.MAC, &m.UUID, &m.Serial, &m.IP, &seen, &m.Cluster, &m.Hostname, &m.Pool, &m.Role, &m.Arch, &m.Source, &m.State, &hw, &m.TalosVersion, &wol, &m.FirstSeen, &m.LastSeen, &m.UpdatedAt); err != nil {
+		return nil, err
+	}
+	m.Hardware = []byte(hw)
+	m.WOL = wol == 1
+	_ = json.Unmarshal([]byte(seen), &m.IPsSeen)
+	return &m, nil
+}
+
+// UpsertNode records a discovery or declaration. Identity is the MAC; a machine that
+// shows up on a new IP keeps its row (the old IP joins ips_seen) and any other row
+// still claiming that IP loses it. Cluster membership and hardware survive rescans
+// that carry neither.
+func (s *Store) UpsertNode(ctx context.Context, n Machine) error {
+	key := MachineKey(n.MAC, n.IP)
+	if n.MAC == "" && n.IP != "" {
+		// No identity given: attach to whatever machine currently holds that IP.
+		if existing, err := s.GetNode(ctx, n.IP); err == nil {
+			key = existing.MAC
+		}
+	}
+	if n.IP != "" {
+		if _, err := s.db.ExecContext(ctx, `UPDATE machines SET ip = NULL WHERE ip = ? AND mac != ?`, n.IP, key); err != nil {
+			return err
+		}
+	}
+	hw := string(n.Hardware)
+	if hw == "" {
+		hw = "{}"
+	}
+	prev, _ := s.GetMachine(ctx, key)
+	seen := []string{}
+	if prev != nil {
+		seen = prev.IPsSeen
+		if prev.IP != "" && prev.IP != n.IP && !contains(seen, prev.IP) {
+			seen = append(seen, prev.IP)
+		}
+	}
+	seenJSON, _ := json.Marshal(seen)
+	var cluster any
+	if n.Cluster != "" {
+		cluster = n.Cluster
+	}
+	_, err := s.db.ExecContext(ctx, `
+		INSERT INTO machines (mac, uuid, serial, ip, ips_seen, cluster, hostname, pool, role, arch, source, state, hardware, talos_version, last_seen)
+		VALUES (?, ?, ?, NULLIF(?, ''), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+		ON CONFLICT(mac) DO UPDATE SET
+			uuid          = CASE WHEN excluded.uuid = '' THEN machines.uuid ELSE excluded.uuid END,
+			serial        = CASE WHEN excluded.serial = '' THEN machines.serial ELSE excluded.serial END,
+			ip            = COALESCE(excluded.ip, machines.ip),
+			ips_seen      = excluded.ips_seen,
+			cluster       = COALESCE(excluded.cluster, machines.cluster),
+			hostname      = CASE WHEN excluded.hostname = '' THEN machines.hostname ELSE excluded.hostname END,
+			pool          = CASE WHEN excluded.pool = '' THEN machines.pool ELSE excluded.pool END,
+			role          = CASE WHEN excluded.role = '' THEN machines.role ELSE excluded.role END,
+			arch          = CASE WHEN excluded.arch = '' THEN machines.arch ELSE excluded.arch END,
+			source        = excluded.source,
+			state         = CASE WHEN excluded.state = '' THEN machines.state ELSE excluded.state END,
+			hardware      = CASE WHEN excluded.hardware = '{}' THEN machines.hardware ELSE excluded.hardware END,
+			talos_version = CASE WHEN excluded.talos_version = '' THEN machines.talos_version ELSE excluded.talos_version END,
+			last_seen     = excluded.last_seen,
+			updated_at    = strftime('%Y-%m-%dT%H:%M:%fZ','now')`,
+		key, n.UUID, n.Serial, n.IP, string(seenJSON), cluster, n.Hostname, n.Pool, n.Role, n.Arch, n.Source, n.State, hw, n.TalosVersion)
+	return err
+}
+
+func (s *Store) GetMachine(ctx context.Context, mac string) (*Machine, error) {
+	m, err := scanMachine(s.db.QueryRowContext(ctx, `SELECT `+machineCols+` FROM machines WHERE mac = ?`, strings.ToLower(mac)))
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, fmt.Errorf("machine %s: %w", mac, ErrNotFound)
+	}
+	return m, err
+}
+
+// GetNode looks a machine up by its current IP.
+func (s *Store) GetNode(ctx context.Context, ip string) (*Machine, error) {
+	m, err := scanMachine(s.db.QueryRowContext(ctx, `SELECT `+machineCols+` FROM machines WHERE ip = ? OR mac = ?`, ip, "ip:"+ip))
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, fmt.Errorf("machine at %s: %w", ip, ErrNotFound)
+	}
+	return m, err
+}
+
+// ListNodes returns every machine, or only a cluster's when cluster is non-empty.
+func (s *Store) ListNodes(ctx context.Context, cluster string) ([]Machine, error) {
+	q := `SELECT ` + machineCols + ` FROM machines`
+	var args []any
+	if cluster != "" {
+		q += ` WHERE cluster = ?`
+		args = append(args, cluster)
+	}
+	rows, err := s.db.QueryContext(ctx, q+` ORDER BY cluster, role, hostname, ip`, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []Machine
+	for rows.Next() {
+		m, err := scanMachine(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, *m)
+	}
+	return out, rows.Err()
+}
+
+func (s *Store) macFor(ctx context.Context, ip string) (string, error) {
+	m, err := s.GetNode(ctx, ip)
+	if err != nil {
+		return "", err
+	}
+	return m.MAC, nil
+}
+
+func (s *Store) SetNodeState(ctx context.Context, ip, state string) error {
+	_, err := s.db.ExecContext(ctx, `UPDATE machines SET state = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE ip = ? OR mac = ?`, state, ip, "ip:"+ip)
+	return err
+}
+
+func (s *Store) AssignNode(ctx context.Context, ip, cluster, hostname, role string) error {
+	_, err := s.db.ExecContext(ctx, `UPDATE machines SET cluster = ?, hostname = ?, role = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE ip = ? OR mac = ?`, cluster, hostname, role, ip, "ip:"+ip)
+	return err
+}
+
+// UnassignNode detaches a machine from its cluster after a reset, keeping the inventory.
+func (s *Store) UnassignNode(ctx context.Context, ip, state string) error {
+	_, err := s.db.ExecContext(ctx, `UPDATE machines SET cluster = NULL, hostname = '', pool = '', role = '', state = ?, machine_config = NULL, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE ip = ? OR mac = ?`, state, ip, "ip:"+ip)
+	return err
+}
+
+func (s *Store) PutNodeMachineConfig(ctx context.Context, ip string, cfg []byte) error {
+	sealed, err := s.crypto.Seal(cfg)
+	if err != nil {
+		return err
+	}
+	_, err = s.db.ExecContext(ctx, `UPDATE machines SET machine_config = ? WHERE ip = ? OR mac = ?`, sealed, ip, "ip:"+ip)
+	return err
+}
+
+func (s *Store) GetNodeMachineConfig(ctx context.Context, ip string) ([]byte, error) {
+	var sealed []byte
+	err := s.db.QueryRowContext(ctx, `SELECT machine_config FROM machines WHERE ip = ? OR mac = ?`, ip, "ip:"+ip).Scan(&sealed)
+	if errors.Is(err, sql.ErrNoRows) || (err == nil && sealed == nil) {
+		return nil, fmt.Errorf("machine config for %s: %w", ip, ErrNotFound)
+	}
+	if err != nil {
+		return nil, err
+	}
+	return s.crypto.Open(sealed)
+}
+
+// SetMachineWOL flags whether Kubit may send Wake-on-LAN packets to a machine.
+func (s *Store) SetMachineWOL(ctx context.Context, mac string, on bool) error {
+	_, err := s.db.ExecContext(ctx, `UPDATE machines SET wol = ? WHERE mac = ?`, b2i(on), strings.ToLower(mac))
+	return err
+}
+
+// DeleteMachine forgets a machine that will not come back.
+func (s *Store) DeleteMachine(ctx context.Context, mac string) error {
+	_, err := s.db.ExecContext(ctx, `DELETE FROM machines WHERE mac = ?`, strings.ToLower(mac))
+	return err
+}
+
+// DeleteNode forgets the machine at an IP.
+func (s *Store) DeleteNode(ctx context.Context, ip string) error {
+	_, err := s.db.ExecContext(ctx, `DELETE FROM machines WHERE ip = ? OR mac = ?`, ip, "ip:"+ip)
+	return err
+}
+
+func contains(list []string, v string) bool {
+	for _, x := range list {
+		if x == v {
+			return true
+		}
+	}
+	return false
+}

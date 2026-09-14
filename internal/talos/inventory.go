@@ -31,6 +31,8 @@ type Inventory struct {
 	MemoryBytes  uint64 `json:"memoryBytes"`
 	Manufacturer string `json:"manufacturer,omitempty"`
 	Product      string `json:"product,omitempty"`
+	UUID         string `json:"uuid,omitempty"`
+	Serial       string `json:"serial,omitempty"`
 	KVM          bool   `json:"kvm"`
 	Disks        []Disk `json:"disks"`
 	Links        []Link `json:"links"`
@@ -104,6 +106,8 @@ func (c *Client) Inspect(ctx context.Context) (*Inventory, error) {
 	if si, err := safe.StateGetByID[*hardware.SystemInformation](ctx, c.COSI, hardware.SystemInformationID); err == nil {
 		inv.Manufacturer = si.TypedSpec().Manufacturer
 		inv.Product = si.TypedSpec().ProductName
+		inv.UUID = si.TypedSpec().UUID
+		inv.Serial = si.TypedSpec().SerialNumber
 	}
 	inv.KVM = c.exists(ctx, "/dev/kvm")
 

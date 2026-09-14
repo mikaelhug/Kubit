@@ -124,6 +124,31 @@ var migrations = []string{
 	);
 	CREATE INDEX events_cluster_ts ON events (cluster, ts);`,
 	`CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);`,
+	`CREATE TABLE machines (
+		mac            TEXT PRIMARY KEY,           -- uplink MAC, lower-case; "ip:<ip>" when unknown
+		uuid           TEXT NOT NULL DEFAULT '',   -- SMBIOS system UUID
+		serial         TEXT NOT NULL DEFAULT '',
+		ip             TEXT UNIQUE,                -- where it is reachable now
+		ips_seen       TEXT NOT NULL DEFAULT '[]',
+		cluster        TEXT REFERENCES clusters(name) ON DELETE SET NULL,
+		hostname       TEXT NOT NULL DEFAULT '',
+		pool           TEXT NOT NULL DEFAULT '',
+		role           TEXT NOT NULL DEFAULT '',
+		arch           TEXT NOT NULL DEFAULT '',
+		source         TEXT NOT NULL DEFAULT 'scan',
+		state          TEXT NOT NULL DEFAULT 'discovered',
+		hardware       TEXT NOT NULL DEFAULT '{}',
+		talos_version  TEXT NOT NULL DEFAULT '',
+		machine_config BLOB,
+		wol            INTEGER NOT NULL DEFAULT 0,
+		first_seen     TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+		last_seen      TEXT,
+		updated_at     TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+	);
+	INSERT INTO machines (mac, ip, cluster, hostname, role, arch, source, state, hardware, talos_version, machine_config, last_seen, updated_at)
+		SELECT CASE WHEN mac = '' THEN 'ip:' || ip ELSE lower(mac) END, ip, cluster, hostname, role, arch, source, state, hardware, talos_version, machine_config, last_seen, updated_at
+		FROM nodes WHERE 1 ORDER BY updated_at;
+	DROP TABLE nodes;`,
 }
 
 func (s *Store) migrate(ctx context.Context) error {

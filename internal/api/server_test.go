@@ -121,3 +121,50 @@ func TestClusterCreateRejectsBadYAML(t *testing.T) {
 		t.Errorf("operations: %s", rec.Body)
 	}
 }
+
+func TestDesignAndLint(t *testing.T) {
+	srv, s := newServer(t, "")
+	hw := `{"cpus":4,"memoryBytes":8589934592,"kvm":false,"disks":[{"devPath":"/dev/sda","sizeBytes":250000000000}]}`
+	for i, mac := range []string{"aa:aa:aa:aa:aa:01", "aa:aa:aa:aa:aa:02", "aa:aa:aa:aa:aa:03"} {
+		if err := s.UpsertNode(t.Context(), store.NodeRow{IP: "10.0.0.1" + string(rune('0'+i)), MAC: mac, Arch: "amd64", State: "maintenance", Hardware: []byte(hw)}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	rec := do(t, srv, "POST", "/api/v1/config/design", `{"name":"lab","macs":["aa:aa:aa:aa:aa:01","aa:aa:aa:aa:aa:02","aa:aa:aa:aa:aa:03"]}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("design: %d %s", rec.Code, rec.Body)
+	}
+	var d struct {
+		YAML     string `json:"yaml"`
+		Topology struct{ ControlPlanes int }
+		Warnings []struct{ Code string }
+	}
+	_ = json.Unmarshal(rec.Body.Bytes(), &d)
+	if d.Topology.ControlPlanes != 3 || !strings.Contains(d.YAML, "pool: controlplane") || !strings.Contains(d.YAML, "vip: 10.0.0.250") {
+		t.Errorf("design: %+v\n%s", d.Topology, d.YAML)
+	}
+	body, _ := json.Marshal(map[string]string{"yaml": strings.Replace(d.YAML, "vip: 10.0.0.250", "", 1)})
+	rec = do(t, srv, "POST", "/api/v1/config/lint", string(body))
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "no-vip") {
+		t.Errorf("lint should flag the missing VIP: %d %s", rec.Code, rec.Body)
+	}
+}
+
+func TestMachinesAndRetire(t *testing.T) {
+	srv, s := newServer(t, "")
+	_ = s.UpsertNode(t.Context(), store.NodeRow{IP: "10.0.0.5", MAC: "aa:aa:aa:aa:aa:05", State: "maintenance"})
+	_ = s.PutCluster(t.Context(), store.ClusterRow{Name: "c", Spec: []byte("x")})
+	_ = s.UpsertNode(t.Context(), store.NodeRow{IP: "10.0.0.6", MAC: "aa:aa:aa:aa:aa:06", Cluster: "c", Hostname: "n", State: "ready"})
+	if rec := do(t, srv, "GET", "/api/v1/machines/aa:aa:aa:aa:aa:05", ""); rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"ip":"10.0.0.5"`) {
+		t.Errorf("machine: %d %s", rec.Code, rec.Body)
+	}
+	if rec := do(t, srv, "DELETE", "/api/v1/machines/aa:aa:aa:aa:aa:06", ""); rec.Code != http.StatusConflict {
+		t.Errorf("retiring a member must be refused: %d", rec.Code)
+	}
+	if rec := do(t, srv, "DELETE", "/api/v1/machines/aa:aa:aa:aa:aa:05", ""); rec.Code != http.StatusNoContent {
+		t.Errorf("retire: %d %s", rec.Code, rec.Body)
+	}
+	if rec := do(t, srv, "POST", "/api/v1/machines/aa:aa:aa:aa:aa:06/wake", ""); rec.Code != http.StatusConflict {
+		t.Errorf("wake without WOL enabled must be refused: %d", rec.Code)
+	}
+}

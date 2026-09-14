@@ -27,7 +27,11 @@ export interface Settings { factoryUrl: string; discoverySubnets: string[]; watc
 export interface PxeStatus { running: boolean; statusUrl: string; error?: string; command?: string; startedAt?: string; interface?: string; ip?: string; httpPort?: number; talosVersion?: string; schematicId?: string; boots?: { mac: string; ip?: string; arch?: string; firstSeen: string; lastSeen: string; stage: string; count: number }[]; log?: string[] }
 export interface Versions { talos: string[]; talosSource: string; kubernetesMinors: string[]; kubernetesLatest: string; machinery: string; minTalos: string; note: string }
 
-export interface NodeSpec { hostname: string; ip: string; mac?: string; role: 'controlplane' | 'worker'; arch: string; kvm?: boolean; installDisk: { path?: string; selector?: { minSize?: string; type?: string; model?: string } } }
+export interface InstallDisk { path?: string; selector?: { minSize?: string; type?: string; model?: string } }
+export interface NodeNetwork { addresses: string[]; gateway?: string; nameservers?: string[]; vlan?: number; mtu?: number }
+export interface NodeSpec { hostname: string; ip: string; mac?: string; uuid?: string; pool?: string; role?: 'controlplane' | 'worker'; arch: string; kvm?: boolean; installDisk?: InstallDisk; network?: NodeNetwork; labels?: Record<string, string>; taints?: Record<string, string>; annotations?: Record<string, string> }
+export interface Pool { name: string; role: 'controlplane' | 'worker'; labels?: Record<string, string>; taints?: Record<string, string>; annotations?: Record<string, string>; extensions?: string[]; schematicID?: string; installDisk?: InstallDisk }
+export interface Warning { level: 'info' | 'warn'; code: string; message: string; node?: string }
 export interface AddonSpec { enabled: boolean; values?: Record<string, unknown> }
 export interface PlatformSpec { metallb: AddonSpec & { range?: string }; ingressNginx: AddonSpec; gvisor: AddonSpec; metricsServer: AddonSpec; certManager: AddonSpec; argocd: AddonSpec }
 export interface ClusterSpec {
@@ -35,7 +39,8 @@ export interface ClusterSpec {
   spec: {
     talosVersion: string; kubernetesVersion: string; extensions?: string[]; schematicID?: string
     controlPlane: { endpoint: string; vip?: string; allowScheduling?: boolean }
-    network: { podCIDR: string; serviceCIDR: string }
+    network: { podCIDR: string; serviceCIDR: string; nameservers?: string[]; ntp?: string[] }
+    pools?: Pool[]
     nodes: NodeSpec[]
     platform: PlatformSpec
   }
@@ -43,7 +48,7 @@ export interface ClusterSpec {
 export interface ClusterRow { name: string; state: string; schematicId: string; createdAt: string; updatedAt: string; spec: ClusterSpec }
 
 export interface Inventory {
-  ip: string; hostname?: string; cpus: number; memoryBytes: number; kvm: boolean; arch: string; talosVersion: string; platform: string; stage: string; manufacturer?: string; product?: string
+  ip: string; hostname?: string; uuid?: string; serial?: string; cpus: number; memoryBytes: number; kvm: boolean; arch: string; talosVersion: string; platform: string; stage: string; manufacturer?: string; product?: string
   disks: { devPath: string; sizeBytes: number; model?: string; transport?: string; rotational: boolean; readonly: boolean; cdrom: boolean }[]
   links: { name: string; mac: string; up: boolean; addresses?: string[] }[]
   bootTime?: string; extensions?: { name: string; version: string; author?: string }[]
@@ -56,9 +61,9 @@ export interface NodeDetail {
   conditions: { type: string; status: string; reason?: string; message?: string; since?: string }[]
   taints: string[] | null; labels: Record<string, string>; capacity: Resources; allocatable: Resources; requests: Resources; pods: PodSummary[] | null
 }
-export interface NodeRow { ip: string; cluster: string; hostname: string; mac: string; arch: string; role: string; source: string; state: string; talosVersion: string; lastSeen: string; inventory?: Inventory }
+export interface NodeRow { ip: string; mac: string; uuid?: string; serial?: string; ipsSeen?: string[]; cluster: string; hostname: string; pool: string; arch: string; role: string; source: string; state: string; talosVersion: string; wol: boolean; firstSeen: string; lastSeen: string; inventory?: Inventory }
 
-export interface NodeStatus { hostname: string; ip: string; role: string; arch: string; kvm: boolean; talosVersion: string; kubeletVersion: string; ready: boolean; unschedulable: boolean; talosReachable: boolean; talosError?: string; registered: boolean; stage: string; cpuMilli: number; cpuCapMilli: number; memBytes: number; memCapBytes: number; pods: number; podCap: number; gvisor: boolean }
+export interface NodeStatus { hostname: string; ip: string; role: string; pool: string; seenAt?: string; arch: string; kvm: boolean; talosVersion: string; kubeletVersion: string; ready: boolean; unschedulable: boolean; talosReachable: boolean; talosError?: string; registered: boolean; stage: string; cpuMilli: number; cpuCapMilli: number; memBytes: number; memCapBytes: number; pods: number; podCap: number; gvisor: boolean }
 export interface Status {
   name: string; state: string; talosVersion: string; kubernetesVersion: string; endpoint: string; apiReachable: boolean; apiError?: string
   nodes: NodeStatus[]
@@ -107,8 +112,18 @@ export const api = {
   ackEvent: (id: number) => req<void>('POST', `/events/${id}/ack`),
   ackAll: (name: string) => req<void>('POST', `/clusters/${name}/events/ack`),
   versions: () => req<Versions>('GET', '/versions'),
-  saveClusterForm: (name: string, form: { talosVersion: string; kubernetesVersion: string; endpoint: string; vip: string; allowScheduling: boolean | null; podCIDR: string; serviceCIDR: string; extensions: string[] }) => req<{ yaml: string }>('PUT', `/clusters/${name}/form`, form),
+  saveClusterForm: (name: string, form: { talosVersion: string; kubernetesVersion: string; endpoint: string; vip: string; allowScheduling: boolean | null; podCIDR: string; serviceCIDR: string; extensions: string[]; nameservers: string[]; ntp: string[] }) => req<{ yaml: string }>('PUT', `/clusters/${name}/form`, form),
   settings: () => req<Settings>('GET', '/settings'),
+  machine: (mac: string) => req<NodeRow>('GET', `/machines/${mac}`),
+  retireMachine: (mac: string) => req<void>('DELETE', `/machines/${mac}`),
+  setWOL: (mac: string, enabled: boolean) => req<void>('PUT', `/machines/${mac}/wol`, { enabled }),
+  wake: (mac: string) => req<void>('POST', `/machines/${mac}/wake`),
+  design: (name: string, macs: string[], metallbRange?: string) => req<{ yaml: string; cluster: ClusterSpec; warnings: Warning[]; topology: { ControlPlanes: number; Workers: number; AllowScheduling: boolean; HA: boolean }; overlaps?: string[] }>('POST', '/config/design', { name, macs, metallbRange }),
+  lint: (yaml: string) => req<{ warnings: Warning[]; yaml: string }>('POST', '/config/lint', { yaml }),
+  renameNode: (cluster: string, hostname: string, to: string) => req<OpRef>('POST', `/clusters/${cluster}/nodes/${hostname}/rename`, { to }),
+  moveNodePool: (cluster: string, hostname: string, pool: string) => req<OpRef>('POST', `/clusters/${cluster}/nodes/${hostname}/pool`, { pool }),
+  readdressNode: (cluster: string, hostname: string, network: NodeNetwork | null, ip: string) => req<OpRef>('POST', `/clusters/${cluster}/nodes/${hostname}/readdress`, { network, ip }),
+  savePools: (cluster: string, pools: Pool[]) => req<Pool[]>('PUT', `/clusters/${cluster}/pools`, pools),
   saveSettings: (v: Settings) => req<Settings>('PUT', '/settings', v),
   pxe: () => req<PxeStatus>('GET', '/pxe'),
   addons: (name: string) => req<AddonStatus[]>('GET', `/clusters/${name}/addons`),
@@ -213,6 +228,7 @@ export const fmt = {
       'cluster.create': 'Create cluster', 'cluster.apply': 'Apply cluster.yaml', 'platform.plan': 'Plan add-ons', 'platform.apply': 'Apply add-ons',
       'upgrade.talos': 'Upgrade Talos', 'upgrade.kubernetes': 'Upgrade Kubernetes', 'node.add': 'Add node', 'node.remove': 'Remove node', discover: 'Discover nodes',
       'node.cordon': 'Cordon node', 'node.uncordon': 'Uncordon node', 'node.drain': 'Drain node', 'node.reboot': 'Reboot node', 'node.upgrade': 'Upgrade node',
+      'node.rename': 'Rename node', 'node.pool': 'Move node to pool', 'node.readdress': 'Re-address node',
     } as Record<string, string>)[kind] || kind
   },
 }
