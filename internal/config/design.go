@@ -75,6 +75,11 @@ func Design(name string, machines []Machine, opts DesignOptions) (*Cluster, []Wa
 		}
 		if len(mch.Disks) > 0 {
 			n.InstallDisk = InstallDisk{Path: mch.Disks[0].DevPath}
+			if opts.DataDisks {
+				for _, d := range mch.Disks[1:] {
+					n.DataDisks = append(n.DataDisks, d.DevPath)
+				}
+			}
 		}
 		c.Spec.Nodes = append(c.Spec.Nodes, n)
 	}
@@ -98,6 +103,8 @@ func Design(name string, machines []Machine, opts DesignOptions) (*Cluster, []Wa
 
 type DesignOptions struct {
 	MetalLBRange string
+	// DataDisks claims every disk besides the install disk for node-local storage.
+	DataDisks bool
 }
 
 // Warning is a lint finding: something legal that an operator should know before
@@ -171,6 +178,11 @@ func Lint(c *Cluster, machines []Machine) []Warning {
 			} else if m.Disks[0].SizeBytes < 20<<30 {
 				warn("warn", "small-disk", n.Hostname, "%s: largest disk is %d GiB; Talos wants 10 GiB plus room for images and etcd.", n.Hostname, m.Disks[0].SizeBytes>>30)
 			}
+			for _, d := range n.DataDisks {
+				if !hasDisk(m.Disks, d) {
+					warn("warn", "unknown-data-disk", n.Hostname, "%s: data disk %s is not in the machine's inventory; the volume stays unprovisioned until a disk matches.", n.Hostname, d)
+				}
+			}
 			if m.MemBytes > 0 && m.MemBytes < 2<<30 {
 				warn("warn", "low-memory", n.Hostname, "%s has %d MiB RAM; Talos control planes need at least 2 GiB.", n.Hostname, m.MemBytes>>20)
 			}
@@ -229,4 +241,13 @@ func Overlaps(rangeSpec string, others map[string]string) []string {
 	}
 	sort.Strings(out)
 	return out
+}
+
+func hasDisk(disks []MachineDisk, path string) bool {
+	for _, d := range disks {
+		if d.DevPath == path {
+			return true
+		}
+	}
+	return false
 }

@@ -40,7 +40,7 @@ export function Backups({ ctx }: { ctx: ClusterCtx }) {
       <span class="whitespace-nowrap flex gap-1 justify-end">
         <button class="btn !py-1" title="Unseal, check the hash and open the database" onClick={() => api.verifySnapshot(name, s.id).then((r) => { toast(r.ok ? `Snapshot #${s.id} verified` : `Snapshot #${s.id}: ${r.error}`, r.ok ? 'good' : 'error') }).catch((e) => toast(e.message, 'error'))}>Verify</button>
         <a class="btn !py-1" href={`/api/v1/clusters/${name}/snapshots/${s.id}`} download title="Plain etcd snapshot (.db) for talosctl or etcdutl">Download</a>
-        <button class="btn btn-danger !py-1" disabled={s.status !== 'ok' || running} onClick={() => setRestore(s)}>Restore…</button>
+        <button class="btn btn-danger !py-1" disabled={s.status !== 'ok' || running} onClick={() => setRestore(s)}>Restore</button>
         <button class="btn !py-1" onClick={() => setRemove(s)} aria-label="Delete snapshot">✕</button>
       </span>
     ) },

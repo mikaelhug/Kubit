@@ -110,7 +110,7 @@ export function Settings({ ctx }: { ctx: ClusterCtx }) {
         <Notice tone="bad">
           <div class="flex items-center gap-3">
             <span>Forget removes Kubit's records and secrets for this cluster. The nodes keep running; without the secrets Kubit can never manage them again. Export first.</span>
-            <button class="btn btn-danger ml-auto shrink-0" onClick={() => setForget(true)}>Forget cluster…</button>
+            <button class="btn btn-danger ml-auto shrink-0" onClick={() => setForget(true)}>Forget cluster</button>
           </div>
         </Notice>
       </Section>

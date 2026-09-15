@@ -9,11 +9,14 @@ import (
 	"fmt"
 	"github.com/mikael/kubit/internal/talos"
 	"log"
+	"net"
+	"strings"
 	"sync"
 	"time"
 
 	"github.com/mikael/kubit/internal/cluster"
 	"github.com/mikael/kubit/internal/k8s"
+	"github.com/mikael/kubit/internal/labhost"
 	"github.com/mikael/kubit/internal/store"
 )
 
@@ -29,19 +32,22 @@ type Watcher struct {
 	OnStatus  func(name string, st *cluster.Status)
 	OnEvent   func(e store.EventRow)
 	OnRefresh func(name, scope string)
+	// OnHostSample pushes a lab host's newest reading (keyed by MAC).
+	OnHostSample func(mac string, sm store.Sample)
 
 	mu           sync.Mutex
 	last         map[string]*cluster.Status
 	lastServices map[string]*cluster.ServiceHealth
 	trackers     map[string]*ServiceTracker
 	running      map[string]context.CancelFunc
+	memHigh      map[string]int // lab host MAC → consecutive samples over the memory line
 }
 
 func New(m *cluster.Manager, interval time.Duration) *Watcher {
 	if interval <= 0 {
 		interval = 15 * time.Second
 	}
-	return &Watcher{Manager: m, Store: m.Store, Interval: interval, ServiceInterval: 4 * interval, last: map[string]*cluster.Status{}, lastServices: map[string]*cluster.ServiceHealth{}, trackers: map[string]*ServiceTracker{}, running: map[string]context.CancelFunc{}}
+	return &Watcher{Manager: m, Store: m.Store, Interval: interval, ServiceInterval: 4 * interval, last: map[string]*cluster.Status{}, lastServices: map[string]*cluster.ServiceHealth{}, trackers: map[string]*ServiceTracker{}, running: map[string]context.CancelFunc{}, memHigh: map[string]int{}}
 }
 
 // Run starts a loop per stored cluster and picks up clusters added or forgotten later.
@@ -76,6 +82,7 @@ func (w *Watcher) Run(ctx context.Context) {
 	}
 	sync()
 	go w.labLoop(ctx)
+	go w.candidateLoop(ctx)
 	t := time.NewTicker(w.Interval)
 	prune := time.NewTicker(time.Hour)
 	defer t.Stop()
@@ -173,6 +180,57 @@ func (w *Watcher) watchKubernetes(ctx context.Context, name string) {
 	}
 }
 
+// candidateLoop keeps the wizard's picker honest: every unassigned machine is probed
+// each service interval, so last-seen moves while it answers and stops when it is
+// gone. Lab VMs are covered by their host's tick.
+func (w *Watcher) candidateLoop(ctx context.Context) {
+	t := time.NewTicker(w.ServiceInterval)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+		}
+		rows, err := w.Store.ListNodes(ctx, "")
+		if err != nil {
+			continue
+		}
+		for _, m := range rows {
+			if m.Cluster != "" || m.LabHost != nil || m.Host != "" || m.IP == "" {
+				continue
+			}
+			switch m.State {
+			case "maintenance", "configured":
+				pctx, cancel := context.WithTimeout(ctx, 6*time.Second)
+				res := talos.Probe(pctx, m.IP, 2*time.Second)
+				cancel()
+				if res.Err == nil {
+					_ = w.Store.UpsertNode(ctx, rowFromScan(res))
+				}
+			case "amt", "off", "unknown":
+				if m.OOB != nil && portOpen(m.OOB.Host, "16992") {
+					_ = w.Store.UpsertNode(ctx, store.NodeRow{MAC: m.MAC, IP: m.IP, Source: "amt", State: m.State})
+				} else if portOpen(m.IP, "16992") {
+					_ = w.Store.UpsertNode(ctx, store.NodeRow{MAC: m.MAC, IP: m.IP, Source: "amt", State: m.State})
+				}
+			}
+		}
+	}
+}
+
+func portOpen(host, port string) bool {
+	if host == "" {
+		return false
+	}
+	c, err := net.DialTimeout("tcp", net.JoinHostPort(host, port), 2*time.Second)
+	if err != nil {
+		return false
+	}
+	c.Close()
+	return true
+}
+
 // labLoop keeps lab hosts current: VM list and capacity over SSH, and VMs that were
 // started into Talos maintenance mode get their row flipped as soon as they answer.
 func (w *Watcher) labLoop(ctx context.Context) {
@@ -199,23 +257,49 @@ func (w *Watcher) labLoop(ctx context.Context) {
 }
 
 func (w *Watcher) labTick(ctx context.Context, host *store.Machine) {
-	tctx, cancel := context.WithTimeout(ctx, 40*time.Second)
+	tctx, cancel := context.WithTimeout(ctx, 3*time.Minute)
 	defer cancel()
+	key := store.LabHostKey(host.MAC)
 	lc, err := w.Manager.LabDial(tctx, host)
 	if err != nil {
-		log.Printf("lab host %s: %v", host.MAC, err)
+		w.labFailed(tctx, host, err)
 		return
 	}
 	defer lc.Close()
 	vms, err := lc.List(tctx)
 	if err != nil {
+		w.labFailed(tctx, host, err)
 		return
 	}
+	if host.LabHost.Failures >= labUnreachableAfter {
+		w.emit(tctx, key, []store.EventRow{{Cluster: key, Severity: "info", Kind: "labhost.back", Message: labName(host) + ": reachable again"}})
+	}
+	host.LabHost.Failures = 0
 	capa, err := lc.Capacity(tctx)
 	if err == nil {
 		host.LabHost.Capacity = capa
 	}
 	host.LabHost.VMs = vms
+	now := time.Now()
+	if m, err := lc.Metrics(tctx); err == nil {
+		host.LabHost.Metrics = &m
+		sm := store.Sample{CPUMilli: int64(m.CPUPct * 10), CPUCap: 1000, MemBytes: m.MemUsed, MemCap: m.MemTotal, Pods: m.VMsRunning, Ready: true, Reachable: true, Disk: m.DiskUsed, DiskCap: m.DiskTotal}
+		_ = w.Store.AddSamples(tctx, key, now, []store.Sample{sm})
+		if w.OnHostSample != nil {
+			sm.TS = now.UTC().Format(time.RFC3339)
+			w.OnHostSample(host.MAC, sm)
+		}
+		w.emit(tctx, key, w.labResourceEvents(tctx, host, m))
+	}
+	// The package index is refreshed hourly; it needs the network and a minute.
+	if u := host.LabHost.Updates; u == nil || staleBy(u.CheckedAt, time.Hour) {
+		if u, err := lc.CheckUpdates(tctx); err == nil {
+			host.LabHost.Updates = &u
+			if (u.Count > 0 || u.NeedsReboot()) && time.Since(w.Store.LastEventAt(tctx, key, "labhost.updates")) > 24*time.Hour {
+				w.emit(tctx, key, []store.EventRow{{Cluster: key, Severity: "info", Kind: "labhost.updates", Message: labName(host) + ": " + updatesSummary(u)}})
+			}
+		}
+	}
 	_ = w.Store.SetLabHost(tctx, host.MAC, host.LabHost)
 	for _, vm := range vms {
 		row, err := w.Store.GetMachine(tctx, vm.MAC)
@@ -242,6 +326,98 @@ func (w *Watcher) labTick(ctx context.Context, host *store.Machine) {
 	}
 }
 
+// labUnreachableAfter is how many consecutive failed ticks make an alert: one is a
+// blip, three minutes without SSH is a host that is down or cut off.
+const labUnreachableAfter = 3
+
+func (w *Watcher) labFailed(ctx context.Context, host *store.Machine, err error) {
+	log.Printf("lab host %s: %v", host.MAC, err)
+	host.LabHost.Failures++
+	key := store.LabHostKey(host.MAC)
+	if host.LabHost.Failures == labUnreachableAfter {
+		w.emit(ctx, key, []store.EventRow{{Cluster: key, Severity: "critical", Kind: "labhost.unreachable", Message: fmt.Sprintf("%s: no SSH for %d checks (%v)", labName(host), labUnreachableAfter, err)}})
+	}
+	_ = w.Store.AddSamples(ctx, key, time.Now(), []store.Sample{{Reachable: false}})
+	_ = w.Store.SetLabHost(ctx, host.MAC, host.LabHost)
+}
+
+// Thresholds on the filesystem carrying thin-provisioned VM disks: at 100 % every VM
+// pauses at once, so the warning comes early and clears with hysteresis.
+const (
+	labDiskWarn     = 85
+	labDiskCritical = 95
+	labDiskOK       = 80
+	labMemWarn      = 92
+	labMemOK        = 85
+	labMemSamples   = 3
+)
+
+func (w *Watcher) labResourceEvents(ctx context.Context, host *store.Machine, m labhost.Metrics) []store.EventRow {
+	key, name := store.LabHostKey(host.MAC), labName(host)
+	var out []store.EventRow
+	if m.DiskTotal > 0 {
+		pct := int(m.DiskUsed * 100 / m.DiskTotal)
+		open := w.Store.OpenEventSeverity(ctx, key, "", "labhost.disk-low")
+		msg := fmt.Sprintf("%s: VM disk %d%% full (%s of %s)", name, pct, humanGiB(m.DiskUsed), humanGiB(m.DiskTotal))
+		switch {
+		case pct >= labDiskCritical && open != "critical":
+			_ = w.Store.ResolveEvents(ctx, key, "", "labhost.disk-low")
+			out = append(out, store.EventRow{Cluster: key, Severity: "critical", Kind: "labhost.disk-low", Message: msg})
+		case pct >= labDiskWarn && pct < labDiskCritical && open == "":
+			out = append(out, store.EventRow{Cluster: key, Severity: "warn", Kind: "labhost.disk-low", Message: msg})
+		case pct < labDiskOK && open != "":
+			out = append(out, store.EventRow{Cluster: key, Severity: "info", Kind: "labhost.disk-ok", Message: fmt.Sprintf("%s: VM disk back to %d%%", name, pct)})
+		}
+	}
+	if m.MemTotal > 0 {
+		pct := int(m.MemUsed * 100 / m.MemTotal)
+		w.mu.Lock()
+		if pct >= labMemWarn {
+			w.memHigh[host.MAC]++
+		} else {
+			w.memHigh[host.MAC] = 0
+		}
+		high := w.memHigh[host.MAC]
+		w.mu.Unlock()
+		open := w.Store.HasOpenEvent(ctx, key, "", "labhost.memory-pressure")
+		switch {
+		case high >= labMemSamples && !open:
+			out = append(out, store.EventRow{Cluster: key, Severity: "warn", Kind: "labhost.memory-pressure", Message: fmt.Sprintf("%s: memory %d%% used for %d checks; VMs may be swapped or killed", name, pct, high)})
+		case pct < labMemOK && open:
+			out = append(out, store.EventRow{Cluster: key, Severity: "info", Kind: "labhost.memory-ok", Message: fmt.Sprintf("%s: memory back to %d%%", name, pct)})
+		}
+	}
+	return out
+}
+
+func labName(host *store.Machine) string {
+	if host.LabHost != nil && host.LabHost.Capacity.Hostname != "" {
+		return host.LabHost.Capacity.Hostname
+	}
+	if host.Hostname != "" {
+		return host.Hostname
+	}
+	return host.MAC
+}
+
+func updatesSummary(u labhost.Updates) string {
+	var parts []string
+	if u.Count > 0 {
+		parts = append(parts, fmt.Sprintf("%d package updates pending", u.Count))
+	}
+	if u.NeedsReboot() {
+		parts = append(parts, "reboot required")
+	}
+	return strings.Join(parts, ", ")
+}
+
+func humanGiB(b int64) string { return fmt.Sprintf("%.0f GiB", float64(b)/(1<<30)) }
+
+func staleBy(ts string, d time.Duration) bool {
+	t, err := time.Parse(time.RFC3339, ts)
+	return err != nil || time.Since(t) > d
+}
+
 func rowFromScan(res talos.ScanResult) store.NodeRow {
 	row := store.NodeRow{IP: res.IP, Source: "scan", State: string(res.State)}
 	if inv := res.Inventory; inv != nil {
@@ -254,7 +430,7 @@ func rowFromScan(res talos.ScanResult) store.NodeRow {
 
 // disruptive operations restart pods by design; workload rules stay quiet for a while
 // after one so the churn is not reported as crashloops.
-var disruptive = []string{"cluster.create", "cluster.apply", "etcd.restore", "upgrade.talos", "upgrade.kubernetes", "node.add", "node.remove", "node.reboot", "node.rename", "node.pool", "node.readdress", "node.upgrade", "platform.apply"}
+var disruptive = []string{"cluster.create", "cluster.apply", "etcd.restore", "upgrade.talos", "upgrade.kubernetes", "node.add", "node.remove", "node.reboot", "node.rename", "node.pool", "node.readdress", "node.upgrade", "platform.apply", "labhost.update", "labhost.reboot"}
 
 const quietAfterOperation = 10 * time.Minute
 
@@ -383,6 +559,7 @@ func (w *Watcher) reconcileOpen(ctx context.Context, name string, st *cluster.St
 // resolves maps a recovery event to the alert kind it clears.
 var resolves = map[string]string{
 	"talos.back": "talos.unreachable", "node.ready": "node.notready", "api.back": "api.unreachable", "etcd.healthy": "etcd.unhealthy", "lb.assigned": "lb.lost",
+	"labhost.back": "labhost.unreachable", "labhost.disk-ok": "labhost.disk-low", "labhost.memory-ok": "labhost.memory-pressure",
 }
 
 // Derive compares two consecutive statuses and returns the events describing what

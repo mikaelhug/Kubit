@@ -37,6 +37,7 @@ func (s *Server) AttachWatcher(ctx context.Context, w *watch.Watcher) {
 		s.forwardEvent(e)
 	}
 	w.OnRefresh = func(name, scope string) { s.refresh(name, scope) }
+	w.OnHostSample = func(mac string, sm store.Sample) { s.hub.publish(Message{Kind: "hostSample", Key: mac, Sample: &sm}) }
 	s.attachLive(ctx)
 	go s.watchPXE(ctx)
 	go s.watchVersions(ctx)
@@ -124,24 +125,26 @@ func (s *Server) handleServiceHealth(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleSamples(w http.ResponseWriter, r *http.Request) {
-	rng := r.URL.Query().Get("range")
-	d := 24 * time.Hour
-	switch rng {
-	case "1h":
-		d = time.Hour
-	case "6h":
-		d = 6 * time.Hour
-	case "7d":
-		d = 7 * 24 * time.Hour
-	case "30d":
-		d = 30 * 24 * time.Hour
-	}
-	rows, err := s.store.Samples(r.Context(), r.PathValue("name"), r.URL.Query().Get("node"), time.Now().Add(-d))
+	rows, err := s.store.Samples(r.Context(), r.PathValue("name"), r.URL.Query().Get("node"), time.Now().Add(-sampleRange(r.URL.Query().Get("range"))))
 	if err != nil {
 		writeErr(w, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, rows)
+}
+
+func sampleRange(rng string) time.Duration {
+	switch rng {
+	case "1h":
+		return time.Hour
+	case "6h":
+		return 6 * time.Hour
+	case "7d":
+		return 7 * 24 * time.Hour
+	case "30d":
+		return 30 * 24 * time.Hour
+	}
+	return 24 * time.Hour
 }
 
 func (s *Server) handleEvents2(w http.ResponseWriter, r *http.Request) {

@@ -15,11 +15,13 @@ import (
 	"github.com/siderolabs/talos/pkg/machinery/config/generate"
 	"github.com/siderolabs/talos/pkg/machinery/config/generate/secrets"
 	"github.com/siderolabs/talos/pkg/machinery/config/machine"
+	"github.com/siderolabs/talos/pkg/machinery/config/types/block"
 	"github.com/siderolabs/talos/pkg/machinery/config/types/k8s"
 	"github.com/siderolabs/talos/pkg/machinery/config/types/meta"
 	"github.com/siderolabs/talos/pkg/machinery/config/types/network"
 	"github.com/siderolabs/talos/pkg/machinery/config/types/runtime"
 	"github.com/siderolabs/talos/pkg/machinery/constants"
+	blockres "github.com/siderolabs/talos/pkg/machinery/resources/block"
 	"go.yaml.in/yaml/v4"
 )
 
@@ -32,6 +34,8 @@ const (
 	LabelGVisorKVM = "sandbox.runtime/gvisor-kvm"
 	// LabelPool records the node's pool on the Kubernetes Node object.
 	LabelPool = "kubit.dev/pool"
+	// LabelDataDisks carries the count of data volumes so storage can target nodes.
+	LabelDataDisks = "kubit.dev/data-disks"
 
 	// vipLinkAlias names the physical interface the control plane VIP floats on.
 	vipLinkAlias = "uplink"
@@ -120,6 +124,13 @@ func generateNode(c *Cluster, in *generate.Input, n Node, installerImage string)
 		return nil, err
 	}
 	docs = append(docs, install)
+	for i, path := range n.DataDisks {
+		vol, err := dataVolume(i+1, path)
+		if err != nil {
+			return nil, err
+		}
+		docs = append(docs, vol)
+	}
 
 	host := findOrAppend(&docs, network.NewHostnameConfigV1Alpha1)
 	host.ConfigAuto = nil
@@ -136,6 +147,9 @@ func generateNode(c *Cluster, in *generate.Input, n Node, installerImage string)
 		}
 	}
 	node.LabelsConfig[LabelPool] = n.Pool
+	if len(n.DataDisks) > 0 {
+		node.LabelsConfig[LabelDataDisks] = fmt.Sprint(len(n.DataDisks))
+	}
 	for k, v := range c.NodeLabels(n) {
 		node.LabelsConfig[k] = v
 	}
@@ -271,6 +285,25 @@ func uplinkSelector(mac string) (cel.Expression, error) {
 		expr = fmt.Sprintf("mac(link.permanent_addr) == %q", strings.ToLower(mac))
 	}
 	return cel.ParseBooleanExpression(expr, celenv.LinkLocator())
+}
+
+// DataMount is where data volume n lands on the node (Talos mounts user volumes
+// under /var/mnt/<name>).
+func DataMount(n int) string { return fmt.Sprintf("/var/mnt/data-%d", n) }
+
+// dataVolume claims a whole disk for node-local storage: xfs, mounted at DataMount.
+// The selector excludes the system disk as a second guard against a stale path.
+func dataVolume(n int, path string) (*block.UserVolumeConfigV1Alpha1, error) {
+	vol := block.NewUserVolumeConfigV1Alpha1()
+	vol.MetaName = fmt.Sprintf("data-%d", n)
+	vol.VolumeType = new(blockres.VolumeTypeDisk)
+	match, err := cel.ParseBooleanExpression(fmt.Sprintf("disk.dev_path == %q && !system_disk", path), celenv.DiskLocator())
+	if err != nil {
+		return nil, err
+	}
+	vol.ProvisioningSpec.DiskSelectorSpec.Match = match
+	vol.FilesystemSpec.FilesystemType = blockres.FilesystemTypeXFS
+	return vol, nil
 }
 
 // diskSelector builds the CEL expression Talos evaluates against each disk at install.

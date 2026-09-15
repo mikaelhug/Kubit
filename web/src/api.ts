@@ -8,10 +8,10 @@ export interface Step { id: string; title: string; status: StepStatus; node?: st
 export interface Event { time: string; clock?: string; kind?: 'log' | 'steps' | 'step'; level: Level; step: string; node?: string; message: string; steps?: Step[]; status?: StepStatus }
 export type OpStatus = 'running' | 'done' | 'failed' | 'cancelled'
 export interface Operation { id: number; cluster: string; kind: string; status: OpStatus; log?: string; startedAt: string; finishedAt?: string; steps: Step[]; artifact?: unknown; request?: unknown }
-export interface Message { seq?: number; kind: 'hello' | 'resync' | 'event' | 'operation' | 'status' | 'health' | 'refresh' | 'cluster' | 'clusterRemoved' | 'machine' | 'machineRemoved' | 'snapshot' | 'snapshotRemoved' | 'audit' | 'settings' | 'healthAck' | 'healthResolved' | 'versions'; operationId?: number; event?: Event; operation?: Operation; cluster?: string; status?: Status; health?: HealthEvent; scope?: string; clusterRow?: ClusterRow; machine?: NodeRow; snapshot?: Snapshot; audit?: AuditEntry; settings?: Settings; key?: string; node?: string; hello?: { seq: number; version: string; startedAt: string; service: boolean; pid: number } }
+export interface Message { seq?: number; kind: 'hello' | 'resync' | 'event' | 'operation' | 'status' | 'health' | 'refresh' | 'cluster' | 'clusterRemoved' | 'machine' | 'machineRemoved' | 'snapshot' | 'snapshotRemoved' | 'audit' | 'settings' | 'healthAck' | 'healthResolved' | 'versions' | 'hostSample'; operationId?: number; event?: Event; operation?: Operation; cluster?: string; status?: Status; health?: HealthEvent; scope?: string; clusterRow?: ClusterRow; machine?: NodeRow; snapshot?: Snapshot; audit?: AuditEntry; settings?: Settings; sample?: Sample; key?: string; node?: string; hello?: { seq: number; version: string; startedAt: string; service: boolean; pid: number } }
 export interface HealthEvent { id: number; ts: string; cluster: string; node?: string; severity: 'info' | 'warn' | 'critical'; kind: string; message: string; acked: boolean }
 export interface ServiceHealth { collectedAt: string; metallb: boolean; workloads?: { kind: string; namespace: string; name: string; ready: number; desired: number; available: boolean; ageSec: number }[]; pods?: { namespace: string; name: string; node?: string; owner?: string; phase: string; restarts: number; ageSec: number }[]; claims?: { namespace: string; name: string; phase: string; ageSec: number }[]; services?: { namespace: string; name: string; type: string; hasSelector: boolean; endpoints: number; ageSec: number }[]; ingresses?: { namespace: string; name: string; hasAddress: boolean; ageSec: number }[]; pool?: { range: string; total: number; allocated: number } }
-export interface Sample { ts: string; node?: string; cpuMilli: number; cpuCap: number; memBytes: number; memCap: number; pods: number; ready: boolean; reachable: boolean }
+export interface Sample { ts: string; node?: string; cpuMilli: number; cpuCap: number; memBytes: number; memCap: number; pods: number; ready: boolean; reachable: boolean; disk?: number; diskCap?: number }
 export interface Workload { kind: string; namespace: string; name: string; ready: number; desired: number; available: boolean; images: string; age: string; selector?: string }
 export interface KService { namespace: string; name: string; type: string; clusterIP: string; externalIPs?: string[]; ports: string[]; endpoints: number; selector?: string; age: string }
 export interface KIngress { namespace: string; name: string; class?: string; rules: { host: string; path: string; service: string; port: string }[]; addresses?: string[]; tlsHosts?: string[]; age: string }
@@ -28,12 +28,12 @@ export interface AlertSettings { minSeverity: 'info' | 'warn' | 'critical'; webh
 export interface OffsiteTarget { type: '' | 'dir' | 's3'; prefix: string; dir: string; endpoint: string; bucket: string; region: string; accessKey: string; secretKey: string; insecure: boolean; pathStyle: boolean; keepBackups: number }
 export interface OffsiteStatus { target: string; enabled: boolean; lastBackup?: string; backups: number; snapshots: number; bytes: number; error?: string }
 export interface Settings { factoryUrl: string; discoverySubnets: string[]; watchIntervalSec: number; pxeStatusUrl: string; defaultMetalLBRange: string; alerts: AlertSettings; offsite: OffsiteTarget; pxeEnrollment: 'open' | 'closed'; amt: OOBConfig }
-export interface PxeStatus { running: boolean; statusUrl: string; error?: string; command?: string; startedAt?: string; interface?: string; ip?: string; httpPort?: number; talosVersion?: string; schematicId?: string; boots?: { mac: string; ip?: string; arch?: string; firstSeen: string; lastSeen: string; stage: string; count: number }[]; log?: string[] }
+export interface PxeStatus { running: boolean; statusUrl: string; error?: string; command?: string; serviceCommand?: string; startedAt?: string; interface?: string; ip?: string; httpPort?: number; talosVersion?: string; schematicId?: string; boots?: { mac: string; ip?: string; arch?: string; firstSeen: string; lastSeen: string; stage: string; count: number }[]; log?: string[] }
 export interface Versions { talos: string[]; talosSource: string; kubernetesMinors: string[]; kubernetesLatest: string; machinery: string; minTalos: string; note: string }
 
 export interface InstallDisk { path?: string; selector?: { minSize?: string; type?: string; model?: string } }
 export interface NodeNetwork { addresses: string[]; gateway?: string; nameservers?: string[]; vlan?: number; mtu?: number }
-export interface NodeSpec { hostname: string; ip: string; mac?: string; uuid?: string; pool?: string; role?: 'controlplane' | 'worker'; arch: string; kvm?: boolean; installDisk?: InstallDisk; network?: NodeNetwork; labels?: Record<string, string>; taints?: Record<string, string>; annotations?: Record<string, string> }
+export interface NodeSpec { hostname: string; ip: string; mac?: string; uuid?: string; pool?: string; role?: 'controlplane' | 'worker'; arch: string; kvm?: boolean; installDisk?: InstallDisk; dataDisks?: string[]; network?: NodeNetwork; labels?: Record<string, string>; taints?: Record<string, string>; annotations?: Record<string, string> }
 export interface Pool { name: string; role: 'controlplane' | 'worker'; labels?: Record<string, string>; taints?: Record<string, string>; annotations?: Record<string, string>; extensions?: string[]; schematicID?: string; installDisk?: InstallDisk }
 export interface Warning { level: 'info' | 'warn'; code: string; message: string; node?: string }
 export interface AddonSpec { enabled: boolean; values?: Record<string, unknown> }
@@ -82,9 +82,16 @@ export interface NodeDetail {
 }
 export interface OOBConfig { type: '' | 'amt'; host: string; user: string; password: string; tls: boolean }
 export interface OOBInfo { version: string; mac: string; manufacturer?: string; model?: string; serial?: string; power: string }
-export interface LabVM { name: string; mac: string; state: string; cpus: number; memMiB: number; diskGiB: number; boot: 'talos' | 'disk'; ip?: string }
+export interface LabVM { name: string; mac: string; state: string; cpus: number; memMiB: number; diskGiB: number; dataGiB?: number; boot: 'talos' | 'disk'; ip?: string }
 export interface LabCapacity { cpus: number; memMiB: number; diskGiB: number; kvm: boolean; kernel: string; libvirt: string; hostname: string; arch: string; bridge: string; ready: boolean; checkedAt: string }
-export interface LabHost { state: 'installing' | 'setup' | 'ready' | 'error'; error?: string; capacity: LabCapacity; talos?: string; vms: LabVM[]; updatedAt: string }
+export interface LabMetrics { load1: number; cpuPct: number; memUsed: number; memTotal: number; diskUsed: number; diskTotal: number; vmsRunning: number; uptimeSec: number; at: string }
+export interface LabUpdates { count: number; security: number; rebootRequired: boolean; kernelRunning: string; kernelInstalled: string; release: string; unattended: boolean; checkedAt: string }
+export interface LabHost { state: 'installing' | 'setup' | 'ready' | 'updating' | 'error'; error?: string; capacity: LabCapacity; talos?: string; /** null from the daemon while installing; readers use vmsOf */ vms: LabVM[] | null; metrics?: LabMetrics; updates?: LabUpdates; failures?: number; updatedAt: string }
+export function vmsOf(lh?: LabHost | null): LabVM[] { return lh?.vms ?? [] }
+/** Samples and events of a lab host are filed under this pseudo-cluster. */
+export function labHostKey(mac: string) { return `labhost:${mac.toLowerCase()}` }
+/** A newer installed kernel or the reboot-required flag: the next Update host will reboot. */
+export function labNeedsReboot(u?: LabUpdates) { return !!u && (u.rebootRequired || (!!u.kernelInstalled && !!u.kernelRunning && u.kernelInstalled !== u.kernelRunning)) }
 export interface NodeRow { ip: string; mac: string; uuid?: string; serial?: string; ipsSeen?: string[]; cluster: string; hostname: string; pool: string; arch: string; role: string; source: string; state: string; talosVersion: string; wol: boolean; oob?: OOBConfig; oobType?: string; provision?: boolean; provisionKind?: string; labhost?: LabHost; host?: string; firstSeen: string; lastSeen: string; inventory?: Inventory }
 
 export interface NodeStatus { hostname: string; ip: string; role: string; pool: string; seenAt?: string; arch: string; kvm: boolean; talosVersion: string; kubeletVersion: string; ready: boolean; unschedulable: boolean; talosReachable: boolean; talosError?: string; registered: boolean; stage: string; cpuMilli: number; cpuCapMilli: number; memBytes: number; memCapBytes: number; pods: number; podCap: number; gvisor: boolean }
@@ -104,7 +111,9 @@ export interface PlanDiff { summary: { Add: number; Change: number; Remove: numb
 
 export class ApiError extends Error {
   status: number
-  constructor(status: number, message: string) { super(message); this.status = status }
+  code?: string
+  command?: string
+  constructor(status: number, message: string, extra?: { code?: string; command?: string }) { super(message); this.status = status; this.code = extra?.code; this.command = extra?.command }
 }
 
 let token = ''
@@ -121,7 +130,7 @@ async function req<T>(method: string, path: string, body?: unknown): Promise<T> 
   const text = await res.text()
   let data: any = text
   try { data = JSON.parse(text) } catch {}
-  if (!res.ok) throw new ApiError(res.status, (data && data.error) || text || res.statusText)
+  if (!res.ok) throw new ApiError(res.status, (data && data.error) || text || res.statusText, data && typeof data === 'object' ? { code: data.code, command: data.command } : undefined)
   return data as T
 }
 
@@ -148,9 +157,13 @@ export const api = {
   oobTest: (mac: string, c?: OOBConfig) => req<{ ok: boolean; error?: string; info?: OOBInfo }>('POST', `/machines/${mac}/oob/test`, c ?? {}),
   power: (mac: string, action: 'on' | 'off' | 'reset' | 'cycle' | 'pxe') => req<OpRef>('POST', `/machines/${mac}/power`, { action }),
   addOOBMachine: (c: OOBConfig) => req<{ machine: NodeRow; info: OOBInfo }>('POST', '/machines/oob', c),
-  labProvision: (mac: string) => req<OpRef>('POST', `/machines/${mac}/labhost`),
+  labProvision: (mac: string, plan?: { vms?: { count: number; cpus: number; memMiB: number; diskGiB: number; dataGiB?: number; prefix?: string }; cluster?: { name: string; controlPlanes: 1 | 3; skipPlatform?: boolean } }) => req<OpRef>('POST', `/machines/${mac}/labhost`, plan ?? {}),
   labRelease: (mac: string) => req<void>('DELETE', `/machines/${mac}/labhost`),
-  labAddVMs: (mac: string, r: { count: number; cpus: number; memMiB: number; diskGiB: number; prefix?: string }) => req<OpRef>('POST', `/machines/${mac}/labhost/vms`, r),
+  labSamples: (mac: string, range: string) => req<Sample[]>('GET', `/machines/${mac}/labhost/samples?range=${range}`),
+  labCheck: (mac: string) => req<LabUpdates>('POST', `/machines/${mac}/labhost/check`),
+  labUpdate: (mac: string) => req<OpRef>('POST', `/machines/${mac}/labhost/update?ignoreWindow=true`),
+  labReboot: (mac: string) => req<OpRef>('POST', `/machines/${mac}/labhost/reboot?ignoreWindow=true`),
+  labAddVMs: (mac: string, r: { count: number; cpus: number; memMiB: number; diskGiB: number; dataGiB?: number; prefix?: string }) => req<OpRef>('POST', `/machines/${mac}/labhost/vms`, r),
   labVM: (mac: string, name: string, action: 'start' | 'stop' | 'kill' | 'reprovision') => req<OpRef>('POST', `/machines/${mac}/labhost/vms/${name}/${action}`),
   labVMResize: (mac: string, name: string, cpus: number, memMiB: number) => req<void>('PUT', `/machines/${mac}/labhost/vms/${name}`, { cpus, memMiB }),
   labVMDelete: (mac: string, name: string) => req<void>('DELETE', `/machines/${mac}/labhost/vms/${name}`),
@@ -254,6 +267,10 @@ export const fmt = {
     return (i >= 3 && v < 100 ? v.toFixed(1) : Math.round(v)) + u[i]
   },
   cores(m: number) { return m >= 1000 ? (m / 1000).toFixed(1) : `${m}m` },
+  uptime(sec: number) {
+    const d = Math.floor(sec / 86400), h = Math.floor((sec % 86400) / 3600), m = Math.floor((sec % 3600) / 60)
+    return d ? `${d}d ${h}h` : h ? `${h}h ${m}m` : `${m}m`
+  },
   pct(a: number, b: number) { return b ? Math.round((a / b) * 100) : 0 },
   time(iso: string) { return iso ? new Date(iso).toLocaleTimeString() : '' },
   datetime(iso: string) { return iso ? new Date(iso).toLocaleString() : '' },
@@ -277,7 +294,7 @@ export const fmt = {
       'cluster.create': 'Create cluster', 'cluster.apply': 'Apply cluster.yaml', 'platform.plan': 'Plan add-ons', 'platform.apply': 'Apply add-ons',
       'upgrade.talos': 'Upgrade Talos', 'upgrade.kubernetes': 'Upgrade Kubernetes', 'node.add': 'Add node', 'node.remove': 'Remove node', discover: 'Discover nodes',
       'node.cordon': 'Cordon node', 'node.uncordon': 'Uncordon node', 'node.drain': 'Drain node', 'node.reboot': 'Reboot node', 'node.upgrade': 'Upgrade node',
-      'node.rename': 'Rename node', 'node.pool': 'Move node to pool', 'node.readdress': 'Re-address node', 'machine.power': 'Remote power action', 'kubit.backup': 'Kubit backup off-site', 'labhost.provision': 'Install lab host', 'labhost.vms': 'Add lab VMs', 'labhost.vm.start': 'Start VM', 'labhost.vm.stop': 'Stop VM', 'labhost.vm.kill': 'Force-stop VM', 'labhost.vm.reprovision': 'Re-provision VM',
+      'node.rename': 'Rename node', 'node.pool': 'Move node to pool', 'node.readdress': 'Re-address node', 'machine.power': 'Remote power action', 'kubit.backup': 'Kubit backup off-site', 'labhost.provision': 'Install lab host', 'labhost.cluster': 'Lab cluster', 'labhost.vms': 'Add lab VMs', 'labhost.vm.start': 'Start VM', 'labhost.vm.stop': 'Stop VM', 'labhost.vm.kill': 'Force-stop VM', 'labhost.vm.reprovision': 'Re-provision VM', 'labhost.update': 'Update lab host', 'labhost.reboot': 'Reboot lab host',
       'etcd.snapshot': 'etcd snapshot', 'etcd.restore': 'Restore etcd from snapshot', 'cert.rotate': 'Rotate credential',
     } as Record<string, string>)[kind] || kind
   },

@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -16,7 +17,14 @@ type Sample struct {
 	Pods      int    `json:"pods"`
 	Ready     bool   `json:"ready"`
 	Reachable bool   `json:"reachable"`
+	// Disk usage is recorded for lab hosts only (the filesystem carrying the VMs).
+	Disk    int64 `json:"disk,omitempty"`
+	DiskCap int64 `json:"diskCap,omitempty"`
 }
+
+// LabHostKey is the pseudo-cluster under which a lab host's samples and events are
+// filed, so the history and alert paths built for clusters serve hosts unchanged.
+func LabHostKey(mac string) string { return "labhost:" + strings.ToLower(mac) }
 
 func (s *Store) AddSamples(ctx context.Context, cluster string, ts time.Time, samples []Sample) error {
 	tx, err := s.db.BeginTx(ctx, nil)
@@ -25,8 +33,8 @@ func (s *Store) AddSamples(ctx context.Context, cluster string, ts time.Time, sa
 	}
 	stamp := ts.UTC().Format(time.RFC3339)
 	for _, sm := range samples {
-		if _, err := tx.ExecContext(ctx, `INSERT INTO samples (ts, cluster, node, cpu_milli, cpu_cap, mem, mem_cap, pods, ready, reachable) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-			stamp, cluster, sm.Node, sm.CPUMilli, sm.CPUCap, sm.MemBytes, sm.MemCap, sm.Pods, b2i(sm.Ready), b2i(sm.Reachable)); err != nil {
+		if _, err := tx.ExecContext(ctx, `INSERT INTO samples (ts, cluster, node, cpu_milli, cpu_cap, mem, mem_cap, pods, ready, reachable, disk, disk_cap) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			stamp, cluster, sm.Node, sm.CPUMilli, sm.CPUCap, sm.MemBytes, sm.MemCap, sm.Pods, b2i(sm.Ready), b2i(sm.Reachable), sm.Disk, sm.DiskCap); err != nil {
 			tx.Rollback()
 			return err
 		}
@@ -36,7 +44,7 @@ func (s *Store) AddSamples(ctx context.Context, cluster string, ts time.Time, sa
 
 // Samples returns rows newer than since for a cluster (node "" = totals).
 func (s *Store) Samples(ctx context.Context, cluster, node string, since time.Time) ([]Sample, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT ts, node, cpu_milli, cpu_cap, mem, mem_cap, pods, ready, reachable FROM samples WHERE cluster = ? AND node = ? AND ts >= ? ORDER BY ts`, cluster, node, since.UTC().Format(time.RFC3339))
+	rows, err := s.db.QueryContext(ctx, `SELECT ts, node, cpu_milli, cpu_cap, mem, mem_cap, pods, ready, reachable, disk, disk_cap FROM samples WHERE cluster = ? AND node = ? AND ts >= ? ORDER BY ts`, cluster, node, since.UTC().Format(time.RFC3339))
 	if err != nil {
 		return nil, err
 	}
@@ -45,7 +53,7 @@ func (s *Store) Samples(ctx context.Context, cluster, node string, since time.Ti
 	for rows.Next() {
 		var sm Sample
 		var ready, reach int
-		if err := rows.Scan(&sm.TS, &sm.Node, &sm.CPUMilli, &sm.CPUCap, &sm.MemBytes, &sm.MemCap, &sm.Pods, &ready, &reach); err != nil {
+		if err := rows.Scan(&sm.TS, &sm.Node, &sm.CPUMilli, &sm.CPUCap, &sm.MemBytes, &sm.MemCap, &sm.Pods, &ready, &reach, &sm.Disk, &sm.DiskCap); err != nil {
 			return nil, err
 		}
 		sm.Ready, sm.Reachable = ready == 1, reach == 1
@@ -125,6 +133,24 @@ func b2i(b bool) int {
 }
 
 // HasOpenEvent reports whether an unacknowledged event of this kind exists.
+// OpenEventSeverity returns the severity of the open event of one kind for a node,
+// or "" when none is open; escalations (warn to critical) need to know.
+func (s *Store) OpenEventSeverity(ctx context.Context, cluster, node, kind string) string {
+	var sev string
+	_ = s.db.QueryRowContext(ctx, `SELECT severity FROM events WHERE cluster = ? AND node = ? AND kind = ? AND acked = 0 ORDER BY id DESC LIMIT 1`, cluster, node, kind).Scan(&sev)
+	return sev
+}
+
+// LastEventAt is when an event of one kind was last recorded (zero when never).
+func (s *Store) LastEventAt(ctx context.Context, cluster, kind string) time.Time {
+	var ts string
+	if err := s.db.QueryRowContext(ctx, `SELECT ts FROM events WHERE cluster = ? AND kind = ? ORDER BY id DESC LIMIT 1`, cluster, kind).Scan(&ts); err != nil {
+		return time.Time{}
+	}
+	t, _ := time.Parse(time.RFC3339Nano, ts)
+	return t
+}
+
 func (s *Store) HasOpenEvent(ctx context.Context, cluster, node, kind string) bool {
 	var n int
 	_ = s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM events WHERE cluster = ? AND node = ? AND kind = ? AND acked = 0`, cluster, node, kind).Scan(&n)

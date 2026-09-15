@@ -71,6 +71,9 @@ func scanMachine(sc interface{ Scan(...any) error }) (*Machine, error) {
 	if lab != "" {
 		var l LabHost
 		if json.Unmarshal([]byte(lab), &l) == nil {
+			if l.VMs == nil {
+				l.VMs = []labhost.VM{}
+			}
 			m.LabHost = &l
 		}
 	}
@@ -291,13 +294,20 @@ type LabHost struct {
 	Initrd    string           `json:"initrd,omitempty"`
 	Index     int              `json:"index"` // for MAC assignment
 	VMs       []labhost.VM     `json:"vms"`
-	UpdatedAt string           `json:"updatedAt"`
+	Metrics   *labhost.Metrics `json:"metrics,omitempty"`
+	Updates   *labhost.Updates `json:"updates,omitempty"`
+	// Failures counts consecutive SSH failures; the watcher alerts on the third.
+	Failures  int    `json:"failures,omitempty"`
+	UpdatedAt string `json:"updatedAt"`
 }
 
 // SetLabHost stores the lab-host state (nil clears the role).
 func (s *Store) SetLabHost(ctx context.Context, mac string, l *LabHost) error {
 	raw := ""
 	if l != nil {
+		if l.VMs == nil {
+			l.VMs = []labhost.VM{}
+		}
 		l.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
 		b, err := json.Marshal(l)
 		if err != nil {

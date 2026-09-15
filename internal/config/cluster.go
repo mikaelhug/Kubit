@@ -128,6 +128,9 @@ type Node struct {
 	Role        Role        `yaml:"role,omitempty" json:"role,omitempty"`
 	Arch        Arch        `yaml:"arch,omitempty" json:"arch,omitempty"`
 	InstallDisk InstallDisk `yaml:"installDisk,omitempty" json:"installDisk,omitempty"`
+	// DataDisks are whole disks Talos formats (xfs) and mounts at /var/mnt/data-N, in
+	// this order, for node-local storage; nothing else on the machine is touched.
+	DataDisks []string `yaml:"dataDisks,omitempty" json:"dataDisks,omitempty"`
 	// KVM marks nodes where /dev/kvm exists, enabling the runsc-kvm RuntimeClass.
 	KVM bool `yaml:"kvm,omitempty" json:"kvm,omitempty"`
 	// Network, when set, replaces DHCP on the uplink with static addressing.
@@ -158,6 +161,9 @@ type NodeNetwork struct {
 	VLAN        uint16   `yaml:"vlan,omitempty" json:"vlan,omitempty"`
 	MTU         uint32   `yaml:"mtu,omitempty" json:"mtu,omitempty"`
 }
+
+// MaxDataDisks bounds the data volumes per node; the mount names are data-1..data-N.
+const MaxDataDisks = 8
 
 // InstallDisk selects the target disk either by explicit device path or by a selector;
 // exactly one of the two must be set.
@@ -518,6 +524,21 @@ func (c *Cluster) Validate() error {
 		}
 		if (n.InstallDisk.Path == "") == (n.InstallDisk.Selector == nil) {
 			errs = append(errs, fmt.Errorf("%s.installDisk needs exactly one of path or selector", p))
+		}
+		if len(n.DataDisks) > MaxDataDisks {
+			errs = append(errs, fmt.Errorf("%s.dataDisks: at most %d", p, MaxDataDisks))
+		}
+		seenDisk := map[string]bool{}
+		for _, d := range n.DataDisks {
+			switch {
+			case d == "":
+				errs = append(errs, fmt.Errorf("%s.dataDisks: empty path", p))
+			case d == n.InstallDisk.Path:
+				errs = append(errs, fmt.Errorf("%s.dataDisks: %s is the install disk", p, d))
+			case seenDisk[d]:
+				errs = append(errs, fmt.Errorf("%s.dataDisks: %s listed twice", p, d))
+			}
+			seenDisk[d] = true
 		}
 	}
 	if m := c.Spec.Platform.MetalLB; m.Enabled {

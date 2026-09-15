@@ -1,9 +1,9 @@
 import { useEffect, useState } from 'preact/hooks'
-import { api, fmt, type NodeRow } from '../../api'
+import { api, fmt, labHostKey, type NodeRow } from '../../api'
 import { useLocation } from 'preact-iso'
-import { clusters, connected, machineList, operations, resyncing, settings, toast, watch } from '../../store'
+import { clusters, connected, health, loadHealth, machineList, operations, resyncing, settings, toast, watch } from '../../store'
 import { DataTable, type Column } from '../../components/DataTable'
-import { ConfirmDialog, ErrorBox, Pill, Section, stateTone } from '../../components/ui'
+import { AlertPill, ConfirmDialog, ErrorBox, Pill, Section, stateTone } from '../../components/ui'
 import { TypePill } from '../create/steps'
 import { AddAMTDialog } from '../../components/RemoteManagement'
 
@@ -28,10 +28,13 @@ export function Inventory() {
   }
   const scanning = [...operations.value.values()].some((o) => o.kind === 'discover' && o.status === 'running')
 
+  const labHosts = machineList.value.filter((m) => m.labhost).map((m) => m.mac).join(',')
+  useEffect(() => { for (const mac of labHosts.split(',').filter(Boolean)) loadHealth(labHostKey(mac)) }, [labHosts])
+  const hostAlert = (mac: string) => (health.value.get(labHostKey(mac)) ?? []).find((e) => !e.acked && e.severity !== 'info')
   const columns: Column<NodeRow>[] = [
     { id: 'mac', header: 'Machine', sort: (n) => n.mac, mono: true, text: (n) => `${n.mac} ${n.uuid ?? ''} ${n.serial ?? ''}`, cell: (n) => <a href={`/machines/${n.mac}`} class="hover:underline flex flex-col"><span>{n.mac}</span>{(n.uuid || n.serial) && <span class="text-[10px] text-muted truncate max-w-[220px]">{n.serial || n.uuid}</span>}</a> },
     { id: 'ip', header: 'IP', sort: (n) => n.ip, mono: true, text: (n) => `${n.ip} ${(n.ipsSeen ?? []).join(' ')}`, cell: (n) => <span class="flex flex-col"><span>{n.ip}</span>{(n.ipsSeen?.length ?? 0) > 1 && <span class="text-[10px] text-muted" title={`Addresses seen: ${n.ipsSeen!.join(', ')}`}>previously {n.ipsSeen!.filter((x) => x !== n.ip).join(', ')}</span>}</span> },
-    { id: 'state', header: 'State', sort: (n) => n.state, cell: (n) => <span class="flex items-center gap-1"><Pill tone={stateTone(n.state)}>{n.state}</Pill>{n.oobType && <Pill tone="info" title="Remote management (Intel AMT) configured">AMT</Pill>}{n.provision && <Pill tone="warn" title="Armed: next network boot gets Talos">boot→Talos</Pill>}</span> },
+    { id: 'state', header: 'State', sort: (n) => n.state, cell: (n) => <span class="flex items-center gap-1"><Pill tone={stateTone(n.state)}>{n.state}</Pill>{n.oobType && <Pill tone="info" title="Remote management (Intel AMT) configured">AMT</Pill>}{n.provision && <Pill tone="warn" title="Armed: next network boot gets Talos">boot→Talos</Pill>}{n.labhost && <AlertPill e={hostAlert(n.mac)} />}</span> },
     { id: 'cluster', header: 'Cluster / pool', sort: (n) => n.cluster, cell: (n) => n.cluster ? <span><a href={`/clusters/${n.cluster}/nodes`} class="text-accent hover:underline">{n.cluster}</a>{n.pool && <span class="text-muted"> / {n.pool}</span>}</span> : <span class="text-muted">unassigned</span> },
     { id: 'hostname', header: 'Hostname', sort: (n) => n.hostname, cell: (n) => n.hostname || <span class="text-muted">—</span> },
     { id: 'arch', header: 'Arch', sort: (n) => n.arch, cell: (n) => n.arch },
@@ -45,7 +48,7 @@ export function Inventory() {
     { id: 'actions', header: '', align: 'right', cell: (n) => (
       <span class="whitespace-nowrap flex gap-1 justify-end">
         {n.wol && <button class="btn !py-1" title="Send a Wake-on-LAN magic packet" onClick={() => api.wake(n.mac).then(() => toast('Magic packet sent', 'good')).catch((e) => toast(e.message, 'error'))}>Wake</button>}
-        {n.state === 'maintenance' && !n.cluster && <button class="btn btn-primary !py-1" onClick={() => adopt(n)}>Adopt…</button>}
+        {n.state === 'maintenance' && !n.cluster && <button class="btn btn-primary !py-1" onClick={() => adopt(n)}>Adopt</button>}
         {!n.cluster && <button class="btn !py-1" title="Forget this machine" onClick={() => setRetire(n)}>Retire</button>}
         <a href={`/machines/${n.mac}`} class="btn !py-1">Open</a>
       </span>

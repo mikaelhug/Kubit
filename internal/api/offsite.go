@@ -174,6 +174,29 @@ func (s *Server) heartbeatText(ctx context.Context) string {
 	if ups := s.updatesAvailable(ctx); len(ups) > 0 {
 		b.WriteString("\nUpdates available: " + strings.Join(ups, "; "))
 	}
+	if machines, err := s.store.ListNodes(ctx, ""); err == nil {
+		for _, m := range machines {
+			lh := m.LabHost
+			if lh == nil {
+				continue
+			}
+			name := lh.Capacity.Hostname
+			if name == "" {
+				name = m.MAC
+			}
+			line := fmt.Sprintf("\n- lab host %s: %s, %d VM(s)", name, lh.State, len(lh.VMs))
+			if mt := lh.Metrics; mt != nil && mt.DiskTotal > 0 {
+				line += fmt.Sprintf(", VM disk %d%% full", mt.DiskUsed*100/mt.DiskTotal)
+			}
+			if u := lh.Updates; u != nil && (u.Count > 0 || u.NeedsReboot()) {
+				line += fmt.Sprintf(", %d package update(s)", u.Count)
+				if u.NeedsReboot() {
+					line += ", reboot required"
+				}
+			}
+			b.WriteString(line)
+		}
+	}
 	st := s.manager.OffsiteStatus(ctx)
 	switch {
 	case !st.Enabled:

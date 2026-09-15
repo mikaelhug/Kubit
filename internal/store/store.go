@@ -181,6 +181,9 @@ var migrations = []string{
 	`ALTER TABLE machines ADD COLUMN labhost TEXT NOT NULL DEFAULT '';
 	 ALTER TABLE machines ADD COLUMN host TEXT NOT NULL DEFAULT '';
 	 ALTER TABLE machines ADD COLUMN provision_kind TEXT NOT NULL DEFAULT '';`,
+	// v11: lab-host samples share the table (cluster "labhost:<mac>") and add disk usage.
+	`ALTER TABLE samples ADD COLUMN disk INTEGER NOT NULL DEFAULT 0;
+	 ALTER TABLE samples ADD COLUMN disk_cap INTEGER NOT NULL DEFAULT 0;`,
 }
 
 func (s *Store) migrate(ctx context.Context) error {

@@ -41,8 +41,8 @@ export function GettingStarted() {
         <a class={`btn btn-primary mt-2 self-start ${free === 0 ? 'opacity-60' : ''}`} href="/clusters/new">Create a cluster →</a>
       </Step>
       <div class="panel p-5 text-[13.5px] flex flex-col gap-1">
-        <h2 class="font-semibold text-[15px]">One capable box instead of several?</h2>
-        <p>With Intel AMT on it, Kubit can install Debian + KVM on the machine and carve Talos VMs from it — a whole lab cluster on one PC. Scan the LAN, then choose <b>Make lab host</b> on the machine in the wizard.</p>
+        <h2 class="font-semibold text-[15px]">One machine, several nodes</h2>
+        <p>An AMT machine can become a lab host: Debian + KVM installed by Kubit, Talos VMs carved from it. Scan, then <b>Make lab host</b> in the wizard.</p>
       </div>
       <p class="text-[12px] text-muted">Afterwards: the cluster runs on its own. Keep Kubit running (or install it as a service) for alerts, scheduled etcd snapshots and off-site copies; export at any time to manage the cluster without Kubit.</p>
     </div>

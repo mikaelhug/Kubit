@@ -192,9 +192,7 @@ func (s *Server) designMachines(r *http.Request, macs []string) ([]config.Machin
 		if cm.Arch == "" {
 			cm.Arch = config.ArchAMD64
 		}
-		for _, d := range inv.InstallCandidates() {
-			cm.Disks = append(cm.Disks, config.MachineDisk{DevPath: d.DevPath, SizeBytes: d.SizeBytes, Transport: d.Transport})
-		}
+		cm.Disks = designDisks(inv, m.Host != "")
 		out = append(out, cm)
 	}
 	return out, nil

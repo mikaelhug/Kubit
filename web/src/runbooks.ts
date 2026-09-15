@@ -7,6 +7,7 @@ export interface Runbook { title: string; why: string; steps: RunbookStep[] }
 interface Ctx { cluster: string; node?: string; nodeHref?: string }
 
 export function runbookFor(kind: string, c: Ctx): Runbook | null {
+  if (c.cluster.startsWith('labhost:')) return labRunbook(kind, c.cluster.slice('labhost:'.length))
   const nodes = `/clusters/${c.cluster}/nodes`
   const node = c.nodeHref ? { label: `Open ${c.node}`, href: c.nodeHref + '#actions' } : { label: 'Nodes', href: nodes }
   switch (kind) {
@@ -87,6 +88,33 @@ export function runbookFor(kind: string, c: Ctx): Runbook | null {
     case 'ingress.no-address':
       return { title: 'Ingress has no address', why: 'No ingress controller claimed it: wrong ingressClassName, or ingress-nginx is not running / has no LoadBalancer IP.', steps: [
         { text: 'Check the ingress-nginx add-on state and its LoadBalancer address.', link: { label: 'Add-ons', href: `/clusters/${c.cluster}/addons` } },
+      ] }
+    default:
+      return null
+  }
+}
+
+function labRunbook(kind: string, mac: string): Runbook | null {
+  const host = { label: 'Lab host', href: `/machines/${mac}#labhost` }
+  switch (kind) {
+    case 'labhost.disk-low':
+      return { title: 'The VM disk is filling up', why: 'VM disks are thin-provisioned and grow as Talos writes. When the host filesystem is full, every VM pauses at once.', steps: [
+        { text: 'Delete VMs you no longer use; their disks are freed immediately.', link: host },
+        { text: 'Move workload data off the lab: images and PersistentVolumes on the VMs are what grows.' },
+        { text: 'Re-provision a VM to reclaim its space (its Talos install is wiped), or rebuild the host with a larger disk.', link: host },
+      ] }
+    case 'labhost.memory-pressure':
+      return { title: 'The host is short of memory', why: 'The VMs and the host together use nearly all RAM; the kernel will swap or kill a VM next.', steps: [
+        { text: 'Stop a VM that is not needed, or resize VMs so their total stays under the host memory minus 2 GiB.', link: host },
+      ] }
+    case 'labhost.unreachable':
+      return { title: 'Lab host not answering on SSH', why: 'Three checks in a row found no SSH. The host is off, rebooting, or cut off; its VMs and their cluster are down with it.', steps: [
+        { text: 'Check power and link. Power it on or reset it through remote management.', link: { label: 'Remote management', href: `/machines/${mac}#oob` } },
+        { text: 'If it was updating, wait: the Update host operation reboots the host and reports in Activity.', link: { label: 'Activity', href: '/operations' } },
+      ] }
+    case 'labhost.updates':
+      return { title: 'Host updates pending', why: 'Security fixes install on their own daily; a kernel or a large upgrade waits for Update host, which parks the VMs first.', steps: [
+        { text: 'Run Update host from the Lab host tab, inside the cluster\'s maintenance window if one is set.', link: host },
       ] }
     default:
       return null

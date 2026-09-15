@@ -1,15 +1,18 @@
 package config_test
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 
 	"github.com/mikael/kubit/internal/config"
 	talosconfig "github.com/siderolabs/talos/pkg/machinery/config"
 	"github.com/siderolabs/talos/pkg/machinery/config/configloader"
+	"github.com/siderolabs/talos/pkg/machinery/config/types/block"
 	"github.com/siderolabs/talos/pkg/machinery/config/types/k8s"
 	"github.com/siderolabs/talos/pkg/machinery/config/types/network"
 	"github.com/siderolabs/talos/pkg/machinery/config/types/runtime"
+	blockres "github.com/siderolabs/talos/pkg/machinery/resources/block"
 	"go.yaml.in/yaml/v4"
 )
 
@@ -119,6 +122,50 @@ func TestGenerateInstallDisk(t *testing.T) {
 	}
 	if bySel.ProvisioningSpec.Wipe == nil || *bySel.ProvisioningSpec.Wipe {
 		t.Error("install must not wipe the disk")
+	}
+}
+
+// README: data disks become whole-disk xfs user volumes mounted at /var/mnt/data-N,
+// in declaration order, never touching the install disk; the node is labelled with
+// the count.
+func TestGenerateDataDisks(t *testing.T) {
+	_, g := generateSample(t)
+	cfg := load(t, g.Nodes["worker-01"])
+	var vols []*block.UserVolumeConfigV1Alpha1
+	for _, d := range cfg.Documents() {
+		if v, ok := d.(*block.UserVolumeConfigV1Alpha1); ok {
+			vols = append(vols, v)
+		}
+	}
+	if len(vols) != 2 {
+		t.Fatalf("worker-01 has %d user volumes, want 2", len(vols))
+	}
+	for i, want := range []string{"/dev/vdb", "/dev/vdc"} {
+		v := vols[i]
+		if v.MetaName != fmt.Sprintf("data-%d", i+1) || *v.VolumeType != blockres.VolumeTypeDisk || v.FilesystemSpec.FilesystemType != blockres.FilesystemTypeXFS {
+			t.Errorf("volume %d = %s %v %v", i, v.MetaName, v.VolumeType, v.FilesystemSpec.FilesystemType)
+		}
+		if got := v.ProvisioningSpec.DiskSelectorSpec.Match.String(); got != fmt.Sprintf(`disk.dev_path == %q && !system_disk`, want) {
+			t.Errorf("volume %d selector = %q", i, got)
+		}
+	}
+	if config.DataMount(2) != "/var/mnt/data-2" {
+		t.Errorf("mount = %s", config.DataMount(2))
+	}
+	if l := doc[*k8s.KubeNodeConfigV1Alpha1](t, cfg).LabelsConfig; l["kubit.dev/data-disks"] != "2" {
+		t.Errorf("labels = %v", l)
+	}
+	if hasDoc[*block.UserVolumeConfigV1Alpha1](load(t, g.Nodes["cp-01"])) {
+		t.Error("cp-01 declares no data disks")
+	}
+}
+
+func TestValidateDataDisks(t *testing.T) {
+	for _, bad := range []string{"dataDisks: [/dev/vda]", "dataDisks: [/dev/vdb, /dev/vdb]", "dataDisks: ['']"} {
+		y := strings.Replace(sampleCluster, "dataDisks: [/dev/vdb, /dev/vdc]", bad, 1)
+		if _, err := config.Parse([]byte(y)); err == nil {
+			t.Errorf("%s must be rejected", bad)
+		}
 	}
 }
 

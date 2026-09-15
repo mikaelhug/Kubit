@@ -444,6 +444,14 @@ in maintenance mode. Credentials are sealed per machine (`machines.oob`); the ba
 digest auth, 16992/16993). Setup on the box: enable AMT in the BIOS, set the MEBx
 password (Ctrl+P), allow network access. The `machine.power` operation shows in Activity.
 
+Install the PXE server once as a root service — `sudo kubit service install --pxe
+--iface en0 --kubit-url http://127.0.0.1:8080` (launchd system daemon / systemd unit;
+`service uninstall --pxe` removes it) — the only sudo Kubit ever needs; the Network
+boot page prints the exact command while it is not running. The machine finds it by
+broadcast: UEFI network boot sends a DHCP request, the LAN's DHCP answers with the
+address and Kubit's proxyDHCP adds the boot file, so the server must sit on the
+machines' VLAN and nothing is configured on the machine or the router.
+
 The PXE server asks the daemon per MAC (`GET /api/v1/pxe/decide`, `--kubit-url`,
 `KUBIT_TOKEN`): **cluster members get no DHCP offer at all** (and an iPXE `exit` as a
 second line of defence), so `kubit pxe` can stay running and BIOS boot order
@@ -454,6 +462,66 @@ the machine in maintenance mode. Recommended BIOS for the EliteDesks: UEFI only,
 Boot off, AHCI, WoL on, and **disk first** unless you own the LAN's DHCP — first
 contact via AMT *Boot into Talos*, F9 network boot, or the ISO stick; re-provisioning
 never needs PXE because `node remove` resets Talos to maintenance mode from disk.
+
+## Lab hosts (one machine, several Talos VMs)
+
+A machine with AMT can become a **lab host**: wizard → Machines → *Make lab host…* (or
+the machine page). Kubit arms a network boot (`provision_kind = labhost`, the PXE
+process serves the Debian 13 netboot installer with a preseed from
+`GET /api/v1/labhost/preseed`), resets the box via AMT, and the unattended install
+puts Debian + `qemu-kvm` + `libvirt` on the largest disk with `br0` bridged onto the
+LAN and Kubit's SSH key (minted once, sealed in settings) for user `kubit`. The
+`labhost.provision` operation waits for SSH, verifies `/dev/kvm` and the bridge,
+records capacity and fetches the Talos kernel/initramfs onto the host
+(`/var/lib/kubit/boot`). Then **Add VMs…** (count, vCPU, RAM, disk; memory checked
+against what is free, host keeps 2 GiB): each VM is a libvirt domain that boots Talos
+**directly from the kernel/initramfs** — no PXE, no ISO — into maintenance mode, and
+is a machine row from the start (source `lab`, MAC `52:54:00:6b:HH:NN`, `host` = the
+lab host). They are picked in the wizard like any machine; when the cluster installs a
+VM, Kubit flips it to boot from its disk before Talos's post-install reboot. *Make lab host* can carry a plan — VM count and sizes, cluster name and 1 or 3
+control planes — so one click runs install → VMs → `cluster.create` (`labhost.cluster`
+operation; hostnames `<name>-cp-NN` / `<name>-worker-NN`, no VIP for a single control
+plane) and the operator comes back to a running cluster. The machine page's *Lab
+host* tab has the VM table (start/stop/re-provision/delete/resize), *Add VMs* and
+*Release*. Lint reports an all-VMs-on-one-host control plane as `lab-cluster` (info).
+
+### Host metrics, alerts and updates
+
+The host itself gets the treatment nodes get. Every service interval the watcher's
+SSH tick also reads `/proc` and `df` (`labhost.Client.Metrics`: load, CPU %, memory
+used, the filesystem carrying `/var/lib/kubit`, running VMs, uptime) and files a
+sample under the pseudo-cluster `labhost:<mac>` in the same `samples` table
+(`disk`/`disk_cap` columns, migration v11) — so the *Lab host* tab shows CPU, memory,
+VM disk and VM count with the same sparklines and ranges as a cluster overview, and
+a `hostSample` live message appends each reading. Alerts come from the same path
+(`events` under `labhost:<mac>`, runbooks, Inventory pill, forwarders):
+
+| kind | raised | cleared |
+|---|---|---|
+| `labhost.disk-low` | VM filesystem ≥ 85 % (warn), ≥ 95 % (critical; the warn is resolved and re-raised) | `labhost.disk-ok` below 80 % |
+| `labhost.memory-pressure` | ≥ 92 % used for three readings | `labhost.memory-ok` below 85 % |
+| `labhost.unreachable` | three failed SSH ticks in a row | `labhost.back` |
+| `labhost.updates` (info) | pending packages or a reboot required, at most daily | — |
+
+Thin-provisioned VM disks are why the disk alert exists: the host's filesystem
+filling up pauses every VM at once. Hourly the tick also refreshes apt (`CheckUpdates`:
+pending count, security count, `/var/run/reboot-required`, running vs newest
+installed kernel, release, whether unattended-upgrades is on); *Check now* does it on
+demand. The preseed installs `unattended-upgrades`, so Debian security and stable
+fixes land daily on their own, never with a reboot.
+
+**Update host** (`labhost.update`) is the reboot: `check` → `upgrade` (apt
+`full-upgrade` + `autoremove`, non-interactive, config files kept) → if no reboot is
+needed the operation ends there and the VMs were never touched → otherwise `vms`
+(graceful `virsh shutdown`, 90 s, then destroy) → `reboot` (wait for SSH, up to
+10 min) → `resume` (domains are `virsh autostart`, stragglers started) → `cluster`
+(every member node on this host Ready). **Reboot host** (`labhost.reboot`) is the same
+without the upgrade. Both refuse while the host is not `ready`, are gated by the
+maintenance window of every cluster that has members on the host (409 + `ignoreWindow`
+like other disruptive routes), are recorded against that cluster so the workload
+quiet window applies, and the watcher skips the host while it is `updating` so the
+reboot is not counted as an outage. The heartbeat lists each lab host with its disk
+percentage and pending updates.
 
 ## Running as a service
 
@@ -512,4 +580,6 @@ virtualisation in the VMs); ArgoCD and cert-manager add-ons.
 - [x] M12 — Product polish: VM-aware design (bare metal first, `control-planes-on-vms`), machine-centric wizard table (model, VM/metal, disk transport, NICs), runbooks on every alert kind, getting-started page with ISO downloads, ⌘K palette, shortcut sheet, theme toggle, loading placeholders, stale alerts reconciled after a daemon restart, `hack/e2e.sh`. Sidebar tree and cluster Operations tab removed; Overview limited to alerts + recoveries
 - [x] M13 — Live everywhere: store change notifier, WebSocket transport with replay/resync, typed live state in the console (clusters, machines, snapshots, audit, settings, acks/resolves), external-writer detection, connection banner. Verified: sidebar pill provisioning → ready without reload, ack in one client clears in another, CLI `discover` and API retire reflected live, daemon stop → banner → reconnect + resync. Also found by the e2e script and fixed: an etcd restore left workers' pods (kube-proxy, MetalLB) with dead watches — restore now recreates every pod on workers
 - [~] M14 — Out-of-band: Intel AMT backend (probe, power on/off/reset/cycle, one-shot PXE boot), per-machine remote-management config sealed at rest, *Add via AMT* in Inventory, `machine.power` operations; member-aware PXE (no offer + iPXE exit for members, `/pxe/decide`, enrollment open/closed, one-shot arming cleared on maintenance sighting; unit-tested). **AMT itself is unverified** — no vPro hardware here; the WS-Man calls follow Intel's reference client and need one run against an EliteDesk
+- [~] M15 — Lab hosts: `internal/labhost` (preseed, SSH client, virsh domain lifecycle, direct kernel boot), PXE Debian profile + preseed proxy, lab-host API/operations, watcher refresh, install-time disk-boot switch, wizard/machine-page/Inventory UI. **Unverified on hardware** (needs the EliteDesk): the Debian install and every virsh call; unit-tested rendering only
+- [~] M16 — Lab host operations: host metrics (SSH tick → `samples` under `labhost:<mac>`, live `hostSample`), disk/memory/unreachable/updates alerts with runbooks and hysteresis (unit-tested), hourly apt check, unattended security upgrades in the preseed, `labhost.update` / `labhost.reboot` operations (VMs parked, autostart, cluster Ready wait, maintenance-window gate), *Lab host* tab with utilisation cards, System panel and confirm dialogs, Inventory alert pill, heartbeat line. **Verified with a seeded host only** (`hack/seedlab`): parsing, thresholds, UI, the failure path of the operation; the real upgrade/reboot path needs the EliteDesk
 - [ ] M7 — tests, CI, packaging, docs

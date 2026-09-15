@@ -81,23 +81,34 @@ export function Dialog({ title, onClose, children, width = 'max-w-lg', footer }:
 }
 
 /** Confirm with an explicit impact list; the primary action names what happens. */
-export function ConfirmDialog({ title, impact, action, tone = 'primary', onConfirm, onClose, typed, cluster }: { title: string; impact: ComponentChildren; action: string; tone?: 'primary' | 'danger'; onConfirm: () => void; onClose: () => void; typed?: string; cluster?: string }) {
+export function ConfirmDialog({ title, impact, action, tone = 'primary', onConfirm, onClose, typed, cluster }: { title: string; impact: ComponentChildren; action: string; tone?: 'primary' | 'danger'; onConfirm: () => void | Promise<unknown>; onClose: () => void; typed?: string; cluster?: string }) {
   let value = ''
+  // One click only: the button stays disabled until a returned promise settles.
+  const [busy, setBusy] = useState(false)
+  const confirm = () => {
+    if (busy) return
+    const r = onConfirm()
+    if (r && typeof (r as Promise<unknown>).then === 'function') {
+      setBusy(true)
+      ;(r as Promise<unknown>).finally(() => setBusy(false))
+    }
+  }
   return (
     <Dialog title={title} onClose={onClose} footer={
       <>
         <button class="btn" onClick={onClose}>Cancel</button>
-        <button class={`btn ${tone === 'danger' ? 'btn-danger' : 'btn-primary'}`} id="confirm-action" disabled={!!typed} onClick={onConfirm}>{action}</button>
+        <button class={`btn ${tone === 'danger' ? 'btn-danger' : 'btn-primary'}`} id="confirm-action" disabled={!!typed || busy} onClick={confirm}>{busy ? 'Working' : action}</button>
       </>
     }>
       {cluster && <MaintenanceNotice cluster={cluster} />}
       <div class="text-[13px] flex flex-col gap-2">{impact}</div>
       {typed && (
-        <Field label={`Type ${typed} to confirm`}>
-          <input class="input mono" onInput={(e) => {
+        <Field label="To confirm, type">
+          <input class="input mono" placeholder={typed} onInput={(e) => {
             value = (e.target as HTMLInputElement).value
             const btn = document.getElementById('confirm-action') as HTMLButtonElement | null
-            if (btn) btn.disabled = value !== typed
+            // The label style uppercases text, so the comparison must not care about case.
+            if (btn) btn.disabled = busy || value.trim().toLowerCase() !== typed.toLowerCase()
           }} />
         </Field>
       )}
@@ -117,6 +128,18 @@ export function MaintenanceNotice({ cluster }: { cluster: string }) {
 export function AlertPill({ e }: { e?: { severity: string; message: string; kind: string } }) {
   if (!e) return null
   return <Pill tone={e.severity === 'critical' ? 'bad' : 'warn'} title={e.message}>{e.kind.split('.')[1]}</Pill>
+}
+
+/** One-line command with a copy button. */
+export function Code({ text }: { text: string }) {
+  const [done, setDone] = useState(false)
+  const copy = () => { navigator.clipboard?.writeText(text).then(() => { setDone(true); setTimeout(() => setDone(false), 1500) }) }
+  return (
+    <div class="flex items-stretch gap-1">
+      <code class="mono flex-1 min-w-0 rounded bg-bg border border-border px-3 py-2 select-all break-all">{text}</code>
+      <button class="btn shrink-0" onClick={copy} title="Copy">{done ? 'Copied' : 'Copy'}</button>
+    </div>
+  )
 }
 
 export function Field({ label, children, hint }: { label: string; children: ComponentChildren; hint?: string }) {

@@ -17,6 +17,8 @@ type VMSpec struct {
 	CPUs    int    `json:"cpus"`
 	MemMiB  int    `json:"memMiB"`
 	DiskGiB int    `json:"diskGiB"`
+	// DataGiB adds a second thin disk (vdb) the cluster can claim as a data volume.
+	DataGiB int `json:"dataGiB,omitempty"`
 	// Kernel/Initrd set = boot Talos maintenance mode from RAM; empty = boot from disk.
 	Kernel string `json:"-"`
 	Initrd string `json:"-"`
@@ -32,6 +34,7 @@ type VM struct {
 	CPUs    int    `json:"cpus"`
 	MemMiB  int    `json:"memMiB"`
 	DiskGiB int    `json:"diskGiB"`
+	DataGiB int    `json:"dataGiB,omitempty"`
 	Boot    string `json:"boot"` // talos | disk
 	IP      string `json:"ip,omitempty"`
 }
@@ -61,7 +64,12 @@ var domainTmpl = template.Must(template.New("domain").Parse(`<domain type='kvm'>
       <source file='{{.Disk}}'/>
       <target dev='vda' bus='virtio'/>
     </disk>
-    <interface type='bridge'>
+{{if .Data}}    <disk type='file' device='disk'>
+      <driver name='qemu' type='qcow2' discard='unmap'/>
+      <source file='{{.Data}}'/>
+      <target dev='vdb' bus='virtio'/>
+    </disk>
+{{end}}    <interface type='bridge'>
       <source bridge='{{.Bridge}}'/>
       <mac address='{{.MAC}}'/>
       <model type='virtio'/>
@@ -86,8 +94,11 @@ func DomainXML(s VMSpec) (string, error) {
 	}
 	data := struct {
 		VMSpec
-		QemuArch, Machine, Emulator, Disk, Bridge string
-	}{s, qarch, machine, emulator, VMDir + "/" + s.Name + ".qcow2", bridge}
+		QemuArch, Machine, Emulator, Disk, Data, Bridge string
+	}{s, qarch, machine, emulator, DiskPath(s.Name), "", bridge}
+	if s.DataGiB > 0 {
+		data.Data = DataPath(s.Name)
+	}
 	var b bytes.Buffer
 	if err := domainTmpl.Execute(&b, data); err != nil {
 		return "", err
@@ -95,20 +106,34 @@ func DomainXML(s VMSpec) (string, error) {
 	return b.String(), nil
 }
 
-// Define creates the disk (thin qcow2) and the domain, and starts it.
+// DiskPath and DataPath are the VM's thin qcow2 images on the host.
+func DiskPath(name string) string { return VMDir + "/" + name + ".qcow2" }
+func DataPath(name string) string { return VMDir + "/" + name + "-data.qcow2" }
+
+// Define creates the disks (thin qcow2) and the domain, and starts it.
 func (c *Client) Define(ctx context.Context, s VMSpec) error {
 	xml, err := DomainXML(s)
 	if err != nil {
 		return err
 	}
-	disk := VMDir + "/" + s.Name + ".qcow2"
+	disk := DiskPath(s.Name)
 	if _, err := c.Run(ctx, fmt.Sprintf("[ -f %s ] || qemu-img create -q -f qcow2 %s %dG", disk, disk, s.DiskGiB)); err != nil {
 		return err
+	}
+	if s.DataGiB > 0 {
+		data := DataPath(s.Name)
+		if _, err := c.Run(ctx, fmt.Sprintf("[ -f %s ] || qemu-img create -q -f qcow2 %s %dG", data, data, s.DataGiB)); err != nil {
+			return err
+		}
 	}
 	if err := c.Put(ctx, VMDir+"/"+s.Name+".xml", []byte(xml), "644"); err != nil {
 		return err
 	}
 	if _, err := c.Run(ctx, "virsh define "+VMDir+"/"+s.Name+".xml >/dev/null"); err != nil {
+		return err
+	}
+	// Autostart so a host reboot (updates, power loss) brings the lab back by itself.
+	if _, err := c.Run(ctx, "virsh autostart "+s.Name+" >/dev/null"); err != nil {
 		return err
 	}
 	_, err = c.Run(ctx, "virsh start "+s.Name+" >/dev/null")
@@ -163,7 +188,7 @@ func (c *Client) Stop(ctx context.Context, name string, force bool) error {
 
 // Delete destroys, undefines and removes the disk.
 func (c *Client) Delete(ctx context.Context, name string) error {
-	_, err := c.Run(ctx, fmt.Sprintf("virsh destroy %s >/dev/null 2>&1; virsh undefine %s --nvram >/dev/null 2>&1 || virsh undefine %s >/dev/null 2>&1; rm -f %s/%s.qcow2 %s/%s.xml", name, name, name, VMDir, name, VMDir, name))
+	_, err := c.Run(ctx, fmt.Sprintf("virsh destroy %s >/dev/null 2>&1; virsh undefine %s --nvram >/dev/null 2>&1 || virsh undefine %s >/dev/null 2>&1; rm -f %s %s %s/%s.xml", name, name, name, DiskPath(name), DataPath(name), VMDir, name))
 	return err
 }
 
@@ -175,7 +200,7 @@ func (c *Client) Resize(ctx context.Context, name string, cpus, memMiB int) erro
 
 // List reports every VM defined under Kubit's naming with its state and lease.
 func (c *Client) List(ctx context.Context) ([]VM, error) {
-	out, err := c.Run(ctx, `for d in $(virsh list --all --name); do [ -z "$d" ] && continue; st=$(virsh domstate $d | head -1); x=$(virsh dumpxml $d --inactive); mac=$(echo "$x" | grep -o "mac address='[^']*'" | head -1 | cut -d"'" -f2); mem=$(echo "$x" | grep -o "<memory unit='[A-Za-z]*'>[0-9]*" | grep -o "[0-9]*$"); unit=$(echo "$x" | grep -o "<memory unit='[A-Za-z]*'" | cut -d"'" -f2); cpu=$(echo "$x" | grep -o "<vcpu[^>]*>[0-9]*" | grep -o "[0-9]*$"); boot=$(echo "$x" | grep -q "<kernel>" && echo talos || echo disk); disk=$(qemu-img info --output=json `+VMDir+`/$d.qcow2 2>/dev/null | grep -o '"virtual-size": [0-9]*' | grep -o '[0-9]*$'); ip=$(virsh domifaddr $d --source arp 2>/dev/null | awk '/ipv4/{print $4}' | head -1 | cut -d/ -f1); echo "$d|$st|$mac|$mem|$unit|$cpu|$boot|$disk|$ip"; done`)
+	out, err := c.Run(ctx, `for d in $(virsh list --all --name); do [ -z "$d" ] && continue; st=$(virsh domstate $d | head -1); x=$(virsh dumpxml $d --inactive); mac=$(echo "$x" | grep -o "mac address='[^']*'" | head -1 | cut -d"'" -f2); mem=$(echo "$x" | grep -o "<memory unit='[A-Za-z]*'>[0-9]*" | grep -o "[0-9]*$"); unit=$(echo "$x" | grep -o "<memory unit='[A-Za-z]*'" | cut -d"'" -f2); cpu=$(echo "$x" | grep -o "<vcpu[^>]*>[0-9]*" | grep -o "[0-9]*$"); boot=$(echo "$x" | grep -q "<kernel>" && echo talos || echo disk); disk=$(qemu-img info --output=json `+VMDir+`/$d.qcow2 2>/dev/null | grep -o '"virtual-size": [0-9]*' | grep -o '[0-9]*$'); data=$(qemu-img info --output=json `+VMDir+`/$d-data.qcow2 2>/dev/null | grep -o '"virtual-size": [0-9]*' | grep -o '[0-9]*$'); ip=$(virsh domifaddr $d --source arp 2>/dev/null | awk '/ipv4/{print $4}' | head -1 | cut -d/ -f1); echo "$d|$st|$mac|$mem|$unit|$cpu|$boot|$disk|$ip|$data"; done`)
 	if err != nil {
 		return nil, err
 	}
@@ -197,6 +222,11 @@ func (c *Client) List(ctx context.Context) ([]VM, error) {
 		vm.CPUs, _ = strconv.Atoi(f[5])
 		if b, err := strconv.ParseInt(f[7], 10, 64); err == nil {
 			vm.DiskGiB = int(b >> 30)
+		}
+		if len(f) > 9 {
+			if b, err := strconv.ParseInt(f[9], 10, 64); err == nil {
+				vm.DataGiB = int(b >> 30)
+			}
 		}
 		vms = append(vms, vm)
 	}

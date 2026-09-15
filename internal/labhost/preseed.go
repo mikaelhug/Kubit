@@ -74,7 +74,7 @@ d-i partman/confirm boolean true
 d-i partman/confirm_nooverwrite boolean true
 d-i partman-efi/non_efi_system boolean true
 tasksel tasksel/first multiselect ssh-server
-d-i pkgsel/include string qemu-system-x86 qemu-utils libvirt-daemon-system libvirt-clients bridge-utils sudo curl ca-certificates
+d-i pkgsel/include string qemu-system-x86 qemu-utils libvirt-daemon-system libvirt-clients bridge-utils sudo curl ca-certificates unattended-upgrades
 d-i pkgsel/upgrade select none
 popularity-contest popularity-contest/participate boolean false
 d-i grub-installer/only_debian boolean true
@@ -131,10 +131,13 @@ func KernelArgs(preseedURL, hostname string) string {
 }
 
 // PostInstall runs inside the freshly installed system: nothing Kubit cannot redo
-// over SSH later, so it stays small — libvirt's default network is off (VMs use br0).
+// over SSH later, so it stays small — libvirt's default network is off (VMs use br0)
+// and unattended-upgrades applies Debian's security and stable updates daily without
+// rebooting; the reboot is Kubit's Update host operation, which parks the VMs first.
 const PostInstall = `#!/bin/sh
 set -e
 virsh net-autostart --disable default 2>/dev/null || true
 virsh net-destroy default 2>/dev/null || true
+printf 'APT::Periodic::Update-Package-Lists "1";\nAPT::Periodic::Unattended-Upgrade "1";\n' > /etc/apt/apt.conf.d/20auto-upgrades
 echo "kubit lab host ready" > /var/lib/kubit/READY
 `

@@ -63,3 +63,16 @@
   Talos` end to end with `kubit pxe` running). If BootPXE's BootSettingData Put is
   rejected by older firmware (AMT < 11), fall back to ChangeBootOrder + SetBootConfigRole
   alone. KVM (VNC over AMT) and IDE-R remote ISO are not implemented.
+- Lab host: first real run on the EliteDesk will shake out preseed details (partman on
+  NVMe with an existing Windows EFI partition, the bridge interface name, Debian 13
+  netboot paths). Keep `virsh console` handy. Resize applies on next boot only; no
+  live migration; no multi-host scheduling.
+- Lab host without AMT (USB-installed Debian): add "adopt existing host" that only
+  needs SSH access with Kubit's key.
+- Lab host updates: VMs defined before M16 lack `virsh autostart`; `labhost.update`
+  restarts what was running, but an unplanned host reboot leaves them off. A one-off
+  `virsh autostart` sweep on the first tick would fix existing hosts.
+- Lab host metrics: per-VM actual qcow2 usage (`qemu-img info` → actual-size) would
+  tell which VM is eating the disk when `labhost.disk-low` fires.
+- Lab host: `hack/seedlab` fills a scratch `KUBIT_HOME` with a fake host for UI work;
+  it is dev-only and not wired into the build.

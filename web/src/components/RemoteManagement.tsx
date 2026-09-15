@@ -2,6 +2,7 @@ import { useState } from 'preact/hooks'
 import { api, type NodeRow, type OOBConfig, type OOBInfo } from '../api'
 import { settings, toast, watch } from '../store'
 import { ConfirmDialog, Dialog, ErrorBox, Field, Notice, Pill } from './ui'
+import { usePxeGated } from './PxeGate'
 
 const empty: OOBConfig = { type: 'amt', host: '', user: 'admin', password: '', tls: false }
 
@@ -14,7 +15,8 @@ export function RemoteManagement({ node }: { node: NodeRow }) {
   // Address and user are known before any credentials are: discovery saw the machine
   // on its IP and Kubit settings hold the default AMT user.
   const seed: OOBConfig = cfg ?? { ...empty, host: node.ip, user: settings.value?.amt?.user || 'admin' }
-  const run = (action: 'on' | 'off' | 'reset' | 'cycle' | 'pxe') => api.power(node.mac, action).then((r) => { setConfirm(null); watch(r) }).catch((e) => toast(e.message, 'error'))
+  const gated = usePxeGated(() => api.power(node.mac, 'pxe'), (r) => { setConfirm(null); watch(r) }, (m) => toast(m, 'error'))
+  const run = (action: 'on' | 'off' | 'reset' | 'cycle' | 'pxe') => action === 'pxe' ? gated.attempt('Boot into Talos') : api.power(node.mac, action).then((r) => { setConfirm(null); watch(r) }).catch((e) => toast(e.message, 'error'))
   const member = !!node.cluster
   return (
     <div class="panel p-4 flex flex-col gap-3">
@@ -28,12 +30,13 @@ export function RemoteManagement({ node }: { node: NodeRow }) {
       {cfg && (
         <div class="flex flex-wrap gap-2">
           <button class="btn" onClick={() => run('on')}>Power on</button>
-          <button class="btn" onClick={() => setConfirm('off')}>Power off…</button>
-          <button class="btn" onClick={() => setConfirm('reset')}>Hard reset…</button>
-          <button class="btn btn-primary" disabled={member} title={member ? 'Members are removed from the cluster first; that resets them to maintenance mode from disk' : 'Force one network boot: Kubit\'s PXE server hands this MAC Talos in maintenance mode'} onClick={() => setConfirm('pxe')}>Boot into Talos…</button>
+          <button class="btn" onClick={() => setConfirm('off')}>Power off</button>
+          <button class="btn" onClick={() => setConfirm('reset')}>Hard reset</button>
+          <button class="btn btn-primary" disabled={member} title={member ? 'Members are removed from the cluster first; that resets them to maintenance mode from disk' : 'Force one network boot: Kubit\'s PXE server hands this MAC Talos in maintenance mode'} onClick={() => setConfirm('pxe')}>Boot into Talos</button>
           <button class="btn" onClick={() => api.oobTest(node.mac).then((r) => toast(r.ok ? `AMT ${r.info?.version}: power ${r.info?.power}${r.info?.model ? ', ' + r.info.model : ''}` : r.error ?? 'failed', r.ok ? 'good' : 'error')).catch((e) => toast(e.message, 'error'))}>Test</button>
         </div>
       )}
+      {gated.element}
       {edit && <OOBDialog mac={node.mac} initial={seed} onClose={() => { setEdit(false); if (location.hash === '#oob') history.replaceState(null, '', location.pathname + '#actions') }} />}
       {confirm === 'off' && <ConfirmDialog title="Power off" action="Power off" tone="danger" onClose={() => setConfirm(null)} onConfirm={() => run('off')} impact={<p>Hard power-off through the management engine — like holding the power button. {member ? 'Drain the node first if it runs workloads.' : ''}</p>} />}
       {confirm === 'reset' && <ConfirmDialog title="Hard reset" action="Reset" tone="danger" onClose={() => setConfirm(null)} onConfirm={() => run('reset')} impact={<p>Immediate reset without a clean shutdown; use when the machine is hung. {member ? 'Prefer Reboot on the node\'s Actions tab when Talos still answers.' : ''}</p>} />}

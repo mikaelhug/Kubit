@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"os"
 	"time"
 
 	"github.com/mikael/kubit/internal/store"
@@ -89,6 +90,31 @@ func (s *Server) applySettings(v store.Settings) {
 
 // handlePXEStatus proxies the pxe process's status page; the process runs separately
 // (it needs root for ports 67/69/4011), so "not running" is a normal answer.
+// pxeCommand is the foreground command a terminal user runs; binary path resolved so
+// it can be pasted as is.
+func pxeCommand(host string) string {
+	bin := "kubit"
+	if p, err := os.Executable(); err == nil {
+		bin = p
+	}
+	return fmt.Sprintf("sudo %s pxe --iface en0 --kubit-url http://%s", bin, host)
+}
+
+// pxeRunning asks the separate PXE process for its status page.
+func (s *Server) pxeRunning(ctx contextT) bool {
+	v, err := s.store.GetSettings(ctx)
+	if err != nil || v.PXEStatusURL == "" {
+		return false
+	}
+	client := &http.Client{Timeout: 2 * time.Second}
+	resp, err := client.Get(v.PXEStatusURL)
+	if err != nil {
+		return false
+	}
+	resp.Body.Close()
+	return resp.StatusCode == http.StatusOK
+}
+
 func (s *Server) handlePXEStatus(w http.ResponseWriter, r *http.Request) {
 	v, err := s.store.GetSettings(r.Context())
 	if err != nil {
@@ -99,7 +125,7 @@ func (s *Server) handlePXEStatus(w http.ResponseWriter, r *http.Request) {
 	resp, err := client.Get(v.PXEStatusURL)
 	if err != nil {
 		writeJSON(w, http.StatusOK, map[string]any{"running": false, "statusUrl": v.PXEStatusURL, "error": err.Error(),
-			"command": fmt.Sprintf("sudo kubit pxe --iface en0 --talos-version %s", defaultTalosVersion())})
+			"command": pxeCommand(r.Host), "serviceCommand": fmt.Sprintf("sudo kubit service install --pxe --iface en0 --kubit-url http://%s", r.Host)})
 		return
 	}
 	defer resp.Body.Close()

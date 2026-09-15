@@ -2,7 +2,7 @@ import { useEffect, useState } from 'preact/hooks'
 import { refreshKey, settings, toast } from '../../store'
 import { api, fmt, type PxeStatus } from '../../api'
 import { DataTable, type Column } from '../../components/DataTable'
-import { KeyValue, Notice, Pill, Section, type Tone } from '../../components/ui'
+import { Code, KeyValue, Notice, Pill, Section, type Tone } from '../../components/ui'
 
 type Boot = NonNullable<PxeStatus['boots']>[number]
 const stageTone: Record<string, Tone> = { dhcp: 'warn', ipxe: 'info', kernel: 'good' }
@@ -31,9 +31,9 @@ export function Pxe() {
         {st && !st.running && (
           <Notice tone="muted">
             <div class="flex flex-col gap-2">
-              <span>The PXE server is not running ({st.error}). Start it on this machine, on the interface facing the machines to boot:</span>
-              <code class="mono block rounded bg-bg border border-border px-3 py-2 select-all">{st.command}</code>
-              <span class="text-muted">Status is read from {st.statusUrl} (Settings → Kubit).</span>
+              <span>Not running. Start it in a terminal (ports 67/69 need root):</span>
+              <Code text={st.command ?? ''} />
+              <span class="text-muted">Safe to leave running. As a service instead: <span class="mono select-all">{st.serviceCommand}</span></span>
             </div>
           </Notice>
         )}

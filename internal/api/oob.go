@@ -164,12 +164,22 @@ func (s *Server) handleOOBPower(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "no remote management configured for this machine", http.StatusConflict)
 		return
 	}
+	if req.Action == oob.BootPXE && !s.pxeRunning(r.Context()) {
+		writeJSON(w, http.StatusConflict, map[string]string{"error": "The PXE server is not running, so the machine would find nothing to boot. Start it in a terminal (it can stay open): " + pxeCommand(r.Host), "code": "pxe-down", "command": pxeCommand(r.Host)})
+		return
+	}
 	if req.Action == oob.BootPXE && m.Cluster != "" {
 		http.Error(w, fmt.Sprintf("%s is a member of %s; remove it from the cluster first (that resets it to maintenance mode without PXE)", m.Hostname, m.Cluster), http.StatusConflict)
 		return
 	}
-	id, err := s.runOperation(m.Cluster, "machine.power", map[string]string{"mac": mac, "action": string(req.Action), "hostname": m.Hostname}, func(ctx contextT, sink clusterSink) (any, error) {
+	id, err := s.runOperation(m.Cluster, "machine.power", map[string]string{"mac": mac, "action": string(req.Action), "hostname": m.Hostname}, func(ctx contextT, sink clusterSink) (result any, err error) {
 		if req.Action == oob.BootPXE {
+			// Leave nothing armed behind a failed or cancelled attempt.
+			defer func() {
+				if err != nil {
+					_ = s.store.SetMachineProvision(context.Background(), mac, false)
+				}
+			}()
 			sink(clusterEvent{Time: time.Now(), Kind: "steps", Level: "info", Steps: cluster.Steps("power", "Arm a network boot and reset via AMT", "wait", "Wait for Talos maintenance mode")})
 		}
 		sink(clusterEvent{Time: time.Now(), Kind: "step", Step: "power", Status: cluster.StepRunning})

@@ -64,10 +64,10 @@ export function Sparkline({ points, max, height = 56, format, label }: { points:
   const last = points[points.length - 1]
   return (
     <div class="flex flex-col gap-1">
-      <div class="flex items-baseline justify-between">
+      {label && <div class="flex items-baseline justify-between">
         <span class="label">{label}</span>
         <span class="num text-[13px]">{last ? <><strong>{format(last.v)}</strong>{max ? <span class="text-muted"> / {format(max)}</span> : null}</> : '—'}</span>
-      </div>
+      </div>}
       <canvas ref={ref} class="w-full" style={{ height }} />
     </div>
   )

@@ -103,7 +103,7 @@ export function Overview({ ctx }: { ctx: ClusterCtx }) {
   )
 }
 
-function EventRow({ e, onAck }: { e: HealthEvent; onAck?: () => void }) {
+export function EventRow({ e, onAck }: { e: HealthEvent; onAck?: () => void }) {
   const tone = e.severity === 'critical' ? 'bad' : e.severity === 'warn' ? 'warn' : 'good'
   const [open, setOpen] = useState(false)
   const st = statuses.value.get(e.cluster)
@@ -169,7 +169,7 @@ function objectLink(e: HealthEvent): string | null {
   return `/clusters/${e.cluster}/${page}?ns=${encodeURIComponent(ns)}`
 }
 
-function Card({ label, value, tone, sub }: { label: string; value: string; tone: 'good' | 'warn' | 'bad' | 'muted'; sub?: string }) {
+export function Card({ label, value, tone, sub }: { label: string; value: string; tone: 'good' | 'warn' | 'bad' | 'muted'; sub?: string }) {
   const color = { good: 'text-good', warn: 'text-warn', bad: 'text-bad', muted: 'text-muted' }[tone]
   return (
     <div class="panel p-4 flex flex-col gap-1 min-w-0">

@@ -39,6 +39,13 @@ func TestDomainXMLAndMAC(t *testing.T) {
 	if !strings.Contains(disk, "<boot dev='hd'/>") || strings.Contains(disk, "<kernel>") || !strings.Contains(disk, "aarch64") {
 		t.Error("disk-boot arm64 domain wrong")
 	}
+	if strings.Contains(xml, "vdb") {
+		t.Error("no data disk unless asked")
+	}
+	withData, _ := DomainXML(VMSpec{Name: "d", MAC: MAC(1, 3), CPUs: 1, MemMiB: 1024, DiskGiB: 10, DataGiB: 40, Arch: "amd64"})
+	if !strings.Contains(withData, "/var/lib/kubit/vms/d-data.qcow2") || !strings.Contains(withData, "<target dev='vdb' bus='virtio'/>") {
+		t.Error("data disk must be the second virtio disk")
+	}
 	if !kernelBlock.MatchString(xml) {
 		t.Error("kernel block must be recognisable for SetDiskBoot")
 	}

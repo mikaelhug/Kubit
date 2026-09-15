@@ -3,7 +3,7 @@
 // or, when the daemon says so, reloads the base state once.
 import { fmt, getToken, type Message } from './api'
 import {
-  applyStepEvent, audit, clusters, connected, daemon, health, latestTalos, loadMachines, loadSettings, machines, opEvents, operations,
+  applyStepEvent, audit, clusters, connected, daemon, health, hostSamples, latestTalos, loadMachines, loadSettings, machines, opEvents, operations,
   reconnectAttempt, refreshes, reloadClusters, reloadOperations, resyncing, settings, snapshots, statuses, toast, upsertCluster, upsertOp,
 } from './store'
 
@@ -137,8 +137,11 @@ function apply(m: Message) {
         const h = m.health
         hm.set(h.cluster, [h, ...(hm.get(h.cluster) ?? []).filter((e) => e.id !== h.id)].slice(0, 200))
         health.value = hm
-        if (h.severity !== 'info') toast(`${h.cluster}: ${h.message}`, 'error')
+        if (h.severity !== 'info') toast(h.cluster.startsWith('labhost:') ? h.message : `${h.cluster}: ${h.message}`, 'error')
       }
+      break
+    case 'hostSample':
+      if (m.sample && m.key) hostSamples.value = new Map(hostSamples.value).set(m.key, m.sample)
       break
     case 'healthAck': {
       // The daemon is the authority on acks: same view in every tab.
