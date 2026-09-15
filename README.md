@@ -391,6 +391,48 @@ cluster its state, open alerts and last snapshot age; the off-site status; and a
 Talos/Kubernetes update available (also shown as a notice on each Overview). A
 heartbeat that stops arriving means the daemon is down — the dead-man's switch.
 
+## Console conventions
+
+- **First run** (`/start`, also the home page while no cluster exists): per-arch ISO
+  downloads built from the factory's vanilla schematic and the current stable Talos,
+  the three steps to a cluster, and the network-boot page (`/fleet/pxe`, reachable
+  from Inventory rather than the sidebar until PXE is verified on hardware).
+- **Alerts carry runbooks**: every warn/critical kind has a *What to do* panel
+  (`web/src/runbooks.ts`) — cause in one line, numbered steps, each linked to the
+  place in Kubit where the action lives (node Actions tab, Backups, Add-ons, settings).
+- **Navigation**: one line per cluster in the sidebar; the cluster's tabs live in its
+  header. `⌘K`/`Ctrl+K` jumps to any cluster page, node or Kubit page; `a` toggles
+  the Activity drawer; `/` focuses a table filter; `?` lists shortcuts. Theme follows
+  the OS with a toggle in the status bar (remembered, applied before first paint).
+- **Overview shows only what matters**: unacknowledged alerts with runbooks, alert
+  history limited to alerts and their recoveries, five recent operations linking to
+  Activity (filtered to the cluster). Info-only transitions stay in the events API.
+- Tables show placeholder rows while loading and an explicit empty message after.
+- **Nothing polls; everything is live.** One WebSocket (`/api/v1/ws`) carries every
+  change. The store notifies on each write (`store.OnChange`) and `internal/api/live.go`
+  turns that into typed messages — `cluster`, `clusterRemoved`, `machine`,
+  `machineRemoved`, `snapshot`, `snapshotRemoved`, `audit`, `settings`, `healthAck`,
+  `healthResolved` — alongside `status` (watcher tick), `health`, `operation`/`event`
+  and `refresh {cluster, scope}` from Kubernetes informers (pods, workloads, services,
+  endpoint slices, ingresses, claims, volumes, classes, nodes; debounced 1 s; running
+  from `bootstrapped` on), the daemon-side PXE watch and the hourly `versions` check.
+  The console keeps normalized live state (`web/src/store.ts`) that every view derives
+  from, and refetches only large derived views when their scope fires. Messages carry
+  sequence numbers: a reconnect replays from `?since=` out of a 2000-message ring, or
+  gets `resync` and reloads base state once. Writes by another process (the CLI while
+  the daemon runs) are detected daemon-side via SQLite's `data_version` and trigger
+  `resync`. While disconnected the console shows a banner and the status dot pulses;
+  the only timer in the UI is the "n min ago" clock.
+
+## End-to-end script
+
+`hack/e2e.sh <subnet> [--with-restore] [--teardown --vm-ids "1 2 3 4"]` drives a
+running daemon through discover → design → create (3 control planes) → add worker →
+rename → snapshot + verify → [restore drill] → crashloop alert → remove worker, every
+step as an API operation visible in Activity, asserting with `kubectl` after each.
+`--teardown` forgets the cluster and, with `--vm-ids`, recreates the hack/vm VMs so
+the run repeats cleanly. It is the acceptance script for the hardware run.
+
 ## Running as a service
 
 A cluster never depends on Kubit: Talos and Kubernetes run on their own and `cluster
@@ -445,4 +487,6 @@ virtualisation in the VMs); ArgoCD and cert-manager add-ons.
 - [x] M9 — Lifecycle safety: scheduled/verified/sealed etcd snapshots with restore drill (verified live), credential inventory + rotation (verified), upgrade pre-checks + pre-upgrade snapshot (verified: refuses cordoned node and unpublished Talos version; passes on healthy `lab`), maintenance windows (verified 409/override), alert forwarding via webhook (verified with a local receiver; SMTP verified in M10) and audit UI. Application-layer add-ons (storage, monitoring) are intentionally left to Argo CD.
 - [x] M10 — Service health & always-on: workload alerts from the API server (`internal/watch/services.go`: crashloop, unavailable workload, pending PVC, service without endpoints, ingress without address, exhausted MetalLB pool; age-gated, auto-resolving, deduplicated across restarts, ignore-namespaces setting), object links and row pills in the console, `GET …/service-health`; `kubit service install|status|uninstall` (launchd / systemd --user / --system), `master.key` file fallback for hosts without a keyring, SIGTERM drain + WAL checkpoint, Observer card (watcher freshness + last snapshot) and service/foreground indicator; SMTP with STARTTLS / implicit TLS / none via an explicit client. Verified on `lab`: crashloop, unavailable deployment, pending PVC, empty service and pool-exhaustion alerts raised, forwarded to a local webhook and resolved on delete/free; `kubit service install` → launchd running as "service" → uninstall; SIGTERM shutdown; SMTP delivery to a local receiver (plain mode; STARTTLS/465 code paths untested against a real provider). Not exercised: the systemd unit on a real Linux host (rendering is unit-tested); the `master.key` fallback beyond its unit test
 - [x] M11 — Off-site & dead-man's switch: `internal/offsite` (directory and S3 targets, atomic dir writes, probe, retention), snapshot copy step + `offsite.failed`/`offsite.ok`, daily sealed Kubit backup upload (`kubit.backup` operation), settings section with test/copy-now/status, Backups tab off-site column, heartbeat summary incl. updates available, Overview update notice; also: sidebar tree and cluster Operations tab removed (Activity has a cluster filter), Overview events limited to alerts + recoveries. Verified: dir target round trip, snapshot copied, three backups pruned to two, heartbeat delivered to the webhook. Not exercised: a real S3 endpoint (minio-go; probe/list/put paths are straightforward but untested against a live bucket)
+- [x] M12 — Product polish: VM-aware design (bare metal first, `control-planes-on-vms`), machine-centric wizard table (model, VM/metal, disk transport, NICs), runbooks on every alert kind, getting-started page with ISO downloads, ⌘K palette, shortcut sheet, theme toggle, loading placeholders, stale alerts reconciled after a daemon restart, `hack/e2e.sh`. Sidebar tree and cluster Operations tab removed; Overview limited to alerts + recoveries
+- [x] M13 — Live everywhere: store change notifier, WebSocket transport with replay/resync, typed live state in the console (clusters, machines, snapshots, audit, settings, acks/resolves), external-writer detection, connection banner. Verified: sidebar pill provisioning → ready without reload, ack in one client clears in another, CLI `discover` and API retire reflected live, daemon stop → banner → reconnect + resync. Also found by the e2e script and fixed: an etcd restore left workers' pods (kube-proxy, MetalLB) with dead watches — restore now recreates every pod on workers
 - [ ] M7 — tests, CI, packaging, docs

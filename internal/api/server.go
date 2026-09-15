@@ -53,7 +53,7 @@ func New(version string, m *cluster.Manager, token string, crypto *store.Crypto)
 	_ = s.store.MarkStaleOperations(contextBackground())
 	r := s.mux
 	r.HandleFunc("GET /api/v1/version", s.handleVersion)
-	r.HandleFunc("GET /api/v1/events", s.handleEvents)
+	r.HandleFunc("GET /api/v1/ws", s.handleLive)
 	r.HandleFunc("GET /api/v1/operations", s.handleOperations)
 	r.HandleFunc("GET /api/v1/operations/{id}", s.handleOperation)
 	r.HandleFunc("DELETE /api/v1/operations/{id}", s.handleOperationCancel)
@@ -103,7 +103,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if s.token != "" && strings.HasPrefix(r.URL.Path, "/api/") {
 		got := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
 		if got == "" {
-			got = r.URL.Query().Get("token") // EventSource cannot set headers
+			got = r.URL.Query().Get("token") // the browser WebSocket cannot set headers
 		}
 		if subtle.ConstantTimeCompare([]byte(got), []byte(s.token)) != 1 {
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
@@ -129,35 +129,6 @@ func Loopback(addr string) bool {
 
 func (s *Server) handleVersion(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"kubit": s.version, "startedAt": s.started.UTC().Format(time.RFC3339), "service": os.Getenv("KUBIT_SERVICE") != "", "pid": os.Getpid()})
-}
-
-func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
-	fl, ok := w.(http.Flusher)
-	if !ok {
-		http.Error(w, "streaming unsupported", http.StatusInternalServerError)
-		return
-	}
-	w.Header().Set("Content-Type", "text/event-stream")
-	w.Header().Set("Cache-Control", "no-cache")
-	w.Header().Set("Connection", "keep-alive")
-	ch, cancel := s.hub.subscribe()
-	defer cancel()
-	fmt.Fprint(w, ": connected\n\n")
-	fl.Flush()
-	ping := time.NewTicker(20 * time.Second)
-	defer ping.Stop()
-	for {
-		select {
-		case <-r.Context().Done():
-			return
-		case <-ping.C:
-			fmt.Fprint(w, ": ping\n\n")
-			fl.Flush()
-		case m := <-ch:
-			fmt.Fprintf(w, "data: %s\n\n", marshal(m))
-			fl.Flush()
-		}
-	}
 }
 
 func (s *Server) handleOperations(w http.ResponseWriter, r *http.Request) {
@@ -648,14 +619,7 @@ func (s *Server) handleDiscover(w http.ResponseWriter, r *http.Request) {
 		sink(clusterEvent{Time: time.Now(), Kind: "step", Step: "scan", Status: cluster.StepDone})
 		sink(clusterEvent{Time: time.Now(), Kind: "step", Step: "record", Status: cluster.StepRunning})
 		// A control-plane VIP answers on :50000 too, but it is an address, not a machine.
-		vips := map[string]string{}
-		if rows, err := s.store.ListClusters(ctx); err == nil {
-			for _, row := range rows {
-				if c, err := config.Parse(row.Spec); err == nil && c.Spec.ControlPlane.VIP != "" {
-					vips[c.Spec.ControlPlane.VIP] = row.Name
-				}
-			}
-		}
+		vips := s.store.ClusterVIPs(ctx)
 		found := 0
 		for _, res := range results {
 			if res.Err != nil {

@@ -58,7 +58,7 @@ func TestPodCrashloopByReasonAndByRestartBurst(t *testing.T) {
 	tr := NewServiceTracker()
 	t0 := time.Now()
 	sh := func(phase string, restarts int32) *cluster.ServiceHealth {
-		return &cluster.ServiceHealth{Pods: []cluster.PodHealth{{Namespace: "app", Name: "web-1", Phase: phase, Restarts: restarts, AgeSec: 10}}}
+		return &cluster.ServiceHealth{Pods: []cluster.PodHealth{{Namespace: "app", Name: "web-1", Phase: phase, Restarts: restarts, AgeSec: 900}}}
 	}
 	if evs := tr.Derive("c", sh("CrashLoopBackOff", 4), t0, nil); !hasKind(evs, "pod.crashloop") {
 		t.Fatalf("CrashLoopBackOff not alerted: %v", kinds(evs))
@@ -91,6 +91,14 @@ func TestPodCrashloopByReasonAndByRestartBurst(t *testing.T) {
 	tr.Seed([]store.EventRow{{Node: "Pod/app/web-1", Kind: "pod.crashloop"}})
 	if evs := tr.Derive("c", sh("Running", 0), t0, nil); !hasKind(evs, "pod.recovered") {
 		t.Fatalf("zero-restart pod not recovered: %v", kinds(evs))
+	}
+}
+
+func TestYoungCrashloopIsNotAlerted(t *testing.T) {
+	tr := NewServiceTracker()
+	sh := &cluster.ServiceHealth{Pods: []cluster.PodHealth{{Namespace: "kube-system", Name: "kube-controller-manager-cp-01", Phase: "CrashLoopBackOff", Restarts: 2, AgeSec: 90}}}
+	if evs := tr.Derive("c", sh, time.Now(), nil); len(evs) != 0 {
+		t.Fatalf("bootstrap-time crashloop alerted: %v", kinds(evs))
 	}
 }
 

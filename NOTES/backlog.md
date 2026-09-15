@@ -55,3 +55,7 @@
 - Kubit's default :8080 collided with another local app during M9 testing; the daemon
   was run with `--addr 127.0.0.1:8090`. Consider a free-port fallback with a clear log
   line, or making the port part of Kubit settings.
+- Maintenance-window notice in confirm dialogs is fetched when the dialog opens (not
+  live); computing open/closed client-side from the spec would remove that fetch.
+- The live ring buffer (2000 messages) is per daemon process; a long outage still ends
+  in a resync, which is correct but reloads everything. Fine at this scale.

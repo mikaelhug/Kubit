@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'preact/hooks'
 import { useLocation } from 'preact-iso'
 import { api, fmt, type AddonStatus } from '../../api'
-import { operations, reloadClusters, toast, watch } from '../../store'
+import { operations, toast, watch, refreshKey } from '../../store'
 import { Dialog, ErrorBox, Field, Notice, Pill, Section, StatusDot, type Tone } from '../../components/ui'
 import type { ClusterCtx } from './ClusterPage'
 
@@ -27,18 +27,20 @@ export function Addons({ ctx }: { ctx: ClusterCtx }) {
   const [edit, setEdit] = useState<AddonStatus | null>(null)
   const ops = [...operations.value.values()].filter((o) => o.cluster === name)
   const finished = ops.filter((o) => o.status !== 'running').length
-  useEffect(() => { api.addons(name).then(setAddons).catch((e) => setError(e.message)) }, [name, finished, cluster.updatedAt])
+  useEffect(() => { api.addons(name).then(setAddons).catch((e) => setError(e.message)) }, [name, finished, cluster.updatedAt, refreshKey(name, 'addons'), refreshKey(name, 'workloads')])
   const lastPlan = ops.filter((o) => o.kind === 'platform.plan' && o.status === 'done').sort((a, b) => b.id - a.id)[0]
   const planStale = lastPlan && cluster.updatedAt > lastPlan.startedAt
   const busy = ops.some((o) => o.status === 'running' && o.kind.startsWith('platform'))
   const drift = addons.some((a) => a.state === 'pending' || a.state === 'orphaned')
-  const plan = () => api.platformPlan(name).then((r) => { watch(r, false); toast('Planning… the review opens when it finishes'); waitAndOpen(r.operationId) }).catch((e) => toast(e.message, 'error'))
-  const waitAndOpen = (id: number) => {
-    const t = setInterval(() => {
-      const o = operations.value.get(id)
-      if (o && o.status !== 'running') { clearInterval(t); if (o.status === 'done') route(`/clusters/${name}/addons/${id}`); else watch(id) }
-    }, 500)
-  }
+  const [pendingPlan, setPendingPlan] = useState<number | null>(null)
+  const plan = () => api.platformPlan(name).then((r) => { watch(r, false); toast('Planning… the review opens when it finishes'); setPendingPlan(r.operationId) }).catch((e) => toast(e.message, 'error'))
+  // The plan's completion arrives over SSE; open the review then.
+  const pending = pendingPlan !== null ? operations.value.get(pendingPlan) : undefined
+  useEffect(() => {
+    if (!pending || pending.status === 'running') return
+    setPendingPlan(null)
+    if (pending.status === 'done') route(`/clusters/${name}/addons/${pending.id}`); else watch(pending.id)
+  }, [pending?.status]) // eslint-disable-line
 
   return (
     <>
@@ -87,7 +89,7 @@ export function Addons({ ctx }: { ctx: ClusterCtx }) {
           })}
         </div>
       </Section>
-      {edit && <ConfigureDialog ctx={ctx} addon={edit} def={defs.find((d) => d.key === edit.key)!} onClose={() => setEdit(null)} onSaved={(list) => { setAddons(list); setEdit(null); reloadClusters() }} />}
+      {edit && <ConfigureDialog ctx={ctx} addon={edit} def={defs.find((d) => d.key === edit.key)!} onClose={() => setEdit(null)} onSaved={(list) => { setAddons(list); setEdit(null) }} />}
     </>
   )
 }

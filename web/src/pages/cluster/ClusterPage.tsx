@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from 'preact/hooks'
 import { useLocation } from 'preact-iso'
 import { api, type ClusterRow, type Status } from '../../api'
-import { clusters, connected, loadHealth, operations, statuses } from '../../store'
+import { clusters, loadHealth, operations, statuses } from '../../store'
 import { Tabs } from '../../components/Tabs'
 import { ErrorBox, Pill, stateTone } from '../../components/ui'
 import { sectionList, type Section } from '../../app'
@@ -27,15 +27,8 @@ export function ClusterPage({ name, section = 'overview', sub }: { name: string;
   const status: Status | null = pushed ?? fetched
   const refresh = useCallback(() => { api.status(name).then((s) => { setFetched(s); setError(null) }).catch((e) => setError(e.message)) }, [name])
   useEffect(() => { setFetched(null); refresh(); loadHealth(name) }, [refresh, name])
-  // The watcher pushes status every 15 s over SSE; poll only while disconnected.
-  useEffect(() => {
-    if (connected.value) return
-    const t = setInterval(refresh, 10000)
-    return () => clearInterval(t)
-  }, [refresh, connected.value])
-  const finished = [...operations.value.values()].filter((o) => o.cluster === name && o.status !== 'running').length
-  useEffect(() => { refresh() }, [finished, refresh])
-
+  // Status arrives on every watcher tick over the live connection; the fetch above
+  // only covers the moment before the first tick.
   if (!cluster) return <div class="p-8 text-muted">{error ?? `Cluster ${name} is not known.`}</div>
   const ctx: ClusterCtx = { name, cluster, status, refresh, error }
   const spec = cluster.spec.spec

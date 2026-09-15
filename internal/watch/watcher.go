@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/mikael/kubit/internal/cluster"
+	"github.com/mikael/kubit/internal/k8s"
 	"github.com/mikael/kubit/internal/store"
 )
 
@@ -21,9 +22,11 @@ type Watcher struct {
 	// ServiceInterval paces the in-cluster (workload) collection, which lists every
 	// pod, service and claim; it is a multiple of Interval.
 	ServiceInterval time.Duration
-	// OnStatus and OnEvent feed the SSE stream; nil is allowed.
-	OnStatus func(name string, st *cluster.Status)
-	OnEvent  func(e store.EventRow)
+	// OnStatus and OnEvent feed the SSE stream; nil is allowed. OnRefresh tells the
+	// UI a view of a cluster changed (Kubernetes informers, debounced).
+	OnStatus  func(name string, st *cluster.Status)
+	OnEvent   func(e store.EventRow)
+	OnRefresh func(name, scope string)
 
 	mu           sync.Mutex
 	last         map[string]*cluster.Status
@@ -101,6 +104,7 @@ func (w *Watcher) LatestServices(name string) *cluster.ServiceHealth {
 }
 
 func (w *Watcher) loop(ctx context.Context, name string) {
+	go w.watchKubernetes(ctx, name)
 	w.tick(ctx, name)
 	w.serviceTick(ctx, name)
 	t := time.NewTicker(w.Interval)
@@ -122,10 +126,64 @@ func (w *Watcher) loop(ctx context.Context, name string) {
 	}
 }
 
+// watchKubernetes keeps informers open on the cluster and reports changed scopes;
+// it reconnects with backoff while the API is unreachable or the cluster is not
+// ready yet. Change bursts (a rollout touches dozens of objects) collapse to one
+// refresh per scope per second.
+func (w *Watcher) watchKubernetes(ctx context.Context, name string) {
+	deb := k8s.NewDebouncer(time.Second, func(scope string) {
+		if w.OnRefresh != nil {
+			w.OnRefresh(name, scope)
+		}
+	})
+	backoff := 5 * time.Second
+	for ctx.Err() == nil {
+		st := w.Latest(name)
+		if st == nil || !st.APIReachable || (st.State != cluster.StateReady && st.State != cluster.StateBootstrapped) {
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(backoff):
+			}
+			continue
+		}
+		kc, err := w.Manager.KubeClient(ctx, name)
+		if err != nil {
+			log.Printf("watch %s: informers: %v", name, err)
+		} else {
+			wctx, cancel := context.WithCancel(ctx)
+			started := time.Now()
+			kc.WatchScopes(wctx, deb.Hit)
+			cancel()
+			if time.Since(started) > time.Minute {
+				backoff = 5 * time.Second
+			}
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(backoff):
+		}
+		if backoff < time.Minute {
+			backoff *= 2
+		}
+	}
+}
+
+// disruptive operations restart pods by design; workload rules stay quiet for a while
+// after one so the churn is not reported as crashloops.
+var disruptive = []string{"cluster.create", "cluster.apply", "etcd.restore", "upgrade.talos", "upgrade.kubernetes", "node.add", "node.remove", "node.reboot", "node.rename", "node.pool", "node.readdress", "node.upgrade", "platform.apply"}
+
+const quietAfterOperation = 10 * time.Minute
+
 // serviceTick collects what runs in the cluster and raises/resolves workload alerts.
-// It is skipped while the API server is unreachable (Status already alerts on that).
+// It is skipped while the API server is unreachable (Status already alerts on that),
+// while the cluster is provisioning, and during the quiet window after an operation.
 func (w *Watcher) serviceTick(ctx context.Context, name string) {
-	if st := w.Latest(name); st != nil && !st.APIReachable {
+	if st := w.Latest(name); st == nil || !st.APIReachable || st.State != cluster.StateReady {
+		return
+	}
+	if last := w.Store.LastFinished(ctx, name, disruptive); time.Since(last) < quietAfterOperation {
 		return
 	}
 	sh, err := w.Manager.ServiceHealth(ctx, name)
@@ -157,6 +215,11 @@ func (w *Watcher) emit(ctx context.Context, name string, events []store.EventRow
 	for _, e := range events {
 		if resolves, ok := resolves[e.Kind]; ok {
 			_ = w.Store.ResolveEvents(ctx, name, e.Node, resolves)
+		}
+		if e.Kind == "node.removed" {
+			for _, k := range []string{"talos.unreachable", "node.notready", "machine.ip-changed"} {
+				_ = w.Store.ResolveEvents(ctx, name, e.Node, k)
+			}
 		}
 		// A daemon restart observes the same bad facts again; one open alert per
 		// (object, kind) is enough for the UI and the forwarders.
@@ -191,11 +254,15 @@ func (w *Watcher) tick(ctx context.Context, name string) {
 	}
 	_ = w.Store.AddSamples(ctx, name, now, samples)
 
-	events := Derive(name, prev, st)
-	if prev == nil {
-		events = append(events, w.reconcileOpen(ctx, name, st)...)
+	// While a cluster is still being provisioned, unreachable nodes and a missing API
+	// are the expected state, not alerts; samples and status still flow to the UI.
+	if st.State == cluster.StateReady {
+		events := Derive(name, prev, st)
+		if prev == nil {
+			events = append(events, w.reconcileOpen(ctx, name, st)...)
+		}
+		w.emit(ctx, name, events)
 	}
-	w.emit(ctx, name, events)
 	if w.OnStatus != nil {
 		w.OnStatus(name, st)
 	}

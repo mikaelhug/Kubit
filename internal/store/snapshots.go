@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"strconv"
 )
 
 // Snapshot is one etcd snapshot taken through the Talos API and kept sealed on disk.
@@ -30,7 +31,11 @@ func (s *Store) AddSnapshot(ctx context.Context, sn Snapshot) (int64, error) {
 	if err != nil {
 		return 0, err
 	}
-	return res.LastInsertId()
+	id, err := res.LastInsertId()
+	if err == nil {
+		s.notify(Change{Table: "snapshots", Cluster: sn.Cluster, Key: strconv.FormatInt(id, 10), Op: "put"})
+	}
+	return id, err
 }
 
 const snapshotCols = `id, cluster, ts, node, path, size_bytes, sha256, keys, talos_version, k8s_version, source, status, offsite`
@@ -71,17 +76,20 @@ func (s *Store) GetSnapshot(ctx context.Context, id int64) (*Snapshot, error) {
 
 func (s *Store) SetSnapshotOffsite(ctx context.Context, id int64, key string) error {
 	_, err := s.db.ExecContext(ctx, `UPDATE snapshots SET offsite = ? WHERE id = ?`, key, id)
-	return err
+	return s.done(err, Change{Table: "snapshots", Key: strconv.FormatInt(id, 10), Op: "put"})
 }
 
 func (s *Store) SetSnapshotStatus(ctx context.Context, id int64, status string) error {
 	_, err := s.db.ExecContext(ctx, `UPDATE snapshots SET status = ? WHERE id = ?`, status, id)
-	return err
+	return s.done(err, Change{Table: "snapshots", Key: strconv.FormatInt(id, 10), Op: "put"})
 }
 
 func (s *Store) DeleteSnapshot(ctx context.Context, id int64) error {
+	// The cluster is read first so subscribers can drop the row from the right list.
+	var cl string
+	_ = s.db.QueryRowContext(ctx, `SELECT cluster FROM snapshots WHERE id = ?`, id).Scan(&cl)
 	_, err := s.db.ExecContext(ctx, `DELETE FROM snapshots WHERE id = ?`, id)
-	return err
+	return s.done(err, Change{Table: "snapshots", Cluster: cl, Key: strconv.FormatInt(id, 10), Op: "delete"})
 }
 
 // LatestSnapshotTS returns the newest snapshot time for a cluster ("" when none).

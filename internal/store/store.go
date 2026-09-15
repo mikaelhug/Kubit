@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 
 	_ "modernc.org/sqlite"
 )
@@ -15,6 +16,8 @@ import (
 type Store struct {
 	db     *sql.DB
 	crypto *Crypto
+	n      notifier
+	dsn    string
 }
 
 // Open creates dir (0700) if needed, opens dir/kubit.db and applies migrations.
@@ -26,12 +29,13 @@ func Open(dir string, crypto *Crypto) (*Store, error) {
 		return nil, err
 	}
 	path := filepath.Join(dir, "kubit.db")
-	db, err := sql.Open("sqlite", path+"?_pragma=journal_mode(WAL)&_pragma=foreign_keys(ON)&_pragma=busy_timeout(5000)")
+	dsn := path + "?_pragma=journal_mode(WAL)&_pragma=foreign_keys(ON)&_pragma=busy_timeout(5000)"
+	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		return nil, err
 	}
 	db.SetMaxOpenConns(1)
-	s := &Store{db: db, crypto: crypto}
+	s := &Store{db: db, crypto: crypto, dsn: dsn}
 	if err := s.migrate(context.Background()); err != nil {
 		db.Close()
 		return nil, err
@@ -200,8 +204,13 @@ func (s *Store) migrate(ctx context.Context) error {
 }
 
 func (s *Store) Audit(ctx context.Context, cluster, action, detail string) error {
-	_, err := s.db.ExecContext(ctx, `INSERT INTO audit_log (cluster, action, detail) VALUES (?, ?, ?)`, cluster, action, detail)
-	return err
+	res, err := s.db.ExecContext(ctx, `INSERT INTO audit_log (cluster, action, detail) VALUES (?, ?, ?)`, cluster, action, detail)
+	if err != nil {
+		return err
+	}
+	id, _ := res.LastInsertId()
+	s.notify(Change{Table: "audit", Cluster: cluster, Key: strconv.FormatInt(id, 10), Op: "put"})
+	return nil
 }
 
 // AuditEntry is one recorded administrative action.

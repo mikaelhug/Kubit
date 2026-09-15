@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"strconv"
 	"time"
 )
 
@@ -108,12 +109,12 @@ func (s *Store) Events(ctx context.Context, cluster string, limit int, unackedOn
 
 func (s *Store) AckEvent(ctx context.Context, id int64) error {
 	_, err := s.db.ExecContext(ctx, `UPDATE events SET acked = 1 WHERE id = ?`, id)
-	return err
+	return s.done(err, Change{Table: "events", Key: strconv.FormatInt(id, 10), Op: "ack"})
 }
 
 func (s *Store) AckClusterEvents(ctx context.Context, cluster string) error {
 	_, err := s.db.ExecContext(ctx, `UPDATE events SET acked = 1 WHERE cluster = ?`, cluster)
-	return err
+	return s.done(err, Change{Table: "events", Cluster: cluster, Key: "*", Op: "ack"})
 }
 
 func b2i(b bool) int {
@@ -132,6 +133,12 @@ func (s *Store) HasOpenEvent(ctx context.Context, cluster, node, kind string) bo
 
 // ResolveEvents acknowledges open events of one kind for a node: the condition cleared.
 func (s *Store) ResolveEvents(ctx context.Context, cluster, node, kind string) error {
-	_, err := s.db.ExecContext(ctx, `UPDATE events SET acked = 1 WHERE cluster = ? AND node = ? AND kind = ? AND acked = 0`, cluster, node, kind)
-	return err
+	res, err := s.db.ExecContext(ctx, `UPDATE events SET acked = 1 WHERE cluster = ? AND node = ? AND kind = ? AND acked = 0`, cluster, node, kind)
+	if err != nil {
+		return err
+	}
+	if n, _ := res.RowsAffected(); n > 0 {
+		s.notify(Change{Table: "events", Cluster: cluster, Key: kind, Node: node, Op: "resolve"})
+	}
+	return nil
 }

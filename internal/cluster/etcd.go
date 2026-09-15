@@ -322,7 +322,7 @@ func (m *Manager) SnapshotStale(ctx context.Context, c *config.Cluster) bool {
 // is uploaded to the first control plane, etcd is bootstrapped from it and the other
 // members rejoin. Workers keep running; their kubelets reconnect once the API is back.
 func (m *Manager) RestoreEtcd(ctx context.Context, name string, snapshotID int64, sink Sink) error {
-	sink.plan(Steps("check", "Verify the snapshot and reach every control plane", "wipe", "Wipe etcd state on every control plane and reboot", "upload", "Upload the snapshot to the first control plane", "bootstrap", "Bootstrap etcd from the snapshot", "ready", "Wait for nodes to become Ready")...)
+	sink.plan(Steps("check", "Verify the snapshot and reach every control plane", "wipe", "Wipe etcd state on every control plane and reboot", "upload", "Upload the snapshot to the first control plane", "bootstrap", "Bootstrap etcd from the snapshot", "ready", "Wait for nodes to become Ready", "workers", "Restart pods on workers")...)
 	c, _, err := m.LoadCluster(ctx, name)
 	if err != nil {
 		return err
@@ -454,8 +454,29 @@ func (m *Manager) RestoreEtcd(ctx context.Context, name string, snapshotID int64
 	if err := sink.run("ready", func() error { return m.waitReady(ctx, c, c.Spec.Nodes, sink) }); err != nil {
 		return fail(err)
 	}
+	// A restore resets resourceVersions; watches held by pods on workers (kube-proxy,
+	// CNI, MetalLB speakers) never recover on their own and the node loses service
+	// routing. Control planes rebooted; workers get their pods recreated.
+	if len(c.Workers()) == 0 {
+		sink.skip("workers")
+	} else if err := sink.run("workers", func() error {
+		kc, err := m.KubeClient(ctx, name)
+		if err != nil {
+			return err
+		}
+		for _, w := range c.Workers() {
+			n, err := kc.DeletePodsOnNode(ctx, w.Hostname)
+			if err != nil {
+				return fmt.Errorf("%s: %w", w.Hostname, err)
+			}
+			sink.emit(Info, "workers", w.Hostname, "%d pod(s) deleted; controllers recreate them with fresh watches", n)
+		}
+		return nil
+	}); err != nil {
+		return fail(err)
+	}
 	_ = m.Store.Audit(ctx, name, "etcd.restore", fmt.Sprintf("snapshot %d", snapshotID))
-	sink.emit(Done, "ready", "", "cluster %s restored from snapshot #%d (%s)", name, sn.ID, sn.TS)
+	sink.emit(Done, "workers", "", "cluster %s restored from snapshot #%d (%s)", name, sn.ID, sn.TS)
 	return nil
 }
 

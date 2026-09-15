@@ -35,8 +35,12 @@ func discoverCmd() *cobra.Command {
 					return err
 				}
 				defer s.Close()
+				vips := s.ClusterVIPs(cmd.Context())
 				for _, r := range results {
 					if r.Err != nil {
+						continue
+					}
+					if _, isVIP := vips[r.IP]; isVIP {
 						continue
 					}
 					row := store.NodeRow{IP: r.IP, Source: "scan", State: string(r.State)}

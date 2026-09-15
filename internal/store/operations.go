@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strconv"
+	"time"
 )
 
 type OperationRow struct {
@@ -38,7 +40,7 @@ func (s *Store) SetOperationSteps(ctx context.Context, id int64, steps []byte) e
 
 func (s *Store) SetOperationArtifact(ctx context.Context, id int64, artifact []byte) error {
 	_, err := s.db.ExecContext(ctx, `UPDATE operations SET artifact = ? WHERE id = ?`, string(artifact), id)
-	return err
+	return s.done(err, Change{Table: "operations", Key: strconv.FormatInt(id, 10), Op: "put"})
 }
 
 func (s *Store) AppendOperationLog(ctx context.Context, id int64, line string) error {
@@ -71,6 +73,23 @@ func (s *Store) GetOperation(ctx context.Context, id int64) (*OperationRow, erro
 }
 
 // ListOperations returns the most recent operations first, without their logs.
+// LastFinished returns when the newest operation of one of the kinds ended for a
+// cluster (zero time when none did).
+func (s *Store) LastFinished(ctx context.Context, cluster string, kinds []string) time.Time {
+	var out time.Time
+	for _, k := range kinds {
+		var ts sql.NullString
+		if err := s.db.QueryRowContext(ctx, `SELECT finished_at FROM operations WHERE cluster = ? AND kind = ? AND finished_at IS NOT NULL ORDER BY id DESC LIMIT 1`, cluster, k).Scan(&ts); err == nil && ts.Valid {
+			if t, err := time.Parse(time.RFC3339Nano, ts.String); err == nil && t.After(out) {
+				out = t
+			} else if t, err := time.Parse("2006-01-02T15:04:05.000Z", ts.String); err == nil && t.After(out) {
+				out = t
+			}
+		}
+	}
+	return out
+}
+
 func (s *Store) ListOperations(ctx context.Context, limit int) ([]OperationRow, error) {
 	rows, err := s.db.QueryContext(ctx, `SELECT id, cluster, kind, status, started_at, finished_at, steps FROM operations ORDER BY id DESC LIMIT ?`, limit)
 	if err != nil {

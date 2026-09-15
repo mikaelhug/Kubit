@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'preact/hooks'
 import { api, fmt, type OffsiteStatus, type Settings } from '../api'
-import { toast, watch } from '../store'
+import { loadSettings, settings, toast, watch } from '../store'
 import { ErrorBox, Field, Notice, Section } from '../components/ui'
 
 export function KubitSettings() {
@@ -9,14 +9,25 @@ export function KubitSettings() {
   const [error, setError] = useState<string | null>(null)
   const [off, setOff] = useState<OffsiteStatus | null>(null)
   const loadOff = () => api.offsiteStatus().then(setOff).catch(() => {})
-  useEffect(() => { api.settings().then((v) => { setS(v); setOrig(v) }).catch((e) => setError(e.message)); loadOff() }, [])
+  const pushed = settings.value
+  // The daemon pushes the saved row; adopt it unless the form has unsaved edits, in
+  // which case a notice says the baseline moved.
+  useEffect(() => {
+    if (!pushed) { loadSettings(); return }
+    const dirtyNow = s && orig && JSON.stringify(s) !== JSON.stringify(orig)
+    if (!dirtyNow) setS(pushed)
+    setOrig(pushed)
+    loadOff()
+  }, [pushed]) // eslint-disable-line
   if (!s) return <div class="p-6 text-muted">{error ?? 'Loading…'}</div>
   const dirty = JSON.stringify(s) !== JSON.stringify(orig)
+  const movedUnderneath = dirty && pushed && JSON.stringify(pushed) !== JSON.stringify(orig)
   const save = () => api.saveSettings(s).then((v) => { setS(v); setOrig(v); setError(null); toast('Settings saved', 'good') }).catch((e) => setError(e.message))
   return (
     <div class="p-6 flex flex-col gap-6 max-w-3xl">
       <Section title="Kubit settings" help="Preferences of this Kubit installation. Cluster-specific settings live under each cluster.">
         <ErrorBox error={error} />
+        {movedUnderneath && <Notice tone="warn">Settings were changed elsewhere while you were editing. Saving overwrites them; <button class="underline" onClick={() => { setS(pushed); setOrig(pushed) }}>discard your edits</button> to see the current values.</Notice>}
         <div class="panel p-4 grid grid-cols-1 md:grid-cols-2 gap-4">
           <Field label="Image Factory URL" hint="Where installer images, ISOs and PXE assets come from. Point at a self-hosted factory for air-gapped sites."><input class="input mono" value={s.factoryUrl} onInput={(e) => setS({ ...s, factoryUrl: (e.target as HTMLInputElement).value })} /></Field>
           <Field label="Health poll interval (seconds)" hint="How often every cluster is queried for samples and events. Minimum 5."><input class="input num" type="number" min={5} value={s.watchIntervalSec} onInput={(e) => setS({ ...s, watchIntervalSec: Number((e.target as HTMLInputElement).value) })} /></Field>

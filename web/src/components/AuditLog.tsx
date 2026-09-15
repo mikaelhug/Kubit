@@ -1,13 +1,13 @@
-import { useEffect, useState } from 'preact/hooks'
-import { api, fmt, type AuditEntry } from '../api'
+import { useEffect } from 'preact/hooks'
+import { fmt, type AuditEntry } from '../api'
+import { audit, loadAudit, refreshKey } from '../store'
 import { DataTable, type Column } from './DataTable'
-import { ErrorBox, Section } from './ui'
+import { Section } from './ui'
 
 /** Who did what, when: every administrative action Kubit recorded. */
 export function AuditLog({ cluster }: { cluster?: string }) {
-  const [rows, setRows] = useState<AuditEntry[]>([])
-  const [error, setError] = useState<string | null>(null)
-  useEffect(() => { api.audit(cluster).then(setRows).catch((e) => setError(e.message)) }, [cluster])
+  const rows = cluster ? audit.value.filter((a) => a.cluster === cluster) : audit.value
+  useEffect(() => { loadAudit(cluster) }, [cluster, refreshKey('*', 'resync')])
   const columns: Column<AuditEntry>[] = [
     { id: 'at', header: 'When', sort: (a) => a.at, cell: (a) => <span class="num text-muted">{fmt.datetime(a.at)}</span> },
     ...(cluster ? [] : [{ id: 'cluster', header: 'Cluster', sort: (a: AuditEntry) => a.cluster, cell: (a: AuditEntry) => a.cluster ? <a href={`/clusters/${a.cluster}/overview`} class="text-accent hover:underline">{a.cluster}</a> : <span class="text-muted">kubit</span> } as Column<AuditEntry>]),
@@ -21,7 +21,6 @@ export function AuditLog({ cluster }: { cluster?: string }) {
   }
   return (
     <Section title="Audit log" help="Administrative actions in order: cluster creation, node changes, upgrades, snapshots, restores, credential rotation, settings changes. The single-admin deployment records no user; add a note in your change tracker when several people share this host." actions={<button class="btn" onClick={csv} disabled={rows.length === 0}>Export CSV</button>}>
-      <ErrorBox error={error} />
       <DataTable id={`audit-${cluster ?? 'all'}`} columns={columns} rows={rows} rowKey={(a) => String(a.id)} defaultSort={{ id: 'at', dir: 'desc' }} empty="Nothing recorded yet." />
     </Section>
   )

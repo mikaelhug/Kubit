@@ -114,7 +114,7 @@ func (s *Store) GetValue(ctx context.Context, key string) string {
 
 func (s *Store) SetValue(ctx context.Context, key, value string) error {
 	_, err := s.db.ExecContext(ctx, `INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value`, key, value)
-	return err
+	return s.done(err, Change{Table: "settings", Key: key, Op: "put"})
 }
 
 func (s *Store) PutSettings(ctx context.Context, v Settings) error {
@@ -130,5 +130,5 @@ func (s *Store) PutSettings(ctx context.Context, v Settings) error {
 		return err
 	}
 	_, err = s.db.ExecContext(ctx, `INSERT INTO settings (key, value) VALUES ('kubit', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value`, string(b))
-	return err
+	return s.done(err, Change{Table: "settings", Key: "kubit", Op: "put"})
 }

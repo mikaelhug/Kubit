@@ -1,18 +1,37 @@
-// Global state as signals, fed by one SSE connection. Pages read signals and call api.*;
-// the stream keeps operations, their steps and their event logs current.
+// Global live state as signals, fed by one WebSocket (see live.ts). Pages derive from
+// these and only fetch large derived views, which the daemon tells them to refresh.
 import { signal, computed } from '@preact/signals'
-import { api, fmt, getToken, type ClusterRow, type Event, type HealthEvent, type Message, type Operation, type Status, type Step } from './api'
+import { api, type AuditEntry, type ClusterRow, type Event, type HealthEvent, type NodeRow, type Operation, type Settings, type Snapshot, type Status, type Step } from './api'
 
 export const clusters = signal<ClusterRow[]>([])
+/** Every machine Kubit knows, keyed by MAC; pushed on each store write. */
+export const machines = signal<Map<string, NodeRow>>(new Map())
+export const machineList = computed(() => [...machines.value.values()].sort((a, b) => a.ip.localeCompare(b.ip, undefined, { numeric: true })))
+/** etcd snapshots per cluster, newest first. */
+export const snapshots = signal<Map<string, Snapshot[]>>(new Map())
+/** Audit entries, newest first (all clusters; filter per view). */
+export const audit = signal<AuditEntry[]>([])
+/** Kubit settings as the daemon last pushed them (secrets redacted). */
+export const settings = signal<Settings | null>(null)
+/** Newest stable Talos the factory publishes; bumps when the daemon's hourly check changes. */
+export const latestTalos = signal<string>('')
+/** Daemon facts from the hello message. */
+export const daemon = signal<{ version: string; startedAt: string; service: boolean } | null>(null)
 export const operations = signal<Map<number, Operation>>(new Map())
 export const opEvents = signal<Map<number, Event[]>>(new Map())
 export const connected = signal(false)
+/** True while base state is being reloaded after a reconnect or an external write. */
+export const resyncing = signal(false)
+export const reconnectAttempt = signal(0)
 export const drawerOpen = signal<boolean>(read('kubit.drawer', false))
 export const drawerHeight = signal<number>(read('kubit.drawerHeight', 260))
 export const drawerTab = signal<number | null>(null)
 export const toasts = signal<{ id: number; text: string; tone: 'info' | 'error' | 'good' }[]>([])
 /** Latest Status per cluster, pushed by the daemon's watcher. */
 export const statuses = signal<Map<string, Status>>(new Map())
+/** Per (cluster, scope) change counters pushed by the daemon; views refetch when theirs moves. */
+export const refreshes = signal<Map<string, number>>(new Map())
+export function refreshKey(cluster: string, scope: string) { return refreshes.value.get(`${cluster}/${scope}`) ?? 0 }
 /** Health events per cluster (newest first), seeded from the API and appended live. */
 export const health = signal<Map<string, HealthEvent[]>>(new Map())
 
@@ -36,11 +55,44 @@ export async function loadHealth(name: string) {
   } catch {}
 }
 
+/** Acks go to the daemon; the healthAck message that comes back updates every tab. */
 export async function ack(name: string, id?: number) {
   if (id === undefined) await api.ackAll(name); else await api.ackEvent(id)
-  const m = new Map(health.value)
-  m.set(name, (m.get(name) ?? []).map((e) => id === undefined || e.id === id ? { ...e, acked: true } : e))
-  health.value = m
+}
+
+export function upsertCluster(row: ClusterRow) {
+  const rest = clusters.value.filter((c) => c.name !== row.name)
+  clusters.value = [...rest, row].sort((a, b) => a.name.localeCompare(b.name))
+}
+
+export async function loadMachines() {
+  try {
+    const rows = await api.nodes()
+    machines.value = new Map(rows.map((m) => [m.mac || `ip:${m.ip}`, m]))
+  } catch {}
+}
+
+export async function loadSnapshots(name: string) {
+  try {
+    const rows = await api.snapshots(name)
+    const m = new Map(snapshots.value)
+    m.set(name, rows)
+    snapshots.value = m
+  } catch {}
+}
+
+export async function loadAudit(cluster?: string) {
+  try {
+    const rows = await api.audit(cluster)
+    if (cluster) {
+      const others = audit.value.filter((a) => a.cluster !== cluster)
+      audit.value = [...rows, ...others].sort((a, b) => b.id - a.id)
+    } else audit.value = rows
+  } catch {}
+}
+
+export async function loadSettings() {
+  try { settings.value = await api.settings() } catch {}
 }
 
 export const running = computed(() => [...operations.value.values()].filter((o) => o.status === 'running').sort((a, b) => a.id - b.id))
@@ -79,13 +131,13 @@ export function watch(op: { operationId: number } | number, open = true) {
   if (!operations.value.has(id)) api.operation(id).then((o) => upsertOp(o)).catch(() => {})
 }
 
-function upsertOp(o: Operation) {
+export function upsertOp(o: Operation) {
   const m = new Map(operations.value)
   m.set(o.id, { ...m.get(o.id), ...o, steps: o.steps ?? m.get(o.id)?.steps ?? [] })
   operations.value = m
 }
 
-function applyStepEvent(id: number, e: Event) {
+export function applyStepEvent(id: number, e: Event) {
   const op = operations.value.get(id)
   if (!op) return
   let steps: Step[] = [...(op.steps || [])]
@@ -102,54 +154,6 @@ function applyStepEvent(id: number, e: Event) {
     else if (steps[i].status === 'pending') steps[i] = { ...steps[i], status: 'running', startedAt: e.time }
   }
   upsertOp({ ...op, steps })
-}
-
-let source: EventSource | null = null
-export function connect() {
-  if (source) return
-  const t = getToken()
-  source = new EventSource('/api/v1/events' + (t ? `?token=${encodeURIComponent(t)}` : ''))
-  source.onopen = () => { connected.value = true; reloadOperations(); reloadClusters() }
-  source.onmessage = (ev) => {
-    const m = JSON.parse(ev.data) as Message
-    if (m.kind === 'operation' && m.operation) {
-      const prev = operations.value.get(m.operation.id)
-      upsertOp(m.operation)
-      if (m.operation.status !== 'running') {
-        reloadClusters()
-        if (prev?.status === 'running') toast(`${fmt.kind(m.operation.kind)}${m.operation.cluster ? ' · ' + m.operation.cluster : ''}: ${m.operation.status}`, m.operation.status === 'done' ? 'good' : 'error')
-      }
-    } else if (m.kind === 'status' && m.status && m.cluster) {
-      const sm = new Map(statuses.value)
-      sm.set(m.cluster, m.status)
-      statuses.value = sm
-    } else if (m.kind === 'health' && m.health) {
-      const hm = new Map(health.value)
-      const resolves: Record<string, string> = { 'talos.back': 'talos.unreachable', 'node.ready': 'node.notready', 'api.back': 'api.unreachable', 'etcd.healthy': 'etcd.unhealthy', 'lb.assigned': 'lb.lost', 'workload.available': 'workload.unavailable', 'pod.recovered': 'pod.crashloop', 'pvc.bound': 'pvc.pending', 'service.endpoints': 'service.no-endpoints', 'ingress.address': 'ingress.no-address', 'lb.pool-free': 'lb.pool-exhausted' }
-      const cleared = resolves[m.health.kind]
-      const h = m.health
-      const prev = (hm.get(h.cluster) ?? []).map((e) => cleared && e.kind === cleared && (e.node ?? '') === (h.node ?? '') ? { ...e, acked: true } : e)
-      hm.set(h.cluster, [h, ...prev].slice(0, 200))
-      health.value = hm
-      if (m.health.severity !== 'info') toast(`${m.health.cluster}: ${m.health.message}`, 'error')
-    } else if (m.kind === 'event' && m.event && m.operationId !== undefined) {
-      const e = m.event
-      const id = m.operationId
-      if (e.kind === 'log' || !e.kind) {
-        const map = new Map(opEvents.value)
-        const list = map.get(id) ?? []
-        map.set(id, list.length > 2000 ? [...list.slice(-1500), e] : [...list, e])
-        opEvents.value = map
-      }
-      applyStepEvent(id, e)
-    }
-  }
-  source.onerror = () => {
-    connected.value = false
-    source?.close()
-    source = null
-    setTimeout(connect, 3000)
-  }
 }
 
 /** Load the persisted log of an operation that finished before this page opened. */

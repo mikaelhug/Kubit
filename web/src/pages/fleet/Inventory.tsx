@@ -1,30 +1,27 @@
 import { useEffect, useState } from 'preact/hooks'
 import { api, fmt, type NodeRow } from '../../api'
 import { useLocation } from 'preact-iso'
-import { clusters, toast, watch } from '../../store'
+import { clusters, connected, machineList, operations, resyncing, settings, toast, watch } from '../../store'
 import { DataTable, type Column } from '../../components/DataTable'
 import { ConfirmDialog, ErrorBox, Pill, Section, stateTone } from '../../components/ui'
 import { TypePill } from '../create/steps'
-import { operations } from '../../store'
 
 /** Every machine Kubit knows: maintenance-mode candidates and cluster members. */
 export function Inventory() {
-  const [nodes, setNodes] = useState<NodeRow[]>([])
-  const [loaded, setLoaded] = useState(false)
+  const nodes = machineList.value
+  const loaded = connected.value && !resyncing.value
   const [targets, setTargets] = useState('')
-  const [error, setError] = useState<string | null>(null)
+  const error = null
   const [retire, setRetire] = useState<NodeRow | null>(null)
   const { route } = useLocation()
-  const load = () => api.nodes().then((ns) => { setNodes(ns); if (!targets && ns[0]) setTargets((t) => t || ns[0].ip.replace(/\.\d+$/, '.0/24')) }).catch((e) => setError(e.message)).finally(() => setLoaded(true))
-  useEffect(() => { load(); api.settings().then((v) => { if (v.discoverySubnets.length) setTargets(v.discoverySubnets.join(', ')) }).catch(() => {}) }, []) // eslint-disable-line
+  const subnets = settings.value?.discoverySubnets ?? []
+  useEffect(() => { if (!targets) setTargets(subnets.length ? subnets.join(', ') : nodes[0] ? nodes[0].ip.replace(/\.\d+$/, '.0/24') : '') }, [subnets.join(','), nodes.length]) // eslint-disable-line
   const adopt = (n: NodeRow) => {
     const ready = clusters.value.filter((c) => c.state === 'ready' || c.state === 'bootstrapped')
     if (ready.length === 0) { route('/clusters/new'); return }
     const target = ready.length === 1 ? ready[0].name : prompt(`Adopt ${n.ip} into which cluster? (${ready.map((c) => c.name).join(', ')})`, ready[0].name)
     if (target && ready.find((c) => c.name === target)) route(`/clusters/${target}/nodes?adopt=${n.ip}`)
   }
-  const finishedDiscoveries = [...operations.value.values()].filter((o) => o.kind === 'discover' && o.status !== 'running').length
-  useEffect(() => { load() }, [finishedDiscoveries]) // eslint-disable-line
   const scanning = [...operations.value.values()].some((o) => o.kind === 'discover' && o.status === 'running')
 
   const columns: Column<NodeRow>[] = [
@@ -63,7 +60,7 @@ export function Inventory() {
         <DataTable loading={!loaded} id="inventory" columns={columns} rows={nodes} rowKey={(n) => n.mac || n.ip} defaultSort={{ id: 'ip', dir: 'asc' }} empty="No machines known yet. Scan a subnet." />
       </Section>
       {retire && <ConfirmDialog title={`Retire ${retire.hostname || retire.mac}`} action="Retire" tone="danger" onClose={() => setRetire(null)}
-        onConfirm={() => api.retireMachine(retire.mac).then(() => { setRetire(null); load() }).catch((e) => toast(e.message, 'error'))}
+        onConfirm={() => api.retireMachine(retire.mac).then(() => setRetire(null)).catch((e) => toast(e.message, 'error'))}
         impact={<p>Deletes the inventory row for <span class="mono">{retire.mac}</span> (hardware record, address history). Nothing is sent to the machine; it reappears on the next scan if still online.</p>} />}
     </div>
   )

@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'preact/hooks'
 import { api, fmt, formOf, type Snapshot } from '../../api'
-import { operations, reloadClusters, toast, watch } from '../../store'
+import { loadSnapshots, operations, refreshKey, snapshots, toast, watch } from '../../store'
 import { DataTable, type Column } from '../../components/DataTable'
 import { ConfirmDialog, ErrorBox, Field, Notice, Pill, Section } from '../../components/ui'
 import type { ClusterCtx } from './ClusterPage'
@@ -11,22 +11,20 @@ import type { ClusterCtx } from './ClusterPage'
  */
 export function Backups({ ctx }: { ctx: ClusterCtx }) {
   const { name, cluster, status } = ctx
-  const [rows, setRows] = useState<Snapshot[]>([])
-  const [loaded, setLoaded] = useState(false)
+  const rows = snapshots.value.get(name) ?? []
+  const loaded = snapshots.value.has(name)
   const [error, setError] = useState<string | null>(null)
   const [restore, setRestore] = useState<Snapshot | null>(null)
   const [remove, setRemove] = useState<Snapshot | null>(null)
   const [schedule, setSchedule] = useState({ interval: cluster.spec.spec.backup?.etcd.interval ?? '6h', keep: String(cluster.spec.spec.backup?.etcd.keep ?? 28) })
-  const finished = [...operations.value.values()].filter((o) => o.cluster === name && o.status !== 'running').length
-  const load = () => api.snapshots(name).then((s) => { setRows(s); setError(null) }).catch((e) => setError(e.message)).finally(() => setLoaded(true))
-  useEffect(() => { load() }, [name, finished]) // eslint-disable-line
+  useEffect(() => { loadSnapshots(name) }, [name, refreshKey('*', 'resync')])
   useEffect(() => { setSchedule({ interval: cluster.spec.spec.backup?.etcd.interval ?? '6h', keep: String(cluster.spec.spec.backup?.etcd.keep ?? 28) }) }, [cluster.updatedAt])
   const running = [...operations.value.values()].some((o) => o.cluster === name && o.status === 'running')
   const latest = rows.find((r) => r.status === 'ok')
   const scheduleDirty = schedule.interval !== (cluster.spec.spec.backup?.etcd.interval ?? '6h') || Number(schedule.keep) !== (cluster.spec.spec.backup?.etcd.keep ?? 28)
   const saveSchedule = () => {
     api.saveClusterForm(name, { ...formOf(cluster.spec.spec), etcdSnapshotInterval: schedule.interval, etcdSnapshotKeep: Number(schedule.keep) || 0 })
-      .then(() => { toast('Schedule saved', 'good'); reloadClusters() }).catch((e) => setError(e.message))
+      .then(() => { toast('Schedule saved', 'good') }).catch((e) => setError(e.message))
   }
 
   const columns: Column<Snapshot>[] = [
@@ -40,7 +38,7 @@ export function Backups({ ctx }: { ctx: ClusterCtx }) {
     { id: 'offsite', header: 'Off-site', sort: (s) => s.offsite ? 1 : 0, cell: (s) => s.offsite ? <Pill tone="good" title={s.offsite}>copied</Pill> : <span class="text-muted" title="No off-site copy: target off or the copy failed">—</span> },
     { id: 'actions', header: '', align: 'right', cell: (s) => (
       <span class="whitespace-nowrap flex gap-1 justify-end">
-        <button class="btn !py-1" title="Unseal, check the hash and open the database" onClick={() => api.verifySnapshot(name, s.id).then((r) => { toast(r.ok ? `Snapshot #${s.id} verified` : `Snapshot #${s.id}: ${r.error}`, r.ok ? 'good' : 'error'); load() }).catch((e) => toast(e.message, 'error'))}>Verify</button>
+        <button class="btn !py-1" title="Unseal, check the hash and open the database" onClick={() => api.verifySnapshot(name, s.id).then((r) => { toast(r.ok ? `Snapshot #${s.id} verified` : `Snapshot #${s.id}: ${r.error}`, r.ok ? 'good' : 'error') }).catch((e) => toast(e.message, 'error'))}>Verify</button>
         <a class="btn !py-1" href={`/api/v1/clusters/${name}/snapshots/${s.id}`} download title="Plain etcd snapshot (.db) for talosctl or etcdutl">Download</a>
         <button class="btn btn-danger !py-1" disabled={s.status !== 'ok' || running} onClick={() => setRestore(s)}>Restore…</button>
         <button class="btn !py-1" onClick={() => setRemove(s)} aria-label="Delete snapshot">✕</button>
@@ -86,7 +84,7 @@ export function Backups({ ctx }: { ctx: ClusterCtx }) {
       )}
       {remove && (
         <ConfirmDialog title={`Delete snapshot #${remove.id}`} action="Delete" tone="danger" onClose={() => setRemove(null)}
-          onConfirm={() => api.deleteSnapshot(name, remove.id).then(() => { setRemove(null); load() }).catch((e) => toast(e.message, 'error'))}
+          onConfirm={() => api.deleteSnapshot(name, remove.id).then(() => { setRemove(null) }).catch((e) => toast(e.message, 'error'))}
           impact={<p>Deletes the sealed file and its record. {remove.source === 'manual' ? 'Manual snapshots are never pruned automatically.' : ''}</p>} />
       )}
     </div>

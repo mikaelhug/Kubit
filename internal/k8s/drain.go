@@ -6,6 +6,7 @@ import (
 	"io"
 	"time"
 
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/kubectl/pkg/drain"
 )
@@ -46,4 +47,22 @@ func (c *Client) Uncordon(ctx context.Context, name string) error {
 
 func (c *Client) DeleteNode(ctx context.Context, name string) error {
 	return c.CoreV1().Nodes().Delete(ctx, name, metav1.DeleteOptions{})
+}
+
+// DeletePodsOnNode deletes every pod scheduled on a node (DaemonSet pods included)
+// so their controllers recreate them; used after an etcd restore, when running pods
+// hold watches the restored API server cannot resume.
+func (c *Client) DeletePodsOnNode(ctx context.Context, node string) (int, error) {
+	pods, err := c.CoreV1().Pods("").List(ctx, metav1.ListOptions{FieldSelector: "spec.nodeName=" + node})
+	if err != nil {
+		return 0, err
+	}
+	n := 0
+	for _, p := range pods.Items {
+		if err := c.CoreV1().Pods(p.Namespace).Delete(ctx, p.Name, metav1.DeleteOptions{}); err != nil && !apierrors.IsNotFound(err) {
+			return n, err
+		}
+		n++
+	}
+	return n, nil
 }

@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'preact/hooks'
 import { api, fmt, logsUrl, type ClusterRow, type Inventory, type NodeDetail, type NodeRow, type NodeSpec, type PodSummary, type Service } from '../api'
 import { useLocation } from 'preact-iso'
-import { clusters, operations, statuses, toast, watch } from '../store'
+import { clusters, connected, machineList, machines, operations, refreshKey, resyncing, statuses, toast, watch } from '../store'
 import { ReaddressDialog } from './cluster/Nodes'
 import { Tabs } from '../components/Tabs'
 import { DataTable, type Column } from '../components/DataTable'
@@ -21,18 +21,21 @@ export function NodePage({ ip: ipParam, mac }: { ip?: string; mac?: string }) {
   const [error, setError] = useState<string | null>(null)
   const finished = [...operations.value.values()].filter((o) => o.status !== 'running').length
 
-  const load = () => {
-    const row = mac ? api.machine(mac) : api.nodes().then((ns) => ns.find((n) => n.ip === ipParam) ?? null)
-    row.then((n) => {
-      setNode(n)
-      if (n && !mac) history.replaceState(null, '', `/machines/${n.mac}`)
-      const addr = n?.ip ?? ipParam
-      if (!addr) return
-      api.inventory(addr).then((i) => { setInv(i); setInvErr(null) }).catch((e) => setInvErr(e.message))
-      api.nodeKubernetes(addr).then((d) => { setK8s(d); setK8sErr(null) }).catch((e) => setK8sErr(e.message))
-    }).catch((e) => setError(e.message))
-  }
-  useEffect(() => { load() }, [ipParam, mac, finished]) // eslint-disable-line
+  // The machine row is live state; the two Talos/Kubernetes detail calls follow the
+  // cluster's status ticks and node-scope changes.
+  const live = mac ? machines.value.get(mac.toLowerCase()) ?? null : machineList.value.find((n) => n.ip === ipParam) ?? null
+  useEffect(() => {
+    setNode(live)
+    if (live && !mac) history.replaceState(null, '', `/machines/${live.mac}`)
+    if (!live && connected.value && !resyncing.value) setError(`No machine ${mac ?? ipParam} is known.`)
+  }, [live, mac, ipParam]) // eslint-disable-line
+  const observed = live?.cluster ? statuses.value.get(live.cluster)?.observedAt : undefined
+  useEffect(() => {
+    const addr = live?.ip ?? ipParam
+    if (!addr) return
+    api.inventory(addr).then((i) => { setInv(i); setInvErr(null) }).catch((e) => setInvErr(e.message))
+    api.nodeKubernetes(addr).then((d) => { setK8s(d); setK8sErr(null) }).catch((e) => setK8sErr(e.message))
+  }, [live?.ip, ipParam, finished, observed, refreshKey(live?.cluster ?? '', 'nodes')]) // eslint-disable-line
 
   const cluster = node?.cluster ? clusters.value.find((c) => c.name === node.cluster) : undefined
   const spec: NodeSpec | undefined = cluster?.spec.spec.nodes.find((n) => (node?.mac && n.mac === node.mac) || n.hostname === node?.hostname)
@@ -62,7 +65,7 @@ export function NodePage({ ip: ipParam, mac }: { ip?: string; mac?: string }) {
         {tab === 'overview' && <OverviewTab inv={inv} invErr={invErr} k8s={k8s} k8sErr={k8sErr} node={node} spec={spec} />}
         {tab === 'hardware' && <HardwareTab inv={inv} invErr={invErr} />}
         {tab === 'kubernetes' && <KubernetesTab k8s={k8s} err={k8sErr} />}
-        {tab === 'services' && <ServicesTab ip={ip} />}
+        {tab === 'services' && <ServicesTab ip={ip} cluster={node?.cluster} />}
         {tab === 'logs' && <LogsTab ip={ip} />}
         {tab === 'actions' && <ActionsTab node={node} k8s={k8s} inv={inv} cluster={cluster} spec={spec} talosVersion={cluster?.spec.spec.talosVersion} />}
       </div>
@@ -203,10 +206,11 @@ function KubernetesTab({ k8s, err }: { k8s: NodeDetail | null; err: string | nul
   )
 }
 
-function ServicesTab({ ip }: { ip: string }) {
+function ServicesTab({ ip, cluster }: { ip: string; cluster?: string }) {
   const [services, setServices] = useState<Service[]>([])
   const [error, setError] = useState<string | null>(null)
-  useEffect(() => { api.services(ip).then(setServices).catch((e) => setError(e.message)) }, [ip])
+  const tick = statuses.value.get(cluster ?? '')?.observedAt
+  useEffect(() => { api.services(ip).then(setServices).catch((e) => setError(e.message)) }, [ip, tick])
   return (
     <Section title="Talos services" help="System services on the machine (apid, etcd, kubelet, containerd…). Unhealthy is reported by the service's own health check.">
       <ErrorBox error={error} />
@@ -335,7 +339,7 @@ function MachineActions({ node }: { node: NodeRow | null }) {
   const [retire, setRetire] = useState(false)
   if (!node) return <Notice tone="muted">Loading…</Notice>
   const ready = clusters.value.filter((c) => c.state === 'ready' || c.state === 'bootstrapped')
-  const refresh = () => api.machine(node.mac).then(() => location.reload()).catch(() => {})
+  const refresh = () => Promise.resolve() // the machine row arrives over the live connection
   return (
     <div class="flex flex-col gap-3 max-w-3xl">
       <Notice tone="muted">This machine is not a cluster member.</Notice>

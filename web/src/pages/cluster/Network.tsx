@@ -2,7 +2,7 @@ import { useEffect, useState } from 'preact/hooks'
 import { api, type KIngress, type KService, type NetworkView } from '../../api'
 import { DataTable, type Column } from '../../components/DataTable'
 import { AlertPill, ErrorBox, KeyValue, Notice, Pill, Section } from '../../components/ui'
-import { openAlert } from '../../store'
+import { openAlert, refreshKey } from '../../store'
 import type { ClusterCtx } from './ClusterPage'
 
 export function Network({ ctx }: { ctx: ClusterCtx }) {
@@ -11,11 +11,8 @@ export function Network({ ctx }: { ctx: ClusterCtx }) {
   const [view, setView] = useState<NetworkView | null>(null)
   const [error, setError] = useState<string | null>(null)
   useEffect(() => {
-    const load = () => api.network(name).then((v) => { setView(v); setError(null) }).catch((e) => setError(e.message))
-    load()
-    const t = setInterval(load, 15000)
-    return () => clearInterval(t)
-  }, [name])
+    api.network(name).then((v) => { setView(v); setError(null) }).catch((e) => setError(e.message))
+  }, [name, refreshKey(name, 'network'), refreshKey(name, 'addons')])
   const pool = view?.pool
   const scols: Column<KService>[] = [
     { id: 'ns', header: 'Namespace', sort: (s) => s.namespace, cell: (s) => s.namespace },

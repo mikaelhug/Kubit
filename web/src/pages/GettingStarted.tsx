@@ -1,7 +1,7 @@
 import type { ComponentChildren } from 'preact'
 import { useEffect, useState } from 'preact/hooks'
-import { api, type NodeRow, type Versions } from '../api'
-import { operations } from '../store'
+import { api, type Versions } from '../api'
+import { latestTalos, machineList, settings } from '../store'
 
 // Schematic with no extensions: enough to reach maintenance mode. Installs use the
 // cluster's own schematic later, so the boot medium never needs to change.
@@ -10,11 +10,9 @@ const vanillaSchematic = '376567988ad370138ad8b2698212367b8edcb69b5fd68c80be1f2e
 /** First run: how machines get to Kubit, and the three steps to a cluster. */
 export function GettingStarted() {
   const [versions, setVersions] = useState<Versions | null>(null)
-  const [machines, setMachines] = useState<NodeRow[]>([])
-  const [factory, setFactory] = useState('https://factory.talos.dev')
-  const finished = [...operations.value.values()].filter((o) => o.kind === 'discover' && o.status !== 'running').length
-  useEffect(() => { api.versions().then(setVersions).catch(() => {}); api.settings().then((s) => setFactory(s.factoryUrl)).catch(() => {}) }, [])
-  useEffect(() => { api.nodes().then(setMachines).catch(() => {}) }, [finished])
+  const machines = machineList.value
+  const factory = settings.value?.factoryUrl ?? 'https://factory.talos.dev'
+  useEffect(() => { api.versions().then(setVersions).catch(() => {}) }, [latestTalos.value])
   const talos = versions?.talos.find((v) => !v.includes('-')) ?? versions?.minTalos ?? 'v1.14.0'
   const iso = (arch: 'amd64' | 'arm64') => `${factory}/image/${vanillaSchematic}/${talos}/metal-${arch}.iso`
   const free = machines.filter((m) => m.state === 'maintenance' && !m.cluster).length

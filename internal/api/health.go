@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"io"
 	"net/http"
 	"sort"
 	"strconv"
@@ -35,7 +36,63 @@ func (s *Server) AttachWatcher(ctx context.Context, w *watch.Watcher) {
 		s.hub.publish(Message{Kind: "health", Cluster: e.Cluster, Health: &e})
 		s.forwardEvent(e)
 	}
+	w.OnRefresh = func(name, scope string) { s.refresh(name, scope) }
+	s.attachLive(ctx)
+	go s.watchPXE(ctx)
+	go s.watchVersions(ctx)
 	go w.Run(ctx)
+}
+
+// watchVersions re-reads the factory feed hourly and pushes a `versions` message
+// when the newest stable Talos changed, so update notices appear without a reload.
+func (s *Server) watchVersions(ctx context.Context) {
+	last := s.latestStableTalos(ctx)
+	t := time.NewTicker(time.Hour)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+		}
+		s.versionsMu.Lock()
+		s.versionsAt = time.Time{} // force a refetch past the cache
+		s.versionsMu.Unlock()
+		if v := s.latestStableTalos(ctx); v != last {
+			last = v
+			s.hub.publish(Message{Kind: "versions", Key: v})
+		}
+	}
+}
+
+// watchPXE polls the separate pxe process's status page on the daemon's side and
+// pushes a refresh only when it changed, so the console never polls it.
+func (s *Server) watchPXE(ctx context.Context) {
+	var last string
+	client := &http.Client{Timeout: 2 * time.Second}
+	t := time.NewTicker(5 * time.Second)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+		}
+		v, err := s.store.GetSettings(ctx)
+		if err != nil || v.PXEStatusURL == "" {
+			continue
+		}
+		body := ""
+		if resp, err := client.Get(v.PXEStatusURL); err == nil {
+			b, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+			resp.Body.Close()
+			body = string(b)
+		}
+		if body != last {
+			last = body
+			s.refresh("", "pxe")
+		}
+	}
 }
 
 func (s *Server) healthRoutes() {

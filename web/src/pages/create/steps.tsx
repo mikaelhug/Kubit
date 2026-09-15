@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'preact/hooks'
 import { api, fmt, type ClusterSpec, type NodeRow, type NodeSpec, type Pool, type Warning } from '../../api'
-import { operations, toast, watch } from '../../store'
+import { machineList, operations, settings, toast, watch } from '../../store'
 import { Field, Notice, Pill } from '../../components/ui'
 import { Tabs } from '../../components/Tabs'
 import { PoolsEditor } from '../../components/PoolsEditor'
@@ -42,16 +42,14 @@ export function machineWarnings(m: NodeRow, all: NodeRow[]): string[] {
 
 // ─── 1 · Machines ────────────────────────────────────────────────────────────
 
-export function MachinesStep({ draft, patch, setError }: { draft: Draft; patch: (p: Partial<Draft>) => void; setError: (e: string | null) => void }) {
+export function MachinesStep({ draft, patch, setError }: { draft: Draft; patch: (p: Partial<Draft>) => void; setError: (_e: string | null) => void }) {
   const [targets, setTargets] = useState('')
-  const load = () => api.nodes().then((ns) => {
-    const free = ns.filter((n) => n.state === 'maintenance' && !n.cluster)
-    patch({ machines: free, selected: draft.selected.filter((mac) => free.some((m) => m.mac === mac)) })
-    if (!targets && free[0]) setTargets(free[0].ip.replace(/\.\d+$/, '.0/24'))
-  }).catch((e) => setError(e.message))
-  useEffect(() => { load(); api.settings().then((s) => { if (s.discoverySubnets.length) setTargets(s.discoverySubnets.join(', ')) }).catch(() => {}) }, []) // eslint-disable-line
-  const finished = [...operations.value.values()].filter((o) => o.kind === 'discover' && o.status !== 'running').length
-  useEffect(() => { load() }, [finished]) // eslint-disable-line
+  // The machine list is live state: every discovery result lands here as it is recorded.
+  const free = machineList.value.filter((n) => n.state === 'maintenance' && !n.cluster)
+  const freeKey = free.map((m) => m.mac + m.ip + m.lastSeen).join('|')
+  useEffect(() => { patch({ machines: free, selected: draft.selected.filter((mac) => free.some((m) => m.mac === mac)) }) }, [freeKey]) // eslint-disable-line
+  const subnets = settings.value?.discoverySubnets ?? []
+  useEffect(() => { if (!targets) setTargets(subnets.length ? subnets.join(', ') : free[0] ? free[0].ip.replace(/\.\d+$/, '.0/24') : '') }, [subnets.join(','), free.length]) // eslint-disable-line
   const scanning = [...operations.value.values()].some((o) => o.kind === 'discover' && o.status === 'running')
   const toggle = (mac: string) => patch({ selected: draft.selected.includes(mac) ? draft.selected.filter((x) => x !== mac) : [...draft.selected, mac] })
   const chosen = draft.machines.filter((m) => draft.selected.includes(m.mac))

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"strings"
 	"sync"
 	"time"
 
@@ -14,22 +15,96 @@ import (
 // Message is what SSE subscribers receive: an operation event, an operation status
 // change, or (later) cluster status and health events.
 type Message struct {
-	Kind        string              `json:"kind"` // event | operation | status | health
+	Seq         int64               `json:"seq,omitempty"`
+	Kind        string              `json:"kind"` // hello | resync | event | operation | status | health | refresh | cluster | clusterRemoved | machine | machineRemoved | snapshot | snapshotRemoved | audit | settings | healthAck | healthResolved | versions
 	OperationID int64               `json:"operationId,omitempty"`
 	Event       *cluster.Event      `json:"event,omitempty"`
 	Operation   *store.OperationRow `json:"operation,omitempty"`
 	Cluster     string              `json:"cluster,omitempty"`
 	Status      *cluster.Status     `json:"status,omitempty"`
 	Health      *store.EventRow     `json:"health,omitempty"`
+	// Scope names the view that changed for kind "refresh" (workloads, network,
+	// storage, nodes, machines, snapshots, addons, certificates, settings, pxe).
+	Scope string `json:"scope,omitempty"`
+	// Typed live-state payloads (one is set per kind).
+	ClusterRow *store.ClusterRow `json:"clusterRow,omitempty"`
+	Machine    *store.Machine    `json:"machine,omitempty"`
+	Snapshot   *store.Snapshot   `json:"snapshot,omitempty"`
+	Audit      *store.AuditEntry `json:"audit,omitempty"`
+	Settings   *store.Settings   `json:"settings,omitempty"`
+	Key        string            `json:"key,omitempty"`  // removed row key, or event id for healthAck ("*" = all)
+	Node       string            `json:"node,omitempty"` // healthResolved: object; refresh: unused
+	Hello      *Hello            `json:"hello,omitempty"`
 }
 
-// hub fans messages out to SSE subscribers.
+// Hello opens every live connection: what the client needs to decide between replay
+// and resync, and the daemon facts the status bar shows.
+type Hello struct {
+	Seq       int64  `json:"seq"`
+	Version   string `json:"version"`
+	StartedAt string `json:"startedAt"`
+	Service   bool   `json:"service"`
+	PID       int    `json:"pid"`
+}
+
+// refresh tells connected consoles that a view of a cluster ("" = Kubit-wide) is
+// stale; they refetch exactly that view. This is what replaces polling.
+func (s *Server) refresh(cluster string, scopes ...string) {
+	for _, sc := range scopes {
+		s.hub.publish(Message{Kind: "refresh", Cluster: cluster, Scope: sc})
+	}
+}
+
+// scopesForKind maps a finished operation to the views it may have changed.
+func scopesForKind(kind string) []string {
+	// Rows the store owns (clusters, machines, snapshots, settings) are pushed by the
+	// change notifier; only derived Kubernetes views need a nudge here.
+	switch {
+	case strings.HasPrefix(kind, "etcd."), strings.HasPrefix(kind, "node."), strings.HasPrefix(kind, "cluster."), strings.HasPrefix(kind, "upgrade."):
+		return []string{"nodes"}
+	case strings.HasPrefix(kind, "platform."):
+		return []string{"addons", "network"}
+	case kind == "cert.rotate":
+		return []string{"certificates"}
+	}
+	return nil
+}
+
+// hub fans messages out to live subscribers and keeps a ring of recent messages so a
+// reconnecting console can replay what it missed instead of resyncing.
 type hub struct {
 	mu   sync.Mutex
 	subs map[chan Message]struct{}
+	seq  int64
+	ring []Message
+	head int
+	n    int
 }
 
-func newHub() *hub { return &hub{subs: map[chan Message]struct{}{}} }
+const ringSize = 2000
+
+func newHub() *hub { return &hub{subs: map[chan Message]struct{}{}, ring: make([]Message, ringSize)} }
+
+// since returns the messages after seq, or ok=false when seq is older than the ring
+// (the client must resync). seq 0 means "just the head".
+func (h *hub) since(seq int64) (out []Message, head int64, ok bool) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	head = h.seq
+	if seq >= head {
+		return nil, head, true
+	}
+	if seq < head-int64(h.n) {
+		return nil, head, false
+	}
+	for i := 0; i < h.n; i++ {
+		m := h.ring[(h.head-h.n+i+ringSize)%ringSize]
+		if m.Seq > seq {
+			out = append(out, m)
+		}
+	}
+	return out, head, true
+}
 
 func (h *hub) subscribe() (chan Message, func()) {
 	ch := make(chan Message, 256)
@@ -46,6 +121,13 @@ func (h *hub) subscribe() (chan Message, func()) {
 func (h *hub) publish(m Message) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
+	h.seq++
+	m.Seq = h.seq
+	h.ring[h.head] = m
+	h.head = (h.head + 1) % ringSize
+	if h.n < ringSize {
+		h.n++
+	}
 	for ch := range h.subs {
 		select {
 		case ch <- m:
@@ -207,6 +289,7 @@ func (s *Server) runOperation(cluster, kind string, request any, fn opFunc) (int
 		_ = s.store.SetOperationSteps(bg, id, tracker.json())
 		_ = s.store.FinishOperation(bg, id, status)
 		s.publishOperation(bg, id)
+		s.refresh(cluster, scopesForKind(kind)...)
 	}()
 	return id, nil
 }
@@ -241,8 +324,7 @@ func (s *Server) cancelOperation(id int64) bool {
 
 func (s *Server) publishOperation(ctx context.Context, id int64) {
 	if op, err := s.store.GetOperation(ctx, id); err == nil {
-		op.Log = ""
-		op.Artifact = nil
+		op.Log = "" // streamed as events; artifacts (plans) are small and wanted live
 		s.hub.publish(Message{Kind: "operation", OperationID: id, Operation: op})
 	}
 }

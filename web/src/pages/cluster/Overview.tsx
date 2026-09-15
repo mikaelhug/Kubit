@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'preact/hooks'
 import { api, fmt, type HealthEvent, type Sample, type Versions } from '../../api'
-import { ack, health, operations, statuses } from '../../store'
+import { ack, health, latestTalos as latestTalosSignal, operations, statuses } from '../../store'
 import { runbookFor } from '../../runbooks'
 import { Sparkline } from '../../components/Sparkline'
 import { Notice, Pill, Section, StatusDot } from '../../components/ui'
@@ -21,13 +21,24 @@ export function Overview({ ctx }: { ctx: ClusterCtx }) {
   const [range, setRange] = useState('24h')
   const [samples, setSamples] = useState<Sample[]>([])
   const [versions, setVersions] = useState<Versions | null>(null)
-  useEffect(() => { api.versions().then(setVersions).catch(() => {}) }, [name])
+  useEffect(() => { api.versions().then(setVersions).catch(() => {}) }, [name, latestTalosSignal.value])
   const latestTalos = versions?.talos.find((v) => !v.includes('-'))
   const updates = [
     latestTalos && verLess(spec.talosVersion, latestTalos) ? `Talos ${latestTalos} (running ${spec.talosVersion})` : '',
     versions && verLess(spec.kubernetesVersion, versions.kubernetesLatest) ? `Kubernetes ${versions.kubernetesLatest} (running ${spec.kubernetesVersion})` : '',
   ].filter(Boolean)
-  useEffect(() => { api.samples(name, range).then(setSamples).catch(() => {}) }, [name, range, status?.totals.pods])
+  useEffect(() => { api.samples(name, range).then(setSamples).catch(() => {}) }, [name, range])
+  // Every pushed status is also the newest sample: append it so the graphs move
+  // without refetching.
+  useEffect(() => {
+    if (!status?.observedAt || !t) return
+    setSamples((prev) => {
+      const last = prev[prev.length - 1]
+      if (last && last.ts >= status.observedAt!) return prev
+      const point: Sample = { ts: status.observedAt!, cpuMilli: t.cpuMilli, cpuCap: t.cpuCapMilli, memBytes: t.memBytes, memCap: t.memCapBytes, pods: t.pods, ready: t.nodesReady === t.nodes, reachable: status.apiReachable }
+      return [...prev, point]
+    })
+  }, [status?.observedAt]) // eslint-disable-line
   const pts = (f: (s: Sample) => number) => samples.map((s) => ({ t: new Date(s.ts).getTime(), v: f(s) }))
   const last = samples[samples.length - 1]
 

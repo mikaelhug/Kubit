@@ -2,13 +2,11 @@ package api_test
 
 import (
 	"bytes"
-	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/mikael/kubit/internal/api"
 	"github.com/mikael/kubit/internal/cluster"
@@ -46,15 +44,13 @@ func TestTokenGuardsAPIOnly(t *testing.T) {
 	if rec := do(t, srv, "GET", "/api/v1/version", "", "Authorization", "Bearer secret"); rec.Code != http.StatusOK {
 		t.Errorf("with token: %d", rec.Code)
 	}
-	// EventSource cannot set headers: the token may come as a query parameter. The stream
-	// only ends with the request context, so give it one.
-	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
-	defer cancel()
-	req := httptest.NewRequest("GET", "/api/v1/events?token=secret", nil).WithContext(ctx)
-	rec := httptest.NewRecorder()
-	srv.ServeHTTP(rec, req)
-	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), ": connected") {
-		t.Errorf("events with query token: %d %q", rec.Code, rec.Body.String())
+	// The browser WebSocket cannot set headers: the token may come as a query
+	// parameter. Without it the upgrade is refused before any handshake.
+	if rec := do(t, srv, "GET", "/api/v1/ws", ""); rec.Code != http.StatusUnauthorized {
+		t.Errorf("ws without token: %d", rec.Code)
+	}
+	if rec := do(t, srv, "GET", "/api/v1/ws?token=secret", ""); rec.Code == http.StatusUnauthorized {
+		t.Errorf("ws with query token must pass the guard, got %d", rec.Code)
 	}
 	if rec := do(t, srv, "GET", "/", ""); rec.Code != http.StatusOK {
 		t.Errorf("SPA must not require the token: %d", rec.Code)

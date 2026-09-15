@@ -133,9 +133,9 @@ func (t *ServiceTracker) Derive(name string, cur *cluster.ServiceHealth, now tim
 		burst := p.Restarts-hist[0].count >= crashloopRestarts
 		quiet := p.Restarts == 0 || now.Sub(hist[len(hist)-1].at) >= crashloopWindow
 		switch {
-		case p.Phase == "CrashLoopBackOff":
+		case p.Phase == "CrashLoopBackOff" && gate(p.AgeSec):
 			raise(key, "pod.crashloop", "warn", fmt.Sprintf("%s is in CrashLoopBackOff (%d restarts)%s", obj, p.Restarts, onNode(p.Node)))
-		case burst:
+		case burst && gate(p.AgeSec):
 			raise(key, "pod.crashloop", "warn", fmt.Sprintf("%s restarted %d times in %s%s", obj, p.Restarts-hist[0].count, crashloopWindow, onNode(p.Node)))
 		case (p.Phase == "Running" || p.Phase == "Succeeded") && quiet:
 			// Between back-offs a crashing pod is briefly Running; only a full quiet

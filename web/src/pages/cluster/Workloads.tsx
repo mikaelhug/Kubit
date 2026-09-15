@@ -2,7 +2,7 @@ import { useEffect, useState } from 'preact/hooks'
 import { api, fmt, podLogsUrl, type PodEvent, type PodSummary, type Workload } from '../../api'
 import { DataTable, type Column } from '../../components/DataTable'
 import { AlertPill, Dialog, ErrorBox, Notice, Pill, Section, StatusDot } from '../../components/ui'
-import { nsFromQuery, openAlert } from '../../store'
+import { nsFromQuery, openAlert, refreshKey } from '../../store'
 import { Tabs } from '../../components/Tabs'
 import { LogStream } from '../../components/LogStream'
 import type { ClusterCtx } from './ClusterPage'
@@ -22,7 +22,7 @@ export function Workloads({ ctx }: { ctx: ClusterCtx }) {
     api.workloads(name).then(setWorkloads).catch((e) => setError(e.message)).finally(() => setLoaded(true))
     api.pods(name).then(setPods).catch((e) => setError(e.message))
   }
-  useEffect(() => { load(); const t = setInterval(load, 15000); return () => clearInterval(t) }, [name]) // eslint-disable-line
+  useEffect(() => { load() }, [name, refreshKey(name, 'workloads')]) // eslint-disable-line
   const namespaces = [...new Set([...workloads.map((w) => w.namespace), ...pods.map((p) => p.namespace)])].sort()
   const wl = ns ? workloads.filter((w) => w.namespace === ns) : workloads
   const pl = ns ? pods.filter((p) => p.namespace === ns) : pods
@@ -73,7 +73,7 @@ function PodDialog({ cluster, pod, onClose }: { cluster: string; pod: PodSummary
   const [container, setContainer] = useState(pod.containers?.[0] ?? '')
   const [follow, setFollow] = useState(false)
   const [events, setEvents] = useState<PodEvent[]>([])
-  useEffect(() => { api.podEvents(cluster, pod.namespace, pod.name).then(setEvents).catch(() => {}) }, [cluster, pod])
+  useEffect(() => { api.podEvents(cluster, pod.namespace, pod.name).then(setEvents).catch(() => {}) }, [cluster, pod, refreshKey(cluster, 'workloads')])
   return (
     <Dialog title={`${pod.namespace} / ${pod.name}`} onClose={onClose} width="max-w-5xl">
       <div class="flex flex-wrap items-center gap-3 text-[13px]">

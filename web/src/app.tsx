@@ -1,7 +1,7 @@
 import { LocationProvider, Router, Route, useLocation } from 'preact-iso'
-import { useEffect, useState } from 'preact/hooks'
-import { api } from './api'
-import { clusters, connect, connected, drawerHeight, drawerOpen, running } from './store'
+import { useEffect } from 'preact/hooks'
+import { clusters, connected, daemon, drawerHeight, drawerOpen, reconnectAttempt, resyncing, running } from './store'
+import { connectLive } from './live'
 import { Pill, stateTone } from './components/ui'
 import { ActivityDrawer } from './components/ActivityDrawer'
 import { Toasts } from './components/Toasts'
@@ -16,7 +16,7 @@ import { GettingStarted } from './pages/GettingStarted'
 import { KubitSettings } from './pages/KubitSettings'
 
 export function App() {
-  useEffect(() => { connect() }, [])
+  useEffect(() => { connectLive() }, [])
   return (
     <LocationProvider>
       <Shell />
@@ -62,13 +62,14 @@ function Shell() {
         <NavLink href="/operations" path={path}>Activity {running.value.length > 0 && <Pill tone="warn">{running.value.length}</Pill>}</NavLink>
         <NavLink href="/settings" path={path}>Settings</NavLink>
         <div class="mt-auto px-4 py-2.5 text-[11px] text-muted border-t border-border flex items-center gap-2">
-          <span class={`inline-block h-1.5 w-1.5 rounded-full ${connected.value ? 'bg-good' : 'bg-bad'}`} />
-          {connected.value ? 'live' : 'reconnecting…'}
+          <span class={`inline-block h-1.5 w-1.5 rounded-full ${connected.value ? (resyncing.value ? 'bg-warn animate-pulse' : 'bg-good') : 'bg-bad animate-pulse'}`} />
+          {connected.value ? (resyncing.value ? 'resyncing…' : 'live') : `reconnecting${reconnectAttempt.value > 1 ? ` (${reconnectAttempt.value})` : ''}…`}
           <DaemonMode />
           <span class="ml-auto flex items-center gap-2"><ThemeToggle /><button class="hover:text-text" title="Jump to… (⌘K)" onClick={() => window.dispatchEvent(new KeyboardEvent('keydown', { key: 'k', metaKey: true }))}>⌘K</button><button class="hover:text-text" title="Keyboard shortcuts" onClick={() => window.dispatchEvent(new KeyboardEvent('keydown', { key: '?' }))}>?</button></span>
         </div>
       </nav>
       <main class="flex-1 min-w-0 overflow-auto" style={{ paddingBottom: pad }}>
+        {!connected.value && <div class="sticky top-0 z-30 bg-warn/15 border-b border-warn/40 text-warn text-[12.5px] px-4 py-1.5">Live updates paused — reconnecting to the Kubit daemon{reconnectAttempt.value > 1 ? ` (attempt ${reconnectAttempt.value})` : ''}… What you see may be stale.</div>}
         <Router>
           <Route path="/clusters/new" component={NewCluster} />
           <Route path="/clusters/:name" component={ClusterPage} />
@@ -102,8 +103,7 @@ function Home() {
 
 /** Whether the daemon is a supervised service (alerts and snapshots keep running unattended) or a foreground process. */
 function DaemonMode() {
-  const [v, setV] = useState<{ service?: boolean; startedAt?: string } | null>(null)
-  useEffect(() => { api.version().then(setV).catch(() => {}) }, [connected.value])
+  const v = daemon.value
   if (!v) return null
-  return <span title={v.startedAt ? `daemon up since ${new Date(v.startedAt).toLocaleString()}` : ''}>· {v.service ? 'service' : 'foreground'}</span>
+  return <span title={`kubit ${v.version}, up since ${new Date(v.startedAt).toLocaleString()}`}>· {v.service ? 'service' : 'foreground'}</span>
 }

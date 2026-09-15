@@ -3,7 +3,7 @@ import { useLocation } from 'preact-iso'
 import { api, fmt, type CertInfo, type Pool, type Versions, type Warning } from '../../api'
 import { PoolsEditor } from '../../components/PoolsEditor'
 import { WarningLine } from '../create/steps'
-import { operations, reloadClusters, toast, watch } from '../../store'
+import { latestTalos, operations, toast, watch, refreshKey } from '../../store'
 import { Tabs } from '../../components/Tabs'
 import { ConfirmDialog, ErrorBox, Field, MaintenanceNotice, Notice, Pill, Section } from '../../components/ui'
 import type { ClusterCtx } from './ClusterPage'
@@ -20,7 +20,7 @@ export function Settings({ ctx }: { ctx: ClusterCtx }) {
   const [versions, setVersions] = useState<Versions | null>(null)
   const [form, setForm] = useState(fromSpec(spec))
   const [upgrade, setUpgrade] = useState<{ talos: string; k8s: string }>({ talos: spec.talosVersion, k8s: spec.kubernetesVersion })
-  useEffect(() => { api.versions().then(setVersions).catch(() => {}) }, [])
+  useEffect(() => { api.versions().then(setVersions).catch(() => {}) }, [latestTalos.value])
   useEffect(() => { api.clusterYaml(name).then((y) => { setYaml(y); setDirty(false) }).catch((e) => setError(e.message)); setForm(fromSpec(spec)) }, [name, cluster.updatedAt])
   const k8sMinor = spec.kubernetesVersion.split('.').slice(0, 2).join('.')
   const k8sTargets = (versions?.kubernetesMinors ?? []).filter((m) => m >= k8sMinor)
@@ -28,7 +28,7 @@ export function Settings({ ctx }: { ctx: ClusterCtx }) {
   const cps = spec.nodes.filter((n) => n.role === 'controlplane').length
   const list = (s: string) => s.split(/[,\s]+/).filter(Boolean)
   const saveForm = () => api.saveClusterForm(name, { ...form, extensions: list(form.extensions), nameservers: list(form.nameservers), ntp: list(form.ntp), etcdSnapshotKeep: Number(form.etcdSnapshotKeep) || 0 })
-    .then(() => { setError(null); reloadClusters(); toast('Saved. Apply node configs to push machine changes; add-ons are planned under Add-ons.', 'good') }).catch((e) => setError(e.message))
+    .then(() => { setError(null); toast('Saved. Apply node configs to push machine changes; add-ons are planned under Add-ons.', 'good') }).catch((e) => setError(e.message))
 
   return (
     <div class="flex flex-col gap-6">
@@ -66,7 +66,7 @@ export function Settings({ ctx }: { ctx: ClusterCtx }) {
             <textarea class="input mono !text-[12px] h-[420px]" value={yaml} spellcheck={false} onInput={(e) => { setYaml((e.target as HTMLTextAreaElement).value); setDirty(true) }} />
             <div class="flex gap-2 items-center">
               <button class="btn" onClick={() => api.validate(yaml).then((v) => { setYaml(v.yaml); setError(null); toast('Valid') }).catch((e) => setError(e.message))}>Validate</button>
-              <button class="btn btn-primary" disabled={!dirty} onClick={() => api.saveClusterYaml(name, yaml).then((v) => { setYaml(v.yaml); setDirty(false); setError(null); reloadClusters(); toast('Saved.', 'good') }).catch((e) => setError(e.message))}>Save</button>
+              <button class="btn btn-primary" disabled={!dirty} onClick={() => api.saveClusterYaml(name, yaml).then((v) => { setYaml(v.yaml); setDirty(false); setError(null); toast('Saved.', 'good') }).catch((e) => setError(e.message))}>Save</button>
               <button class="btn" disabled={dirty} onClick={() => api.applyCluster(name).then((r) => watch(r)).catch((e) => setError(e.message))}>Apply node configs</button>
               <a href={`/clusters/${name}/addons`} class="btn">Plan add-ons →</a>
               {dirty && <span class="text-[12px] text-warn">unsaved changes</span>}
@@ -116,7 +116,7 @@ export function Settings({ ctx }: { ctx: ClusterCtx }) {
       </Section>
       {forget && (
         <ConfirmDialog title={`Forget ${name}`} action="Forget cluster" tone="danger" typed={name} onClose={() => setForget(false)}
-          onConfirm={() => api.forgetCluster(name).then(() => { reloadClusters(); route('/') }).catch((e) => toast(e.message, 'error'))}
+          onConfirm={() => api.forgetCluster(name).then(() => { route('/') }).catch((e) => toast(e.message, 'error'))}
           impact={<><p>Deletes the stored cluster.yaml, secrets bundle, talosconfig, kubeconfig and per-node machine configs.</p><p>The {spec.nodes.length} node{spec.nodes.length === 1 ? '' : 's'} are not touched and stay in the cluster.</p></>} />
       )}
     </div>
@@ -138,7 +138,7 @@ function CredentialsSection({ name }: { name: string }) {
   const [certs, setCerts] = useState<CertInfo[]>([])
   const [error, setError] = useState<string | null>(null)
   const finished = [...operations.value.values()].filter((o) => o.cluster === name && o.status !== 'running').length
-  useEffect(() => { api.certificates(name).then(setCerts).catch((e) => setError(e.message)) }, [name, finished])
+  useEffect(() => { api.certificates(name).then(setCerts).catch((e) => setError(e.message)) }, [name, finished, refreshKey(name, 'certificates')])
   const label: Record<string, string> = { talosconfig: 'Admin talosconfig', kubeconfig: 'Admin kubeconfig', 'talos-ca': 'Talos API CA', 'kubernetes-ca': 'Kubernetes CA', 'etcd-ca': 'etcd CA', 'aggregator-ca': 'Aggregator CA' }
   const tone = (d: number) => d <= 7 ? 'bad' : d <= 30 ? 'warn' : 'good'
   return (
@@ -174,7 +174,7 @@ function PoolsSection({ ctx }: { ctx: ClusterCtx }) {
   useEffect(() => { setPools(spec.pools ?? []) }, [cluster.updatedAt])
   useEffect(() => { api.lint(JSON.stringify(cluster.spec)).then((r) => setWarnings(r.warnings)).catch(() => {}) }, [cluster.updatedAt])
   const dirty = JSON.stringify(pools) !== JSON.stringify(spec.pools ?? [])
-  const save = () => api.savePools(name, pools).then(() => { setError(null); reloadClusters(); toast('Pools saved. Existing nodes pick up label/taint changes on Apply node configs; a changed extension set applies on the next upgrade or move.', 'good') }).catch((e) => setError(e.message))
+  const save = () => api.savePools(name, pools).then(() => { setError(null); toast('Pools saved. Existing nodes pick up label/taint changes on Apply node configs; a changed extension set applies on the next upgrade or move.', 'good') }).catch((e) => setError(e.message))
   return (
     <Section title="Pools" help="A pool is a class of nodes: role, labels, taints, system extensions and disk policy. Nodes reference a pool; move a node between pools from its Actions tab." actions={<button class="btn btn-primary" disabled={!dirty} onClick={save}>Save pools</button>}>
       <ErrorBox error={error} />

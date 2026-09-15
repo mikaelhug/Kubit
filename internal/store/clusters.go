@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"go.yaml.in/yaml/v4"
 )
 
 var ErrNotFound = errors.New("not found")
@@ -31,7 +32,30 @@ func (s *Store) PutCluster(ctx context.Context, c ClusterRow) error {
 		ON CONFLICT(name) DO UPDATE SET spec = excluded.spec, schematic_id = excluded.schematic_id,
 			state = excluded.state, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now')`,
 		c.Name, string(c.Spec), c.SchematicID, c.State)
-	return err
+	return s.done(err, Change{Table: "clusters", Cluster: c.Name, Key: c.Name, Op: "put"})
+}
+
+// ClusterVIPs maps each stored cluster's control-plane VIP to its name. A VIP answers
+// on :50000 like a machine; discovery must not record it as one.
+func (s *Store) ClusterVIPs(ctx context.Context) map[string]string {
+	out := map[string]string{}
+	rows, err := s.ListClusters(ctx)
+	if err != nil {
+		return out
+	}
+	for _, r := range rows {
+		var c struct {
+			Spec struct {
+				ControlPlane struct {
+					VIP string `yaml:"vip"`
+				} `yaml:"controlPlane"`
+			} `yaml:"spec"`
+		}
+		if yaml.Unmarshal(r.Spec, &c) == nil && c.Spec.ControlPlane.VIP != "" {
+			out[c.Spec.ControlPlane.VIP] = r.Name
+		}
+	}
+	return out
 }
 
 func (s *Store) GetCluster(ctx context.Context, name string) (*ClusterRow, error) {
@@ -76,12 +100,22 @@ func (s *Store) SetClusterState(ctx context.Context, name, state string) error {
 	if n, _ := res.RowsAffected(); n == 0 {
 		return fmt.Errorf("cluster %q: %w", name, ErrNotFound)
 	}
+	s.notify(Change{Table: "clusters", Cluster: name, Key: name, Op: "put"})
 	return nil
 }
 
+// DeleteCluster drops the cluster row and releases its machines: they keep running
+// Talos ("configured") but belong to nobody Kubit knows, so a later scan that finds
+// them in maintenance mode can offer them again.
 func (s *Store) DeleteCluster(ctx context.Context, name string) error {
+	if _, err := s.db.ExecContext(ctx, `UPDATE machines SET cluster = NULL, hostname = '', pool = '', role = '', machine_config = NULL, state = 'configured', updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE cluster = ?`, name); err != nil {
+		return err
+	}
 	_, err := s.db.ExecContext(ctx, `DELETE FROM clusters WHERE name = ?`, name)
-	return err
+	if err == nil {
+		s.notify(Change{Table: "machines", Cluster: name, Op: "put"})
+	}
+	return s.done(err, Change{Table: "clusters", Cluster: name, Key: name, Op: "delete"})
 }
 
 func (s *Store) PutClusterSecrets(ctx context.Context, name string, sec ClusterSecrets) error {
@@ -175,7 +209,7 @@ func (s *Store) SetPlatformStatus(ctx context.Context, name string, p PlatformSt
 		return err
 	}
 	_, err = s.db.ExecContext(ctx, `UPDATE clusters SET platform = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE name = ?`, string(b), name)
-	return err
+	return s.done(err, Change{Table: "clusters", Cluster: name, Key: name, Op: "put"})
 }
 
 func (s *Store) GetPlatformStatus(ctx context.Context, name string) (*PlatformStatus, error) {

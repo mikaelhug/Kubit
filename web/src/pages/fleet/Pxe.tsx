@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'preact/hooks'
+import { refreshKey } from '../../store'
 import { api, fmt, type PxeStatus } from '../../api'
 import { DataTable, type Column } from '../../components/DataTable'
 import { KeyValue, Notice, Pill, Section, type Tone } from '../../components/ui'
@@ -11,11 +12,8 @@ const stageText: Record<string, string> = { dhcp: 'firmware asked (DHCP)', ipxe:
 export function Pxe() {
   const [st, setSt] = useState<PxeStatus | null>(null)
   useEffect(() => {
-    const load = () => api.pxe().then(setSt).catch(() => {})
-    load()
-    const t = setInterval(load, 5000)
-    return () => clearInterval(t)
-  }, [])
+    api.pxe().then(setSt).catch(() => {})
+  }, [refreshKey('', 'pxe')])
   const cols: Column<Boot>[] = [
     { id: 'mac', header: 'MAC', mono: true, sort: (b) => b.mac, cell: (b) => b.mac },
     { id: 'ip', header: 'IP', mono: true, sort: (b) => b.ip ?? '', cell: (b) => b.ip ? <a href={`/nodes/${b.ip}`} class="hover:underline">{b.ip}</a> : <span class="text-muted">—</span> },

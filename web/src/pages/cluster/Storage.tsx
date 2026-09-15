@@ -2,7 +2,7 @@ import { useEffect, useState } from 'preact/hooks'
 import { api, fmt, type StorageView } from '../../api'
 import { DataTable, type Column } from '../../components/DataTable'
 import { AlertPill, ErrorBox, Notice, Pill, Section } from '../../components/ui'
-import { openAlert } from '../../store'
+import { openAlert, refreshKey } from '../../store'
 import type { ClusterCtx } from './ClusterPage'
 
 type SC = StorageView['classes'][number]
@@ -13,7 +13,7 @@ export function Storage({ ctx }: { ctx: ClusterCtx }) {
   const { name } = ctx
   const [view, setView] = useState<StorageView | null>(null)
   const [error, setError] = useState<string | null>(null)
-  useEffect(() => { api.storage(name).then(setView).catch((e) => setError(e.message)) }, [name])
+  useEffect(() => { api.storage(name).then(setView).catch((e) => setError(e.message)) }, [name, refreshKey(name, 'storage')])
   const scols: Column<SC>[] = [
     { id: 'name', header: 'Class', sort: (c) => c.name, cell: (c) => <span class="font-medium">{c.name} {c.default && <Pill tone="info">default</Pill>}</span> },
     { id: 'prov', header: 'Provisioner', mono: true, cell: (c) => c.provisioner },

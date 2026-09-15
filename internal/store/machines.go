@@ -101,10 +101,12 @@ func (s *Store) UpsertNode(ctx context.Context, n Machine) error {
 			serial        = CASE WHEN excluded.serial = '' THEN machines.serial ELSE excluded.serial END,
 			ip            = COALESCE(excluded.ip, machines.ip),
 			ips_seen      = excluded.ips_seen,
-			cluster       = COALESCE(excluded.cluster, machines.cluster),
-			hostname      = CASE WHEN excluded.hostname = '' THEN machines.hostname ELSE excluded.hostname END,
-			pool          = CASE WHEN excluded.pool = '' THEN machines.pool ELSE excluded.pool END,
-			role          = CASE WHEN excluded.role = '' THEN machines.role ELSE excluded.role END,
+			-- A member found back in maintenance mode was wiped outside Kubit: it is
+			-- no longer part of any cluster.
+			cluster       = CASE WHEN excluded.state = 'maintenance' AND excluded.cluster IS NULL THEN NULL ELSE COALESCE(excluded.cluster, machines.cluster) END,
+			hostname      = CASE WHEN excluded.state = 'maintenance' AND excluded.cluster IS NULL THEN '' WHEN excluded.hostname = '' THEN machines.hostname ELSE excluded.hostname END,
+			pool          = CASE WHEN excluded.state = 'maintenance' AND excluded.cluster IS NULL THEN '' WHEN excluded.pool = '' THEN machines.pool ELSE excluded.pool END,
+			role          = CASE WHEN excluded.state = 'maintenance' AND excluded.cluster IS NULL THEN '' WHEN excluded.role = '' THEN machines.role ELSE excluded.role END,
 			arch          = CASE WHEN excluded.arch = '' THEN machines.arch ELSE excluded.arch END,
 			source        = excluded.source,
 			state         = CASE WHEN excluded.state = '' THEN machines.state ELSE excluded.state END,
@@ -113,7 +115,7 @@ func (s *Store) UpsertNode(ctx context.Context, n Machine) error {
 			last_seen     = excluded.last_seen,
 			updated_at    = strftime('%Y-%m-%dT%H:%M:%fZ','now')`,
 		key, n.UUID, n.Serial, n.IP, string(seenJSON), cluster, n.Hostname, n.Pool, n.Role, n.Arch, n.Source, n.State, hw, n.TalosVersion)
-	return err
+	return s.done(err, Change{Table: "machines", Cluster: n.Cluster, Key: key, Op: "put"})
 }
 
 func (s *Store) GetMachine(ctx context.Context, mac string) (*Machine, error) {
@@ -167,18 +169,18 @@ func (s *Store) macFor(ctx context.Context, ip string) (string, error) {
 
 func (s *Store) SetNodeState(ctx context.Context, ip, state string) error {
 	_, err := s.db.ExecContext(ctx, `UPDATE machines SET state = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE ip = ? OR mac = ?`, state, ip, "ip:"+ip)
-	return err
+	return s.done(err, Change{Table: "machines", Key: ip, Op: "put"})
 }
 
 func (s *Store) AssignNode(ctx context.Context, ip, cluster, hostname, role string) error {
 	_, err := s.db.ExecContext(ctx, `UPDATE machines SET cluster = ?, hostname = ?, role = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE ip = ? OR mac = ?`, cluster, hostname, role, ip, "ip:"+ip)
-	return err
+	return s.done(err, Change{Table: "machines", Cluster: cluster, Key: ip, Op: "put"})
 }
 
 // UnassignNode detaches a machine from its cluster after a reset, keeping the inventory.
 func (s *Store) UnassignNode(ctx context.Context, ip, state string) error {
 	_, err := s.db.ExecContext(ctx, `UPDATE machines SET cluster = NULL, hostname = '', pool = '', role = '', state = ?, machine_config = NULL, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE ip = ? OR mac = ?`, state, ip, "ip:"+ip)
-	return err
+	return s.done(err, Change{Table: "machines", Key: ip, Op: "put"})
 }
 
 func (s *Store) PutNodeMachineConfig(ctx context.Context, ip string, cfg []byte) error {
@@ -205,19 +207,19 @@ func (s *Store) GetNodeMachineConfig(ctx context.Context, ip string) ([]byte, er
 // SetMachineWOL flags whether Kubit may send Wake-on-LAN packets to a machine.
 func (s *Store) SetMachineWOL(ctx context.Context, mac string, on bool) error {
 	_, err := s.db.ExecContext(ctx, `UPDATE machines SET wol = ? WHERE mac = ?`, b2i(on), strings.ToLower(mac))
-	return err
+	return s.done(err, Change{Table: "machines", Key: strings.ToLower(mac), Op: "put"})
 }
 
 // DeleteMachine forgets a machine that will not come back.
 func (s *Store) DeleteMachine(ctx context.Context, mac string) error {
 	_, err := s.db.ExecContext(ctx, `DELETE FROM machines WHERE mac = ?`, strings.ToLower(mac))
-	return err
+	return s.done(err, Change{Table: "machines", Key: strings.ToLower(mac), Op: "delete"})
 }
 
 // DeleteNode forgets the machine at an IP.
 func (s *Store) DeleteNode(ctx context.Context, ip string) error {
 	_, err := s.db.ExecContext(ctx, `DELETE FROM machines WHERE ip = ? OR mac = ?`, ip, "ip:"+ip)
-	return err
+	return s.done(err, Change{Table: "machines", Key: ip, Op: "delete"})
 }
 
 func contains(list []string, v string) bool {

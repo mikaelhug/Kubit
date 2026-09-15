@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'preact/hooks'
-import { api, fmt, type ClusterRow, type NodeNetwork, type NodeRow, type NodeSpec, type NodeStatus } from '../../api'
-import { toast, watch } from '../../store'
+import { api, fmt, type ClusterRow, type NodeNetwork, type NodeSpec, type NodeStatus } from '../../api'
+import { machineList, toast, watch } from '../../store'
 import { DataTable, type Column } from '../../components/DataTable'
 import { ConfirmDialog, Dialog, ErrorBox, Field, MaintenanceNotice, Pill, Section } from '../../components/ui'
 import { KVEditor } from '../../components/PoolsEditor'
@@ -111,7 +111,6 @@ function RemoveImpact({ n, cluster }: { n: NodeStatus; cluster: ClusterRow }) {
 
 function AddNodeDialog({ cluster, onClose, preselect }: { cluster: ClusterRow; onClose: () => void; preselect?: string }) {
   const pools = cluster.spec.spec.pools ?? []
-  const [candidates, setCandidates] = useState<NodeRow[]>([])
   const [ip, setIp] = useState(preselect ?? '')
   const [hostname, setHostname] = useState('')
   const [pool, setPool] = useState(pools.find((p) => p.role === 'worker')?.name ?? pools[0]?.name ?? 'worker')
@@ -121,7 +120,7 @@ function AddNodeDialog({ cluster, onClose, preselect }: { cluster: ClusterRow; o
   const [network, setNetwork] = useState<NodeNetwork | undefined>()
   const [more, setMore] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  useEffect(() => { api.nodes().then((ns) => setCandidates(ns.filter((n) => n.state === 'maintenance' && !n.cluster))).catch((e) => setError(e.message)) }, [])
+  const candidates = machineList.value.filter((n) => n.state === 'maintenance' && !n.cluster)
   const selected = candidates.find((c) => c.ip === ip)
   const p = pools.find((x) => x.name === pool)
   const role = p?.role ?? 'worker'
