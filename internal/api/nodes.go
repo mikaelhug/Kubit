@@ -13,9 +13,9 @@ func (s *Server) nodeRoutes() {
 	r.HandleFunc("GET /api/v1/nodes/{ip}/kubernetes", s.handleNodeKubernetes)
 	r.HandleFunc("POST /api/v1/clusters/{name}/nodes/{hostname}/cordon", s.nodeOp("node.cordon", s.manager.CordonNode))
 	r.HandleFunc("POST /api/v1/clusters/{name}/nodes/{hostname}/uncordon", s.nodeOp("node.uncordon", s.manager.UncordonNode))
-	r.HandleFunc("POST /api/v1/clusters/{name}/nodes/{hostname}/drain", s.nodeOp("node.drain", s.manager.DrainNode))
-	r.HandleFunc("POST /api/v1/clusters/{name}/nodes/{hostname}/reboot", s.handleNodeRebootOp)
-	r.HandleFunc("POST /api/v1/clusters/{name}/nodes/{hostname}/upgrade", s.handleNodeUpgrade)
+	r.HandleFunc("POST /api/v1/clusters/{name}/nodes/{hostname}/drain", s.disruptive(s.nodeOp("node.drain", s.manager.DrainNode)))
+	r.HandleFunc("POST /api/v1/clusters/{name}/nodes/{hostname}/reboot", s.disruptive(s.handleNodeRebootOp))
+	r.HandleFunc("POST /api/v1/clusters/{name}/nodes/{hostname}/upgrade", s.disruptive(s.handleNodeUpgrade))
 }
 
 // handleNodeInventory returns live hardware/OS facts; for cluster members it also

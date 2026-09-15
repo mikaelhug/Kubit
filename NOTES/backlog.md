@@ -31,3 +31,13 @@
 - Re-addressing a control plane reboots it (etcd/static pods bind the old address); a
   gentler path would restart etcd + kubelet services only, if Talos updates the etcd
   peer URL on service restart. Not investigated.
+- SMTP alert forwarding is untested against a real server (only the webhook path was
+  exercised). STARTTLS is whatever net/smtp negotiates; no implicit-TLS (465) option.
+- Restore of a control plane whose `ip:` has changed since the snapshot was taken is
+  not handled (snapshot carries the old Node objects; kubelets re-register, but the
+  old Node entries linger until deleted).
+- Maintenance window: the daemon's own scheduled snapshots ignore it on purpose
+  (non-disruptive); consider a per-cluster switch for "quiet hours" on alerts.
+- Kubit's default :8080 collided with another local app during M9 testing; the daemon
+  was run with `--addr 127.0.0.1:8090`. Consider a free-port fallback with a clear log
+  line, or making the port part of Kubit settings.

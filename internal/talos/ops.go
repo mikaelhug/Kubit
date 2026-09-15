@@ -13,6 +13,7 @@ import (
 	"github.com/siderolabs/talos/pkg/machinery/resources/runtime"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/types/known/durationpb"
 	"google.golang.org/protobuf/types/known/emptypb"
 )
 
@@ -209,4 +210,34 @@ func (c *Client) BootstrapManifests(ctx context.Context) ([]map[string]any, erro
 		}
 	}
 	return out, nil
+}
+
+// GenerateTalosconfig asks the node for a fresh os:admin client configuration signed
+// by the cluster's Talos CA.
+func (c *Client) GenerateTalosconfig(ctx context.Context, ttl time.Duration) ([]byte, error) {
+	resp, err := c.GenerateClientConfiguration(c.Context(ctx), &machineapi.GenerateClientConfigurationRequest{Roles: []string{"os:admin"}, CrtTtl: durationpb.New(ttl)})
+	if err != nil {
+		return nil, err
+	}
+	if len(resp.Messages) == 0 || len(resp.Messages[0].Talosconfig) == 0 {
+		return nil, errors.New("empty GenerateClientConfiguration response")
+	}
+	return resp.Messages[0].Talosconfig, nil
+}
+
+// VarAvailable returns free bytes on the EPHEMERAL (/var) filesystem, where images and
+// container state live.
+func (c *Client) VarAvailable(ctx context.Context) (avail, size uint64, err error) {
+	resp, err := c.Mounts(c.Context(ctx))
+	if err != nil {
+		return 0, 0, err
+	}
+	for _, msg := range resp.Messages {
+		for _, st := range msg.Stats {
+			if st.MountedOn == "/var" {
+				return st.Available, st.Size, nil
+			}
+		}
+	}
+	return 0, 0, errors.New("/var not found in mounts")
 }

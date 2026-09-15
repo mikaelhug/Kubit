@@ -122,6 +122,22 @@ func (s *Store) SetKubeconfig(ctx context.Context, name string, kubeconfig []byt
 	return nil
 }
 
+// SetTalosconfig replaces the stored admin talosconfig (certificate rotation).
+func (s *Store) SetTalosconfig(ctx context.Context, name string, talosconfig []byte) error {
+	tc, err := s.crypto.Seal(talosconfig)
+	if err != nil {
+		return err
+	}
+	res, err := s.db.ExecContext(ctx, `UPDATE cluster_secrets SET talosconfig = ? WHERE cluster = ?`, tc, name)
+	if err != nil {
+		return err
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return fmt.Errorf("secrets for cluster %q: %w", name, ErrNotFound)
+	}
+	return nil
+}
+
 func (s *Store) GetClusterSecrets(ctx context.Context, name string) (*ClusterSecrets, error) {
 	var bundle, tc, kc []byte
 	err := s.db.QueryRowContext(ctx, `SELECT secrets_bundle, talosconfig, kubeconfig FROM cluster_secrets WHERE cluster = ?`, name).Scan(&bundle, &tc, &kc)

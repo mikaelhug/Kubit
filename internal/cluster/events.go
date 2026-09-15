@@ -133,3 +133,18 @@ func (s Sink) run(step string, fn func() error) error {
 	s.end(step)
 	return nil
 }
+
+// subSink folds a nested operation's events into one step of the parent: its plan and
+// step transitions are dropped, its log lines are re-attributed to step.
+func subSink(parent Sink, step string) Sink {
+	if parent == nil {
+		return nil
+	}
+	return func(e Event) {
+		if e.Kind != KindLog {
+			return
+		}
+		e.Step = step
+		parent(e)
+	}
+}

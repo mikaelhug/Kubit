@@ -20,9 +20,9 @@ func (s *Server) machineRoutes() {
 	r.HandleFunc("POST /api/v1/machines/{mac}/wake", s.handleMachineWake)
 	r.HandleFunc("POST /api/v1/config/design", s.handleDesign)
 	r.HandleFunc("POST /api/v1/config/lint", s.handleLint)
-	r.HandleFunc("POST /api/v1/clusters/{name}/nodes/{hostname}/rename", s.handleNodeRename)
-	r.HandleFunc("POST /api/v1/clusters/{name}/nodes/{hostname}/pool", s.handleNodePool)
-	r.HandleFunc("POST /api/v1/clusters/{name}/nodes/{hostname}/readdress", s.handleNodeReaddress)
+	r.HandleFunc("POST /api/v1/clusters/{name}/nodes/{hostname}/rename", s.disruptive(s.handleNodeRename))
+	r.HandleFunc("POST /api/v1/clusters/{name}/nodes/{hostname}/pool", s.disruptive(s.handleNodePool))
+	r.HandleFunc("POST /api/v1/clusters/{name}/nodes/{hostname}/readdress", s.disruptive(s.handleNodeReaddress))
 	r.HandleFunc("PUT /api/v1/clusters/{name}/pools", s.handlePoolsSave)
 }
 

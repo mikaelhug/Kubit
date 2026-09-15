@@ -259,6 +259,14 @@ func (l *clusterLocks) get(name string) *sync.Mutex {
 
 func (l *clusterLocks) lock(name string)   { l.get(name).Lock() }
 func (l *clusterLocks) unlock(name string) { l.get(name).Unlock() }
+func (l *clusterLocks) busy(name string) bool {
+	m := l.get(name)
+	if m.TryLock() {
+		m.Unlock()
+		return false
+	}
+	return true
+}
 
 func marshal(v any) []byte {
 	b, _ := json.Marshal(v)

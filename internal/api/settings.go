@@ -15,6 +15,8 @@ func (s *Server) settingsRoutes() {
 	r := s.mux
 	r.HandleFunc("GET /api/v1/settings", s.handleGetSettings)
 	r.HandleFunc("PUT /api/v1/settings", s.handlePutSettings)
+	r.HandleFunc("POST /api/v1/settings/alerts/test", s.handleAlertTest)
+	r.HandleFunc("GET /api/v1/audit", s.handleAudit)
 	r.HandleFunc("GET /api/v1/pxe", s.handlePXEStatus)
 	r.HandleFunc("GET /api/v1/backup", s.handleBackup)
 }
@@ -25,7 +27,14 @@ func (s *Server) handleGetSettings(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, v)
+	writeJSON(w, http.StatusOK, redactSettings(v))
+}
+
+func redactSettings(v store.Settings) store.Settings {
+	if v.Alerts.SMTP.Password != "" {
+		v.Alerts.SMTP.Password = "•••"
+	}
+	return v
 }
 
 func (s *Server) handlePutSettings(w http.ResponseWriter, r *http.Request) {
@@ -42,13 +51,18 @@ func (s *Server) handlePutSettings(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusUnprocessableEntity, map[string]string{"error": "watchIntervalSec must be at least 5"})
 		return
 	}
+	if v.Alerts.SMTP.Password == "•••" {
+		if cur, err := s.store.GetSettings(r.Context()); err == nil {
+			v.Alerts.SMTP.Password = cur.Alerts.SMTP.Password
+		}
+	}
 	if err := s.store.PutSettings(r.Context(), v); err != nil {
 		writeErr(w, err)
 		return
 	}
 	s.applySettings(v)
 	_ = s.store.Audit(r.Context(), "", "settings.save", "")
-	writeJSON(w, http.StatusOK, v)
+	writeJSON(w, http.StatusOK, redactSettings(v))
 }
 
 // applySettings pushes live-changeable settings into running components.

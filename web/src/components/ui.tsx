@@ -1,4 +1,6 @@
 import type { ComponentChildren } from 'preact'
+import { useEffect, useState } from 'preact/hooks'
+import { api, type MaintenanceState } from '../api'
 import type { Event, Level } from '../api'
 
 export type Tone = 'good' | 'warn' | 'bad' | 'info' | 'muted'
@@ -78,7 +80,7 @@ export function Dialog({ title, onClose, children, width = 'max-w-lg', footer }:
 }
 
 /** Confirm with an explicit impact list; the primary action names what happens. */
-export function ConfirmDialog({ title, impact, action, tone = 'primary', onConfirm, onClose, typed }: { title: string; impact: ComponentChildren; action: string; tone?: 'primary' | 'danger'; onConfirm: () => void; onClose: () => void; typed?: string }) {
+export function ConfirmDialog({ title, impact, action, tone = 'primary', onConfirm, onClose, typed, cluster }: { title: string; impact: ComponentChildren; action: string; tone?: 'primary' | 'danger'; onConfirm: () => void; onClose: () => void; typed?: string; cluster?: string }) {
   let value = ''
   return (
     <Dialog title={title} onClose={onClose} footer={
@@ -87,6 +89,7 @@ export function ConfirmDialog({ title, impact, action, tone = 'primary', onConfi
         <button class={`btn ${tone === 'danger' ? 'btn-danger' : 'btn-primary'}`} id="confirm-action" disabled={!!typed} onClick={onConfirm}>{action}</button>
       </>
     }>
+      {cluster && <MaintenanceNotice cluster={cluster} />}
       <div class="text-[13px] flex flex-col gap-2">{impact}</div>
       {typed && (
         <Field label={`Type ${typed} to confirm`}>
@@ -99,6 +102,14 @@ export function ConfirmDialog({ title, impact, action, tone = 'primary', onConfi
       )}
     </Dialog>
   )
+}
+
+/** Warns when a disruptive action is about to start outside the cluster's maintenance window. */
+export function MaintenanceNotice({ cluster }: { cluster: string }) {
+  const [state, setState] = useState<MaintenanceState | null>(null)
+  useEffect(() => { api.maintenance(cluster).then(setState).catch(() => {}) }, [cluster])
+  if (!state || !state.window || state.open) return null
+  return <Notice tone="warn">Outside the maintenance window <span class="mono">{state.window}{state.timezone ? ` ${state.timezone}` : ''}</span>{state.next ? `; it next opens ${new Date(state.next).toLocaleString()}` : ''}. Confirming runs it anyway.</Notice>
 }
 
 export function Field({ label, children, hint }: { label: string; children: ComponentChildren; hint?: string }) {

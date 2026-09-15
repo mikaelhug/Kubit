@@ -4,6 +4,7 @@ import { loadOperationLog, operations, reloadOperations } from '../store'
 import { DataTable, type Column } from '../components/DataTable'
 import { OperationView } from '../components/ActivityDrawer'
 import { Breadcrumbs, Pill, Section, stateTone } from '../components/ui'
+import { AuditLog } from '../components/AuditLog'
 
 /** All operations across clusters; /operations/:id shows one with its steps and log. */
 export function Operations({ id }: { id?: string }) {
@@ -44,6 +45,7 @@ export function Operations({ id }: { id?: string }) {
       <Section title="Activity" help="Every operation Kubit has run. Running ones also appear in the bottom drawer (press a).">
         <DataTable id="ops" columns={columns} rows={rows} rowKey={(o) => String(o.id)} defaultSort={{ id: 'id', dir: 'desc' }} />
       </Section>
+      <AuditLog />
     </div>
   )
 }

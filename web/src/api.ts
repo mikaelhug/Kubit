@@ -23,7 +23,8 @@ export interface AddonStatus {
   readiness?: { namespace: string; ready: number; total: number; detail?: string[] }
   state: 'disabled' | 'pending' | 'deploying' | 'ready' | 'degraded' | 'failed' | 'orphaned'
 }
-export interface Settings { factoryUrl: string; discoverySubnets: string[]; watchIntervalSec: number; pxeStatusUrl: string; defaultMetalLBRange: string }
+export interface AlertSettings { minSeverity: 'info' | 'warn' | 'critical'; webhookUrl: string; smtp: { host: string; port: number; from: string; to: string[]; username: string; password: string; startTLS: boolean } }
+export interface Settings { factoryUrl: string; discoverySubnets: string[]; watchIntervalSec: number; pxeStatusUrl: string; defaultMetalLBRange: string; alerts: AlertSettings }
 export interface PxeStatus { running: boolean; statusUrl: string; error?: string; command?: string; startedAt?: string; interface?: string; ip?: string; httpPort?: number; talosVersion?: string; schematicId?: string; boots?: { mac: string; ip?: string; arch?: string; firstSeen: string; lastSeen: string; stage: string; count: number }[]; log?: string[] }
 export interface Versions { talos: string[]; talosSource: string; kubernetesMinors: string[]; kubernetesLatest: string; machinery: string; minTalos: string; note: string }
 
@@ -33,6 +34,7 @@ export interface NodeSpec { hostname: string; ip: string; mac?: string; uuid?: s
 export interface Pool { name: string; role: 'controlplane' | 'worker'; labels?: Record<string, string>; taints?: Record<string, string>; annotations?: Record<string, string>; extensions?: string[]; schematicID?: string; installDisk?: InstallDisk }
 export interface Warning { level: 'info' | 'warn'; code: string; message: string; node?: string }
 export interface AddonSpec { enabled: boolean; values?: Record<string, unknown> }
+export interface Snapshot { id: number; cluster: string; ts: string; node: string; sizeBytes: number; sha256: string; keys: number; talosVersion?: string; k8sVersion?: string; source: 'manual' | 'schedule' | 'pre-upgrade'; status: 'ok' | 'corrupt' | 'missing' }
 export interface PlatformSpec { metallb: AddonSpec & { range?: string }; ingressNginx: AddonSpec; gvisor: AddonSpec; metricsServer: AddonSpec; certManager: AddonSpec; argocd: AddonSpec }
 export interface ClusterSpec {
   apiVersion: string; kind: string; metadata: { name: string }
@@ -43,8 +45,22 @@ export interface ClusterSpec {
     pools?: Pool[]
     nodes: NodeSpec[]
     platform: PlatformSpec
+    backup?: { etcd: { interval?: string; keep?: number } }
+    maintenance?: { window?: string; timezone?: string }
   }
 }
+export interface ClusterForm { talosVersion: string; kubernetesVersion: string; endpoint: string; vip: string; allowScheduling: boolean | null; podCIDR: string; serviceCIDR: string; extensions: string[]; nameservers: string[]; ntp: string[]; etcdSnapshotInterval: string; etcdSnapshotKeep: number; maintenanceWindow: string; maintenanceTimezone: string }
+/** The structured-settings form as the daemon currently stores it. */
+export function formOf(spec: ClusterSpec['spec']): ClusterForm {
+  return {
+    talosVersion: spec.talosVersion, kubernetesVersion: spec.kubernetesVersion, endpoint: spec.controlPlane.endpoint, vip: spec.controlPlane.vip ?? '', allowScheduling: spec.controlPlane.allowScheduling ?? null,
+    podCIDR: spec.network.podCIDR, serviceCIDR: spec.network.serviceCIDR, extensions: spec.extensions ?? [], nameservers: spec.network.nameservers ?? [], ntp: spec.network.ntp ?? [],
+    etcdSnapshotInterval: spec.backup?.etcd.interval ?? '6h', etcdSnapshotKeep: spec.backup?.etcd.keep ?? 28, maintenanceWindow: spec.maintenance?.window ?? '', maintenanceTimezone: spec.maintenance?.timezone ?? '',
+  }
+}
+export interface CertInfo { name: string; subject: string; issuer?: string; notBefore: string; notAfter: string; daysLeft: number; rotatable: boolean; error?: string }
+export interface AuditEntry { id: number; at: string; cluster: string; action: string; detail: string }
+export interface MaintenanceState { window: string; timezone: string; open: boolean; next?: string }
 export interface ClusterRow { name: string; state: string; schematicId: string; createdAt: string; updatedAt: string; spec: ClusterSpec }
 
 export interface Inventory {
@@ -112,7 +128,7 @@ export const api = {
   ackEvent: (id: number) => req<void>('POST', `/events/${id}/ack`),
   ackAll: (name: string) => req<void>('POST', `/clusters/${name}/events/ack`),
   versions: () => req<Versions>('GET', '/versions'),
-  saveClusterForm: (name: string, form: { talosVersion: string; kubernetesVersion: string; endpoint: string; vip: string; allowScheduling: boolean | null; podCIDR: string; serviceCIDR: string; extensions: string[]; nameservers: string[]; ntp: string[] }) => req<{ yaml: string }>('PUT', `/clusters/${name}/form`, form),
+  saveClusterForm: (name: string, form: ClusterForm) => req<{ yaml: string }>('PUT', `/clusters/${name}/form`, form),
   settings: () => req<Settings>('GET', '/settings'),
   machine: (mac: string) => req<NodeRow>('GET', `/machines/${mac}`),
   retireMachine: (mac: string) => req<void>('DELETE', `/machines/${mac}`),
@@ -120,9 +136,19 @@ export const api = {
   wake: (mac: string) => req<void>('POST', `/machines/${mac}/wake`),
   design: (name: string, macs: string[], metallbRange?: string) => req<{ yaml: string; cluster: ClusterSpec; warnings: Warning[]; topology: { ControlPlanes: number; Workers: number; AllowScheduling: boolean; HA: boolean }; overlaps?: string[] }>('POST', '/config/design', { name, macs, metallbRange }),
   lint: (yaml: string) => req<{ warnings: Warning[]; yaml: string }>('POST', '/config/lint', { yaml }),
-  renameNode: (cluster: string, hostname: string, to: string) => req<OpRef>('POST', `/clusters/${cluster}/nodes/${hostname}/rename`, { to }),
-  moveNodePool: (cluster: string, hostname: string, pool: string) => req<OpRef>('POST', `/clusters/${cluster}/nodes/${hostname}/pool`, { pool }),
-  readdressNode: (cluster: string, hostname: string, network: NodeNetwork | null, ip: string) => req<OpRef>('POST', `/clusters/${cluster}/nodes/${hostname}/readdress`, { network, ip }),
+  renameNode: (cluster: string, hostname: string, to: string) => req<OpRef>('POST', `/clusters/${cluster}/nodes/${hostname}/rename?ignoreWindow=true`, { to }),
+  moveNodePool: (cluster: string, hostname: string, pool: string) => req<OpRef>('POST', `/clusters/${cluster}/nodes/${hostname}/pool?ignoreWindow=true`, { pool }),
+  readdressNode: (cluster: string, hostname: string, network: NodeNetwork | null, ip: string) => req<OpRef>('POST', `/clusters/${cluster}/nodes/${hostname}/readdress?ignoreWindow=true`, { network, ip }),
+  certificates: (cluster: string) => req<CertInfo[]>('GET', `/clusters/${cluster}/certificates`),
+  rotateCredential: (cluster: string, which: 'talosconfig' | 'kubeconfig') => req<OpRef>('POST', `/clusters/${cluster}/certificates/rotate`, { which }),
+  maintenance: (cluster: string) => req<MaintenanceState>('GET', `/clusters/${cluster}/maintenance`),
+  audit: (cluster?: string) => req<AuditEntry[]>('GET', '/audit' + (cluster ? `?cluster=${cluster}` : '')),
+  testAlerts: () => req<{ ok: boolean; errors: string[] }>('POST', '/settings/alerts/test'),
+  snapshots: (cluster: string) => req<Snapshot[]>('GET', `/clusters/${cluster}/snapshots`),
+  takeSnapshot: (cluster: string) => req<OpRef>('POST', `/clusters/${cluster}/snapshots`, { source: 'manual' }),
+  deleteSnapshot: (cluster: string, id: number) => req<void>('DELETE', `/clusters/${cluster}/snapshots/${id}`),
+  verifySnapshot: (cluster: string, id: number) => req<{ ok: boolean; error?: string; snapshot: Snapshot }>('POST', `/clusters/${cluster}/snapshots/${id}/verify`),
+  restoreSnapshot: (cluster: string, id: number) => req<OpRef>('POST', `/clusters/${cluster}/snapshots/${id}/restore?ignoreWindow=true`, { confirm: cluster }),
   savePools: (cluster: string, pools: Pool[]) => req<Pool[]>('PUT', `/clusters/${cluster}/pools`, pools),
   saveSettings: (v: Settings) => req<Settings>('PUT', '/settings', v),
   pxe: () => req<PxeStatus>('GET', '/pxe'),
@@ -144,15 +170,15 @@ export const api = {
   },
   createCluster: (yaml: string, skipPlatform = false) => req<OpRef & { cluster: string }>('POST', '/clusters', { yaml, skipPlatform }),
   forgetCluster: (name: string) => req<void>('DELETE', `/clusters/${name}`),
-  applyCluster: (name: string, yaml?: string) => req<OpRef>('POST', `/clusters/${name}/apply`, { yaml: yaml || '' }),
+  applyCluster: (name: string, yaml?: string) => req<OpRef>('POST', `/clusters/${name}/apply?ignoreWindow=true`, { yaml: yaml || '' }),
   platformPlan: (name: string) => req<OpRef>('POST', `/clusters/${name}/platform/plan`),
   platformApply: (name: string) => req<OpRef>('POST', `/clusters/${name}/platform/apply`),
   platformApplyPlan: (name: string, planId: number) => req<OpRef>('POST', `/clusters/${name}/platform/apply/${planId}`),
-  upgradeTalos: (name: string, to: string) => req<OpRef>('POST', `/clusters/${name}/upgrade/talos`, { to }),
-  upgradeKubernetes: (name: string, to: string) => req<OpRef>('POST', `/clusters/${name}/upgrade/kubernetes`, { to }),
+  upgradeTalos: (name: string, to: string) => req<OpRef>('POST', `/clusters/${name}/upgrade/talos?ignoreWindow=true`, { to }),
+  upgradeKubernetes: (name: string, to: string) => req<OpRef>('POST', `/clusters/${name}/upgrade/kubernetes?ignoreWindow=true`, { to }),
   exportCluster: (name: string, dir?: string) => req<{ dir: string }>('POST', `/clusters/${name}/export`, { dir: dir || '' }),
   addNode: (name: string, node: NodeSpec) => req<OpRef>('POST', `/clusters/${name}/nodes`, node),
-  removeNode: (name: string, hostname: string, force = false) => req<OpRef>('DELETE', `/clusters/${name}/nodes/${hostname}?force=${force}`),
+  removeNode: (name: string, hostname: string, force = false) => req<OpRef>('DELETE', `/clusters/${name}/nodes/${hostname}?force=${force}&ignoreWindow=true`),
   nodes: (cluster?: string) => req<NodeRow[]>('GET', '/nodes' + (cluster ? `?cluster=${cluster}` : '')),
   discover: (targets: string[]) => req<OpRef>('POST', '/discover', { targets }),
   services: (ip: string) => req<Service[]>('GET', `/nodes/${ip}/services`),
@@ -160,9 +186,9 @@ export const api = {
   nodeKubernetes: (ip: string) => req<NodeDetail>('GET', `/nodes/${ip}/kubernetes`),
   cordon: (cluster: string, hostname: string) => req<OpRef>('POST', `/clusters/${cluster}/nodes/${hostname}/cordon`),
   uncordon: (cluster: string, hostname: string) => req<OpRef>('POST', `/clusters/${cluster}/nodes/${hostname}/uncordon`),
-  drain: (cluster: string, hostname: string) => req<OpRef>('POST', `/clusters/${cluster}/nodes/${hostname}/drain`),
-  rebootNode: (cluster: string, hostname: string, drain: boolean) => req<OpRef>('POST', `/clusters/${cluster}/nodes/${hostname}/reboot`, { drain }),
-  upgradeNode: (cluster: string, hostname: string, to: string) => req<OpRef>('POST', `/clusters/${cluster}/nodes/${hostname}/upgrade`, { to }),
+  drain: (cluster: string, hostname: string) => req<OpRef>('POST', `/clusters/${cluster}/nodes/${hostname}/drain?ignoreWindow=true`),
+  rebootNode: (cluster: string, hostname: string, drain: boolean) => req<OpRef>('POST', `/clusters/${cluster}/nodes/${hostname}/reboot?ignoreWindow=true`, { drain }),
+  upgradeNode: (cluster: string, hostname: string, to: string) => req<OpRef>('POST', `/clusters/${cluster}/nodes/${hostname}/upgrade?ignoreWindow=true`, { to }),
   reboot: (ip: string) => req<void>('POST', `/nodes/${ip}/reboot`),
   operations: () => req<Operation[]>('GET', '/operations'),
   operation: (id: number) => req<Operation>('GET', `/operations/${id}`),
@@ -229,6 +255,7 @@ export const fmt = {
       'upgrade.talos': 'Upgrade Talos', 'upgrade.kubernetes': 'Upgrade Kubernetes', 'node.add': 'Add node', 'node.remove': 'Remove node', discover: 'Discover nodes',
       'node.cordon': 'Cordon node', 'node.uncordon': 'Uncordon node', 'node.drain': 'Drain node', 'node.reboot': 'Reboot node', 'node.upgrade': 'Upgrade node',
       'node.rename': 'Rename node', 'node.pool': 'Move node to pool', 'node.readdress': 'Re-address node',
+      'etcd.snapshot': 'etcd snapshot', 'etcd.restore': 'Restore etcd from snapshot', 'cert.rotate': 'Rotate credential',
     } as Record<string, string>)[kind] || kind
   },
 }

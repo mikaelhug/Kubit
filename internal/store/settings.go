@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"database/sql"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 )
@@ -14,10 +15,28 @@ type Settings struct {
 	WatchIntervalSec int      `json:"watchIntervalSec"`
 	PXEStatusURL     string   `json:"pxeStatusUrl"`
 	DefaultMetalLB   string   `json:"defaultMetalLBRange"`
+	Alerts           Alerts   `json:"alerts"`
+}
+
+// Alerts forwards health events at or above MinSeverity to external sinks.
+type Alerts struct {
+	MinSeverity string `json:"minSeverity"` // warn | critical
+	WebhookURL  string `json:"webhookUrl"`  // generic JSON POST; empty = off
+	SMTP        SMTP   `json:"smtp"`
+}
+
+type SMTP struct {
+	Host     string   `json:"host"` // empty = off
+	Port     int      `json:"port"`
+	From     string   `json:"from"`
+	To       []string `json:"to"`
+	Username string   `json:"username"`
+	Password string   `json:"password"` // sealed at rest, never returned to the UI
+	StartTLS bool     `json:"startTLS"`
 }
 
 func DefaultSettings() Settings {
-	return Settings{FactoryURL: "https://factory.talos.dev", DiscoverySubnets: []string{}, WatchIntervalSec: 15, PXEStatusURL: "http://127.0.0.1:8069/status.json"}
+	return Settings{FactoryURL: "https://factory.talos.dev", DiscoverySubnets: []string{}, WatchIntervalSec: 15, PXEStatusURL: "http://127.0.0.1:8069/status.json", Alerts: Alerts{MinSeverity: "warn", SMTP: SMTP{Port: 587, StartTLS: true, To: []string{}}}}
 }
 
 func (s *Store) GetSettings(ctx context.Context) (Settings, error) {
@@ -33,10 +52,24 @@ func (s *Store) GetSettings(ctx context.Context) (Settings, error) {
 	if err := json.Unmarshal([]byte(raw), &out); err != nil {
 		return out, err
 	}
+	if out.Alerts.SMTP.Password != "" {
+		if b, err := base64.StdEncoding.DecodeString(out.Alerts.SMTP.Password); err == nil {
+			if plain, err := s.crypto.Open(b); err == nil {
+				out.Alerts.SMTP.Password = string(plain)
+			}
+		}
+	}
 	return out, nil
 }
 
 func (s *Store) PutSettings(ctx context.Context, v Settings) error {
+	if v.Alerts.SMTP.Password != "" {
+		sealed, err := s.crypto.Seal([]byte(v.Alerts.SMTP.Password))
+		if err != nil {
+			return err
+		}
+		v.Alerts.SMTP.Password = base64.StdEncoding.EncodeToString(sealed)
+	}
 	b, err := json.Marshal(v)
 	if err != nil {
 		return err

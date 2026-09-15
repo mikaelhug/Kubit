@@ -11,6 +11,7 @@ import (
 	"os"
 	"regexp"
 	"strings"
+	"time"
 
 	talosconfig "github.com/siderolabs/talos/pkg/machinery/config"
 	"github.com/siderolabs/talos/pkg/machinery/constants"
@@ -61,6 +62,30 @@ type Spec struct {
 	Pools    []Pool   `yaml:"pools,omitempty" json:"pools,omitempty"`
 	Nodes    []Node   `yaml:"nodes" json:"nodes"`
 	Platform Platform `yaml:"platform" json:"platform"`
+	Backup   Backup   `yaml:"backup" json:"backup"`
+	// Maintenance gates disruptive operations to a window; empty = anytime.
+	Maintenance Maintenance `yaml:"maintenance,omitempty" json:"maintenance,omitempty"`
+}
+
+// Backup declares what Kubit keeps on the admin host for disaster recovery.
+type Backup struct {
+	Etcd EtcdBackup `yaml:"etcd" json:"etcd"`
+}
+
+// EtcdBackup schedules etcd snapshots over the Talos API. Interval "0" disables the
+// schedule; snapshots can still be taken by hand.
+type EtcdBackup struct {
+	Interval string `yaml:"interval,omitempty" json:"interval,omitempty"` // Go duration, default 6h
+	Keep     int    `yaml:"keep,omitempty" json:"keep,omitempty"`         // scheduled snapshots retained, default 28
+}
+
+// IntervalDuration parses Interval; zero means disabled.
+func (b EtcdBackup) IntervalDuration() time.Duration {
+	d, err := time.ParseDuration(b.Interval)
+	if err != nil || d <= 0 {
+		return 0
+	}
+	return d
 }
 
 // Pool is a node class in the sense of Omni machine classes or CAPI machine pools.
@@ -205,6 +230,12 @@ func (c *Cluster) applyDefaults() {
 	if c.Spec.TalosVersion == "" {
 		c.Spec.TalosVersion = gendata.VersionTag
 	}
+	if c.Spec.Backup.Etcd.Interval == "" {
+		c.Spec.Backup.Etcd.Interval = "6h"
+	}
+	if c.Spec.Backup.Etcd.Keep == 0 {
+		c.Spec.Backup.Etcd.Keep = 28
+	}
 	if c.Spec.KubernetesVersion == "" {
 		c.Spec.KubernetesVersion = "v" + constants.DefaultKubernetesVersion
 	}
@@ -339,6 +370,17 @@ func (c *Cluster) Validate() error {
 	var errs []error
 	if c.APIVersion != APIVersion || c.Kind != KindCluster {
 		errs = append(errs, fmt.Errorf("expected apiVersion %s kind %s", APIVersion, KindCluster))
+	}
+	if iv := c.Spec.Backup.Etcd.Interval; iv != "" && iv != "0" {
+		if d, err := time.ParseDuration(iv); err != nil || d < 5*time.Minute {
+			errs = append(errs, fmt.Errorf("backup.etcd.interval %q: a Go duration of at least 5m, or 0 to disable", iv))
+		}
+	}
+	if c.Spec.Backup.Etcd.Keep < 1 {
+		errs = append(errs, fmt.Errorf("backup.etcd.keep must be at least 1"))
+	}
+	if err := c.Spec.Maintenance.Validate(); err != nil {
+		errs = append(errs, err)
 	}
 	if contract, err := talosconfig.ParseContractFromVersion(c.Spec.TalosVersion); err != nil {
 		errs = append(errs, fmt.Errorf("talosVersion: %w", err))

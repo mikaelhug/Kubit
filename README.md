@@ -118,6 +118,11 @@ spec:
         gateway: 192.168.64.1
         nameservers: [192.168.64.1]
         vlan: 0                    # > 0 → VLANConfig on the uplink, addresses move to the VLAN link
+  backup:
+    etcd: { interval: 6h, keep: 28 }   # scheduled etcd snapshots; interval 0 disables
+  maintenance:                          # optional; gates disruptive operations
+    window: "Sat,Sun 02:00-06:00"       # "<days> HH:MM-HH:MM", days Mon..Sun or daily, may cross midnight
+    timezone: Europe/Stockholm          # IANA; empty = daemon host zone
   platform:
     metallb: { enabled: true, range: 192.168.64.200-192.168.64.220 }
     ingressNginx: { enabled: true }
@@ -293,6 +298,50 @@ clears. The first observation after a daemon start reports only what is currentl
 wrong, so restarts do not replay history. `GET /clusters/{name}/status` serves the
 watcher's latest result; `?fresh=true` forces a live query.
 
+## etcd snapshots and disaster recovery
+
+`kubit etcd snapshot <cluster>` (UI: Backups → Take snapshot) streams `EtcdSnapshot`
+from the first control plane with healthy etcd, verifies it (bbolt open, key count,
+sha256), gzips (≈20×) and seals it with the master key under
+`~/.kubit/clusters/<name>/snapshots/`, recorded in the `snapshots` table. The daemon
+takes one every `backup.etcd.interval` while the cluster is ready and idle, pruning
+scheduled snapshots to `keep` (manual and pre-upgrade snapshots are never pruned); a
+schedule that slips past twice its interval raises `backup.stale`. `kubit etcd
+list|download|restore`, `GET/POST /clusters/{name}/snapshots`, download of the plain
+`.db` for `talosctl bootstrap --recover-from`.
+
+**Restore** (`etcd.restore`, typed confirmation, `--yes` on the CLI) is the
+disaster-recovery path: EPHEMERAL is wiped on every control plane (STATE keeps the
+machine config, so they come back as members rather than in maintenance mode), the
+snapshot is uploaded to the first control plane (`EtcdRecover`), etcd is bootstrapped
+with `RecoverEtcd`, the other members rejoin, and Kubit waits for every node to be
+Ready. Verified on `lab` (3 control planes): a ConfigMap created after the snapshot was
+gone, LB addresses and workloads intact, ~3 minutes end to end.
+
+## Lifecycle safety
+
+- **Pre-upgrade checks** — every Talos/Kubernetes upgrade starts with `precheck`
+  (API reachable, etcd healthy, all nodes Ready/uncordoned/Talos-reachable, ≥ 1 GiB
+  free on `/var` per node, Talos target published by the Image Factory, and for
+  Kubernetes the `apiserver_requested_deprecated_apis` metric checked against the
+  target release — usage of an API removed in the target blocks the upgrade) and a
+  `pre-upgrade` etcd snapshot.
+- **Credentials** — `GET /clusters/{name}/certificates` parses the stored talosconfig
+  and kubeconfig client certificates and the four CAs; `cert.expiring` (warn ≤ 30
+  days, critical ≤ 7) is raised hourly per credential. `POST …/certificates/rotate`
+  mints a fresh one-year talosconfig (`GenerateClientConfiguration`, endpoints
+  rewritten to all control planes) or kubeconfig and replaces the stored copy.
+- **Maintenance window** — `spec.maintenance.window` gates the disruptive routes
+  (apply, upgrades, node drain/reboot/upgrade/remove/rename/pool/readdress, restore):
+  outside the window the API answers 409 unless `?ignoreWindow=true`; the console
+  shows the window notice in every confirm dialog and then overrides deliberately.
+- **Alert forwarding** — Kubit settings → Alerts: health events at or above a
+  severity are POSTed as JSON (`text` + `event`) to a webhook (Slack/Discord/Teams
+  compatible) and/or mailed over SMTP (password sealed at rest); *Send test alert*
+  exercises the sinks.
+- **Audit log** — `audit_log` (every administrative action) is listed under Activity
+  and each cluster's Operations tab, with CSV export.
+
 ## Backup and restore
 
 `kubit backup -o file.kubitbak` (or Settings → Download backup) writes a tar.gz of
@@ -329,4 +378,5 @@ virtualisation in the VMs); ArgoCD and cert-manager add-ons.
 - [x] M5 — add-on cards join cluster.yaml, tofu state (Helm release/chart/app version, status) and namespace readiness into one state (disabled/pending/deploying/ready/degraded/failed/orphaned); Configure dialog edits enabled/MetalLB range/Helm `values` (server-validated YAML) into cluster.yaml; `platform.<addon>.values` flows to `helm_release.values` only when set; Settings has a Form tab (endpoint, VIP, CIDRs, extensions, scheduling) beside YAML — verified: enabled ArgoCD with `server.replicas: 1` via UI → plan → reviewed apply → ArgoCD answering on its MetalLB IP; cert-manager verified in M1
 - [~] M6 — Inventory: Adopt… opens the target cluster's add-node dialog preselected; PXE page reads the separate `kubit pxe` process's `/status.json` (server state, per-MAC boot stages dhcp → ipxe → kernel, log) and shows the exact sudo command when it is not running; Kubit Settings (`settings` table: factory URL, poll interval, discovery subnets, default MetalLB range, PXE status URL — applied live); `kubit backup`/`restore`/`key export` and a Download backup button — verified: backup restored into a fresh KUBIT_HOME manages the live cluster. **PXE boot itself is unverified** (see NOTES/backlog.md): pending real hardware
 - [x] M8 — Onboarding & identity: machines keyed by MAC (migration v7, `ips_seen`, UUID/serial, WoL flag), node pools (role/labels/taints/extensions/disk policy → per-pool schematic), per-node DHCP or static addressing (+VLAN), cluster nameservers/NTP, `config.Design`/`Lint`, 5-step create wizard (Machines → Design → Network → Platform → Review), rename / move-to-pool / re-address operations, Inventory by machine with Retire and Wake-on-LAN, `/machines/<mac>` pages. Verified on 4 VMs: wizard with a `sandbox` pool (label + taint, static `.150`), rename, DHCP→static re-address of a control plane (reboot path) and static→static of a worker (kubelet-restart path). **Not exercised:** the `machine.ip-changed` path with a real DHCP lease change (vmnet leases are sticky; unit-tested in `internal/watch`), pool moves with a different extension set (re-image path shares `UpgradeNode`)
+- [x] M9 — Lifecycle safety: scheduled/verified/sealed etcd snapshots with restore drill (verified live), credential inventory + rotation (verified), upgrade pre-checks + pre-upgrade snapshot (verified: refuses cordoned node and unpublished Talos version; passes on healthy `lab`), maintenance windows (verified 409/override), alert forwarding via webhook (verified with a local receiver; SMTP untested) and audit UI. Application-layer add-ons (storage, monitoring) are intentionally left to Argo CD.
 - [ ] M7 — tests, CI, packaging, docs

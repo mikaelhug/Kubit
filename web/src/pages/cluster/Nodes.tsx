@@ -2,7 +2,7 @@ import { useEffect, useState } from 'preact/hooks'
 import { api, fmt, type ClusterRow, type NodeNetwork, type NodeRow, type NodeSpec, type NodeStatus } from '../../api'
 import { toast, watch } from '../../store'
 import { DataTable, type Column } from '../../components/DataTable'
-import { ConfirmDialog, Dialog, ErrorBox, Field, Pill, Section } from '../../components/ui'
+import { ConfirmDialog, Dialog, ErrorBox, Field, MaintenanceNotice, Pill, Section } from '../../components/ui'
 import { KVEditor } from '../../components/PoolsEditor'
 import { guessGateway } from '../create/net'
 import type { ClusterCtx } from './ClusterPage'
@@ -66,7 +66,7 @@ export function Nodes({ ctx }: { ctx: ClusterCtx }) {
       {add && <AddNodeDialog cluster={cluster} preselect={adoptIP ?? undefined} onClose={() => { setAdd(false); if (adoptIP) history.replaceState(null, '', location.pathname) }} />}
       {readdress && <ReaddressDialog cluster={cluster} n={readdress} spec={specOf(readdress)} onClose={() => setReaddress(null)} />}
       {remove && (
-        <ConfirmDialog title={`Remove ${remove.hostname}`} action="Drain and remove" tone="danger" onClose={() => setRemove(null)}
+        <ConfirmDialog title={`Remove ${remove.hostname}`} action="Drain and remove" tone="danger" cluster={name} onClose={() => setRemove(null)}
           onConfirm={() => api.removeNode(name, remove.hostname).then((r) => { setRemove(null); watch(r) }).catch((e) => toast(e.message, 'error'))}
           impact={<RemoveImpact n={remove} cluster={cluster} />} />
       )}
@@ -205,6 +205,7 @@ export function ReaddressDialog({ cluster, n, spec, onClose }: { cluster: Cluste
   return (
     <Dialog title={`Update address of ${n.hostname}`} onClose={onClose} footer={<><button class="btn" onClick={onClose}>Cancel</button><button class="btn btn-primary" disabled={isEndpoint && ip !== n.ip} onClick={submit}>Apply</button></>}>
       <ErrorBox error={error} />
+      <MaintenanceNotice cluster={cluster.name} />
       {seen && <p class="text-[13px]">The declaration says <span class="mono">{n.ip}</span>; discovery last saw this MAC at <span class="mono">{seen}</span>.</p>}
       {isEndpoint && <p class="text-[13px] text-warn">This node is the API endpoint (no VIP). Changing its address would break every kubeconfig; set a VIP first.</p>}
       <Field label="Mode">

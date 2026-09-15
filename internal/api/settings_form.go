@@ -3,6 +3,7 @@ package api
 import (
 	"encoding/json"
 	"net/http"
+	"strings"
 )
 
 // clusterForm is the structured, non-node part of cluster.yaml the Settings form edits.
@@ -17,6 +18,11 @@ type clusterForm struct {
 	Extensions        []string `json:"extensions"`
 	Nameservers       []string `json:"nameservers"`
 	NTP               []string `json:"ntp"`
+	// Etcd snapshot schedule; empty interval keeps the stored value.
+	EtcdSnapshotInterval string `json:"etcdSnapshotInterval"`
+	EtcdSnapshotKeep     int    `json:"etcdSnapshotKeep"`
+	MaintenanceWindow    string `json:"maintenanceWindow"`
+	MaintenanceTimezone  string `json:"maintenanceTimezone"`
 }
 
 // handleClusterForm validates and saves the structured fields; versions are only
@@ -43,6 +49,14 @@ func (s *Server) handleClusterForm(w http.ResponseWriter, r *http.Request) {
 	c.Spec.Extensions = f.Extensions
 	c.Spec.Network.Nameservers = f.Nameservers
 	c.Spec.Network.NTP = f.NTP
+	if f.EtcdSnapshotInterval != "" {
+		c.Spec.Backup.Etcd.Interval = f.EtcdSnapshotInterval
+	}
+	if f.EtcdSnapshotKeep > 0 {
+		c.Spec.Backup.Etcd.Keep = f.EtcdSnapshotKeep
+	}
+	c.Spec.Maintenance.Window = strings.TrimSpace(f.MaintenanceWindow)
+	c.Spec.Maintenance.Timezone = strings.TrimSpace(f.MaintenanceTimezone)
 	if err := c.Validate(); err != nil {
 		writeJSON(w, http.StatusUnprocessableEntity, map[string]string{"error": err.Error()})
 		return

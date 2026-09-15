@@ -5,7 +5,7 @@ import { clusters, operations, statuses, toast, watch } from '../store'
 import { ReaddressDialog } from './cluster/Nodes'
 import { Tabs } from '../components/Tabs'
 import { DataTable, type Column } from '../components/DataTable'
-import { Breadcrumbs, ConfirmDialog, Dialog, ErrorBox, Field, KeyValue, Meter, Notice, Pill, Section, StatusDot, stateTone } from '../components/ui'
+import { Breadcrumbs, ConfirmDialog, Dialog, ErrorBox, Field, KeyValue, MaintenanceNotice, Meter, Notice, Pill, Section, StatusDot, stateTone } from '../components/ui'
 
 type TabId = 'overview' | 'hardware' | 'kubernetes' | 'services' | 'logs' | 'actions'
 
@@ -291,14 +291,15 @@ function ActionsTab({ node, k8s, inv, cluster, spec, talosVersion }: { node: Nod
       <Action title="Move to another pool" what={pools.length ? `Same-role pools: ${pools.map((p) => p.name).join(', ')}. Labels and taints follow the pool; a different extension set means a re-image.` : `No other ${cp ? 'control-plane' : 'worker'} pool exists. Add one under Settings → Pools.`} button="Move…" disabled={!inv || pools.length === 0} onClick={() => { setPool(pools[0]?.name ?? ''); setConfirm('pool') }} />
       <Action title="Update address" what={spec?.network ? `Static ${spec.network.addresses.join(', ')}${spec.network.vlan ? ` on VLAN ${spec.network.vlan}` : ''}. Change it or go back to DHCP.` : `DHCP; declared ${node.ip}${status?.seenAt && status.seenAt !== node.ip ? `, last seen at ${status.seenAt}` : ''}. Record a new lease or pin a static address.`} button="Update…" disabled={!inv} onClick={() => setConfirm('readdress')} />
       <Action title="Remove from cluster" what={`Drain, delete the Node object, and reset Talos to maintenance mode. ${cp ? 'etcd membership is reduced by one.' : ''}`} button="Remove…" href={`/clusters/${name}/nodes`} />
-      {confirm === 'drain' && <ConfirmDialog title={`Drain ${host}`} action="Drain" onClose={() => setConfirm(null)} onConfirm={() => run(api.drain(name, host))}
+      {confirm === 'drain' && <ConfirmDialog title={`Drain ${host}`} action="Drain" cluster={name} onClose={() => setConfirm(null)} onConfirm={() => run(api.drain(name, host))}
         impact={<ul class="list-disc pl-5"><li>Cordons the node.</li><li>Evicts {pods} pod{pods === 1 ? '' : 's'}; controllers reschedule them on other nodes.</li><li>Waits up to 5 minutes; PodDisruptionBudgets are respected.</li></ul>} />}
-      {(confirm === 'reboot' || confirm === 'reboot-drain') && <ConfirmDialog title={`Reboot ${host}`} action={confirm === 'reboot-drain' ? 'Drain and reboot' : 'Reboot'} tone="danger" onClose={() => setConfirm(null)} onConfirm={() => run(api.rebootNode(name, host, confirm === 'reboot-drain'))}
+      {(confirm === 'reboot' || confirm === 'reboot-drain') && <ConfirmDialog title={`Reboot ${host}`} action={confirm === 'reboot-drain' ? 'Drain and reboot' : 'Reboot'} tone="danger" cluster={name} onClose={() => setConfirm(null)} onConfirm={() => run(api.rebootNode(name, host, confirm === 'reboot-drain'))}
         impact={<ul class="list-disc pl-5">{confirm === 'reboot-drain' && <li>Drains {pods} pod{pods === 1 ? '' : 's'} first and uncordons afterwards.</li>}{confirm === 'reboot' && <li class="text-warn">Pods on this node go down until it returns (~1–2 min).</li>}{cp && <li>Control plane: etcd loses this member's vote while it is down.</li>}<li>Waits for the machine to answer with a new boot ID, then for Kubernetes Ready.</li></ul>} />}
-      {confirm === 'upgrade' && <ConfirmDialog title={`Upgrade ${host} to Talos ${talosVersion}`} action="Upgrade node" onClose={() => setConfirm(null)} onConfirm={() => run(api.upgradeNode(name, host, talosVersion ?? ''))}
+      {confirm === 'upgrade' && <ConfirmDialog title={`Upgrade ${host} to Talos ${talosVersion}`} action="Upgrade node" cluster={name} onClose={() => setConfirm(null)} onConfirm={() => run(api.upgradeNode(name, host, talosVersion ?? ''))}
         impact={<ul class="list-disc pl-5"><li>Installs the new image into the inactive slot and reboots.</li><li>Talos rolls back on its own if the new system fails to boot.</li><li>Pods on this node are not drained first.</li></ul>} />}
       {confirm === 'rename' && (
         <Dialog title={`Rename ${host}`} onClose={() => setConfirm(null)} footer={<><button class="btn" onClick={() => setConfirm(null)}>Cancel</button><button class="btn btn-primary" disabled={!/^[a-z0-9]([-a-z0-9]*[a-z0-9])?$/.test(to) || to === host || cluster.spec.spec.nodes.some((n) => n.hostname === to)} onClick={() => run(api.renameNode(name, host, to))}>Rename</button></>}>
+          <MaintenanceNotice cluster={name} />
           <Field label="New hostname" hint="DNS label, unique in the cluster."><input class="input mono" value={to} onInput={(e) => setTo((e.target as HTMLInputElement).value.trim().toLowerCase())} /></Field>
           <ul class="list-disc pl-5 text-[13px] flex flex-col gap-1">
             <li>Drains {pods} pod{pods === 1 ? '' : 's'} (they reschedule elsewhere once), applies the new hostname without a reboot.</li>
@@ -310,6 +311,7 @@ function ActionsTab({ node, k8s, inv, cluster, spec, talosVersion }: { node: Nod
       )}
       {confirm === 'pool' && (
         <Dialog title={`Move ${host} to another pool`} onClose={() => setConfirm(null)} footer={<><button class="btn" onClick={() => setConfirm(null)}>Cancel</button><button class="btn btn-primary" disabled={!target} onClick={() => run(api.moveNodePool(name, host, pool))}>Move</button></>}>
+          <MaintenanceNotice cluster={name} />
           <Field label="Target pool">
             <select class="input" value={pool} onChange={(e) => setPool((e.target as HTMLSelectElement).value)}>{pools.map((p) => <option key={p.name} value={p.name}>{p.name}</option>)}</select>
           </Field>

@@ -1,11 +1,11 @@
 import { useEffect, useState } from 'preact/hooks'
 import { useLocation } from 'preact-iso'
-import { api, type Pool, type Versions, type Warning } from '../../api'
+import { api, fmt, type CertInfo, type Pool, type Versions, type Warning } from '../../api'
 import { PoolsEditor } from '../../components/PoolsEditor'
 import { WarningLine } from '../create/steps'
-import { reloadClusters, toast, watch } from '../../store'
+import { operations, reloadClusters, toast, watch } from '../../store'
 import { Tabs } from '../../components/Tabs'
-import { ConfirmDialog, ErrorBox, Field, KeyValue, Notice, Section } from '../../components/ui'
+import { ConfirmDialog, ErrorBox, Field, KeyValue, MaintenanceNotice, Notice, Pill, Section } from '../../components/ui'
 import type { ClusterCtx } from './ClusterPage'
 
 export function Settings({ ctx }: { ctx: ClusterCtx }) {
@@ -27,7 +27,7 @@ export function Settings({ ctx }: { ctx: ClusterCtx }) {
   const formDirty = JSON.stringify(form) !== JSON.stringify(fromSpec(spec))
   const cps = spec.nodes.filter((n) => n.role === 'controlplane').length
   const list = (s: string) => s.split(/[,\s]+/).filter(Boolean)
-  const saveForm = () => api.saveClusterForm(name, { ...form, extensions: list(form.extensions), nameservers: list(form.nameservers), ntp: list(form.ntp) })
+  const saveForm = () => api.saveClusterForm(name, { ...form, extensions: list(form.extensions), nameservers: list(form.nameservers), ntp: list(form.ntp), etcdSnapshotKeep: Number(form.etcdSnapshotKeep) || 0 })
     .then(() => { setError(null); reloadClusters(); toast('Saved. Apply node configs to push machine changes; add-ons are planned under Add-ons.', 'good') }).catch((e) => setError(e.message))
 
   return (
@@ -45,6 +45,8 @@ export function Settings({ ctx }: { ctx: ClusterCtx }) {
               <Field label="System extensions" hint="Image Factory extensions baked into the installer (comma-separated). A new schematic is used by new nodes and upgrades."><input class="input mono" value={form.extensions} onInput={(e) => setForm({ ...form, extensions: (e.target as HTMLInputElement).value })} /></Field>
               <Field label="Nameservers" hint="Cluster-wide DNS for every node (comma-separated); empty keeps DHCP's."><input class="input mono" value={form.nameservers} placeholder="from DHCP" onInput={(e) => setForm({ ...form, nameservers: (e.target as HTMLInputElement).value })} /></Field>
               <Field label="NTP servers" hint="Empty uses Talos' default."><input class="input mono" value={form.ntp} placeholder="time.cloudflare.com" onInput={(e) => setForm({ ...form, ntp: (e.target as HTMLInputElement).value })} /></Field>
+              <Field label="Maintenance window" hint='Disruptive operations (upgrades, reboots, drains, removals, restores) are refused outside it unless overridden. "<days> HH:MM-HH:MM", e.g. "Sat,Sun 22:00-04:00" or "daily 01:00-05:00"; empty = anytime.'><input class="input mono" value={form.maintenanceWindow} placeholder="anytime" onInput={(e) => setForm({ ...form, maintenanceWindow: (e.target as HTMLInputElement).value })} /></Field>
+              <Field label="Window time zone" hint="IANA name; empty uses the daemon host's zone."><input class="input mono" value={form.maintenanceTimezone} placeholder={Intl.DateTimeFormat().resolvedOptions().timeZone} onInput={(e) => setForm({ ...form, maintenanceTimezone: (e.target as HTMLInputElement).value })} /></Field>
               <Field label="Workloads on control planes" hint={`${cps} control plane${cps === 1 ? '' : 's'}; Kubit defaults to schedulable below 6 nodes.`}>
                 <select class="input" value={form.allowScheduling === null ? 'auto' : String(form.allowScheduling)} onChange={(e) => { const v = (e.target as HTMLSelectElement).value; setForm({ ...form, allowScheduling: v === 'auto' ? null : v === 'true' }) }}>
                   <option value="true">Allowed (control planes also run pods)</option>
@@ -75,7 +77,8 @@ export function Settings({ ctx }: { ctx: ClusterCtx }) {
 
       <PoolsSection ctx={ctx} />
 
-      <Section title="Versions" help={`Rolling, one node at a time, control planes first; each node must come back Ready before the next starts. ${versions?.note ?? ''}`}>
+      <Section title="Versions" help={`Rolling, one node at a time, control planes first; each node must come back Ready before the next starts. Every upgrade begins with pre-flight checks (etcd, node health, /var headroom, removed APIs for Kubernetes) and a pre-upgrade etcd snapshot. ${versions?.note ?? ''}`}>
+        <MaintenanceNotice cluster={name} />
         <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
           <Field label={`Talos (now ${spec.talosVersion})`} hint={versions ? `Releases from ${versions.talosSource}; A/B partition swap with automatic rollback on boot failure. Pre-releases are listed but not recommended.` : 'A/B partition swap; Talos rolls back on its own if the new system does not boot.'}>
             <div class="flex gap-2">
@@ -93,6 +96,8 @@ export function Settings({ ctx }: { ctx: ClusterCtx }) {
           </Field>
         </div>
       </Section>
+
+      <CredentialsSection name={name} />
 
       <Section title="Identity">
         <div class="panel p-4">
@@ -134,7 +139,40 @@ function fromSpec(spec: ClusterCtx['cluster']['spec']['spec']) {
     talosVersion: spec.talosVersion, kubernetesVersion: spec.kubernetesVersion, endpoint: spec.controlPlane.endpoint, vip: spec.controlPlane.vip ?? '',
     allowScheduling: spec.controlPlane.allowScheduling ?? null, podCIDR: spec.network.podCIDR, serviceCIDR: spec.network.serviceCIDR, extensions: (spec.extensions ?? []).join(', '),
     nameservers: (spec.network.nameservers ?? []).join(', '), ntp: (spec.network.ntp ?? []).join(', '),
+    etcdSnapshotInterval: spec.backup?.etcd.interval ?? '6h', etcdSnapshotKeep: String(spec.backup?.etcd.keep ?? 28),
+    maintenanceWindow: spec.maintenance?.window ?? '', maintenanceTimezone: spec.maintenance?.timezone ?? '',
   }
+}
+
+/** What Kubit holds to talk to the cluster, and when each stops working. */
+function CredentialsSection({ name }: { name: string }) {
+  const [certs, setCerts] = useState<CertInfo[]>([])
+  const [error, setError] = useState<string | null>(null)
+  const finished = [...operations.value.values()].filter((o) => o.cluster === name && o.status !== 'running').length
+  useEffect(() => { api.certificates(name).then(setCerts).catch((e) => setError(e.message)) }, [name, finished])
+  const label: Record<string, string> = { talosconfig: 'Admin talosconfig', kubeconfig: 'Admin kubeconfig', 'talos-ca': 'Talos API CA', 'kubernetes-ca': 'Kubernetes CA', 'etcd-ca': 'etcd CA', 'aggregator-ca': 'Aggregator CA' }
+  const tone = (d: number) => d <= 7 ? 'bad' : d <= 30 ? 'warn' : 'good'
+  return (
+    <Section title="Credentials" help="Client certificates Kubit uses (and hands out via Download/Export) are valid one year; rotating issues a fresh one through the Talos API and replaces the stored copy — the old one keeps working until it expires. CAs are valid ten years and cannot be rotated in place. Kubit raises an alert 30 days before any of these expires.">
+      <ErrorBox error={error} />
+      <div class="panel overflow-x-auto">
+        <table class="data">
+          <thead><tr><th class="pl-4">Credential</th><th>Expires</th><th>Issued</th><th>Subject</th><th></th></tr></thead>
+          <tbody>
+            {certs.map((c) => (
+              <tr key={c.name}>
+                <td class="pl-4 font-medium">{label[c.name] ?? c.name}</td>
+                <td>{c.error ? <span class="text-bad">{c.error}</span> : <span class="flex items-center gap-2"><Pill tone={tone(c.daysLeft)}>{c.daysLeft} days</Pill><span class="num text-muted">{fmt.datetime(c.notAfter)}</span></span>}</td>
+                <td class="num text-muted">{c.notBefore ? fmt.datetime(c.notBefore) : '—'}</td>
+                <td class="mono text-[11px] text-muted truncate max-w-[260px]" title={c.subject}>{c.subject}</td>
+                <td class="text-right pr-3">{c.rotatable && <button class="btn !py-1" onClick={() => api.rotateCredential(name, c.name as 'talosconfig' | 'kubeconfig').then((r) => watch(r)).catch((e) => toast(e.message, 'error'))}>Rotate</button>}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </Section>
+  )
 }
 
 /** Pools live in cluster.yaml; saving resolves a schematic per distinct extension set. */

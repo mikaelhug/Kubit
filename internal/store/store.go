@@ -149,6 +149,21 @@ var migrations = []string{
 		SELECT CASE WHEN mac = '' THEN 'ip:' || ip ELSE lower(mac) END, ip, cluster, hostname, role, arch, source, state, hardware, talos_version, machine_config, last_seen, updated_at
 		FROM nodes WHERE 1 ORDER BY updated_at;
 	DROP TABLE nodes;`,
+	`CREATE TABLE snapshots (
+		id            INTEGER PRIMARY KEY AUTOINCREMENT,
+		cluster       TEXT NOT NULL REFERENCES clusters(name) ON DELETE CASCADE,
+		ts            TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+		node          TEXT NOT NULL,               -- control plane the snapshot was taken from
+		path          TEXT NOT NULL,               -- sealed file under $KUBIT_HOME
+		size_bytes    INTEGER NOT NULL,            -- of the plain snapshot
+		sha256        TEXT NOT NULL,               -- of the plain snapshot
+		keys          INTEGER NOT NULL DEFAULT 0,  -- etcd keys counted while verifying
+		talos_version TEXT NOT NULL DEFAULT '',
+		k8s_version   TEXT NOT NULL DEFAULT '',
+		source        TEXT NOT NULL DEFAULT 'manual', -- manual | schedule | pre-upgrade
+		status        TEXT NOT NULL DEFAULT 'ok'      -- ok | corrupt | missing
+	);
+	CREATE INDEX snapshots_cluster_ts ON snapshots (cluster, ts);`,
 }
 
 func (s *Store) migrate(ctx context.Context) error {
@@ -182,4 +197,38 @@ func (s *Store) migrate(ctx context.Context) error {
 func (s *Store) Audit(ctx context.Context, cluster, action, detail string) error {
 	_, err := s.db.ExecContext(ctx, `INSERT INTO audit_log (cluster, action, detail) VALUES (?, ?, ?)`, cluster, action, detail)
 	return err
+}
+
+// AuditEntry is one recorded administrative action.
+type AuditEntry struct {
+	ID      int64  `json:"id"`
+	At      string `json:"at"`
+	Cluster string `json:"cluster"`
+	Action  string `json:"action"`
+	Detail  string `json:"detail"`
+}
+
+// ListAudit returns the newest entries, optionally for one cluster.
+func (s *Store) ListAudit(ctx context.Context, cluster string, limit int) ([]AuditEntry, error) {
+	if limit <= 0 || limit > 5000 {
+		limit = 500
+	}
+	q, args := `SELECT id, at, cluster, action, detail FROM audit_log ORDER BY id DESC LIMIT ?`, []any{limit}
+	if cluster != "" {
+		q, args = `SELECT id, at, cluster, action, detail FROM audit_log WHERE cluster = ? ORDER BY id DESC LIMIT ?`, []any{cluster, limit}
+	}
+	rows, err := s.db.QueryContext(ctx, q, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []AuditEntry{}
+	for rows.Next() {
+		var e AuditEntry
+		if err := rows.Scan(&e.ID, &e.At, &e.Cluster, &e.Action, &e.Detail); err != nil {
+			return nil, err
+		}
+		out = append(out, e)
+	}
+	return out, rows.Err()
 }

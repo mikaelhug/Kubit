@@ -123,6 +123,13 @@ func b2i(b bool) int {
 	return 0
 }
 
+// HasOpenEvent reports whether an unacknowledged event of this kind exists.
+func (s *Store) HasOpenEvent(ctx context.Context, cluster, node, kind string) bool {
+	var n int
+	_ = s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM events WHERE cluster = ? AND node = ? AND kind = ? AND acked = 0`, cluster, node, kind).Scan(&n)
+	return n > 0
+}
+
 // ResolveEvents acknowledges open events of one kind for a node: the condition cleared.
 func (s *Store) ResolveEvents(ctx context.Context, cluster, node, kind string) error {
 	_, err := s.db.ExecContext(ctx, `UPDATE events SET acked = 1 WHERE cluster = ? AND node = ? AND kind = ? AND acked = 0`, cluster, node, kind)

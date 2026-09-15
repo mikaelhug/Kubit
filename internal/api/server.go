@@ -26,15 +26,16 @@ import (
 )
 
 type Server struct {
-	mux     *http.ServeMux
-	version string
-	manager *cluster.Manager
-	store   *store.Store
-	hub     *hub
-	locks   clusterLocks
-	cancels sync.Map // operation id → context.CancelFunc
-	watcher *watch.Watcher
-	crypto  *store.Crypto
+	mux       *http.ServeMux
+	version   string
+	manager   *cluster.Manager
+	store     *store.Store
+	hub       *hub
+	locks     clusterLocks
+	cancels   sync.Map // operation id → context.CancelFunc
+	watcher   *watch.Watcher
+	certCheck throttle
+	crypto    *store.Crypto
 	// token, when set, is required as "Authorization: Bearer" on /api (non-loopback binds).
 	token string
 }
@@ -61,17 +62,17 @@ func New(version string, m *cluster.Manager, token string, crypto *store.Crypto)
 	r.HandleFunc("PUT /api/v1/clusters/{name}/yaml", s.handleClusterYAMLSave)
 	r.HandleFunc("PUT /api/v1/clusters/{name}/form", s.handleClusterForm)
 	r.HandleFunc("GET /api/v1/clusters/{name}/kubeconfig", s.handleClusterKubeconfig)
-	r.HandleFunc("POST /api/v1/clusters/{name}/apply", s.handleClusterApply)
+	r.HandleFunc("POST /api/v1/clusters/{name}/apply", s.disruptive(s.handleClusterApply))
 	r.HandleFunc("GET /api/v1/clusters/{name}/addons", s.handleAddons)
 	r.HandleFunc("PUT /api/v1/clusters/{name}/addons/{addon}", s.handleAddonUpdate)
 	r.HandleFunc("POST /api/v1/clusters/{name}/platform/plan", s.handlePlatformPlan)
 	r.HandleFunc("POST /api/v1/clusters/{name}/platform/apply", s.handlePlatformApply)
 	r.HandleFunc("POST /api/v1/clusters/{name}/platform/apply/{planId}", s.handlePlatformApplyPlan)
-	r.HandleFunc("POST /api/v1/clusters/{name}/upgrade/talos", s.handleUpgradeTalos)
-	r.HandleFunc("POST /api/v1/clusters/{name}/upgrade/kubernetes", s.handleUpgradeKubernetes)
+	r.HandleFunc("POST /api/v1/clusters/{name}/upgrade/talos", s.disruptive(s.handleUpgradeTalos))
+	r.HandleFunc("POST /api/v1/clusters/{name}/upgrade/kubernetes", s.disruptive(s.handleUpgradeKubernetes))
 	r.HandleFunc("POST /api/v1/clusters/{name}/export", s.handleExport)
 	r.HandleFunc("POST /api/v1/clusters/{name}/nodes", s.handleNodeAdd)
-	r.HandleFunc("DELETE /api/v1/clusters/{name}/nodes/{hostname}", s.handleNodeRemove)
+	r.HandleFunc("DELETE /api/v1/clusters/{name}/nodes/{hostname}", s.disruptive(s.handleNodeRemove))
 	r.HandleFunc("GET /api/v1/nodes", s.handleNodes)
 	r.HandleFunc("POST /api/v1/discover", s.handleDiscover)
 	r.HandleFunc("GET /api/v1/nodes/{ip}/logs", s.handleNodeLogs)
@@ -84,6 +85,9 @@ func New(version string, m *cluster.Manager, token string, crypto *store.Crypto)
 	s.k8sRoutes()
 	s.settingsRoutes()
 	s.machineRoutes()
+	s.etcdRoutes()
+	s.certRoutes()
+	s.mux.HandleFunc("GET /api/v1/clusters/{name}/maintenance", s.handleMaintenance)
 	dist, _ := fs.Sub(web.Dist, "dist")
 	r.Handle("/", spaHandler(http.FS(dist)))
 	return s

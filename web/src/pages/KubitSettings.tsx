@@ -27,6 +27,26 @@ export function KubitSettings() {
           {dirty && <span class="text-[12px] text-warn">unsaved changes</span>}
         </div>
       </Section>
+      <Section title="Alert forwarding" help="Health events at or above the chosen severity (node unreachable, etcd unhealthy, stale backups, expiring credentials, …) are pushed as they happen. The webhook body is JSON with a top-level text field, so Slack, Discord, Teams and generic receivers all work; mail goes through SMTP with STARTTLS.">
+        <div class="panel p-4 grid grid-cols-1 md:grid-cols-2 gap-4">
+          <Field label="Minimum severity">
+            <select class="input" value={s.alerts.minSeverity} onChange={(e) => setS({ ...s, alerts: { ...s.alerts, minSeverity: (e.target as HTMLSelectElement).value as any } })}>
+              <option value="info">info (everything)</option><option value="warn">warn</option><option value="critical">critical only</option>
+            </select>
+          </Field>
+          <Field label="Webhook URL" hint="Empty = off."><input class="input mono" value={s.alerts.webhookUrl} placeholder="https://hooks.slack.com/services/…" onInput={(e) => setS({ ...s, alerts: { ...s.alerts, webhookUrl: (e.target as HTMLInputElement).value.trim() } })} /></Field>
+          <Field label="SMTP host" hint="Empty = off."><input class="input mono" value={s.alerts.smtp.host} placeholder="smtp.example.com" onInput={(e) => setS({ ...s, alerts: { ...s.alerts, smtp: { ...s.alerts.smtp, host: (e.target as HTMLInputElement).value.trim() } } })} /></Field>
+          <Field label="SMTP port"><input class="input num" type="number" value={s.alerts.smtp.port} onInput={(e) => setS({ ...s, alerts: { ...s.alerts, smtp: { ...s.alerts.smtp, port: Number((e.target as HTMLInputElement).value) } } })} /></Field>
+          <Field label="From"><input class="input mono" value={s.alerts.smtp.from} placeholder="kubit@example.com" onInput={(e) => setS({ ...s, alerts: { ...s.alerts, smtp: { ...s.alerts.smtp, from: (e.target as HTMLInputElement).value.trim() } } })} /></Field>
+          <Field label="To" hint="Comma-separated."><input class="input mono" value={s.alerts.smtp.to.join(', ')} onInput={(e) => setS({ ...s, alerts: { ...s.alerts, smtp: { ...s.alerts.smtp, to: (e.target as HTMLInputElement).value.split(/[,\s]+/).filter(Boolean) } } })} /></Field>
+          <Field label="Username" hint="Empty = no authentication."><input class="input mono" value={s.alerts.smtp.username} onInput={(e) => setS({ ...s, alerts: { ...s.alerts, smtp: { ...s.alerts.smtp, username: (e.target as HTMLInputElement).value } } })} /></Field>
+          <Field label="Password" hint="Stored sealed with the master key; shown masked."><input class="input mono" type="password" value={s.alerts.smtp.password} onInput={(e) => setS({ ...s, alerts: { ...s.alerts, smtp: { ...s.alerts.smtp, password: (e.target as HTMLInputElement).value } } })} /></Field>
+        </div>
+        <div class="flex gap-2 items-center">
+          <button class="btn btn-primary" disabled={!dirty} onClick={save}>Save</button>
+          <button class="btn" disabled={dirty} title={dirty ? 'Save first' : 'Send a test alert through the saved sinks'} onClick={() => api.testAlerts().then((r) => toast(r.ok ? 'Test alert delivered' : r.errors.join('; '), r.ok ? 'good' : 'error')).catch((e) => toast(e.message, 'error'))}>Send test alert</button>
+        </div>
+      </Section>
       <Section title="Backup" help="A sealed archive of ~/.kubit: the database (cluster secrets stay encrypted inside it), kubeconfigs, talosconfigs and the OpenTofu roots with their state. Binaries and the asset cache are excluded.">
         <Notice tone="muted">
           <div class="flex flex-col gap-2">

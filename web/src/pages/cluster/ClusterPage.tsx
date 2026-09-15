@@ -14,6 +14,7 @@ import { Placeholder } from './Placeholder'
 import { Workloads } from './Workloads'
 import { Network } from './Network'
 import { Storage } from './Storage'
+import { Backups } from './Backups'
 
 export interface ClusterCtx { name: string; cluster: ClusterRow; status: Status | null; refresh: () => void; error: string | null }
 
@@ -70,6 +71,7 @@ function renderSection(section: Section, sub: string | undefined, ctx: ClusterCt
     case 'workloads': return <Workloads ctx={ctx} />
     case 'network': return <Network ctx={ctx} />
     case 'storage': return <Storage ctx={ctx} />
+    case 'backups': return <Backups ctx={ctx} />
     default: return <Placeholder title="Not found" milestone="">Unknown section.</Placeholder>
   }
 }

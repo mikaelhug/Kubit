@@ -3,6 +3,7 @@ import { operations } from '../../store'
 import { DataTable, type Column } from '../../components/DataTable'
 import { Pill, Section, stateTone } from '../../components/ui'
 import { Stepper } from '../../components/Stepper'
+import { AuditLog } from '../../components/AuditLog'
 import type { ClusterCtx } from './ClusterPage'
 
 export function ClusterOperations({ ctx }: { ctx: ClusterCtx }) {
@@ -16,9 +17,12 @@ export function ClusterOperations({ ctx }: { ctx: ClusterCtx }) {
     { id: 'duration', header: 'Duration', align: 'right', cell: (o) => <span class="num">{fmt.duration(o.startedAt, o.finishedAt)}</span> },
   ]
   return (
-    <Section title="Operations" help="Everything Kubit has done to this cluster. Steps, logs and artefacts (such as plans) are kept.">
-      <DataTable id="cluster-ops" columns={columns} rows={rows} rowKey={(o) => String(o.id)} defaultSort={{ id: 'id', dir: 'desc' }} />
-    </Section>
+    <div class="flex flex-col gap-6">
+      <Section title="Operations" help="Everything Kubit has done to this cluster. Steps, logs and artefacts (such as plans) are kept.">
+        <DataTable id="cluster-ops" columns={columns} rows={rows} rowKey={(o) => String(o.id)} defaultSort={{ id: 'id', dir: 'desc' }} />
+      </Section>
+      <AuditLog cluster={ctx.name} />
+    </div>
   )
 }
 

@@ -60,8 +60,14 @@ func (m *Manager) UpgradeTalos(ctx context.Context, name, version string, sink S
 	}
 	imageFor := func(n config.Node) string { return m.Factory.InstallerImage(c.SchematicFor(c.PoolOf(n)), version) }
 	nodes := orderedNodes(c)
-	sink.plan(nodeSteps(nodes, "Upgrade")...)
-	sink.emit(Info, nodeStep(nodes[0]), "", "Talos %s → %s", c.Spec.TalosVersion, version)
+	sink.plan(append(upgradePrechecks, nodeSteps(nodes, "Upgrade")...)...)
+	sink.emit(Info, "precheck", "", "Talos %s → %s", c.Spec.TalosVersion, version)
+	if err := sink.run("precheck", func() error { return m.precheckUpgrade(ctx, c, kc, sec.Talosconfig, "talos", version, sink) }); err != nil {
+		return err
+	}
+	if err := sink.run("snapshot", func() error { return m.preUpgradeSnapshot(ctx, name, sink) }); err != nil {
+		return err
+	}
 	_ = m.Store.Audit(ctx, name, "upgrade.talos", version)
 
 	for _, n := range nodes {
@@ -132,10 +138,24 @@ func (m *Manager) UpgradeKubernetes(ctx context.Context, name, version string, s
 		return nil
 	}
 	prev := c.Spec.KubernetesVersion
-	c.Spec.KubernetesVersion = version
 	nodes := orderedNodes(c)
-	sink.plan(append(nodeSteps(nodes, "Apply"), Step{ID: "manifests", Title: "Sync bootstrap manifests (kube-proxy, CoreDNS, CNI)"})...)
-	sink.emit(Info, nodeStep(nodes[0]), "", "Kubernetes %s → %s", prev, version)
+	sink.plan(append(append(upgradePrechecks, nodeSteps(nodes, "Apply")...), Step{ID: "manifests", Title: "Sync bootstrap manifests (kube-proxy, CoreDNS, CNI)"})...)
+	sink.emit(Info, "precheck", "", "Kubernetes %s → %s", prev, version)
+	sec, err := m.Store.GetClusterSecrets(ctx, name)
+	if err != nil {
+		return err
+	}
+	kc, err := m.KubeClient(ctx, name)
+	if err != nil {
+		return err
+	}
+	if err := sink.run("precheck", func() error { return m.precheckUpgrade(ctx, c, kc, sec.Talosconfig, "kubernetes", version, sink) }); err != nil {
+		return err
+	}
+	if err := sink.run("snapshot", func() error { return m.preUpgradeSnapshot(ctx, name, sink) }); err != nil {
+		return err
+	}
+	c.Spec.KubernetesVersion = version
 	_ = m.Store.Audit(ctx, name, "upgrade.kubernetes", version)
 	if err := m.ApplyConfigs(ctx, c, version, sink); err != nil {
 		return err
