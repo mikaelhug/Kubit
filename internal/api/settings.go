@@ -37,6 +37,9 @@ func redactSettings(v store.Settings) store.Settings {
 	if v.Offsite.SecretKey != "" {
 		v.Offsite.SecretKey = "•••"
 	}
+	if v.AMT.Password != "" {
+		v.AMT.Password = "•••"
+	}
 	return v
 }
 
@@ -54,13 +57,16 @@ func (s *Server) handlePutSettings(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusUnprocessableEntity, map[string]string{"error": "watchIntervalSec must be at least 5"})
 		return
 	}
-	if v.Alerts.SMTP.Password == "•••" || v.Offsite.SecretKey == "•••" {
+	if v.Alerts.SMTP.Password == "•••" || v.Offsite.SecretKey == "•••" || v.AMT.Password == "•••" {
 		if cur, err := s.store.GetSettings(r.Context()); err == nil {
 			if v.Alerts.SMTP.Password == "•••" {
 				v.Alerts.SMTP.Password = cur.Alerts.SMTP.Password
 			}
 			if v.Offsite.SecretKey == "•••" {
 				v.Offsite.SecretKey = cur.Offsite.SecretKey
+			}
+			if v.AMT.Password == "•••" {
+				v.AMT.Password = cur.AMT.Password
 			}
 		}
 	}

@@ -7,10 +7,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/mikael/kubit/internal/oob"
 	"io"
 	"io/fs"
 	"net"
 	"net/http"
+	"net/netip"
 	"os"
 	"strconv"
 	"strings"
@@ -92,6 +94,8 @@ func New(version string, m *cluster.Manager, token string, crypto *store.Crypto)
 	s.machineRoutes()
 	s.etcdRoutes()
 	s.offsiteRoutes()
+	s.oobRoutes()
+	s.labhostRoutes()
 	s.certRoutes()
 	s.mux.HandleFunc("GET /api/v1/clusters/{name}/maintenance", s.handleMaintenance)
 	dist, _ := fs.Sub(web.Dist, "dist")
@@ -575,6 +579,27 @@ type nodeView struct {
 	Inventory *talos.Inventory `json:"inventory,omitempty"`
 }
 
+// machineView is the machine row as the console may see it: hardware decoded, the
+// out-of-band password masked.
+func machineView(row store.NodeRow) nodeView {
+	v := nodeView{NodeRow: row}
+	if len(row.Hardware) > 2 {
+		var inv talos.Inventory
+		if json.Unmarshal(row.Hardware, &inv) == nil {
+			v.Inventory = &inv
+		}
+	}
+	v.Hardware = nil
+	if v.OOB != nil {
+		c := *v.OOB
+		if c.Password != "" {
+			c.Password = "•••"
+		}
+		v.OOB = &c
+	}
+	return v
+}
+
 func (s *Server) handleNodes(w http.ResponseWriter, r *http.Request) {
 	rows, err := s.store.ListNodes(r.Context(), r.URL.Query().Get("cluster"))
 	if err != nil {
@@ -583,15 +608,7 @@ func (s *Server) handleNodes(w http.ResponseWriter, r *http.Request) {
 	}
 	out := []nodeView{}
 	for _, row := range rows {
-		v := nodeView{NodeRow: row}
-		if len(row.Hardware) > 2 {
-			var inv talos.Inventory
-			if json.Unmarshal(row.Hardware, &inv) == nil {
-				v.Inventory = &inv
-			}
-		}
-		v.Hardware = nil
-		out = append(out, v)
+		out = append(out, machineView(row))
 	}
 	writeJSON(w, http.StatusOK, out)
 }
@@ -610,7 +627,7 @@ func (s *Server) handleDiscover(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	id, err := s.runOperation("", "discover", req, func(ctx contextT, sink clusterSink) (any, error) {
-		sink(clusterEvent{Time: time.Now(), Kind: "steps", Level: cluster.Info, Steps: cluster.Steps("scan", fmt.Sprintf("Probe %d addresses on port 50000", len(addrs)), "record", "Record inventory")})
+		sink(clusterEvent{Time: time.Now(), Kind: "steps", Level: cluster.Info, Steps: cluster.Steps("scan", fmt.Sprintf("Probe %d addresses on port 50000", len(addrs)), "record", "Record inventory", "amt", "Probe the rest for Intel AMT")})
 		sink(clusterEvent{Time: time.Now(), Kind: "step", Step: "scan", Status: cluster.StepRunning})
 		results := talos.Scan(ctx, addrs, 64, 2*time.Second)
 		if ctx.Err() != nil {
@@ -629,12 +646,7 @@ func (s *Server) handleDiscover(w http.ResponseWriter, r *http.Request) {
 				sink(clusterEvent{Time: time.Now(), Kind: "log", Level: cluster.Info, Step: "record", Node: res.IP, Message: "VIP of cluster " + name + ", skipped"})
 				continue
 			}
-			row := store.NodeRow{IP: res.IP, Source: "scan", State: string(res.State)}
-			if inv := res.Inventory; inv != nil {
-				row.MAC, row.Arch, row.TalosVersion = inv.PrimaryMAC(), inv.Arch, inv.TalosVersion
-				row.UUID, row.Serial = inv.UUID, inv.Serial
-				row.Hardware, _ = json.Marshal(inv)
-			}
+			row := rowFromScan(res)
 			if err := s.store.UpsertNode(ctx, row); err != nil {
 				return nil, err
 			}
@@ -642,7 +654,8 @@ func (s *Server) handleDiscover(w http.ResponseWriter, r *http.Request) {
 			sink(clusterEvent{Time: time.Now(), Kind: "log", Level: cluster.Info, Step: "record", Node: res.IP, Message: string(res.State)})
 		}
 		sink(clusterEvent{Time: time.Now(), Kind: "log", Level: cluster.Done, Step: "record", Message: fmt.Sprintf("%d Talos nodes found", found)})
-		return map[string]int{"found": found}, nil
+		amtFound := s.discoverAMT(ctx, addrs, results, sink)
+		return map[string]int{"found": found, "amt": amtFound}, nil
 	})
 	if err != nil {
 		writeErr(w, err)
@@ -885,4 +898,72 @@ func spaHandler(root http.FileSystem) http.Handler {
 		r.URL.Path = "/"
 		files.ServeHTTP(w, r)
 	})
+}
+
+// rowFromScan is the machine row a Talos probe result produces.
+func rowFromScan(res talos.ScanResult) store.NodeRow {
+	row := store.NodeRow{IP: res.IP, Source: "scan", State: string(res.State)}
+	if inv := res.Inventory; inv != nil {
+		row.MAC, row.Arch, row.TalosVersion = inv.PrimaryMAC(), inv.Arch, inv.TalosVersion
+		row.UUID, row.Serial = inv.UUID, inv.Serial
+		row.Hardware, _ = json.Marshal(inv)
+	}
+	return row
+}
+
+// discoverAMT sweeps the addresses that did not answer as Talos for the AMT port and
+// records what it finds as machines: with the default credentials from settings the
+// engine tells MAC, model and power state; without them the ARP table supplies the
+// MAC and the operator adds credentials on the machine page.
+func (s *Server) discoverAMT(ctx contextT, addrs []netip.Addr, talosResults []talos.ScanResult, sink clusterSink) int {
+	sink(clusterEvent{Time: time.Now(), Kind: "step", Step: "amt", Status: cluster.StepRunning})
+	isTalos := map[string]bool{}
+	for _, r := range talosResults {
+		if r.Err == nil {
+			isTalos[r.IP] = true
+		}
+	}
+	var rest []netip.Addr
+	for _, a := range addrs {
+		if !isTalos[a.String()] {
+			rest = append(rest, a)
+		}
+	}
+	v, _ := s.store.GetSettings(ctx)
+	found := 0
+	for _, r := range oob.Scan(ctx, rest, v.AMT, 2*time.Second) {
+		if r.MAC == "" {
+			sink(clusterEvent{Time: time.Now(), Kind: "log", Level: cluster.Warn, Step: "amt", Node: r.IP, Message: "answers on 16992 but its MAC is unknown (not on this segment?); add it via its address on the Inventory page"})
+			continue
+		}
+		row := store.NodeRow{IP: r.IP, MAC: r.MAC, Source: "amt", State: "amt"}
+		if existing, err := s.store.GetMachine(ctx, r.MAC); err == nil && existing.State != "" && existing.State != "amt" {
+			row.State = existing.State // a known machine that is simply off/in another OS right now
+		}
+		if r.Info != nil {
+			row.Serial = r.Info.Serial
+			if r.Info.Model != "" {
+				row.Hardware, _ = json.Marshal(map[string]any{"manufacturer": r.Info.Manufacturer, "product": r.Info.Model, "serial": r.Info.Serial, "disks": []any{}, "links": []any{}})
+			}
+		}
+		if err := s.store.UpsertNode(ctx, row); err != nil {
+			continue
+		}
+		if r.Info != nil {
+			c := v.AMT
+			c.Type, c.Host = "amt", r.IP
+			_ = s.store.SetMachineOOB(ctx, r.MAC, &c)
+			sink(clusterEvent{Time: time.Now(), Kind: "log", Level: cluster.Info, Step: "amt", Node: r.IP, Message: fmt.Sprintf("Intel AMT %s, %s, power %s", r.Info.Version, strings.TrimSpace(r.Info.Manufacturer+" "+r.Info.Model), r.Info.Power)})
+		} else if r.Err != nil {
+			sink(clusterEvent{Time: time.Now(), Kind: "log", Level: cluster.Warn, Step: "amt", Node: r.IP, Message: "Intel AMT answers but the default credentials were refused: " + r.Err.Error()})
+		} else {
+			sink(clusterEvent{Time: time.Now(), Kind: "log", Level: cluster.Info, Step: "amt", Node: r.IP, Message: "Intel AMT answers; set default AMT credentials under Kubit settings to identify it"})
+		}
+		found++
+	}
+	sink(clusterEvent{Time: time.Now(), Kind: "step", Step: "amt", Status: cluster.StepDone})
+	if found > 0 {
+		sink(clusterEvent{Time: time.Now(), Kind: "log", Level: cluster.Done, Step: "amt", Message: fmt.Sprintf("%d machine(s) reachable via Intel AMT", found)})
+	}
+	return found
 }

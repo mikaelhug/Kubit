@@ -295,6 +295,15 @@ func (m *Manager) installOne(ctx context.Context, n config.Node, cfg []byte, tal
 	} else {
 		sink.emit(Info, "install", n.Hostname, "config applied, installing to disk and rebooting")
 	}
+	// A lab VM boots Talos from RAM until now; from the install reboot on it must
+	// boot its disk.
+	if n.MAC != "" {
+		if err := m.labDiskBoot(ctx, storeMachineRef{MAC: n.MAC}); err != nil {
+			sink.emit(Warn, "install", n.Hostname, "lab VM: could not switch to disk boot: %v", err)
+		} else if vm, err := m.Store.GetMachine(ctx, n.MAC); err == nil && vm.Host != "" {
+			sink.emit(Info, "install", n.Hostname, "lab VM switched to boot from disk")
+		}
+	}
 	if err := talos.WaitForReboot(ctx, target, talosconfig, bootID, m.Timeouts.Install); err != nil {
 		return err
 	}

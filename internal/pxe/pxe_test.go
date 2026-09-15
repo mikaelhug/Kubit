@@ -132,3 +132,25 @@ func TestBootScript(t *testing.T) {
 		t.Errorf("only kernel/initramfs may be proxied, got %d", res.StatusCode)
 	}
 }
+
+func TestMembersGetNoOffer(t *testing.T) {
+	c := Config{IP: net.IPv4(10, 0, 0, 2), HTTPPort: 8069, Log: log.New(io.Discard, "", 0), Decide: func(mac string) string {
+		if mac == "52:54:00:4b:49:01" {
+			return "local"
+		}
+		return ""
+	}}
+	m := discover(t, dhcpv4.WithOption(dhcpv4.OptClassIdentifier("PXEClient:Arch:00007:UNDI:003016")), dhcpv4.WithOption(dhcpv4.OptClientArch(iana.EFI_X86_64)))
+	m.ClientHWAddr = net.HardwareAddr{0x52, 0x54, 0x00, 0x4b, 0x49, 0x01}
+	conn := &fakeConn{}
+	c.handle(conn, &net.UDPAddr{IP: net.IPv4zero, Port: 68}, m)
+	if conn.sent != nil {
+		t.Fatal("a cluster member must not be offered a boot file")
+	}
+	m.ClientHWAddr = net.HardwareAddr{0x52, 0x54, 0x00, 0x4b, 0x49, 0x02}
+	conn = &fakeConn{}
+	c.handle(conn, &net.UDPAddr{IP: net.IPv4zero, Port: 68}, m)
+	if conn.sent == nil {
+		t.Fatal("an unknown machine (daemon undecided) must still be offered Talos")
+	}
+}

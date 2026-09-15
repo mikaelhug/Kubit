@@ -48,7 +48,7 @@ export function ActivityDrawer() {
   return (
     <div class="fixed left-56 right-0 bottom-0 z-30 flex flex-col bg-panel border-t border-border shadow-[0_-8px_24px_rgba(0,0,0,0.25)]" style={{ height }}>
       <div class="h-1.5 cursor-row-resize hover:bg-accent/40" onMouseDown={() => { dragging.current = true }} title="Drag to resize" />
-      <div class="flex items-center gap-1 px-2 border-b border-border overflow-x-auto">
+      <div class="flex items-center gap-1 px-2 border-b border-border scroll-x">
         <span class="label px-2">Activity</span>
         {tabs.map((t) => (
           <button key={t.id} class={`px-3 py-1.5 text-[13px] whitespace-nowrap border-b-2 -mb-px flex items-center gap-2 ${t.id === active ? 'border-accent text-text' : 'border-transparent text-muted hover:text-text'}`} onClick={() => { drawerTab.value = t.id }}>

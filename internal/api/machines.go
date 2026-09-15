@@ -32,15 +32,7 @@ func (s *Server) handleMachine(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, err)
 		return
 	}
-	v := nodeView{NodeRow: *m}
-	if len(m.Hardware) > 2 {
-		var inv talos.Inventory
-		if json.Unmarshal(m.Hardware, &inv) == nil {
-			v.Inventory = &inv
-		}
-	}
-	v.Hardware = nil
-	writeJSON(w, http.StatusOK, v)
+	writeJSON(w, http.StatusOK, machineView(*m))
 }
 
 // handleMachineRetire forgets a machine; cluster members must be removed first.
@@ -196,7 +188,7 @@ func (s *Server) designMachines(r *http.Request, macs []string) ([]config.Machin
 		}
 		var inv talos.Inventory
 		_ = json.Unmarshal(m.Hardware, &inv)
-		cm := config.Machine{IP: m.IP, MAC: m.MAC, UUID: m.UUID, Arch: config.Arch(m.Arch), CPUs: inv.CPUs, MemBytes: inv.MemoryBytes, KVM: inv.KVM, Virtual: inv.Virtual || talos.IsVirtual(inv.Manufacturer, inv.Product), Model: strings.TrimSpace(inv.Manufacturer + " " + inv.Product)}
+		cm := config.Machine{IP: m.IP, MAC: m.MAC, UUID: m.UUID, Arch: config.Arch(m.Arch), CPUs: inv.CPUs, MemBytes: inv.MemoryBytes, KVM: inv.KVM, Virtual: inv.Virtual || talos.IsVirtual(inv.Manufacturer, inv.Product), Host: m.Host, Model: strings.TrimSpace(inv.Manufacturer + " " + inv.Product)}
 		if cm.Arch == "" {
 			cm.Arch = config.ArchAMD64
 		}

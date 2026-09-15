@@ -29,6 +29,13 @@ type Config struct {
 	// onDHCP and onLog feed the status tracker when set.
 	onDHCP func(mac, arch string)
 	onLog  func(line string)
+	// Decide asks the daemon what a MAC should boot: "talos" (maintenance mode),
+	// "local" (its own disk — cluster members), or "" when the daemon is unreachable,
+	// which is treated as talos so onboarding works without it.
+	Decide func(mac string) string
+	// KubitURL/KubitToken let the HTTP side fetch per-machine files (lab-host
+	// preseeds) from the daemon on behalf of the installer.
+	KubitURL, KubitToken string
 	// Interface to answer on; its IPv4 address becomes next-server and the HTTP host.
 	Interface string
 	IP        net.IP
@@ -77,6 +84,14 @@ func (c Config) handle(conn net.PacketConn, peer net.Addr, m *dhcpv4.DHCPv4) {
 	}
 	pxeClient := strings.HasPrefix(m.ClassIdentifier(), "PXEClient")
 	if !pxeClient && !isIPXE(m) {
+		return
+	}
+	if c.decide(m.ClientHWAddr.String()) == "local" {
+		// No offer at all: the firmware moves on to its disk without loading iPXE.
+		c.Log.Printf("pxe: %s is a cluster member; letting it boot locally", m.ClientHWAddr)
+		if c.onLog != nil {
+			c.onLog(fmt.Sprintf("%s is a cluster member: no offer, boots from disk", m.ClientHWAddr))
+		}
 		return
 	}
 	var (
@@ -144,6 +159,16 @@ func (c Config) handle(conn net.PacketConn, peer net.Addr, m *dhcpv4.DHCPv4) {
 	if c.onLog != nil {
 		c.onLog(fmt.Sprintf("%s (%v) offered %s", m.ClientHWAddr, m.ClientArch(), file))
 	}
+}
+
+func (c Config) decide(mac string) string {
+	if c.Decide == nil {
+		return "talos"
+	}
+	if d := c.Decide(strings.ToLower(mac)); d != "" {
+		return d
+	}
+	return "talos"
 }
 
 // listenShared binds a UDP port with SO_REUSEADDR/SO_REUSEPORT so the proxy can sit on

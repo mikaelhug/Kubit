@@ -3,9 +3,11 @@ package pxe
 import (
 	"context"
 	"fmt"
+	"github.com/mikael/kubit/internal/labhost"
 	"io"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"strings"
 	"time"
@@ -103,12 +105,29 @@ func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /status.json", s.statusHandler)
 	mux.HandleFunc("GET /boot.ipxe", func(w http.ResponseWriter, r *http.Request) {
-		// iPXE substitutes ${buildarch} before requesting; a bare hit gets a chain that
-		// fills it in.
+		// iPXE substitutes ${buildarch} and ${net0/mac} before requesting; a bare hit
+		// gets a chain that fills them in.
 		arch := archFromIPXE(r.URL.Query().Get("arch"))
 		w.Header().Set("Content-Type", "text/plain")
 		if arch == "" {
-			fmt.Fprintf(w, "#!ipxe\nchain %s?arch=${buildarch}\n", s.ScriptURL())
+			fmt.Fprintf(w, "#!ipxe\nchain %s?arch=${buildarch}&mac=${net0/mac}\n", s.ScriptURL())
+			return
+		}
+		mac := r.URL.Query().Get("mac")
+		if mac != "" && s.Config.decide(mac) == "debian" {
+			// Lab host: the Debian installer with Kubit's preseed, no Talos.
+			base := fmt.Sprintf("http://%s:%d", s.IP, s.HTTPPort)
+			args := labhost.KernelArgs(fmt.Sprintf("%s/labhost/%s/preseed", base, mac), "")
+			fmt.Fprintf(w, "#!ipxe\nkernel %s/assets/debian/%s/linux %s\ninitrd %s/assets/debian/%s/initrd.gz\nboot\n", base, arch, args, base, arch)
+			s.track.http(hostOf(r.RemoteAddr), arch, "debian")
+			s.track.logf(fmt.Sprintf("%s (%s) fetched the Debian installer script (lab host)", hostOf(r.RemoteAddr), mac))
+			return
+		}
+		if mac != "" && s.Config.decide(mac) == "local" {
+			// Second line of defence (the DHCP layer normally never offered): exit
+			// iPXE so the firmware continues with the next boot device.
+			fmt.Fprint(w, "#!ipxe\necho Kubit: this machine is a cluster member, booting from disk\nexit\n")
+			s.track.logf(fmt.Sprintf("%s (%s) is a cluster member; iPXE exits to local boot", hostOf(r.RemoteAddr), mac))
 			return
 		}
 		base := fmt.Sprintf("http://%s:%d/assets/%s/%s", s.IP, s.HTTPPort, s.Profile.SchematicID, s.Profile.TalosVersion)
@@ -118,6 +137,45 @@ func (s *Server) Handler() http.Handler {
 		s.Log.Printf("http: boot script for %s (%s)", r.RemoteAddr, arch)
 		s.track.http(hostOf(r.RemoteAddr), arch, "ipxe")
 		s.track.logf(fmt.Sprintf("iPXE on %s fetched the %s boot script", hostOf(r.RemoteAddr), arch))
+	})
+	mux.HandleFunc("GET /assets/debian/{arch}/{file}", func(w http.ResponseWriter, r *http.Request) {
+		arch, file := r.PathValue("arch"), r.PathValue("file")
+		if file != "linux" && file != "initrd.gz" {
+			http.NotFound(w, r)
+			return
+		}
+		path, err := s.Cache.Path(r.Context(), labhost.NetbootURL(arch, file))
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadGateway)
+			return
+		}
+		s.track.logf(fmt.Sprintf("%s downloading Debian %s %s", hostOf(r.RemoteAddr), arch, file))
+		http.ServeFile(w, r, path)
+	})
+	// The installer fetches its preseed and post-install script through this proxy;
+	// only the pxe process holds the daemon's token.
+	mux.HandleFunc("GET /labhost/{mac}/{file}", func(w http.ResponseWriter, r *http.Request) {
+		mac, file := r.PathValue("mac"), r.PathValue("file")
+		if s.KubitURL == "" || (file != "preseed" && file != "postinstall") {
+			http.NotFound(w, r)
+			return
+		}
+		base := fmt.Sprintf("http://%s:%d", s.IP, s.HTTPPort)
+		u := fmt.Sprintf("%s/api/v1/labhost/%s?mac=%s&post=%s/labhost/%s/postinstall", strings.TrimRight(s.KubitURL, "/"), file, url.QueryEscape(mac), base, mac)
+		req, _ := http.NewRequestWithContext(r.Context(), "GET", u, nil)
+		if s.KubitToken != "" {
+			req.Header.Set("Authorization", "Bearer "+s.KubitToken)
+		}
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadGateway)
+			return
+		}
+		defer resp.Body.Close()
+		w.Header().Set("Content-Type", "text/plain")
+		w.WriteHeader(resp.StatusCode)
+		_, _ = io.Copy(w, resp.Body)
+		s.track.logf(fmt.Sprintf("%s fetched %s for %s", hostOf(r.RemoteAddr), file, mac))
 	})
 	mux.HandleFunc("GET /assets/{schematic}/{version}/{file}", func(w http.ResponseWriter, r *http.Request) {
 		schematic, version, file := r.PathValue("schematic"), r.PathValue("version"), r.PathValue("file")

@@ -20,6 +20,8 @@ type Machine struct {
 	// Virtual: a VM. Several VMs usually share one host, so control planes prefer
 	// bare metal.
 	Virtual bool `json:"virtual"`
+	// Host names the lab host a VM runs on ("" for anything else).
+	Host string `json:"host,omitempty"`
 	// Disks are install candidates, largest first (dev path and size).
 	Disks []MachineDisk `json:"disks"`
 	Model string        `json:"model,omitempty"`
@@ -146,13 +148,19 @@ func Lint(c *Cluster, machines []Machine) []Warning {
 		byMAC[strings.ToLower(m.MAC)] = m
 	}
 	virtualCPs := 0
+	hosts := map[string]bool{}
 	for _, n := range c.ControlPlanes() {
 		if m, ok := byMAC[strings.ToLower(n.MAC)]; ok && m.Virtual {
 			virtualCPs++
+			hosts[m.Host] = true
 		}
 	}
 	if virtualCPs >= 2 {
-		warn("warn", "control-planes-on-vms", "", "%d control planes are virtual machines; if they share a hypervisor, one host failure takes etcd quorum with it. Spread them over hosts or use bare metal.", virtualCPs)
+		if len(hosts) == 1 && !hosts[""] {
+			warn("info", "lab-cluster", "", "All control planes are VMs on one lab host: a lab, not HA — the host is a single failure domain.")
+		} else {
+			warn("warn", "control-planes-on-vms", "", "%d control planes are virtual machines; if they share a hypervisor, one host failure takes etcd quorum with it. Spread them over hosts or use bare metal.", virtualCPs)
+		}
 	}
 	var subnet netip.Prefix
 	for _, n := range c.Spec.Nodes {

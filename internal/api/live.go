@@ -42,7 +42,8 @@ func (s *Server) onChange(ctx context.Context, c store.Change) {
 			// A whole-cluster release (forget): push every affected row.
 			if rows, err := s.store.ListNodes(ctx, ""); err == nil {
 				for i := range rows {
-					s.hub.publish(Message{Kind: "machine", Cluster: rows[i].Cluster, Machine: &rows[i]})
+					v := machineView(rows[i])
+					s.hub.publish(Message{Kind: "machine", Cluster: rows[i].Cluster, Machine: &v})
 				}
 			}
 			return
@@ -52,7 +53,8 @@ func (s *Server) onChange(ctx context.Context, c store.Change) {
 			m, err = s.store.GetNode(ctx, c.Key)
 		}
 		if err == nil {
-			s.hub.publish(Message{Kind: "machine", Cluster: m.Cluster, Machine: m})
+			v := machineView(*m)
+			s.hub.publish(Message{Kind: "machine", Cluster: m.Cluster, Machine: &v})
 		}
 	case "snapshots":
 		id, _ := strconv.ParseInt(c.Key, 10, 64)

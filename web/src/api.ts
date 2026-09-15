@@ -27,7 +27,7 @@ export interface AddonStatus {
 export interface AlertSettings { minSeverity: 'info' | 'warn' | 'critical'; webhookUrl: string; smtp: { host: string; port: number; from: string; to: string[]; username: string; password: string; startTLS: boolean; tls?: 'starttls' | 'tls' | 'none' }; ignoreNamespaces: string[]; heartbeatHours: number }
 export interface OffsiteTarget { type: '' | 'dir' | 's3'; prefix: string; dir: string; endpoint: string; bucket: string; region: string; accessKey: string; secretKey: string; insecure: boolean; pathStyle: boolean; keepBackups: number }
 export interface OffsiteStatus { target: string; enabled: boolean; lastBackup?: string; backups: number; snapshots: number; bytes: number; error?: string }
-export interface Settings { factoryUrl: string; discoverySubnets: string[]; watchIntervalSec: number; pxeStatusUrl: string; defaultMetalLBRange: string; alerts: AlertSettings; offsite: OffsiteTarget }
+export interface Settings { factoryUrl: string; discoverySubnets: string[]; watchIntervalSec: number; pxeStatusUrl: string; defaultMetalLBRange: string; alerts: AlertSettings; offsite: OffsiteTarget; pxeEnrollment: 'open' | 'closed'; amt: OOBConfig }
 export interface PxeStatus { running: boolean; statusUrl: string; error?: string; command?: string; startedAt?: string; interface?: string; ip?: string; httpPort?: number; talosVersion?: string; schematicId?: string; boots?: { mac: string; ip?: string; arch?: string; firstSeen: string; lastSeen: string; stage: string; count: number }[]; log?: string[] }
 export interface Versions { talos: string[]; talosSource: string; kubernetesMinors: string[]; kubernetesLatest: string; machinery: string; minTalos: string; note: string }
 
@@ -80,7 +80,12 @@ export interface NodeDetail {
   conditions: { type: string; status: string; reason?: string; message?: string; since?: string }[]
   taints: string[] | null; labels: Record<string, string>; capacity: Resources; allocatable: Resources; requests: Resources; pods: PodSummary[] | null
 }
-export interface NodeRow { ip: string; mac: string; uuid?: string; serial?: string; ipsSeen?: string[]; cluster: string; hostname: string; pool: string; arch: string; role: string; source: string; state: string; talosVersion: string; wol: boolean; firstSeen: string; lastSeen: string; inventory?: Inventory }
+export interface OOBConfig { type: '' | 'amt'; host: string; user: string; password: string; tls: boolean }
+export interface OOBInfo { version: string; mac: string; manufacturer?: string; model?: string; serial?: string; power: string }
+export interface LabVM { name: string; mac: string; state: string; cpus: number; memMiB: number; diskGiB: number; boot: 'talos' | 'disk'; ip?: string }
+export interface LabCapacity { cpus: number; memMiB: number; diskGiB: number; kvm: boolean; kernel: string; libvirt: string; hostname: string; arch: string; bridge: string; ready: boolean; checkedAt: string }
+export interface LabHost { state: 'installing' | 'setup' | 'ready' | 'error'; error?: string; capacity: LabCapacity; talos?: string; vms: LabVM[]; updatedAt: string }
+export interface NodeRow { ip: string; mac: string; uuid?: string; serial?: string; ipsSeen?: string[]; cluster: string; hostname: string; pool: string; arch: string; role: string; source: string; state: string; talosVersion: string; wol: boolean; oob?: OOBConfig; oobType?: string; provision?: boolean; provisionKind?: string; labhost?: LabHost; host?: string; firstSeen: string; lastSeen: string; inventory?: Inventory }
 
 export interface NodeStatus { hostname: string; ip: string; role: string; pool: string; seenAt?: string; arch: string; kvm: boolean; talosVersion: string; kubeletVersion: string; ready: boolean; unschedulable: boolean; talosReachable: boolean; talosError?: string; registered: boolean; stage: string; cpuMilli: number; cpuCapMilli: number; memBytes: number; memCapBytes: number; pods: number; podCap: number; gvisor: boolean }
 export interface Status {
@@ -139,6 +144,16 @@ export const api = {
   retireMachine: (mac: string) => req<void>('DELETE', `/machines/${mac}`),
   setWOL: (mac: string, enabled: boolean) => req<void>('PUT', `/machines/${mac}/wol`, { enabled }),
   wake: (mac: string) => req<void>('POST', `/machines/${mac}/wake`),
+  saveOOB: (mac: string, c: OOBConfig) => req<void>('PUT', `/machines/${mac}/oob`, c),
+  oobTest: (mac: string, c?: OOBConfig) => req<{ ok: boolean; error?: string; info?: OOBInfo }>('POST', `/machines/${mac}/oob/test`, c ?? {}),
+  power: (mac: string, action: 'on' | 'off' | 'reset' | 'cycle' | 'pxe') => req<OpRef>('POST', `/machines/${mac}/power`, { action }),
+  addOOBMachine: (c: OOBConfig) => req<{ machine: NodeRow; info: OOBInfo }>('POST', '/machines/oob', c),
+  labProvision: (mac: string) => req<OpRef>('POST', `/machines/${mac}/labhost`),
+  labRelease: (mac: string) => req<void>('DELETE', `/machines/${mac}/labhost`),
+  labAddVMs: (mac: string, r: { count: number; cpus: number; memMiB: number; diskGiB: number; prefix?: string }) => req<OpRef>('POST', `/machines/${mac}/labhost/vms`, r),
+  labVM: (mac: string, name: string, action: 'start' | 'stop' | 'kill' | 'reprovision') => req<OpRef>('POST', `/machines/${mac}/labhost/vms/${name}/${action}`),
+  labVMResize: (mac: string, name: string, cpus: number, memMiB: number) => req<void>('PUT', `/machines/${mac}/labhost/vms/${name}`, { cpus, memMiB }),
+  labVMDelete: (mac: string, name: string) => req<void>('DELETE', `/machines/${mac}/labhost/vms/${name}`),
   design: (name: string, macs: string[], metallbRange?: string) => req<{ yaml: string; cluster: ClusterSpec; warnings: Warning[]; topology: { ControlPlanes: number; Workers: number; AllowScheduling: boolean; HA: boolean }; overlaps?: string[] }>('POST', '/config/design', { name, macs, metallbRange }),
   lint: (yaml: string) => req<{ warnings: Warning[]; yaml: string }>('POST', '/config/lint', { yaml }),
   renameNode: (cluster: string, hostname: string, to: string) => req<OpRef>('POST', `/clusters/${cluster}/nodes/${hostname}/rename?ignoreWindow=true`, { to }),
@@ -262,7 +277,7 @@ export const fmt = {
       'cluster.create': 'Create cluster', 'cluster.apply': 'Apply cluster.yaml', 'platform.plan': 'Plan add-ons', 'platform.apply': 'Apply add-ons',
       'upgrade.talos': 'Upgrade Talos', 'upgrade.kubernetes': 'Upgrade Kubernetes', 'node.add': 'Add node', 'node.remove': 'Remove node', discover: 'Discover nodes',
       'node.cordon': 'Cordon node', 'node.uncordon': 'Uncordon node', 'node.drain': 'Drain node', 'node.reboot': 'Reboot node', 'node.upgrade': 'Upgrade node',
-      'node.rename': 'Rename node', 'node.pool': 'Move node to pool', 'node.readdress': 'Re-address node',
+      'node.rename': 'Rename node', 'node.pool': 'Move node to pool', 'node.readdress': 'Re-address node', 'machine.power': 'Remote power action', 'kubit.backup': 'Kubit backup off-site', 'labhost.provision': 'Install lab host', 'labhost.vms': 'Add lab VMs', 'labhost.vm.start': 'Start VM', 'labhost.vm.stop': 'Stop VM', 'labhost.vm.kill': 'Force-stop VM', 'labhost.vm.reprovision': 'Re-provision VM',
       'etcd.snapshot': 'etcd snapshot', 'etcd.restore': 'Restore etcd from snapshot', 'cert.rotate': 'Rotate credential',
     } as Record<string, string>)[kind] || kind
   },

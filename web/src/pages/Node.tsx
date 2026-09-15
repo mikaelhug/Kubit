@@ -3,11 +3,13 @@ import { api, fmt, logsUrl, type ClusterRow, type Inventory, type NodeDetail, ty
 import { useLocation } from 'preact-iso'
 import { clusters, connected, machineList, machines, operations, refreshKey, resyncing, statuses, toast, watch } from '../store'
 import { ReaddressDialog } from './cluster/Nodes'
+import { RemoteManagement } from '../components/RemoteManagement'
+import { LabHostPanel, MakeLabHostDialog } from '../components/LabHost'
 import { Tabs } from '../components/Tabs'
 import { DataTable, type Column } from '../components/DataTable'
 import { Breadcrumbs, ConfirmDialog, Dialog, ErrorBox, Field, KeyValue, MaintenanceNotice, Meter, Notice, Pill, Section, StatusDot, stateTone } from '../components/ui'
 
-type TabId = 'overview' | 'hardware' | 'kubernetes' | 'services' | 'logs' | 'actions'
+type TabId = 'overview' | 'hardware' | 'kubernetes' | 'services' | 'logs' | 'actions' | 'labhost'
 
 /** One machine: what Talos says, what Kubernetes says, and what can be done to it. */
 export function NodePage({ ip: ipParam, mac }: { ip?: string; mac?: string }) {
@@ -17,7 +19,7 @@ export function NodePage({ ip: ipParam, mac }: { ip?: string; mac?: string }) {
   const [invErr, setInvErr] = useState<string | null>(null)
   const [k8s, setK8s] = useState<NodeDetail | null>(null)
   const [k8sErr, setK8sErr] = useState<string | null>(null)
-  const [tab, setTab] = useState<TabId>(() => (typeof location !== 'undefined' && location.hash === '#actions' ? 'actions' : 'overview'))
+  const [tab, setTab] = useState<TabId>(() => (typeof location !== 'undefined' && (location.hash === '#actions' || location.hash === '#oob') ? 'actions' : location.hash === '#labhost' ? 'labhost' : 'overview'))
   const [error, setError] = useState<string | null>(null)
   const finished = [...operations.value.values()].filter((o) => o.status !== 'running').length
 
@@ -58,6 +60,7 @@ export function NodePage({ ip: ipParam, mac }: { ip?: string; mac?: string }) {
         <Tabs active={tab} onSelect={(t) => setTab(t as TabId)} tabs={[
           { id: 'overview', label: 'Overview' }, { id: 'hardware', label: 'Hardware' }, { id: 'kubernetes', label: 'Kubernetes', badge: k8s?.pods?.length },
           { id: 'services', label: 'Services' }, { id: 'logs', label: 'Logs' }, { id: 'actions', label: 'Actions' },
+          ...(node?.labhost ? [{ id: 'labhost', label: 'Lab host', badge: node.labhost.vms.length }] : []),
         ]} />
       </header>
       <div class="p-6 flex flex-col gap-5 max-w-[1300px]">
@@ -67,6 +70,7 @@ export function NodePage({ ip: ipParam, mac }: { ip?: string; mac?: string }) {
         {tab === 'kubernetes' && <KubernetesTab k8s={k8s} err={k8sErr} />}
         {tab === 'services' && <ServicesTab ip={ip} cluster={node?.cluster} />}
         {tab === 'logs' && <LogsTab ip={ip} />}
+        {tab === 'labhost' && node?.labhost && <LabHostPanel host={node} />}
         {tab === 'actions' && <ActionsTab node={node} k8s={k8s} inv={inv} cluster={cluster} spec={spec} talosVersion={cluster?.spec.spec.talosVersion} />}
       </div>
     </div>
@@ -295,6 +299,7 @@ function ActionsTab({ node, k8s, inv, cluster, spec, talosVersion }: { node: Nod
       <Action title="Move to another pool" what={pools.length ? `Same-role pools: ${pools.map((p) => p.name).join(', ')}. Labels and taints follow the pool; a different extension set means a re-image.` : `No other ${cp ? 'control-plane' : 'worker'} pool exists. Add one under Settings → Pools.`} button="Move…" disabled={!inv || pools.length === 0} onClick={() => { setPool(pools[0]?.name ?? ''); setConfirm('pool') }} />
       <Action title="Update address" what={spec?.network ? `Static ${spec.network.addresses.join(', ')}${spec.network.vlan ? ` on VLAN ${spec.network.vlan}` : ''}. Change it or go back to DHCP.` : `DHCP; declared ${node.ip}${status?.seenAt && status.seenAt !== node.ip ? `, last seen at ${status.seenAt}` : ''}. Record a new lease or pin a static address.`} button="Update…" disabled={!inv} onClick={() => setConfirm('readdress')} />
       <Action title="Remove from cluster" what={`Drain, delete the Node object, and reset Talos to maintenance mode. ${cp ? 'etcd membership is reduced by one.' : ''}`} button="Remove…" href={`/clusters/${name}/nodes`} />
+      <RemoteManagement node={node} />
       {confirm === 'drain' && <ConfirmDialog title={`Drain ${host}`} action="Drain" cluster={name} onClose={() => setConfirm(null)} onConfirm={() => run(api.drain(name, host))}
         impact={<ul class="list-disc pl-5"><li>Cordons the node.</li><li>Evicts {pods} pod{pods === 1 ? '' : 's'}; controllers reschedule them on other nodes.</li><li>Waits up to 5 minutes; PodDisruptionBudgets are respected.</li></ul>} />}
       {(confirm === 'reboot' || confirm === 'reboot-drain') && <ConfirmDialog title={`Reboot ${host}`} action={confirm === 'reboot-drain' ? 'Drain and reboot' : 'Reboot'} tone="danger" cluster={name} onClose={() => setConfirm(null)} onConfirm={() => run(api.rebootNode(name, host, confirm === 'reboot-drain'))}
@@ -337,6 +342,7 @@ function ActionsTab({ node, k8s, inv, cluster, spec, talosVersion }: { node: Nod
 function MachineActions({ node }: { node: NodeRow | null }) {
   const { route } = useLocation()
   const [retire, setRetire] = useState(false)
+  const [lab, setLab] = useState(false)
   if (!node) return <Notice tone="muted">Loading…</Notice>
   const ready = clusters.value.filter((c) => c.state === 'ready' || c.state === 'bootstrapped')
   const refresh = () => Promise.resolve() // the machine row arrives over the live connection
@@ -345,6 +351,9 @@ function MachineActions({ node }: { node: NodeRow | null }) {
       <Notice tone="muted">This machine is not a cluster member.</Notice>
       <Action title="Adopt into a cluster" what={ready.length ? `Join ${ready.map((c) => c.name).join(', ')} as a new node.` : 'No ready cluster yet; create one with this machine.'} button={ready.length ? 'Adopt…' : 'New cluster'} disabled={node.state !== 'maintenance'}
         onClick={() => { if (!ready.length) { route('/clusters/new'); return } const t = ready.length === 1 ? ready[0].name : prompt(`Adopt into which cluster? (${ready.map((c) => c.name).join(', ')})`, ready[0].name); if (t && ready.find((c) => c.name === t)) route(`/clusters/${t}/nodes?adopt=${node.ip}`) }} />
+      <RemoteManagement node={node} />
+      {!node.labhost && <Action title="Make lab host" what="Install Debian + KVM/libvirt on this machine (disk wiped) and carve Talos VMs from it. Needs AMT and kubit pxe on the LAN for the install." button="Make lab host…" disabled={!node.oobType} onClick={() => setLab(true)} />}
+      {lab && <MakeLabHostDialog m={node} onClose={() => setLab(false)} />}
       <Action title="Wake-on-LAN" what={node.wol ? 'Enabled: Kubit can send a magic packet from this host to power the machine on.' : 'Off. Enable when the firmware supports WoL on the uplink NIC.'} button={node.wol ? 'Wake now' : 'Enable'}
         onClick={() => (node.wol ? api.wake(node.mac).then(() => toast('Magic packet sent', 'good')) : api.setWOL(node.mac, true).then(refresh)).catch((e) => toast(e.message, 'error'))}
         secondary={node.wol ? { label: 'Disable', onClick: () => api.setWOL(node.mac, false).then(refresh).catch((e) => toast(e.message, 'error')) } : undefined} />

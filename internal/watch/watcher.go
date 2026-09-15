@@ -5,7 +5,9 @@ package watch
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"github.com/mikael/kubit/internal/talos"
 	"log"
 	"sync"
 	"time"
@@ -73,6 +75,7 @@ func (w *Watcher) Run(ctx context.Context) {
 		}
 	}
 	sync()
+	go w.labLoop(ctx)
 	t := time.NewTicker(w.Interval)
 	prune := time.NewTicker(time.Hour)
 	defer t.Stop()
@@ -168,6 +171,85 @@ func (w *Watcher) watchKubernetes(ctx context.Context, name string) {
 			backoff *= 2
 		}
 	}
+}
+
+// labLoop keeps lab hosts current: VM list and capacity over SSH, and VMs that were
+// started into Talos maintenance mode get their row flipped as soon as they answer.
+func (w *Watcher) labLoop(ctx context.Context) {
+	t := time.NewTicker(w.ServiceInterval)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+		}
+		rows, err := w.Store.ListNodes(ctx, "")
+		if err != nil {
+			continue
+		}
+		for i := range rows {
+			host := rows[i]
+			if host.LabHost == nil || host.LabHost.State != "ready" {
+				continue
+			}
+			w.labTick(ctx, &host)
+		}
+	}
+}
+
+func (w *Watcher) labTick(ctx context.Context, host *store.Machine) {
+	tctx, cancel := context.WithTimeout(ctx, 40*time.Second)
+	defer cancel()
+	lc, err := w.Manager.LabDial(tctx, host)
+	if err != nil {
+		log.Printf("lab host %s: %v", host.MAC, err)
+		return
+	}
+	defer lc.Close()
+	vms, err := lc.List(tctx)
+	if err != nil {
+		return
+	}
+	capa, err := lc.Capacity(tctx)
+	if err == nil {
+		host.LabHost.Capacity = capa
+	}
+	host.LabHost.VMs = vms
+	_ = w.Store.SetLabHost(tctx, host.MAC, host.LabHost)
+	for _, vm := range vms {
+		row, err := w.Store.GetMachine(tctx, vm.MAC)
+		if err != nil {
+			continue
+		}
+		if vm.State != "running" && row.Cluster == "" && row.State != "off" {
+			_ = w.Store.SetNodeState(tctx, row.IP, "off")
+			continue
+		}
+		if vm.State == "running" && row.State == "off" {
+			_ = w.Store.SetNodeState(tctx, row.IP, "booting")
+			row.State = "booting"
+		}
+		if vm.State == "running" && vm.IP != "" && (row.State == "booting" || row.IP == "") {
+			res := talos.Probe(tctx, vm.IP, 2*time.Second)
+			if res.Err == nil {
+				r := rowFromScan(res)
+				r.Source = "lab"
+				_ = w.Store.UpsertNode(tctx, r)
+				_ = w.Store.SetMachineHost(tctx, vm.MAC, host.MAC)
+			}
+		}
+	}
+}
+
+func rowFromScan(res talos.ScanResult) store.NodeRow {
+	row := store.NodeRow{IP: res.IP, Source: "scan", State: string(res.State)}
+	if inv := res.Inventory; inv != nil {
+		row.MAC, row.Arch, row.TalosVersion = inv.PrimaryMAC(), inv.Arch, inv.TalosVersion
+		row.UUID, row.Serial = inv.UUID, inv.Serial
+		row.Hardware, _ = json.Marshal(inv)
+	}
+	return row
 }
 
 // disruptive operations restart pods by design; workload rules stay quiet for a while

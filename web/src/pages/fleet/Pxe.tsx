@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'preact/hooks'
-import { refreshKey } from '../../store'
+import { refreshKey, settings, toast } from '../../store'
 import { api, fmt, type PxeStatus } from '../../api'
 import { DataTable, type Column } from '../../components/DataTable'
 import { KeyValue, Notice, Pill, Section, type Tone } from '../../components/ui'
@@ -25,7 +25,8 @@ export function Pxe() {
   ]
   return (
     <div class="p-6 flex flex-col gap-5">
-      <Section title="PXE boot" help="Zero-touch onboarding: machines that network-boot get iPXE over proxyDHCP/TFTP and a boot script that loads Talos into maintenance mode from a local cache of Image Factory assets. The LAN's own DHCP server keeps handing out addresses. Kubit's daemon cannot bind ports 67/69 itself, so the PXE server runs as a separate root process on the same machine.">
+      <Section title="Network boot" help="Machines that network-boot get iPXE over proxyDHCP/TFTP and a script that loads Talos into maintenance mode from a local cache of Image Factory assets; the LAN's own DHCP server keeps handing out addresses. Cluster members are never offered anything (they boot from disk), so the server can stay running. Kubit's daemon cannot bind ports 67/69 itself, so the PXE server runs as a separate root process."
+        actions={<EnrollmentSwitch />}>
         {!st && <div class="text-muted">Checking…</div>}
         {st && !st.running && (
           <Notice tone="muted">
@@ -60,5 +61,20 @@ export function Pxe() {
         </Section>
       )}
     </div>
+  )
+}
+
+/** Open: any unknown machine that network-boots gets Talos. Closed: only machines Kubit already knows or armed with Boot into Talos. */
+function EnrollmentSwitch() {
+  const s = settings.value
+  if (!s) return null
+  const set = (v: 'open' | 'closed') => api.saveSettings({ ...s, pxeEnrollment: v }).then(() => toast(v === 'open' ? 'Enrollment open: unknown machines get Talos' : 'Enrollment closed: only known or armed machines get Talos', 'good')).catch((e) => toast(e.message, 'error'))
+  return (
+    <label class="flex items-center gap-2 text-[13px]"><span class="text-muted">Enrollment</span>
+      <select class="input !py-1 w-auto" value={s.pxeEnrollment ?? 'open'} onChange={(e) => set((e.target as HTMLSelectElement).value as any)}>
+        <option value="open">Open — unknown machines get Talos</option>
+        <option value="closed">Closed — only known or armed machines</option>
+      </select>
+    </label>
   )
 }

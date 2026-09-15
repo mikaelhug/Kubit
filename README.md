@@ -433,6 +433,28 @@ step as an API operation visible in Activity, asserting with `kubectl` after eac
 `--teardown` forgets the cluster and, with `--vm-ids`, recreates the hack/vm VMs so
 the run repeats cleanly. It is the acceptance script for the hardware run.
 
+## Remote management (Intel AMT) and member-aware PXE
+
+Machines with Intel AMT (vPro EliteDesks and the like) can be managed out-of-band from
+the machine page → *Remote management* (or Inventory → *Add via AMT* before Talos ever
+booted: AMT reports MAC, model and serial): **Power on / off / hard reset** and **Boot
+into Talos** — AMT forces one network boot and Kubit's PXE server hands that MAC Talos
+in maintenance mode. Credentials are sealed per machine (`machines.oob`); the backend is
+`internal/oob` over WS-Management (`github.com/device-management-toolkit/go-wsman-messages`,
+digest auth, 16992/16993). Setup on the box: enable AMT in the BIOS, set the MEBx
+password (Ctrl+P), allow network access. The `machine.power` operation shows in Activity.
+
+The PXE server asks the daemon per MAC (`GET /api/v1/pxe/decide`, `--kubit-url`,
+`KUBIT_TOKEN`): **cluster members get no DHCP offer at all** (and an iPXE `exit` as a
+second line of defence), so `kubit pxe` can stay running and BIOS boot order
+"network first" is safe on a LAN Kubit controls. Unknown machines get Talos while
+*Enrollment* (PXE page) is *open*, only known or armed ones when it is *closed*. A member
+armed with *Boot into Talos* is served once; discovery clears the arming when it sees
+the machine in maintenance mode. Recommended BIOS for the EliteDesks: UEFI only, Secure
+Boot off, AHCI, WoL on, and **disk first** unless you own the LAN's DHCP — first
+contact via AMT *Boot into Talos*, F9 network boot, or the ISO stick; re-provisioning
+never needs PXE because `node remove` resets Talos to maintenance mode from disk.
+
 ## Running as a service
 
 A cluster never depends on Kubit: Talos and Kubernetes run on their own and `cluster
@@ -489,4 +511,5 @@ virtualisation in the VMs); ArgoCD and cert-manager add-ons.
 - [x] M11 — Off-site & dead-man's switch: `internal/offsite` (directory and S3 targets, atomic dir writes, probe, retention), snapshot copy step + `offsite.failed`/`offsite.ok`, daily sealed Kubit backup upload (`kubit.backup` operation), settings section with test/copy-now/status, Backups tab off-site column, heartbeat summary incl. updates available, Overview update notice; also: sidebar tree and cluster Operations tab removed (Activity has a cluster filter), Overview events limited to alerts + recoveries. Verified: dir target round trip, snapshot copied, three backups pruned to two, heartbeat delivered to the webhook. Not exercised: a real S3 endpoint (minio-go; probe/list/put paths are straightforward but untested against a live bucket)
 - [x] M12 — Product polish: VM-aware design (bare metal first, `control-planes-on-vms`), machine-centric wizard table (model, VM/metal, disk transport, NICs), runbooks on every alert kind, getting-started page with ISO downloads, ⌘K palette, shortcut sheet, theme toggle, loading placeholders, stale alerts reconciled after a daemon restart, `hack/e2e.sh`. Sidebar tree and cluster Operations tab removed; Overview limited to alerts + recoveries
 - [x] M13 — Live everywhere: store change notifier, WebSocket transport with replay/resync, typed live state in the console (clusters, machines, snapshots, audit, settings, acks/resolves), external-writer detection, connection banner. Verified: sidebar pill provisioning → ready without reload, ack in one client clears in another, CLI `discover` and API retire reflected live, daemon stop → banner → reconnect + resync. Also found by the e2e script and fixed: an etcd restore left workers' pods (kube-proxy, MetalLB) with dead watches — restore now recreates every pod on workers
+- [~] M14 — Out-of-band: Intel AMT backend (probe, power on/off/reset/cycle, one-shot PXE boot), per-machine remote-management config sealed at rest, *Add via AMT* in Inventory, `machine.power` operations; member-aware PXE (no offer + iPXE exit for members, `/pxe/decide`, enrollment open/closed, one-shot arming cleared on maintenance sighting; unit-tested). **AMT itself is unverified** — no vPro hardware here; the WS-Man calls follow Intel's reference client and need one run against an EliteDesk
 - [ ] M7 — tests, CI, packaging, docs

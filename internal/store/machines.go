@@ -6,7 +6,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/mikael/kubit/internal/labhost"
+	"github.com/mikael/kubit/internal/oob"
 	"strings"
+	"time"
 )
 
 // Machine is a physical or virtual computer Kubit knows, keyed by the MAC of its
@@ -27,9 +30,20 @@ type Machine struct {
 	Hardware     []byte   `json:"-"`
 	TalosVersion string   `json:"talosVersion"`
 	WOL          bool     `json:"wol"`
-	FirstSeen    string   `json:"firstSeen"`
-	LastSeen     string   `json:"lastSeen"`
-	UpdatedAt    string   `json:"updatedAt"`
+	// OOB is the out-of-band config (password redacted on the API); OOBType is a
+	// cheap "has remote management" for lists. Provision marks a machine that PXE
+	// must hand Talos to on its next boot even though it is a cluster member.
+	OOB       *oob.Config `json:"oob,omitempty"`
+	OOBType   string      `json:"oobType,omitempty"`
+	Provision bool        `json:"provision"`
+	// ProvisionKind says what the armed network boot should load: talos | labhost.
+	ProvisionKind string `json:"provisionKind,omitempty"`
+	// LabHost is set on machines Kubit turned into KVM hosts; Host on the VMs they run.
+	LabHost   *LabHost `json:"labhost,omitempty"`
+	Host      string   `json:"host,omitempty"`
+	FirstSeen string   `json:"firstSeen"`
+	LastSeen  string   `json:"lastSeen"`
+	UpdatedAt string   `json:"updatedAt"`
 }
 
 // NodeRow is the pre-M8 name; discovery and the API still speak in these terms.
@@ -44,14 +58,28 @@ func MachineKey(mac, ip string) string {
 	return "ip:" + ip
 }
 
-const machineCols = `mac, uuid, serial, COALESCE(ip,''), ips_seen, COALESCE(cluster,''), hostname, pool, role, arch, source, state, hardware, talos_version, wol, first_seen, COALESCE(last_seen,''), updated_at`
+const machineCols = `mac, uuid, serial, COALESCE(ip,''), ips_seen, COALESCE(cluster,''), hostname, pool, role, arch, source, state, hardware, talos_version, wol, first_seen, COALESCE(last_seen,''), updated_at, oob, provision, labhost, host, provision_kind`
 
 func scanMachine(sc interface{ Scan(...any) error }) (*Machine, error) {
 	var m Machine
-	var hw, seen string
-	var wol int
-	if err := sc.Scan(&m.MAC, &m.UUID, &m.Serial, &m.IP, &seen, &m.Cluster, &m.Hostname, &m.Pool, &m.Role, &m.Arch, &m.Source, &m.State, &hw, &m.TalosVersion, &wol, &m.FirstSeen, &m.LastSeen, &m.UpdatedAt); err != nil {
+	var hw, seen, oobRaw, lab string
+	var wol, prov int
+	if err := sc.Scan(&m.MAC, &m.UUID, &m.Serial, &m.IP, &seen, &m.Cluster, &m.Hostname, &m.Pool, &m.Role, &m.Arch, &m.Source, &m.State, &hw, &m.TalosVersion, &wol, &m.FirstSeen, &m.LastSeen, &m.UpdatedAt, &oobRaw, &prov, &lab, &m.Host, &m.ProvisionKind); err != nil {
 		return nil, err
+	}
+	m.Provision = prov == 1
+	if lab != "" {
+		var l LabHost
+		if json.Unmarshal([]byte(lab), &l) == nil {
+			m.LabHost = &l
+		}
+	}
+	if oobRaw != "" {
+		var c oob.Config
+		if json.Unmarshal([]byte(oobRaw), &c) == nil {
+			m.OOB = &c
+			m.OOBType = c.Type
+		}
 	}
 	m.Hardware = []byte(hw)
 	m.WOL = wol == 1
@@ -113,6 +141,7 @@ func (s *Store) UpsertNode(ctx context.Context, n Machine) error {
 			hardware      = CASE WHEN excluded.hardware = '{}' THEN machines.hardware ELSE excluded.hardware END,
 			talos_version = CASE WHEN excluded.talos_version = '' THEN machines.talos_version ELSE excluded.talos_version END,
 			last_seen     = excluded.last_seen,
+			provision     = CASE WHEN excluded.state = 'maintenance' THEN 0 ELSE machines.provision END,
 			updated_at    = strftime('%Y-%m-%dT%H:%M:%fZ','now')`,
 		key, n.UUID, n.Serial, n.IP, string(seenJSON), cluster, n.Hostname, n.Pool, n.Role, n.Arch, n.Source, n.State, hw, n.TalosVersion)
 	return s.done(err, Change{Table: "machines", Cluster: n.Cluster, Key: key, Op: "put"})
@@ -202,6 +231,115 @@ func (s *Store) GetNodeMachineConfig(ctx context.Context, ip string) ([]byte, er
 		return nil, err
 	}
 	return s.crypto.Open(sealed)
+}
+
+// SetMachineOOB stores the out-of-band config with the password sealed; nil clears it.
+func (s *Store) SetMachineOOB(ctx context.Context, mac string, c *oob.Config) error {
+	raw := ""
+	if c != nil && c.Type != "" {
+		cp := *c
+		sealed, err := s.seal(cp.Password)
+		if err != nil {
+			return err
+		}
+		cp.Password = sealed
+		b, err := json.Marshal(cp)
+		if err != nil {
+			return err
+		}
+		raw = string(b)
+	}
+	_, err := s.db.ExecContext(ctx, `UPDATE machines SET oob = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE mac = ?`, raw, strings.ToLower(mac))
+	return s.done(err, Change{Table: "machines", Key: strings.ToLower(mac), Op: "put"})
+}
+
+// MachineOOB returns the config with the password unsealed, for the backend only.
+func (s *Store) MachineOOB(ctx context.Context, mac string) (*oob.Config, error) {
+	m, err := s.GetMachine(ctx, mac)
+	if err != nil {
+		return nil, err
+	}
+	if m.OOB == nil {
+		return nil, fmt.Errorf("machine %s: %w", mac, ErrNotFound)
+	}
+	c := *m.OOB
+	c.Password = s.unseal(c.Password)
+	return &c, nil
+}
+
+// SetMachineProvision arms or clears the one-shot network-boot hand-off; kind says
+// what to serve (talos | labhost).
+func (s *Store) SetMachineProvision(ctx context.Context, mac string, on bool, kind ...string) error {
+	k := ""
+	if on && len(kind) > 0 {
+		k = kind[0]
+	} else if on {
+		k = "talos"
+	}
+	_, err := s.db.ExecContext(ctx, `UPDATE machines SET provision = ?, provision_kind = ? WHERE mac = ?`, b2i(on), k, strings.ToLower(mac))
+	return s.done(err, Change{Table: "machines", Key: strings.ToLower(mac), Op: "put"})
+}
+
+// LabHost is the state of a machine Kubit runs as a KVM host.
+type LabHost struct {
+	State     string           `json:"state"` // installing | setup | ready | error
+	Error     string           `json:"error,omitempty"`
+	Capacity  labhost.Capacity `json:"capacity"`
+	Talos     string           `json:"talos,omitempty"`     // version of the boot assets on the host
+	Schematic string           `json:"schematic,omitempty"` // schematic id of those assets
+	Kernel    string           `json:"kernel,omitempty"`
+	Initrd    string           `json:"initrd,omitempty"`
+	Index     int              `json:"index"` // for MAC assignment
+	VMs       []labhost.VM     `json:"vms"`
+	UpdatedAt string           `json:"updatedAt"`
+}
+
+// SetLabHost stores the lab-host state (nil clears the role).
+func (s *Store) SetLabHost(ctx context.Context, mac string, l *LabHost) error {
+	raw := ""
+	if l != nil {
+		l.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
+		b, err := json.Marshal(l)
+		if err != nil {
+			return err
+		}
+		raw = string(b)
+	}
+	_, err := s.db.ExecContext(ctx, `UPDATE machines SET labhost = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE mac = ?`, raw, strings.ToLower(mac))
+	return s.done(err, Change{Table: "machines", Key: strings.ToLower(mac), Op: "put"})
+}
+
+// SetMachineHost records which lab host a VM lives on.
+func (s *Store) SetMachineHost(ctx context.Context, mac, host string) error {
+	_, err := s.db.ExecContext(ctx, `UPDATE machines SET host = ? WHERE mac = ?`, strings.ToLower(host), strings.ToLower(mac))
+	return s.done(err, Change{Table: "machines", Key: strings.ToLower(mac), Op: "put"})
+}
+
+// NextLabHostIndex hands out the per-host byte used in VM MAC addresses.
+func (s *Store) NextLabHostIndex(ctx context.Context) int {
+	var n int
+	_ = s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM machines WHERE labhost != ''`).Scan(&n)
+	return n + 1
+}
+
+// SSHKey returns Kubit's key pair for lab hosts, minting it on first use. The private
+// key is sealed in the settings table.
+func (s *Store) SSHKey(ctx context.Context) (priv []byte, pub string, err error) {
+	if sealed := s.GetValue(ctx, "ssh.priv"); sealed != "" {
+		return []byte(s.unseal(sealed)), s.GetValue(ctx, "ssh.pub"), nil
+	}
+	priv, pub, err = labhost.GenerateKey()
+	if err != nil {
+		return nil, "", err
+	}
+	sealed, err := s.seal(string(priv))
+	if err != nil {
+		return nil, "", err
+	}
+	if err := s.SetValue(ctx, "ssh.priv", sealed); err != nil {
+		return nil, "", err
+	}
+	return priv, pub, s.SetValue(ctx, "ssh.pub", pub)
 }
 
 // SetMachineWOL flags whether Kubit may send Wake-on-LAN packets to a machine.

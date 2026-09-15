@@ -144,7 +144,7 @@ function CredentialsSection({ name }: { name: string }) {
   return (
     <Section title="Credentials" help="Client certificates Kubit uses (and hands out via Download/Export) are valid one year; rotating issues a fresh one through the Talos API and replaces the stored copy — the old one keeps working until it expires. CAs are valid ten years and cannot be rotated in place. Kubit raises an alert 30 days before any of these expires.">
       <ErrorBox error={error} />
-      <div class="panel overflow-x-auto">
+      <div class="panel scroll-x">
         <table class="data">
           <thead><tr><th class="pl-4">Credential</th><th>Expires</th><th>Issued</th><th>Subject</th><th></th></tr></thead>
           <tbody>

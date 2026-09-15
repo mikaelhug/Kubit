@@ -1,9 +1,15 @@
 package main
 
 import (
+	"encoding/json"
 	"log"
+	"net/http"
+	neturl "net/url"
 	"os"
 	"path/filepath"
+	"strings"
+	"sync"
+	"time"
 
 	"github.com/mikael/kubit/internal/factory"
 	"github.com/mikael/kubit/internal/pxe"
@@ -15,6 +21,7 @@ func pxeCmd() *cobra.Command {
 		iface, schematic, talosVersion string
 		extensions                     []string
 		httpPort                       int
+		kubitURL                       string
 	)
 	cmd := &cobra.Command{
 		Use:   "pxe",
@@ -40,7 +47,7 @@ machines land in maintenance mode and show up in 'kubit discover'.`,
 			}
 			logger := log.New(os.Stderr, "", log.LstdFlags)
 			srv := &pxe.Server{
-				Config:  pxe.Config{Interface: iface, IP: ip, HTTPPort: httpPort, Log: logger},
+				Config:  pxe.Config{Interface: iface, IP: ip, HTTPPort: httpPort, Log: logger, Decide: pxeDecider(kubitURL, os.Getenv("KUBIT_TOKEN"), logger), KubitURL: kubitURL, KubitToken: os.Getenv("KUBIT_TOKEN")},
 				Profile: pxe.Profile{SchematicID: schematic, TalosVersion: talosVersion},
 				Cache:   pxe.NewCache(filepath.Join(home, "cache")),
 				Factory: f,
@@ -53,5 +60,48 @@ machines land in maintenance mode and show up in 'kubit discover'.`,
 	cmd.Flags().StringSliceVar(&extensions, "extensions", []string{"siderolabs/gvisor"}, "system extensions for the default schematic")
 	cmd.Flags().StringVar(&talosVersion, "talos-version", "v1.14.0", "Talos release to boot")
 	cmd.Flags().IntVar(&httpPort, "http-port", 8069, "port for the iPXE script and boot assets")
+	cmd.Flags().StringVar(&kubitURL, "kubit-url", "http://127.0.0.1:8080", "daemon to ask whether a MAC should boot Talos or its own disk (cluster members boot locally); KUBIT_TOKEN for its bearer token")
 	return cmd
+}
+
+// pxeDecider asks the daemon per MAC and caches the answer briefly; when the daemon is
+// down every machine gets Talos, as before.
+func pxeDecider(url, token string, logger *log.Logger) func(string) string {
+	type entry struct {
+		boot string
+		at   time.Time
+	}
+	var mu sync.Mutex
+	cache := map[string]entry{}
+	client := &http.Client{Timeout: 2 * time.Second}
+	return func(mac string) string {
+		mu.Lock()
+		if e, ok := cache[mac]; ok && time.Since(e.at) < 10*time.Second {
+			mu.Unlock()
+			return e.boot
+		}
+		mu.Unlock()
+		req, err := http.NewRequest("GET", strings.TrimRight(url, "/")+"/api/v1/pxe/decide?mac="+neturl.QueryEscape(mac), nil)
+		if err != nil {
+			return ""
+		}
+		if token != "" {
+			req.Header.Set("Authorization", "Bearer "+token)
+		}
+		resp, err := client.Do(req)
+		if err != nil {
+			logger.Printf("pxe: daemon unreachable (%v); serving Talos to %s", err, mac)
+			return ""
+		}
+		defer resp.Body.Close()
+		var d struct{ Boot, Reason string }
+		if err := json.NewDecoder(resp.Body).Decode(&d); err != nil {
+			return ""
+		}
+		logger.Printf("pxe: %s → %s (%s)", mac, d.Boot, d.Reason)
+		mu.Lock()
+		cache[mac] = entry{boot: d.Boot, at: time.Now()}
+		mu.Unlock()
+		return d.Boot
+	}
 }

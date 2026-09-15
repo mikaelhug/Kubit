@@ -173,6 +173,14 @@ var migrations = []string{
 	CREATE INDEX snapshots_cluster_ts ON snapshots (cluster, ts);`,
 	// v8: off-site copy key per snapshot ("" = not copied).
 	`ALTER TABLE snapshots ADD COLUMN offsite TEXT NOT NULL DEFAULT '';`,
+	// v9: out-of-band management (sealed JSON) and the one-shot "serve Talos over
+	// PXE even though this machine is a member" flag.
+	`ALTER TABLE machines ADD COLUMN oob TEXT NOT NULL DEFAULT '';
+	 ALTER TABLE machines ADD COLUMN provision INTEGER NOT NULL DEFAULT 0;`,
+	// v10: lab hosts (KVM hosts Kubit installed) and the VMs they carry.
+	`ALTER TABLE machines ADD COLUMN labhost TEXT NOT NULL DEFAULT '';
+	 ALTER TABLE machines ADD COLUMN host TEXT NOT NULL DEFAULT '';
+	 ALTER TABLE machines ADD COLUMN provision_kind TEXT NOT NULL DEFAULT '';`,
 }
 
 func (s *Store) migrate(ctx context.Context) error {

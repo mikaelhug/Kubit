@@ -59,3 +59,7 @@
   live); computing open/closed client-side from the spec would remove that fetch.
 - The live ring buffer (2000 messages) is per daemon process; a long outage still ends
   in a resync, which is correct but reloads everything. Fine at this scale.
+- AMT: verify Probe/Power/BootPXE against a real vPro box (first run, then `Boot into
+  Talos` end to end with `kubit pxe` running). If BootPXE's BootSettingData Put is
+  rejected by older firmware (AMT < 11), fall back to ChangeBootOrder + SetBootConfigRole
+  alone. KVM (VNC over AMT) and IDE-R remote ISO are not implemented.

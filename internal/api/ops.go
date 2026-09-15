@@ -28,7 +28,7 @@ type Message struct {
 	Scope string `json:"scope,omitempty"`
 	// Typed live-state payloads (one is set per kind).
 	ClusterRow *store.ClusterRow `json:"clusterRow,omitempty"`
-	Machine    *store.Machine    `json:"machine,omitempty"`
+	Machine    *nodeView         `json:"machine,omitempty"`
 	Snapshot   *store.Snapshot   `json:"snapshot,omitempty"`
 	Audit      *store.AuditEntry `json:"audit,omitempty"`
 	Settings   *store.Settings   `json:"settings,omitempty"`

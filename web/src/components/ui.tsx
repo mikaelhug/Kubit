@@ -14,6 +14,7 @@ export function Pill({ tone, children, title }: { tone: Tone; children: Componen
 }
 
 export function stateTone(state: string): Tone {
+  if (state === 'amt' || state === 'off') return 'info'
   switch (state) {
     case 'ready': case 'done': case 'running': case 'maintenance': return 'good'
     case 'failed': return 'bad'

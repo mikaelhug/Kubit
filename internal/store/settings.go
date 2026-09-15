@@ -8,6 +8,7 @@ import (
 	"errors"
 
 	"github.com/mikael/kubit/internal/offsite"
+	"github.com/mikael/kubit/internal/oob"
 )
 
 // Settings are Kubit's own preferences; everything has a default so a missing row is fine.
@@ -20,6 +21,14 @@ type Settings struct {
 	Alerts           Alerts   `json:"alerts"`
 	// Offsite is the second home for snapshots and Kubit backups.
 	Offsite offsite.Target `json:"offsite"`
+	// PXEEnrollment: "open" hands Talos to any unknown machine that network-boots
+	// (onboarding a batch); "closed" only to machines Kubit expects (unassigned ones it
+	// has seen, or members armed with Boot into Talos). Members always boot locally.
+	PXEEnrollment string `json:"pxeEnrollment"`
+	// AMT holds default management credentials: discovery uses them to identify
+	// machines that answer on 16992, so vPro boxes show up with model and power
+	// state before Talos ever ran. Password sealed at rest.
+	AMT oob.Config `json:"amt"`
 }
 
 // Alerts forwards health events at or above MinSeverity to external sinks.
@@ -60,7 +69,7 @@ func (c SMTP) Mode() string {
 }
 
 func DefaultSettings() Settings {
-	return Settings{FactoryURL: "https://factory.talos.dev", DiscoverySubnets: []string{}, WatchIntervalSec: 15, PXEStatusURL: "http://127.0.0.1:8069/status.json", Alerts: Alerts{MinSeverity: "warn", SMTP: SMTP{Port: 587, StartTLS: true, TLS: "starttls", To: []string{}}, IgnoreNamespaces: []string{}, HeartbeatHours: 24}, Offsite: offsite.Target{KeepBackups: 14}}
+	return Settings{FactoryURL: "https://factory.talos.dev", DiscoverySubnets: []string{}, WatchIntervalSec: 15, PXEStatusURL: "http://127.0.0.1:8069/status.json", Alerts: Alerts{MinSeverity: "warn", SMTP: SMTP{Port: 587, StartTLS: true, TLS: "starttls", To: []string{}}, IgnoreNamespaces: []string{}, HeartbeatHours: 24}, Offsite: offsite.Target{KeepBackups: 14}, PXEEnrollment: "open", AMT: oob.Config{Type: "amt", User: "admin"}}
 }
 
 func (s *Store) GetSettings(ctx context.Context) (Settings, error) {
@@ -78,6 +87,7 @@ func (s *Store) GetSettings(ctx context.Context) (Settings, error) {
 	}
 	out.Alerts.SMTP.Password = s.unseal(out.Alerts.SMTP.Password)
 	out.Offsite.SecretKey = s.unseal(out.Offsite.SecretKey)
+	out.AMT.Password = s.unseal(out.AMT.Password)
 	return out, nil
 }
 
@@ -123,6 +133,9 @@ func (s *Store) PutSettings(ctx context.Context, v Settings) error {
 		return err
 	}
 	if v.Offsite.SecretKey, err = s.seal(v.Offsite.SecretKey); err != nil {
+		return err
+	}
+	if v.AMT.Password, err = s.seal(v.AMT.Password); err != nil {
 		return err
 	}
 	b, err := json.Marshal(v)

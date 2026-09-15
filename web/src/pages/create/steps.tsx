@@ -4,6 +4,7 @@ import { machineList, operations, settings, toast, watch } from '../../store'
 import { Field, Notice, Pill } from '../../components/ui'
 import { Tabs } from '../../components/Tabs'
 import { PoolsEditor } from '../../components/PoolsEditor'
+import { LabHostsSection, MakeLabHostDialog } from '../../components/LabHost'
 import type { Draft } from './NewCluster'
 import { addrOf, guessGateway, inRange, ip4, parseRange, prefixOf, sameSubnet } from './net'
 
@@ -24,6 +25,8 @@ export function isVirtual(m?: NodeRow) {
   return /qemu|kvm|vmware|virtualbox|innotek|xen|virtual machine|apple virtualization|parallels|bochs|proxmox/i.test(`${inv?.manufacturer ?? ''} ${inv?.product ?? ''}`)
 }
 export function TypePill({ m }: { m?: NodeRow }) {
+  if (m?.labhost) return <Pill tone="info" title="KVM host Kubit installed">lab host</Pill>
+  if (m?.host) return <Pill tone="info" title={`Talos VM on lab host ${m.host}`}>lab VM</Pill>
   return isVirtual(m) ? <Pill tone="info" title="Virtual machine: shares its host's failure domain">VM</Pill> : <Pill tone="muted" title="Bare metal">metal</Pill>
 }
 export function installCandidates(m?: NodeRow) { return (m?.inventory?.disks ?? []).filter((d) => !d.readonly && !d.cdrom && d.transport !== 'usb').sort((a, b) => b.sizeBytes - a.sizeBytes) }
@@ -43,13 +46,15 @@ export function machineWarnings(m: NodeRow, all: NodeRow[]): string[] {
 // ─── 1 · Machines ────────────────────────────────────────────────────────────
 
 export function MachinesStep({ draft, patch, setError }: { draft: Draft; patch: (p: Partial<Draft>) => void; setError: (_e: string | null) => void }) {
-  const [targets, setTargets] = useState('')
+  const [targets, setTargetsRaw] = useState('')
+  const [typed, setTyped] = useState(false)
+  const setTargets = (v: string) => { setTyped(true); setTargetsRaw(v) }
   // The machine list is live state: every discovery result lands here as it is recorded.
   const free = machineList.value.filter((n) => n.state === 'maintenance' && !n.cluster)
   const freeKey = free.map((m) => m.mac + m.ip + m.lastSeen).join('|')
   useEffect(() => { patch({ machines: free, selected: draft.selected.filter((mac) => free.some((m) => m.mac === mac)) }) }, [freeKey]) // eslint-disable-line
   const subnets = settings.value?.discoverySubnets ?? []
-  useEffect(() => { if (!targets) setTargets(subnets.length ? subnets.join(', ') : free[0] ? free[0].ip.replace(/\.\d+$/, '.0/24') : '') }, [subnets.join(','), free.length]) // eslint-disable-line
+  useEffect(() => { if (!typed) setTargetsRaw(subnets.length ? subnets.join(', ') : free[0] ? free[0].ip.replace(/\.\d+$/, '.0/24') : '') }, [subnets.join(','), free.length]) // eslint-disable-line
   const scanning = [...operations.value.values()].some((o) => o.kind === 'discover' && o.status === 'running')
   const toggle = (mac: string) => patch({ selected: draft.selected.includes(mac) ? draft.selected.filter((x) => x !== mac) : [...draft.selected, mac] })
   const chosen = draft.machines.filter((m) => draft.selected.includes(m.mac))
@@ -62,23 +67,21 @@ export function MachinesStep({ draft, patch, setError }: { draft: Draft; patch: 
           <button class="btn shrink-0" disabled={scanning || !targets.trim()} onClick={() => api.discover(targets.split(/[,\s]+/).filter(Boolean)).then((r) => watch(r, false)).catch((e) => setError(e.message))}>{scanning ? 'Scanning…' : 'Scan'}</button>
         </div>
       </div>
-      <div class="panel overflow-x-auto">
-        <table class="data">
-          <thead><tr><th class="pl-4 w-8"><input type="checkbox" checked={draft.machines.length > 0 && chosen.length === draft.machines.length} onChange={(e) => patch({ selected: (e.target as HTMLInputElement).checked ? draft.machines.map((m) => m.mac) : [] })} aria-label="Select all" /></th><th>Machine</th><th>Type</th><th>Address</th><th>Arch</th><th class="num">CPU</th><th class="num">RAM</th><th>Install disk</th><th>NICs</th><th>Notes</th></tr></thead>
+      <div class="panel">
+        <table class="data wrap">
+          <thead><tr><th class="pl-4 w-8"><input type="checkbox" checked={draft.machines.length > 0 && chosen.length === draft.machines.length} onChange={(e) => patch({ selected: (e.target as HTMLInputElement).checked ? draft.machines.map((m) => m.mac) : [] })} aria-label="Select all" /></th><th>Machine</th><th>Address</th><th>Resources</th><th>Install disk</th><th>Notes</th></tr></thead>
           <tbody>
-            {draft.machines.length === 0 && <tr><td colSpan={10} class="pl-4 text-muted py-3">{scanning ? 'Scanning…' : 'No unassigned machines in maintenance mode. Boot one from a Talos ISO and scan its subnet.'}</td></tr>}
+            {draft.machines.length === 0 && <tr><td colSpan={6} class="pl-4 text-muted py-3">{scanning ? 'Scanning…' : 'No unassigned machines in maintenance mode. Boot one from a Talos ISO and scan its subnet.'}</td></tr>}
             {draft.machines.map((m) => {
               const disks = installCandidates(m)
               const warns = machineWarnings(m, chosen.length ? chosen : draft.machines)
               return (
                 <tr key={m.mac} class="cursor-pointer" onClick={() => toggle(m.mac)}>
                   <td class="pl-4"><input type="checkbox" class="pointer-events-none" checked={draft.selected.includes(m.mac)} readOnly /></td>
-                  <td class="whitespace-nowrap"><span class="font-medium">{modelOf(m)}</span><br /><span class="text-[11px] text-muted mono">{m.serial ? `${m.serial} · ` : ''}{m.mac} · Talos {m.talosVersion}</span></td>
-                  <td><TypePill m={m} /></td>
-                  <td class="mono">{m.ip}</td><td>{m.arch}</td>
-                  <td class="num">{m.inventory?.cpus ?? '—'}</td><td class="num">{fmt.bytes(m.inventory?.memoryBytes ?? 0)}{m.inventory?.kvm && <span class="text-[10px] text-muted"> · kvm</span>}</td>
-                  <td class="mono">{disks[0] ? <>{disks[0].devPath} {fmt.bytes(disks[0].sizeBytes)}<span class="text-[10px] text-muted"> {disks[0].transport ?? ''}{disks[0].rotational ? ' hdd' : ''}{disks.length > 1 ? ` +${disks.length - 1}` : ''}</span></> : <span class="text-bad">none</span>}</td>
-                  <td class="num">{m.inventory?.links?.length ?? '—'}{(m.inventory?.links?.length ?? 0) > 0 && <span class="text-[10px] text-muted"> · {m.inventory!.links.filter((l) => l.up).length} up</span>}</td>
+                  <td><span class="flex items-center gap-2 flex-wrap"><span class="font-medium">{modelOf(m)}</span><TypePill m={m} /></span><span class="block text-[11px] text-muted mono break-all">{m.serial ? `${m.serial} · ` : ''}{m.mac} · Talos {m.talosVersion}</span></td>
+                  <td class="mono">{m.ip}</td>
+                  <td class="num whitespace-nowrap">{m.arch} · {m.inventory?.cpus ?? '?'} CPU · {fmt.bytes(m.inventory?.memoryBytes ?? 0)}{m.inventory?.kvm && <span class="text-[10px] text-muted"> · kvm</span>}<span class="block text-[10px] text-muted">{m.inventory?.links?.length ?? 0} NIC{(m.inventory?.links?.length ?? 0) === 1 ? '' : 's'}, {m.inventory?.links?.filter((l) => l.up).length ?? 0} up</span></td>
+                  <td class="mono whitespace-nowrap">{disks[0] ? <>{disks[0].devPath} {fmt.bytes(disks[0].sizeBytes)}<span class="block text-[10px] text-muted">{disks[0].transport ?? ''}{disks[0].rotational && disks[0].transport !== 'virtio' ? ' hdd' : ''}{disks.length > 1 ? ` +${disks.length - 1} more` : ''}</span></> : <span class="text-bad">none</span>}</td>
                   <td>{warns.length ? <span class="text-warn text-[12px]">{warns.join('; ')}</span> : <span class="text-muted">—</span>}</td>
                 </tr>
               )
@@ -86,6 +89,9 @@ export function MachinesStep({ draft, patch, setError }: { draft: Draft; patch: 
           </tbody>
         </table>
       </div>
+      <HiddenMachinesNote />
+      <LabHostsSection />
+      <AMTMachines />
       <div class="flex items-end gap-3">
         <Field label="Cluster name" hint="DNS label; prefixes hostnames and names the kubeconfig context.">
           <input class="input w-56 mono" value={draft.name} onInput={(e) => patch({ name: (e.target as HTMLInputElement).value.toLowerCase() })} />
@@ -93,6 +99,50 @@ export function MachinesStep({ draft, patch, setError }: { draft: Draft; patch: 
         <span class="text-[13px] text-muted pb-2">{chosen.length} machine{chosen.length === 1 ? '' : 's'} selected · {topologyText(chosen.length)}</span>
       </div>
     </>
+  )
+}
+
+/** Why Inventory may list more machines than this picker does. */
+function HiddenMachinesNote() {
+  const all = machineList.value
+  const members = all.filter((m) => m.cluster).length
+  const other = all.filter((m) => !m.cluster && !m.labhost && m.state !== 'maintenance' && m.state !== 'amt' && !m.oobType).length
+  if (members === 0 && other === 0) return null
+  const parts = [members ? `${members} ${members === 1 ? 'is a member' : 'are members'} of a cluster` : '', other ? `${other} ${other === 1 ? 'is' : 'are'} known but not in maintenance mode` : ''].filter(Boolean)
+  return <p class="text-[12px] text-muted -mt-2">Not listed: {parts.join('; ')} — <a class="text-accent hover:underline" href="/fleet/inventory">Inventory</a> shows every machine.</p>
+}
+
+/** Machines that answer on the AMT port but do not run Talos yet: boot them from here. */
+export function AMTMachines() {
+  const rows = machineList.value.filter((m) => !m.labhost && (m.state === 'amt' || (m.oobType === 'amt' && m.state !== 'maintenance' && !m.cluster)))
+  const [busy, setBusy] = useState<Record<string, boolean>>({})
+  const [lab, setLab] = useState<NodeRow | null>(null)
+  if (rows.length === 0) return null
+  const boot = (m: NodeRow) => { setBusy((b) => ({ ...b, [m.mac]: true })); api.power(m.mac, 'pxe').then((r) => watch(r, false)).catch((e) => toast(e.message, 'error')).finally(() => setBusy((b) => ({ ...b, [m.mac]: false }))) }
+  const bootAll = () => rows.filter((m) => m.oobType).forEach(boot)
+  return (
+    <div class="panel">
+      <div class="flex items-center gap-4 px-4 py-2.5 border-b border-border">
+        <span class="font-medium">Via Intel AMT</span>
+        <span class="text-[12px] text-muted">not running Talos yet</span>
+        <button class="btn btn-primary !py-1 ml-auto shrink-0 whitespace-nowrap" title="One network boot via AMT; the machine appears above in maintenance mode. Needs kubit pxe on this LAN." disabled={!rows.some((m) => m.oobType)} onClick={bootAll}>Boot all into Talos</button>
+      </div>
+      <div><table class="data wrap">
+        <thead><tr><th class="pl-4">Machine</th><th>Address</th><th>Power</th><th>Credentials</th><th></th></tr></thead>
+        <tbody>
+          {rows.map((m) => (
+            <tr key={m.mac}>
+              <td class="pl-4 whitespace-nowrap"><span class="font-medium">{modelOf(m)}</span><br /><span class="text-[11px] text-muted mono">{m.serial ? `${m.serial} · ` : ''}{m.mac}</span></td>
+              <td class="mono">{m.ip}</td>
+              <td><Pill tone={m.state === 'off' ? 'muted' : 'info'}>{m.state === 'amt' ? 'other OS / off' : m.state}</Pill></td>
+              <td>{m.oobType ? <Pill tone="good">AMT ok</Pill> : <a class="text-accent hover:underline text-[12px]" href={`/machines/${m.mac}#oob`}>set credentials →</a>}</td>
+              <td class="text-right pr-3 whitespace-nowrap"><button class="btn !py-1" disabled={!m.oobType || m.provision} title="Install Debian + KVM on it and carve Talos VMs from it" onClick={() => setLab(m)}>Make lab host…</button>{' '}<button class="btn btn-primary !py-1" disabled={!m.oobType || busy[m.mac] || m.provision} title={m.provision ? 'Armed; waiting for it to network-boot' : ''} onClick={() => boot(m)}>{m.provision ? 'Booting…' : 'Boot into Talos'}</button></td>
+            </tr>
+          ))}
+        </tbody>
+      </table></div>
+      {lab && <MakeLabHostDialog m={lab} onClose={() => setLab(null)} />}
+    </div>
   )
 }
 
@@ -133,7 +183,7 @@ export function DesignStep({ draft, setCluster, reset, busy }: { draft: Draft; s
         </div>
         <p class="text-[13px] text-muted">Kubit put bare metal before VMs in the control plane (VMs on one host fail together), then the most alike, smallest machines, and kept KVM-capable ones as workers for gVisor. Change any cell; pools decide role, labels, taints and installer image.</p>
       </div>
-      <div class="panel overflow-x-auto">
+      <div class="panel scroll-x">
         <table class="data">
           <thead><tr><th class="pl-4">Machine</th><th>Pool</th><th>Hostname</th><th>Install disk</th><th>Node labels</th></tr></thead>
           <tbody>
@@ -239,7 +289,7 @@ export function NetworkStep({ draft, setCluster }: { draft: Draft; setCluster: S
       {checks.length > 0 && <div class="flex flex-col gap-1">{checks.map((k, i) => <Notice key={i} tone={k.tone}>{k.text}</Notice>)}</div>}
       <div class="flex flex-col gap-2">
         <div><span class="label">Node addressing</span><p class="text-[13px] text-muted">DHCP is the default: the machine keeps asking the LAN's server and Kubit follows it by MAC. Static pins the address in the machine config — use it when the DHCP pool is small, for control planes you want stable without a VIP, or when a VLAN is required.</p></div>
-        <div class="panel overflow-x-auto">
+        <div class="panel scroll-x">
           <table class="data">
             <thead><tr><th class="pl-4">Node</th><th>Mode</th><th>Address (CIDR)</th><th>Gateway</th><th>DNS</th><th>VLAN</th></tr></thead>
             <tbody>
@@ -338,7 +388,7 @@ export function ReviewStep({ draft, setCluster, patch, onCreate, busy }: { draft
             {!lintErr && draft.warnings.length === 0 && !linting && <Notice tone="good">No findings. The declaration is valid and follows the recommendations.</Notice>}
             {draft.warnings.map((w, i) => <WarningLine key={i} w={w} />)}
           </div>
-          <div class="panel overflow-x-auto">
+          <div class="panel scroll-x">
             <table class="data">
               <thead><tr><th class="pl-4">Hostname</th><th>Pool</th><th>Address</th><th>Install disk</th><th>Labels</th><th>Taints</th></tr></thead>
               <tbody>

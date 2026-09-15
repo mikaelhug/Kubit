@@ -88,7 +88,7 @@ export function DataTable<T>({ columns, rows, rowKey, empty = 'Nothing to show.'
           </div>
         </div>
       )}
-      <div class="overflow-x-auto">
+      <div class="scroll-x">
         <table class={`data ${dense ? 'dense' : ''}`}>
           <thead>
             <tr>
