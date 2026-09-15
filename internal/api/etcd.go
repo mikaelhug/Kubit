@@ -47,6 +47,7 @@ func (s *Server) maybeScheduleSnapshot(ctx context.Context, name string, st *clu
 		if err == nil {
 			_ = s.store.ResolveEvents(ctx, name, "", "backup.stale")
 		}
+		s.snapshotOffsiteResult(ctx, name, sn, err)
 		return sn, err
 	}); err != nil {
 		log.Printf("snapshot schedule %s: %v", name, err)
@@ -83,7 +84,9 @@ func (s *Server) handleSnapshotTake(w http.ResponseWriter, r *http.Request) {
 		req.Source = "manual"
 	}
 	id, err := s.runOperation(name, "etcd.snapshot", req, func(ctx contextT, sink clusterSink) (any, error) {
-		return s.manager.SnapshotEtcd(ctx, name, req.Source, sink)
+		sn, err := s.manager.SnapshotEtcd(ctx, name, req.Source, sink)
+		s.snapshotOffsiteResult(ctx, name, sn, err)
+		return sn, err
 	})
 	if err != nil {
 		writeErr(w, err)

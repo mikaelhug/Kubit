@@ -16,6 +16,17 @@ export const statuses = signal<Map<string, Status>>(new Map())
 /** Health events per cluster (newest first), seeded from the API and appended live. */
 export const health = signal<Map<string, HealthEvent[]>>(new Map())
 
+/** Open (unacked, unresolved) workload alert for one object, keyed as kind/namespace/name. */
+export function openAlert(cluster: string, kind: string, ns: string, name: string): HealthEvent | undefined {
+  const key = `${kind}/${ns}/${name}`
+  return (health.value.get(cluster) ?? []).find((e) => !e.acked && e.node === key && e.severity !== 'info')
+}
+
+/** `?ns=` from the URL, used by the object links on alert rows. */
+export function nsFromQuery(): string {
+  return typeof location !== 'undefined' ? new URLSearchParams(location.search).get('ns') ?? '' : ''
+}
+
 export async function loadHealth(name: string) {
   try {
     const list = await api.events(name)
@@ -114,7 +125,7 @@ export function connect() {
       statuses.value = sm
     } else if (m.kind === 'health' && m.health) {
       const hm = new Map(health.value)
-      const resolves: Record<string, string> = { 'talos.back': 'talos.unreachable', 'node.ready': 'node.notready', 'api.back': 'api.unreachable', 'etcd.healthy': 'etcd.unhealthy', 'lb.assigned': 'lb.lost' }
+      const resolves: Record<string, string> = { 'talos.back': 'talos.unreachable', 'node.ready': 'node.notready', 'api.back': 'api.unreachable', 'etcd.healthy': 'etcd.unhealthy', 'lb.assigned': 'lb.lost', 'workload.available': 'workload.unavailable', 'pod.recovered': 'pod.crashloop', 'pvc.bound': 'pvc.pending', 'service.endpoints': 'service.no-endpoints', 'ingress.address': 'ingress.no-address', 'lb.pool-free': 'lb.pool-exhausted' }
       const cleared = resolves[m.health.kind]
       const h = m.health
       const prev = (hm.get(h.cluster) ?? []).map((e) => cleared && e.kind === cleared && (e.node ?? '') === (h.node ?? '') ? { ...e, acked: true } : e)

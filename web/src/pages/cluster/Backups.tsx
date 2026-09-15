@@ -12,12 +12,13 @@ import type { ClusterCtx } from './ClusterPage'
 export function Backups({ ctx }: { ctx: ClusterCtx }) {
   const { name, cluster, status } = ctx
   const [rows, setRows] = useState<Snapshot[]>([])
+  const [loaded, setLoaded] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [restore, setRestore] = useState<Snapshot | null>(null)
   const [remove, setRemove] = useState<Snapshot | null>(null)
   const [schedule, setSchedule] = useState({ interval: cluster.spec.spec.backup?.etcd.interval ?? '6h', keep: String(cluster.spec.spec.backup?.etcd.keep ?? 28) })
   const finished = [...operations.value.values()].filter((o) => o.cluster === name && o.status !== 'running').length
-  const load = () => api.snapshots(name).then((s) => { setRows(s); setError(null) }).catch((e) => setError(e.message))
+  const load = () => api.snapshots(name).then((s) => { setRows(s); setError(null) }).catch((e) => setError(e.message)).finally(() => setLoaded(true))
   useEffect(() => { load() }, [name, finished]) // eslint-disable-line
   useEffect(() => { setSchedule({ interval: cluster.spec.spec.backup?.etcd.interval ?? '6h', keep: String(cluster.spec.spec.backup?.etcd.keep ?? 28) }) }, [cluster.updatedAt])
   const running = [...operations.value.values()].some((o) => o.cluster === name && o.status === 'running')
@@ -36,6 +37,7 @@ export function Backups({ ctx }: { ctx: ClusterCtx }) {
     { id: 'size', header: 'Size', align: 'right', sort: (s) => s.sizeBytes, cell: (s) => fmt.bytes(s.sizeBytes) },
     { id: 'versions', header: 'Versions', mono: true, cell: (s) => <span class="text-muted text-[11px]">{s.talosVersion} · {s.k8sVersion}</span> },
     { id: 'status', header: 'Status', sort: (s) => s.status, cell: (s) => <Pill tone={s.status === 'ok' ? 'good' : 'bad'}>{s.status}</Pill> },
+    { id: 'offsite', header: 'Off-site', sort: (s) => s.offsite ? 1 : 0, cell: (s) => s.offsite ? <Pill tone="good" title={s.offsite}>copied</Pill> : <span class="text-muted" title="No off-site copy: target off or the copy failed">—</span> },
     { id: 'actions', header: '', align: 'right', cell: (s) => (
       <span class="whitespace-nowrap flex gap-1 justify-end">
         <button class="btn !py-1" title="Unseal, check the hash and open the database" onClick={() => api.verifySnapshot(name, s.id).then((r) => { toast(r.ok ? `Snapshot #${s.id} verified` : `Snapshot #${s.id}: ${r.error}`, r.ok ? 'good' : 'error'); load() }).catch((e) => toast(e.message, 'error'))}>Verify</button>
@@ -56,7 +58,7 @@ export function Backups({ ctx }: { ctx: ClusterCtx }) {
           <Stat label="Schedule" value={schedule.interval === '0' ? 'off' : `every ${schedule.interval}`} sub={`keep ${schedule.keep} scheduled snapshots`} />
           <Stat label="Stored" value={String(rows.length)} sub={`${fmt.bytes(rows.reduce((a, r) => a + r.sizeBytes, 0))} uncompressed`} />
         </div>
-        <DataTable id="snapshots" columns={columns} rows={rows} rowKey={(s) => String(s.id)} defaultSort={{ id: 'ts', dir: 'desc' }} empty="No snapshots yet." />
+        <DataTable loading={!loaded} id="snapshots" columns={columns} rows={rows} rowKey={(s) => String(s.id)} defaultSort={{ id: 'ts', dir: 'desc' }} empty="No snapshots yet." />
       </Section>
 
       <Section title="Schedule" help="Snapshots are taken by the daemon when the cluster is ready, etcd is healthy and no other operation is running. Stored in cluster.yaml under backup.etcd.">

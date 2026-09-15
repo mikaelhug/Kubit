@@ -21,6 +21,7 @@ type Snapshot struct {
 	K8sVersion   string `json:"k8sVersion,omitempty"`
 	Source       string `json:"source"`
 	Status       string `json:"status"`
+	Offsite      string `json:"offsite,omitempty"` // remote key once copied
 }
 
 func (s *Store) AddSnapshot(ctx context.Context, sn Snapshot) (int64, error) {
@@ -32,11 +33,11 @@ func (s *Store) AddSnapshot(ctx context.Context, sn Snapshot) (int64, error) {
 	return res.LastInsertId()
 }
 
-const snapshotCols = `id, cluster, ts, node, path, size_bytes, sha256, keys, talos_version, k8s_version, source, status`
+const snapshotCols = `id, cluster, ts, node, path, size_bytes, sha256, keys, talos_version, k8s_version, source, status, offsite`
 
 func scanSnapshot(r interface{ Scan(...any) error }) (*Snapshot, error) {
 	var sn Snapshot
-	if err := r.Scan(&sn.ID, &sn.Cluster, &sn.TS, &sn.Node, &sn.Path, &sn.SizeBytes, &sn.SHA256, &sn.Keys, &sn.TalosVersion, &sn.K8sVersion, &sn.Source, &sn.Status); err != nil {
+	if err := r.Scan(&sn.ID, &sn.Cluster, &sn.TS, &sn.Node, &sn.Path, &sn.SizeBytes, &sn.SHA256, &sn.Keys, &sn.TalosVersion, &sn.K8sVersion, &sn.Source, &sn.Status, &sn.Offsite); err != nil {
 		return nil, err
 	}
 	return &sn, nil
@@ -66,6 +67,11 @@ func (s *Store) GetSnapshot(ctx context.Context, id int64) (*Snapshot, error) {
 		return nil, fmt.Errorf("snapshot %d: %w", id, ErrNotFound)
 	}
 	return sn, err
+}
+
+func (s *Store) SetSnapshotOffsite(ctx context.Context, id int64, key string) error {
+	_, err := s.db.ExecContext(ctx, `UPDATE snapshots SET offsite = ? WHERE id = ?`, key, id)
+	return err
 }
 
 func (s *Store) SetSnapshotStatus(ctx context.Context, id int64, status string) error {

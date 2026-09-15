@@ -5,7 +5,7 @@ import { PoolsEditor } from '../../components/PoolsEditor'
 import { WarningLine } from '../create/steps'
 import { operations, reloadClusters, toast, watch } from '../../store'
 import { Tabs } from '../../components/Tabs'
-import { ConfirmDialog, ErrorBox, Field, KeyValue, MaintenanceNotice, Notice, Pill, Section } from '../../components/ui'
+import { ConfirmDialog, ErrorBox, Field, MaintenanceNotice, Notice, Pill, Section } from '../../components/ui'
 import type { ClusterCtx } from './ClusterPage'
 
 export function Settings({ ctx }: { ctx: ClusterCtx }) {
@@ -32,7 +32,7 @@ export function Settings({ ctx }: { ctx: ClusterCtx }) {
 
   return (
     <div class="flex flex-col gap-6">
-      <Section title="Declaration" help="cluster.yaml is the source of truth. Saving changes only the declaration; Apply node configs pushes machine-level changes (endpoint, VIP, CIDRs, extensions, versions used for new nodes) to every node. Add-ons are reviewed under Add-ons → Plan.">
+      <Section title="Declaration" actions={<span class="text-[12px] text-muted num">created {new Date(cluster.createdAt).toLocaleDateString()} · changed {fmt.when(cluster.updatedAt)}</span>} help="cluster.yaml is the source of truth. Saving changes only the declaration; Apply node configs pushes machine-level changes (endpoint, VIP, CIDRs, extensions, versions used for new nodes) to every node. Add-ons are reviewed under Add-ons → Plan.">
         <ErrorBox error={error} />
         <Tabs active={tab} onSelect={(t) => setTab(t as any)} tabs={[{ id: 'form', label: 'Form' }, { id: 'yaml', label: 'YAML' }]} />
         {tab === 'form' && (
@@ -98,17 +98,6 @@ export function Settings({ ctx }: { ctx: ClusterCtx }) {
       </Section>
 
       <CredentialsSection name={name} />
-
-      <Section title="Identity">
-        <div class="panel p-4">
-          <KeyValue rows={[
-            ['Schematic', <span class="mono text-[12px] break-all">{spec.schematicID}</span>],
-            ['Nodes', `${spec.nodes.length} (${cps} control plane${cps === 1 ? '' : 's'}) — edit under Nodes`],
-            ['Created', new Date(cluster.createdAt).toLocaleString()],
-            ['Last changed', new Date(cluster.updatedAt).toLocaleString()],
-          ]} />
-        </div>
-      </Section>
 
       <Section title="Export" help="Native Talos artefacts (secrets.yaml, talosconfig, kubeconfig, machine configs) plus an OpenTofu root for the siderolabs/talos provider: everything needed to run this cluster without Kubit.">
         <div class="flex gap-2">

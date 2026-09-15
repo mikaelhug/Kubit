@@ -18,6 +18,9 @@ type Store struct {
 }
 
 // Open creates dir (0700) if needed, opens dir/kubit.db and applies migrations.
+// Crypto exposes the sealer for file-level users (backups, snapshots).
+func (s *Store) Crypto() *Crypto { return s.crypto }
+
 func Open(dir string, crypto *Crypto) (*Store, error) {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return nil, err
@@ -164,6 +167,8 @@ var migrations = []string{
 		status        TEXT NOT NULL DEFAULT 'ok'      -- ok | corrupt | missing
 	);
 	CREATE INDEX snapshots_cluster_ts ON snapshots (cluster, ts);`,
+	// v8: off-site copy key per snapshot ("" = not copied).
+	`ALTER TABLE snapshots ADD COLUMN offsite TEXT NOT NULL DEFAULT '';`,
 }
 
 func (s *Store) migrate(ctx context.Context) error {

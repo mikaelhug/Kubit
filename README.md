@@ -148,7 +148,10 @@ overlapping, VIP or MetalLB range taken by another stored cluster).
 `~/.kubit/kubit.db` (SQLite, WAL). Secret columns (secrets bundle, talosconfig,
 kubeconfig, per-node machine config) are AES-256-GCM sealed with a 32-byte master key
 kept in the macOS Keychain as service `kubit` / account `master-key`.
-`KUBIT_MASTER_KEY` (base64) overrides the keyring.
+`KUBIT_MASTER_KEY` (base64) overrides everything; a `master.key` file (0600) in
+`$KUBIT_HOME` is used when present or when no keyring is reachable (headless Linux,
+systemd units) and is minted there automatically. `kubit serve` logs which source it
+used; back that up (`kubit key export`).
 
 ## Discovery
 
@@ -190,7 +193,10 @@ single-node upgrade to the pool's installer when the extension set differs),
 one, then restarts the kubelet on workers or reboots control planes — etcd and the
 static pods keep the old address until restart; refused for the no-VIP endpoint node). `PUT
 /clusters/{name}/pools` edits pools; `POST /config/design` proposes a declaration for a
-set of machines (control planes = the most alike, smallest, non-KVM machines; VIP
+set of machines (control planes = bare metal before VMs — a hypervisor is one failure
+domain, detected from SMBIOS and shown as a VM/metal pill —, then the most alike,
+smallest, non-KVM machines; lint `control-planes-on-vms` when two or more control
+planes are virtual; VIP
 `.250` and MetalLB `.200-.220` in the nodes' /24) and `POST /config/lint` returns
 warnings for any declaration.
 
@@ -295,8 +301,33 @@ previous status into events with a severity: `talos.unreachable`/`talos.back`,
 `etcd.unhealthy`/`etcd.members`/`etcd.leader`, `talos.version`/`kubelet.version`,
 `lb.assigned`/`lb.lost`, `node.removed`. A recovery event acknowledges the alert it
 clears. The first observation after a daemon start reports only what is currently
-wrong, so restarts do not replay history. `GET /clusters/{name}/status` serves the
-watcher's latest result; `?fresh=true` forces a live query.
+wrong, so restarts do not replay history, and an alert that is already open for the
+same object and kind is never raised twice. `GET /clusters/{name}/status` serves the
+watcher's latest result; `?fresh=true` forces a live query; it carries `observedAt`,
+`lastSnapshotAt` and `snapshotInterval` so the Overview's *Observer* card shows how
+far behind the watcher is.
+
+### Service health (what runs in the cluster)
+
+Every `--service-interval` (default 4× the watch interval, 60 s) the watcher lists
+workloads, pods, claims, services and ingresses (`Manager.ServiceHealth`) and applies
+the rules in `internal/watch/services.go`. Nothing is installed in the cluster; the
+API server already knows all of this. Alerts carry the object as
+`kind/namespace/name` and auto-resolve when the object recovers or is deleted:
+
+| alert | when | clears with |
+|---|---|---|
+| `workload.unavailable` | Deployment/DaemonSet/StatefulSet ready < desired, ≥ 5 min old, on two consecutive collections | `workload.available` |
+| `pod.crashloop` | container waiting in `CrashLoopBackOff`, or ≥ 3 restarts within 10 min | `pod.recovered` |
+| `pvc.pending` | claim Pending for ≥ 5 min | `pvc.bound` |
+| `service.no-endpoints` | selector service with no ready endpoint for ≥ 5 min | `service.endpoints` |
+| `ingress.no-address` | MetalLB on, Ingress without an address for ≥ 5 min | `ingress.address` |
+| `lb.pool-exhausted` (critical) | every MetalLB pool address allocated | `lb.pool-free` |
+
+Kubit settings → *Ignore namespaces* silences these for e.g. `dev`/`ci`. The
+Overview alert rows link to the object; Workloads, Network and Storage rows carry a
+pill while an alert is open. `GET /clusters/{name}/service-health` returns the latest
+collection and the open alerts.
 
 ## etcd snapshots and disaster recovery
 
@@ -342,6 +373,39 @@ gone, LB addresses and workloads intact, ~3 minutes end to end.
 - **Audit log** — `audit_log` (every administrative action) is listed under Activity
   and each cluster's Operations tab, with CSV export.
 
+## Off-site copies and the heartbeat
+
+Kubit settings → *Off-site copies* names a second home for the DR material: a
+**directory** (any mounted SMB/NFS share, USB disk or synced folder) or an
+**S3-compatible bucket** (AWS, MinIO, Backblaze B2, Wasabi, Hetzner; secret key sealed
+at rest). Every etcd snapshot is copied there as it is taken (`offsite` step; a failed
+copy never fails the snapshot but raises `offsite.failed`, cleared by the next
+success), local pruning removes the remote copy too, and once a day a sealed Kubit
+backup (`backups/<ts>.kubitbak`, kept to *Keep daily Kubit backups*) is uploaded as the
+`kubit.backup` operation. *Test target* does a write/read/delete round trip; the
+Backups tab shows which snapshots have a copy. Everything off-site stays sealed —
+`kubit key export` must be kept somewhere else again.
+
+*Heartbeat (hours)* sends a summary to the alert sinks regardless of severity: per
+cluster its state, open alerts and last snapshot age; the off-site status; and any
+Talos/Kubernetes update available (also shown as a notice on each Overview). A
+heartbeat that stops arriving means the daemon is down — the dead-man's switch.
+
+## Running as a service
+
+A cluster never depends on Kubit: Talos and Kubernetes run on their own and `cluster
+export` hands over everything. Keeping the daemon running only adds the observer
+features — alerts, scheduled etcd snapshots, watcher history — and the UI shows when
+they lapse (Observer card, `backup.stale`). `kubit service install [--addr]` writes a
+user unit and starts it at login: `~/Library/LaunchAgents/dev.kubit.serve.plist`
+(launchd, `KeepAlive`, log in `~/.kubit/log/serve.log`) on macOS,
+`~/.config/systemd/user/kubit.service` on Linux (`--system` for
+`/etc/systemd/system`, run as root; `loginctl enable-linger` keeps a user unit alive
+while logged out). `service status` / `service uninstall` manage it; the unit sets
+`KUBIT_SERVICE=1`, shown as "service" in the status bar. `kubit serve` stops cleanly
+on SIGTERM: running operations are recorded as cancelled, the listener drains and
+the WAL is checkpointed.
+
 ## Backup and restore
 
 `kubit backup -o file.kubitbak` (or Settings → Download backup) writes a tar.gz of
@@ -378,5 +442,7 @@ virtualisation in the VMs); ArgoCD and cert-manager add-ons.
 - [x] M5 — add-on cards join cluster.yaml, tofu state (Helm release/chart/app version, status) and namespace readiness into one state (disabled/pending/deploying/ready/degraded/failed/orphaned); Configure dialog edits enabled/MetalLB range/Helm `values` (server-validated YAML) into cluster.yaml; `platform.<addon>.values` flows to `helm_release.values` only when set; Settings has a Form tab (endpoint, VIP, CIDRs, extensions, scheduling) beside YAML — verified: enabled ArgoCD with `server.replicas: 1` via UI → plan → reviewed apply → ArgoCD answering on its MetalLB IP; cert-manager verified in M1
 - [~] M6 — Inventory: Adopt… opens the target cluster's add-node dialog preselected; PXE page reads the separate `kubit pxe` process's `/status.json` (server state, per-MAC boot stages dhcp → ipxe → kernel, log) and shows the exact sudo command when it is not running; Kubit Settings (`settings` table: factory URL, poll interval, discovery subnets, default MetalLB range, PXE status URL — applied live); `kubit backup`/`restore`/`key export` and a Download backup button — verified: backup restored into a fresh KUBIT_HOME manages the live cluster. **PXE boot itself is unverified** (see NOTES/backlog.md): pending real hardware
 - [x] M8 — Onboarding & identity: machines keyed by MAC (migration v7, `ips_seen`, UUID/serial, WoL flag), node pools (role/labels/taints/extensions/disk policy → per-pool schematic), per-node DHCP or static addressing (+VLAN), cluster nameservers/NTP, `config.Design`/`Lint`, 5-step create wizard (Machines → Design → Network → Platform → Review), rename / move-to-pool / re-address operations, Inventory by machine with Retire and Wake-on-LAN, `/machines/<mac>` pages. Verified on 4 VMs: wizard with a `sandbox` pool (label + taint, static `.150`), rename, DHCP→static re-address of a control plane (reboot path) and static→static of a worker (kubelet-restart path). **Not exercised:** the `machine.ip-changed` path with a real DHCP lease change (vmnet leases are sticky; unit-tested in `internal/watch`), pool moves with a different extension set (re-image path shares `UpgradeNode`)
-- [x] M9 — Lifecycle safety: scheduled/verified/sealed etcd snapshots with restore drill (verified live), credential inventory + rotation (verified), upgrade pre-checks + pre-upgrade snapshot (verified: refuses cordoned node and unpublished Talos version; passes on healthy `lab`), maintenance windows (verified 409/override), alert forwarding via webhook (verified with a local receiver; SMTP untested) and audit UI. Application-layer add-ons (storage, monitoring) are intentionally left to Argo CD.
+- [x] M9 — Lifecycle safety: scheduled/verified/sealed etcd snapshots with restore drill (verified live), credential inventory + rotation (verified), upgrade pre-checks + pre-upgrade snapshot (verified: refuses cordoned node and unpublished Talos version; passes on healthy `lab`), maintenance windows (verified 409/override), alert forwarding via webhook (verified with a local receiver; SMTP verified in M10) and audit UI. Application-layer add-ons (storage, monitoring) are intentionally left to Argo CD.
+- [x] M10 — Service health & always-on: workload alerts from the API server (`internal/watch/services.go`: crashloop, unavailable workload, pending PVC, service without endpoints, ingress without address, exhausted MetalLB pool; age-gated, auto-resolving, deduplicated across restarts, ignore-namespaces setting), object links and row pills in the console, `GET …/service-health`; `kubit service install|status|uninstall` (launchd / systemd --user / --system), `master.key` file fallback for hosts without a keyring, SIGTERM drain + WAL checkpoint, Observer card (watcher freshness + last snapshot) and service/foreground indicator; SMTP with STARTTLS / implicit TLS / none via an explicit client. Verified on `lab`: crashloop, unavailable deployment, pending PVC, empty service and pool-exhaustion alerts raised, forwarded to a local webhook and resolved on delete/free; `kubit service install` → launchd running as "service" → uninstall; SIGTERM shutdown; SMTP delivery to a local receiver (plain mode; STARTTLS/465 code paths untested against a real provider). Not exercised: the systemd unit on a real Linux host (rendering is unit-tested); the `master.key` fallback beyond its unit test
+- [x] M11 — Off-site & dead-man's switch: `internal/offsite` (directory and S3 targets, atomic dir writes, probe, retention), snapshot copy step + `offsite.failed`/`offsite.ok`, daily sealed Kubit backup upload (`kubit.backup` operation), settings section with test/copy-now/status, Backups tab off-site column, heartbeat summary incl. updates available, Overview update notice; also: sidebar tree and cluster Operations tab removed (Activity has a cluster filter), Overview events limited to alerts + recoveries. Verified: dir target round trip, snapshot copied, three backups pruned to two, heartbeat delivered to the webhook. Not exercised: a real S3 endpoint (minio-go; probe/list/put paths are straightforward but untested against a live bucket)
 - [ ] M7 — tests, CI, packaging, docs

@@ -211,6 +211,24 @@ func (s *Server) runOperation(cluster, kind string, request any, fn opFunc) (int
 	return id, nil
 }
 
+// Drain cancels every running operation and waits (bounded) for them to record their
+// cancelled state, so a daemon stop leaves no operation stuck in "running".
+func (s *Server) Drain(timeout time.Duration) {
+	s.cancels.Range(func(_, v any) bool {
+		v.(context.CancelFunc)()
+		return true
+	})
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		n := 0
+		s.cancels.Range(func(_, _ any) bool { n++; return true })
+		if n == 0 {
+			return
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+}
+
 // cancelOperation stops a running operation; returns false if none is running.
 func (s *Server) cancelOperation(id int64) bool {
 	v, ok := s.cancels.Load(id)

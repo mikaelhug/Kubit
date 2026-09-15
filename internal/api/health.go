@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/mikael/kubit/internal/cluster"
+	"github.com/mikael/kubit/internal/config"
 	"github.com/mikael/kubit/internal/store"
 	"github.com/mikael/kubit/internal/watch"
 	"github.com/siderolabs/talos/pkg/machinery/constants"
@@ -27,6 +28,8 @@ func (s *Server) AttachWatcher(ctx context.Context, w *watch.Watcher) {
 		s.hub.publish(Message{Kind: "status", Cluster: name, Status: st})
 		s.maybeScheduleSnapshot(ctx, name, st)
 		s.certCheck.every(name, time.Hour, func() { s.checkCertificates(ctx, name) })
+		s.maybeOffsiteBackup(ctx)
+		s.maybeHeartbeat(ctx)
 	}
 	w.OnEvent = func(e store.EventRow) {
 		s.hub.publish(Message{Kind: "health", Cluster: e.Cluster, Health: &e})
@@ -38,10 +41,29 @@ func (s *Server) AttachWatcher(ctx context.Context, w *watch.Watcher) {
 func (s *Server) healthRoutes() {
 	r := s.mux
 	r.HandleFunc("GET /api/v1/clusters/{name}/samples", s.handleSamples)
+	r.HandleFunc("GET /api/v1/clusters/{name}/service-health", s.handleServiceHealth)
 	r.HandleFunc("GET /api/v1/clusters/{name}/events", s.handleEvents2)
 	r.HandleFunc("POST /api/v1/clusters/{name}/events/ack", s.handleAckAll)
 	r.HandleFunc("POST /api/v1/events/{id}/ack", s.handleAck)
 	r.HandleFunc("GET /api/v1/versions", s.handleVersions)
+}
+
+// handleServiceHealth returns the watcher's latest in-cluster collection (nil until
+// the first one) with the open workload alerts.
+func (s *Server) handleServiceHealth(w http.ResponseWriter, r *http.Request) {
+	name := r.PathValue("name")
+	var latest *cluster.ServiceHealth
+	if s.watcher != nil {
+		latest = s.watcher.LatestServices(name)
+	}
+	open, _ := s.store.Events(r.Context(), name, 500, true)
+	alerts := []store.EventRow{}
+	for _, e := range open {
+		if strings.Contains(e.Node, "/") {
+			alerts = append(alerts, e)
+		}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"latest": latest, "alerts": alerts})
 }
 
 func (s *Server) handleSamples(w http.ResponseWriter, r *http.Request) {
@@ -125,6 +147,53 @@ func (s *Server) handleVersions(w http.ResponseWriter, r *http.Request) {
 		v.KubernetesMinor = append(v.KubernetesMinor, "v"+strconv.Itoa(major)+"."+strconv.Itoa(minor-i))
 	}
 	writeJSON(w, http.StatusOK, v)
+}
+
+// latestStableTalos is the newest non-prerelease Talos the factory publishes ("" if
+// the factory cannot be reached); cached for an hour.
+func (s *Server) latestStableTalos(ctx context.Context) string {
+	s.versionsMu.Lock()
+	defer s.versionsMu.Unlock()
+	if time.Since(s.versionsAt) < time.Hour {
+		return s.latestTalos
+	}
+	s.versionsAt = time.Now()
+	s.latestTalos = ""
+	list, err := s.manager.Factory.Versions(ctx)
+	if err != nil {
+		return ""
+	}
+	for _, t := range list {
+		if strings.HasPrefix(t, "v1.") && splitVer(t).pre == "" && (s.latestTalos == "" || versionLess(s.latestTalos, t)) {
+			s.latestTalos = t
+		}
+	}
+	return s.latestTalos
+}
+
+// updatesAvailable lists "cluster: Talos vX → vY" lines for the heartbeat.
+func (s *Server) updatesAvailable(ctx context.Context) []string {
+	latest := s.latestStableTalos(ctx)
+	k8s := "v" + constants.DefaultKubernetesVersion
+	rows, _ := s.store.ListClusters(ctx)
+	var out []string
+	for _, row := range rows {
+		c, err := config.Parse(row.Spec)
+		if err != nil {
+			continue
+		}
+		var parts []string
+		if latest != "" && versionLess(c.Spec.TalosVersion, latest) {
+			parts = append(parts, "Talos "+c.Spec.TalosVersion+" → "+latest)
+		}
+		if versionLess(c.Spec.KubernetesVersion, k8s) {
+			parts = append(parts, "Kubernetes "+c.Spec.KubernetesVersion+" → "+k8s)
+		}
+		if len(parts) > 0 {
+			out = append(out, row.Name+": "+strings.Join(parts, ", "))
+		}
+	}
+	return out
 }
 
 func parseMinor(v string) (int, int) {

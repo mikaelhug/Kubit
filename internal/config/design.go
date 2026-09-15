@@ -17,6 +17,9 @@ type Machine struct {
 	CPUs     int    `json:"cpus"`
 	MemBytes uint64 `json:"memBytes"`
 	KVM      bool   `json:"kvm"`
+	// Virtual: a VM. Several VMs usually share one host, so control planes prefer
+	// bare metal.
+	Virtual bool `json:"virtual"`
 	// Disks are install candidates, largest first (dev path and size).
 	Disks []MachineDisk `json:"disks"`
 	Model string        `json:"model,omitempty"`
@@ -34,10 +37,14 @@ type MachineDisk struct {
 func Design(name string, machines []Machine, opts DesignOptions) (*Cluster, []Warning) {
 	topo := Recommend(len(machines))
 	ordered := append([]Machine(nil), machines...)
-	// Control planes: the most alike, smallest machines; KVM-capable ones are worth more
-	// as workers (runsc-kvm) when there are workers to be had.
+	// Control planes: bare metal before VMs (a hypervisor is one failure domain),
+	// then the most alike, smallest machines; KVM-capable ones are worth more as
+	// workers (runsc-kvm) when there are workers to be had.
 	sort.SliceStable(ordered, func(i, j int) bool {
 		a, b := ordered[i], ordered[j]
+		if a.Virtual != b.Virtual {
+			return !a.Virtual
+		}
 		if topo.Workers > 0 && a.KVM != b.KVM {
 			return !a.KVM
 		}
@@ -137,6 +144,15 @@ func Lint(c *Cluster, machines []Machine) []Warning {
 	byMAC := map[string]Machine{}
 	for _, m := range machines {
 		byMAC[strings.ToLower(m.MAC)] = m
+	}
+	virtualCPs := 0
+	for _, n := range c.ControlPlanes() {
+		if m, ok := byMAC[strings.ToLower(n.MAC)]; ok && m.Virtual {
+			virtualCPs++
+		}
+	}
+	if virtualCPs >= 2 {
+		warn("warn", "control-planes-on-vms", "", "%d control planes are virtual machines; if they share a hypervisor, one host failure takes etcd quorum with it. Spread them over hosts or use bare metal.", virtualCPs)
 	}
 	var subnet netip.Prefix
 	for _, n := range c.Spec.Nodes {

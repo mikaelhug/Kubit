@@ -31,8 +31,22 @@
 - Re-addressing a control plane reboots it (etcd/static pods bind the old address); a
   gentler path would restart etcd + kubelet services only, if Talos updates the etcd
   peer URL on service restart. Not investigated.
-- SMTP alert forwarding is untested against a real server (only the webhook path was
-  exercised). STARTTLS is whatever net/smtp negotiates; no implicit-TLS (465) option.
+- SMTP forwarding verified only in plain mode against a local receiver; STARTTLS and
+  implicit-TLS paths need a run against a real provider (Gmail/Fastmail app password).
+- `kubit service install` on Linux (systemd --user / --system) and the `master.key`
+  fallback have unit tests but no run on a real Linux host yet; do it with the first
+  Linux deployment (an always-on NUC is the intended home for the daemon).
+- Off-site S3 target untested against a real bucket (MinIO in a container would do);
+  the directory target is verified. Restoring *from* the off-site copy is manual today
+  (download the `.kubitbak`/snapshot and use `kubit restore` / the Backups tab) — a
+  "restore from off-site" button would close the loop.
+- Events with an empty cluster (Kubit backup failures) are forwarded but not shown in
+  any cluster's Overview; a small "Kubit" notice on Settings or the status bar is missing.
+- Workload alert rules are fixed (5 min age gate, 3 restarts / 10 min); make them
+  per-cluster settings if a workload legitimately restarts often (e.g. batch jobs).
+- Info-level events (node.ready, api.back, …) accumulate unacked in the events table;
+  they are hidden from the alert list but the count grows. Auto-ack info events
+  older than a day.
 - Restore of a control plane whose `ip:` has changed since the snapshot was taken is
   not handled (snapshot carries the old Node objects; kubelets re-register, but the
   old Node entries linger until deleted).

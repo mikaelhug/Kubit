@@ -20,6 +20,7 @@ type Workload struct {
 	Available bool   `json:"available"`
 	Images    string `json:"images"`
 	Age       string `json:"age"`
+	AgeSec    int64  `json:"ageSec"`
 	Selector  string `json:"selector,omitempty"`
 }
 
@@ -27,33 +28,34 @@ type Workload struct {
 func (c *Client) Workloads(ctx context.Context) ([]Workload, error) {
 	var out []Workload
 	age := func(t metav1.Time) string { return metav1.Now().Sub(t.Time).Truncate(1e9).String() }
+	secs := func(t metav1.Time) int64 { return int64(metav1.Now().Sub(t.Time).Seconds()) }
 	deps, err := c.AppsV1().Deployments("").List(ctx, metav1.ListOptions{})
 	if err != nil {
 		return nil, err
 	}
 	for _, d := range deps.Items {
-		out = append(out, Workload{Kind: "Deployment", Namespace: d.Namespace, Name: d.Name, Ready: d.Status.ReadyReplicas, Desired: *d.Spec.Replicas, Available: d.Status.AvailableReplicas == *d.Spec.Replicas, Images: images(d.Spec.Template.Spec), Age: age(d.CreationTimestamp), Selector: metav1.FormatLabelSelector(d.Spec.Selector)})
+		out = append(out, Workload{Kind: "Deployment", Namespace: d.Namespace, Name: d.Name, Ready: d.Status.ReadyReplicas, Desired: *d.Spec.Replicas, Available: d.Status.AvailableReplicas == *d.Spec.Replicas, Images: images(d.Spec.Template.Spec), Age: age(d.CreationTimestamp), AgeSec: secs(d.CreationTimestamp), Selector: metav1.FormatLabelSelector(d.Spec.Selector)})
 	}
 	dss, err := c.AppsV1().DaemonSets("").List(ctx, metav1.ListOptions{})
 	if err != nil {
 		return nil, err
 	}
 	for _, d := range dss.Items {
-		out = append(out, Workload{Kind: "DaemonSet", Namespace: d.Namespace, Name: d.Name, Ready: d.Status.NumberReady, Desired: d.Status.DesiredNumberScheduled, Available: d.Status.NumberReady == d.Status.DesiredNumberScheduled, Images: images(d.Spec.Template.Spec), Age: age(d.CreationTimestamp), Selector: metav1.FormatLabelSelector(d.Spec.Selector)})
+		out = append(out, Workload{Kind: "DaemonSet", Namespace: d.Namespace, Name: d.Name, Ready: d.Status.NumberReady, Desired: d.Status.DesiredNumberScheduled, Available: d.Status.NumberReady == d.Status.DesiredNumberScheduled, Images: images(d.Spec.Template.Spec), Age: age(d.CreationTimestamp), AgeSec: secs(d.CreationTimestamp), Selector: metav1.FormatLabelSelector(d.Spec.Selector)})
 	}
 	sts, err := c.AppsV1().StatefulSets("").List(ctx, metav1.ListOptions{})
 	if err != nil {
 		return nil, err
 	}
 	for _, d := range sts.Items {
-		out = append(out, Workload{Kind: "StatefulSet", Namespace: d.Namespace, Name: d.Name, Ready: d.Status.ReadyReplicas, Desired: *d.Spec.Replicas, Available: d.Status.ReadyReplicas == *d.Spec.Replicas, Images: images(d.Spec.Template.Spec), Age: age(d.CreationTimestamp), Selector: metav1.FormatLabelSelector(d.Spec.Selector)})
+		out = append(out, Workload{Kind: "StatefulSet", Namespace: d.Namespace, Name: d.Name, Ready: d.Status.ReadyReplicas, Desired: *d.Spec.Replicas, Available: d.Status.ReadyReplicas == *d.Spec.Replicas, Images: images(d.Spec.Template.Spec), Age: age(d.CreationTimestamp), AgeSec: secs(d.CreationTimestamp), Selector: metav1.FormatLabelSelector(d.Spec.Selector)})
 	}
 	jobs, err := c.BatchV1().Jobs("").List(ctx, metav1.ListOptions{})
 	if err != nil {
 		return nil, err
 	}
 	for _, j := range jobs.Items {
-		out = append(out, Workload{Kind: "Job", Namespace: j.Namespace, Name: j.Name, Ready: j.Status.Succeeded, Desired: 1, Available: j.Status.Succeeded > 0, Images: images(j.Spec.Template.Spec), Age: age(j.CreationTimestamp)})
+		out = append(out, Workload{Kind: "Job", Namespace: j.Namespace, Name: j.Name, Ready: j.Status.Succeeded, Desired: 1, Available: j.Status.Succeeded > 0, Images: images(j.Spec.Template.Spec), Age: age(j.CreationTimestamp), AgeSec: secs(j.CreationTimestamp)})
 	}
 	sort.Slice(out, func(i, j int) bool {
 		if out[i].Namespace != out[j].Namespace {
@@ -91,7 +93,7 @@ func (c *Client) Pods(ctx context.Context, namespace, selector string) ([]PodSum
 }
 
 func podSummary(p *corev1.Pod) PodSummary {
-	ps := PodSummary{Namespace: p.Namespace, Name: p.Name, Phase: string(p.Status.Phase), Node: p.Spec.NodeName, Age: metav1.Now().Sub(p.CreationTimestamp.Time).Truncate(1e9).String()}
+	ps := PodSummary{Namespace: p.Namespace, Name: p.Name, Phase: string(p.Status.Phase), Node: p.Spec.NodeName, Age: metav1.Now().Sub(p.CreationTimestamp.Time).Truncate(1e9).String(), AgeSec: int64(metav1.Now().Sub(p.CreationTimestamp.Time).Seconds())}
 	ready := 0
 	for _, cs := range p.Status.ContainerStatuses {
 		if cs.Ready {

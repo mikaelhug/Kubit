@@ -55,6 +55,7 @@ type PodSummary struct {
 	CPUMilli   int64    `json:"cpuMilli"`        // requests
 	MemBytes   int64    `json:"memBytes"`
 	Age        string   `json:"age"`
+	AgeSec     int64    `json:"ageSec"`
 	UsageCPU   int64    `json:"usageCpuMilli,omitempty"`
 	UsageMem   int64    `json:"usageMemBytes,omitempty"`
 }

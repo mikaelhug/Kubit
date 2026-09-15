@@ -34,8 +34,11 @@ type Inventory struct {
 	UUID         string `json:"uuid,omitempty"`
 	Serial       string `json:"serial,omitempty"`
 	KVM          bool   `json:"kvm"`
-	Disks        []Disk `json:"disks"`
-	Links        []Link `json:"links"`
+	// Virtual is set from the SMBIOS vendor strings: a VM shares its host's failure
+	// domain, which matters for control-plane placement.
+	Virtual bool   `json:"virtual"`
+	Disks   []Disk `json:"disks"`
+	Links   []Link `json:"links"`
 	// Fields below are only filled on configured (mTLS) nodes.
 	BootTime   string      `json:"bootTime,omitempty"`
 	Extensions []Extension `json:"extensions,omitempty"`
@@ -106,6 +109,7 @@ func (c *Client) Inspect(ctx context.Context) (*Inventory, error) {
 	if si, err := safe.StateGetByID[*hardware.SystemInformation](ctx, c.COSI, hardware.SystemInformationID); err == nil {
 		inv.Manufacturer = si.TypedSpec().Manufacturer
 		inv.Product = si.TypedSpec().ProductName
+		inv.Virtual = IsVirtual(inv.Manufacturer, inv.Product)
 		inv.UUID = si.TypedSpec().UUID
 		inv.Serial = si.TypedSpec().SerialNumber
 	}
@@ -223,4 +227,15 @@ func (c *Client) exists(ctx context.Context, path string) bool {
 			return status.Code(err) != codes.Unknown && status.Code(err) != codes.NotFound
 		}
 	}
+}
+
+// IsVirtual recognises the common hypervisors from SMBIOS manufacturer/product.
+func IsVirtual(manufacturer, product string) bool {
+	m := strings.ToLower(manufacturer + " " + product)
+	for _, hint := range []string{"qemu", "kvm", "vmware", "virtualbox", "innotek", "xen", "virtual machine", "apple virtualization", "parallels", "bochs", "proxmox", "hetzner vserver", "openstack", "amazon ec2", "google compute engine", "nutanix"} {
+		if strings.Contains(m, hint) {
+			return true
+		}
+	}
+	return false
 }

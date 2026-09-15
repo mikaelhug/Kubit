@@ -1,15 +1,18 @@
 import { LocationProvider, Router, Route, useLocation } from 'preact-iso'
-import { useEffect } from 'preact/hooks'
+import { useEffect, useState } from 'preact/hooks'
+import { api } from './api'
 import { clusters, connect, connected, drawerHeight, drawerOpen, running } from './store'
 import { Pill, stateTone } from './components/ui'
 import { ActivityDrawer } from './components/ActivityDrawer'
 import { Toasts } from './components/Toasts'
+import { Palette, Shortcuts, ThemeToggle } from './components/Palette'
 import { ClusterPage } from './pages/cluster/ClusterPage'
 import { NewCluster } from './pages/create/NewCluster'
 import { NodePage } from './pages/Node'
 import { Operations } from './pages/Operations'
 import { Inventory } from './pages/fleet/Inventory'
 import { Pxe } from './pages/fleet/Pxe'
+import { GettingStarted } from './pages/GettingStarted'
 import { KubitSettings } from './pages/KubitSettings'
 
 export function App() {
@@ -17,6 +20,8 @@ export function App() {
   return (
     <LocationProvider>
       <Shell />
+      <Palette />
+      <Shortcuts />
       <Toasts />
     </LocationProvider>
   )
@@ -24,7 +29,7 @@ export function App() {
 
 const sections = [
   ['overview', 'Overview'], ['nodes', 'Nodes'], ['workloads', 'Workloads'], ['network', 'Network'],
-  ['storage', 'Storage'], ['addons', 'Add-ons'], ['backups', 'Backups'], ['operations', 'Operations'], ['settings', 'Settings'],
+  ['storage', 'Storage'], ['addons', 'Add-ons'], ['backups', 'Backups'], ['settings', 'Settings'],
 ] as const
 export type Section = typeof sections[number][0]
 export const sectionList = sections
@@ -45,31 +50,22 @@ function Shell() {
         </a>
         <div class="px-4 pt-4 pb-1 label">Clusters</div>
         {list.map((c) => (
-          <div key={c.name}>
-            <a href={`/clusters/${c.name}/overview`} class={`mx-2 rounded-md px-2 py-1.5 flex items-center justify-between hover:bg-panel-2 ${activeCluster === c.name && !path.includes('/overview') ? '' : activeCluster === c.name ? 'bg-panel-2' : ''}`}>
-              <span class="truncate font-medium">{c.name}</span>
-              <Pill tone={stateTone(c.state)}>{c.state}</Pill>
-            </a>
-            {activeCluster === c.name && c.name !== 'new' && (
-              <div class="ml-4 mb-1 border-l border-border">
-                {sections.map(([id, label]) => (
-                  <a key={id} href={`/clusters/${c.name}/${id}`} class={`block ml-2 rounded-md px-2 py-1 text-[13px] hover:bg-panel-2 ${path === `/clusters/${c.name}/${id}` || path.startsWith(`/clusters/${c.name}/${id}/`) ? 'bg-panel-2 text-text' : 'text-muted'}`}>{label}</a>
-                ))}
-              </div>
-            )}
-          </div>
+          <a key={c.name} href={`/clusters/${c.name}/overview`} class={`mx-2 rounded-md px-2 py-1.5 flex items-center justify-between hover:bg-panel-2 ${activeCluster === c.name ? 'bg-panel-2' : ''}`}>
+            <span class="truncate font-medium">{c.name}</span>
+            <Pill tone={stateTone(c.state)}>{c.state}</Pill>
+          </a>
         ))}
         <a href="/clusters/new" class={`mx-2 mt-1 rounded-md px-2 py-1.5 text-accent hover:bg-panel-2 ${path === '/clusters/new' ? 'bg-panel-2' : ''}`}>+ New cluster</a>
         <div class="px-4 pt-5 pb-1 label">Fleet</div>
         <NavLink href="/fleet/inventory" path={path}>Inventory</NavLink>
-        <NavLink href="/fleet/pxe" path={path}>PXE boot</NavLink>
         <div class="px-4 pt-5 pb-1 label">Kubit</div>
         <NavLink href="/operations" path={path}>Activity {running.value.length > 0 && <Pill tone="warn">{running.value.length}</Pill>}</NavLink>
         <NavLink href="/settings" path={path}>Settings</NavLink>
         <div class="mt-auto px-4 py-2.5 text-[11px] text-muted border-t border-border flex items-center gap-2">
           <span class={`inline-block h-1.5 w-1.5 rounded-full ${connected.value ? 'bg-good' : 'bg-bad'}`} />
           {connected.value ? 'live' : 'reconnecting…'}
-          <span class="ml-auto">a: activity</span>
+          <DaemonMode />
+          <span class="ml-auto flex items-center gap-2"><ThemeToggle /><button class="hover:text-text" title="Jump to… (⌘K)" onClick={() => window.dispatchEvent(new KeyboardEvent('keydown', { key: 'k', metaKey: true }))}>⌘K</button><button class="hover:text-text" title="Keyboard shortcuts" onClick={() => window.dispatchEvent(new KeyboardEvent('keydown', { key: '?' }))}>?</button></span>
         </div>
       </nav>
       <main class="flex-1 min-w-0 overflow-auto" style={{ paddingBottom: pad }}>
@@ -82,6 +78,7 @@ function Shell() {
           <Route path="/machines/:mac" component={NodePage} />
           <Route path="/fleet/inventory" component={Inventory} />
           <Route path="/fleet/pxe" component={Pxe} />
+          <Route path="/start" component={GettingStarted} />
           <Route path="/operations" component={Operations} />
           <Route path="/operations/:id" component={Operations} />
           <Route path="/settings" component={KubitSettings} />
@@ -100,11 +97,13 @@ function NavLink({ href, path, children }: { href: string; path: string; childre
 
 function Home() {
   if (clusters.value.length > 0) return null
-  return (
-    <div class="p-10 max-w-xl flex flex-col gap-3">
-      <h1 class="text-xl font-semibold">No clusters yet</h1>
-      <p class="text-muted">Boot machines from a Talos ISO or over PXE, discover them, and create a cluster.</p>
-      <a href="/clusters/new" class="btn btn-primary self-start">Create a cluster</a>
-    </div>
-  )
+  return <GettingStarted />
+}
+
+/** Whether the daemon is a supervised service (alerts and snapshots keep running unattended) or a foreground process. */
+function DaemonMode() {
+  const [v, setV] = useState<{ service?: boolean; startedAt?: string } | null>(null)
+  useEffect(() => { api.version().then(setV).catch(() => {}) }, [connected.value])
+  if (!v) return null
+  return <span title={v.startedAt ? `daemon up since ${new Date(v.startedAt).toLocaleString()}` : ''}>· {v.service ? 'service' : 'foreground'}</span>
 }

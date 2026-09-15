@@ -21,6 +21,7 @@ type Service struct {
 	Endpoints   int      `json:"endpoints"` // ready addresses behind the service
 	Selector    string   `json:"selector,omitempty"`
 	Age         string   `json:"age"`
+	AgeSec      int64    `json:"ageSec"`
 }
 
 type Ingress struct {
@@ -31,6 +32,7 @@ type Ingress struct {
 	Addresses []string      `json:"addresses,omitempty"`
 	TLSHosts  []string      `json:"tlsHosts,omitempty"`
 	Age       string        `json:"age"`
+	AgeSec    int64         `json:"ageSec"`
 }
 
 type IngressRule struct {
@@ -71,7 +73,7 @@ func (c *Client) Services(ctx context.Context) ([]Service, error) {
 	}
 	out := make([]Service, 0, len(list.Items))
 	for _, s := range list.Items {
-		sv := Service{Namespace: s.Namespace, Name: s.Name, Type: string(s.Spec.Type), ClusterIP: s.Spec.ClusterIP, Age: metav1.Now().Sub(s.CreationTimestamp.Time).Truncate(1e9).String(), Endpoints: ready[s.Namespace+"/"+s.Name]}
+		sv := Service{Namespace: s.Namespace, Name: s.Name, Type: string(s.Spec.Type), ClusterIP: s.Spec.ClusterIP, Age: metav1.Now().Sub(s.CreationTimestamp.Time).Truncate(1e9).String(), AgeSec: int64(metav1.Now().Sub(s.CreationTimestamp.Time).Seconds()), Endpoints: ready[s.Namespace+"/"+s.Name]}
 		for _, ing := range s.Status.LoadBalancer.Ingress {
 			if ing.IP != "" {
 				sv.ExternalIPs = append(sv.ExternalIPs, ing.IP)
@@ -104,7 +106,7 @@ func (c *Client) Ingresses(ctx context.Context) ([]Ingress, error) {
 	}
 	out := make([]Ingress, 0, len(list.Items))
 	for _, ing := range list.Items {
-		i := Ingress{Namespace: ing.Namespace, Name: ing.Name, Age: metav1.Now().Sub(ing.CreationTimestamp.Time).Truncate(1e9).String(), Rules: []IngressRule{}}
+		i := Ingress{Namespace: ing.Namespace, Name: ing.Name, Age: metav1.Now().Sub(ing.CreationTimestamp.Time).Truncate(1e9).String(), AgeSec: int64(metav1.Now().Sub(ing.CreationTimestamp.Time).Seconds()), Rules: []IngressRule{}}
 		if ing.Spec.IngressClassName != nil {
 			i.Class = *ing.Spec.IngressClassName
 		}

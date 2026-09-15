@@ -112,6 +112,12 @@ export function MaintenanceNotice({ cluster }: { cluster: string }) {
   return <Notice tone="warn">Outside the maintenance window <span class="mono">{state.window}{state.timezone ? ` ${state.timezone}` : ''}</span>{state.next ? `; it next opens ${new Date(state.next).toLocaleString()}` : ''}. Confirming runs it anyway.</Notice>
 }
 
+/** Small warning marker for a table row that has an open watcher alert. */
+export function AlertPill({ e }: { e?: { severity: string; message: string; kind: string } }) {
+  if (!e) return null
+  return <Pill tone={e.severity === 'critical' ? 'bad' : 'warn'} title={e.message}>{e.kind.split('.')[1]}</Pill>
+}
+
 export function Field({ label, children, hint }: { label: string; children: ComponentChildren; hint?: string }) {
   return (
     <label class="flex flex-col gap-1">

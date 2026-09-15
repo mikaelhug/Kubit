@@ -1,7 +1,8 @@
 import { useEffect, useState } from 'preact/hooks'
 import { api, fmt, podLogsUrl, type PodEvent, type PodSummary, type Workload } from '../../api'
 import { DataTable, type Column } from '../../components/DataTable'
-import { Dialog, ErrorBox, Notice, Pill, Section, StatusDot } from '../../components/ui'
+import { AlertPill, Dialog, ErrorBox, Notice, Pill, Section, StatusDot } from '../../components/ui'
+import { nsFromQuery, openAlert } from '../../store'
 import { Tabs } from '../../components/Tabs'
 import { LogStream } from '../../components/LogStream'
 import type { ClusterCtx } from './ClusterPage'
@@ -11,13 +12,14 @@ const phaseTone = (p: string) => p === 'Running' || p === 'Succeeded' ? 'good' :
 export function Workloads({ ctx }: { ctx: ClusterCtx }) {
   const { name } = ctx
   const [workloads, setWorkloads] = useState<Workload[]>([])
+  const [loaded, setLoaded] = useState(false)
   const [pods, setPods] = useState<PodSummary[]>([])
-  const [ns, setNs] = useState('')
+  const [ns, setNs] = useState(nsFromQuery())
   const [error, setError] = useState<string | null>(null)
   const [pod, setPod] = useState<PodSummary | null>(null)
   const [view, setView] = useState<'controllers' | 'pods'>('controllers')
   const load = () => {
-    api.workloads(name).then(setWorkloads).catch((e) => setError(e.message))
+    api.workloads(name).then(setWorkloads).catch((e) => setError(e.message)).finally(() => setLoaded(true))
     api.pods(name).then(setPods).catch((e) => setError(e.message))
   }
   useEffect(() => { load(); const t = setInterval(load, 15000); return () => clearInterval(t) }, [name]) // eslint-disable-line
@@ -29,14 +31,14 @@ export function Workloads({ ctx }: { ctx: ClusterCtx }) {
   const wcols: Column<Workload>[] = [
     { id: 'ns', header: 'Namespace', sort: (w) => w.namespace, cell: (w) => w.namespace },
     { id: 'kind', header: 'Kind', sort: (w) => w.kind, cell: (w) => w.kind },
-    { id: 'name', header: 'Name', sort: (w) => w.name, cell: (w) => <button class="font-medium hover:underline text-left" onClick={() => { setNs(w.namespace); setView('pods') }}>{w.name}</button> },
+    { id: 'name', header: 'Name', sort: (w) => w.name, cell: (w) => <span class="flex items-center gap-2"><button class="font-medium hover:underline text-left" onClick={() => { setNs(w.namespace); setView('pods') }}>{w.name}</button><AlertPill e={openAlert(name, w.kind, w.namespace, w.name)} /></span> },
     { id: 'ready', header: 'Ready', sort: (w) => w.ready / Math.max(1, w.desired), cell: (w) => <span class="flex items-center gap-2"><StatusDot tone={w.available ? 'good' : w.ready > 0 ? 'warn' : 'bad'} /><span class="num">{w.ready}/{w.desired}</span></span> },
     { id: 'images', header: 'Images', text: (w) => w.images, cell: (w) => <span class="mono text-[12px] text-muted truncate inline-block max-w-[420px]" title={w.images}>{w.images}</span> },
     { id: 'age', header: 'Age', cell: (w) => <span class="num text-muted">{w.age}</span> },
   ]
   const pcols: Column<PodSummary>[] = [
     { id: 'ns', header: 'Namespace', sort: (p) => p.namespace, cell: (p) => p.namespace },
-    { id: 'name', header: 'Pod', sort: (p) => p.name, mono: true, cell: (p) => <button class="hover:underline text-left" onClick={() => setPod(p)}>{p.name}</button> },
+    { id: 'name', header: 'Pod', sort: (p) => p.name, mono: true, cell: (p) => <span class="flex items-center gap-2"><button class="hover:underline text-left" onClick={() => setPod(p)}>{p.name}</button><AlertPill e={openAlert(name, 'Pod', p.namespace, p.name)} /></span> },
     { id: 'phase', header: 'Phase', sort: (p) => p.phase, cell: (p) => <Pill tone={phaseTone(p.phase)}>{p.phase}</Pill> },
     { id: 'ready', header: 'Ready', cell: (p) => <span class="num">{p.ready}</span> },
     { id: 'restarts', header: 'Restarts', align: 'right', sort: (p) => p.restarts, cell: (p) => <span class={p.restarts > 3 ? 'text-warn' : ''}>{p.restarts}</span> },
@@ -58,8 +60,8 @@ export function Workloads({ ctx }: { ctx: ClusterCtx }) {
         <ErrorBox error={error} />
         {unhealthy > 0 && <Notice tone="warn">{unhealthy} controller{unhealthy === 1 ? '' : 's'} below desired replicas.</Notice>}
         <Tabs active={view} onSelect={(v) => setView(v as any)} tabs={[{ id: 'controllers', label: 'Controllers', badge: wl.length }, { id: 'pods', label: 'Pods', badge: pl.length }]} />
-        {view === 'controllers' && <DataTable id="workloads" columns={wcols} rows={wl} rowKey={(w) => `${w.kind}/${w.namespace}/${w.name}`} defaultSort={{ id: 'ns', dir: 'asc' }} />}
-        {view === 'pods' && <DataTable id="pods" columns={pcols} rows={pl} rowKey={(p) => `${p.namespace}/${p.name}`} defaultSort={{ id: 'ns', dir: 'asc' }} />}
+        {view === 'controllers' && <DataTable loading={!loaded} id="workloads" columns={wcols} rows={wl} rowKey={(w) => `${w.kind}/${w.namespace}/${w.name}`} defaultSort={{ id: 'ns', dir: 'asc' }} />}
+        {view === 'pods' && <DataTable loading={!loaded} id="pods" columns={pcols} rows={pl} rowKey={(p) => `${p.namespace}/${p.name}`} defaultSort={{ id: 'ns', dir: 'asc' }} />}
       </Section>
       {pod && <PodDialog cluster={name} pod={pod} onClose={() => setPod(null)} />}
     </>

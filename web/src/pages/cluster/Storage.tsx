@@ -1,7 +1,8 @@
 import { useEffect, useState } from 'preact/hooks'
 import { api, fmt, type StorageView } from '../../api'
 import { DataTable, type Column } from '../../components/DataTable'
-import { ErrorBox, Notice, Pill, Section } from '../../components/ui'
+import { AlertPill, ErrorBox, Notice, Pill, Section } from '../../components/ui'
+import { openAlert } from '../../store'
 import type { ClusterCtx } from './ClusterPage'
 
 type SC = StorageView['classes'][number]
@@ -32,7 +33,7 @@ export function Storage({ ctx }: { ctx: ClusterCtx }) {
   ]
   const ccols: Column<PVC>[] = [
     { id: 'ns', header: 'Namespace', sort: (c) => c.namespace, cell: (c) => c.namespace },
-    { id: 'name', header: 'Claim', sort: (c) => c.name, cell: (c) => <span class="font-medium">{c.name}</span> },
+    { id: 'name', header: 'Claim', sort: (c) => c.name, cell: (c) => <span class="flex items-center gap-2"><span class="font-medium">{c.name}</span><AlertPill e={openAlert(name, 'PersistentVolumeClaim', c.namespace, c.name)} /></span> },
     { id: 'phase', header: 'Phase', cell: (c) => <Pill tone={c.phase === 'Bound' ? 'good' : 'warn'}>{c.phase}</Pill> },
     { id: 'req', header: 'Requested', align: 'right', cell: (c) => fmt.bytes(c.requestedBytes) },
     { id: 'cap', header: 'Capacity', align: 'right', cell: (c) => c.capacityBytes ? fmt.bytes(c.capacityBytes) : '—' },
@@ -45,13 +46,13 @@ export function Storage({ ctx }: { ctx: ClusterCtx }) {
       <ErrorBox error={error} />
       {view && view.classes.length === 0 && <Notice tone="warn">No StorageClass: PersistentVolumeClaims cannot be provisioned. A storage add-on (Longhorn or local-path) is planned as a platform card.</Notice>}
       <Section title={`Storage classes (${view?.classes.length ?? 0})`}>
-        <DataTable search={false} columns={scols} rows={view?.classes ?? []} rowKey={(c) => c.name} empty="None." />
+        <DataTable loading={!view && !error} search={false} columns={scols} rows={view?.classes ?? []} rowKey={(c) => c.name} empty="None." />
       </Section>
       <Section title={`Persistent volume claims (${view?.claims.length ?? 0})`}>
-        <DataTable id="pvcs" columns={ccols} rows={view?.claims ?? []} rowKey={(c) => c.namespace + '/' + c.name} empty="No claims." />
+        <DataTable loading={!view && !error} id="pvcs" columns={ccols} rows={view?.claims ?? []} rowKey={(c) => c.namespace + '/' + c.name} empty="No claims." />
       </Section>
       <Section title={`Persistent volumes (${view?.volumes.length ?? 0})`}>
-        <DataTable id="pvs" columns={vcols} rows={view?.volumes ?? []} rowKey={(v) => v.name} empty="No volumes." />
+        <DataTable loading={!view && !error} id="pvs" columns={vcols} rows={view?.volumes ?? []} rowKey={(v) => v.name} empty="No volumes." />
       </Section>
     </div>
   )

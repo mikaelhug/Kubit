@@ -74,3 +74,42 @@ func TestOverlaps(t *testing.T) {
 		t.Errorf("got %v", got)
 	}
 }
+
+// Two EliteDesks, two VMs on one KVM host, one standalone box: the metal machines
+// take the control plane even though the VMs are smaller.
+func TestDesignPrefersBareMetalControlPlanes(t *testing.T) {
+	d := []config.MachineDisk{{DevPath: "/dev/sda", SizeBytes: 256 << 30, Transport: "sata"}}
+	ms := []config.Machine{
+		{IP: "10.0.0.21", MAC: "aa:aa:aa:aa:aa:21", Arch: "amd64", CPUs: 8, MemBytes: 32 << 30, KVM: true, Disks: d, Model: "HP EliteDesk 800 G6"},
+		{IP: "10.0.0.22", MAC: "aa:aa:aa:aa:aa:22", Arch: "amd64", CPUs: 8, MemBytes: 32 << 30, KVM: true, Disks: d, Model: "HP EliteDesk 800 G6"},
+		{IP: "10.0.0.23", MAC: "aa:aa:aa:aa:aa:23", Arch: "amd64", CPUs: 2, MemBytes: 4 << 30, Virtual: true, Disks: d, Model: "QEMU Standard PC"},
+		{IP: "10.0.0.24", MAC: "aa:aa:aa:aa:aa:24", Arch: "amd64", CPUs: 2, MemBytes: 4 << 30, Virtual: true, Disks: d, Model: "QEMU Standard PC"},
+		{IP: "10.0.0.25", MAC: "aa:aa:aa:aa:aa:25", Arch: "amd64", CPUs: 4, MemBytes: 8 << 30, Disks: d, Model: "Intel NUC"},
+	}
+	c, warnings := config.Design("office", ms, config.DesignOptions{})
+	cps := map[string]bool{}
+	for _, n := range c.ControlPlanes() {
+		cps[n.MAC] = true
+	}
+	for _, mac := range []string{"aa:aa:aa:aa:aa:21", "aa:aa:aa:aa:aa:22", "aa:aa:aa:aa:aa:25"} {
+		if !cps[mac] {
+			t.Errorf("bare-metal %s should be a control plane; control planes: %v", mac, cps)
+		}
+	}
+	for _, w := range warnings {
+		if w.Code == "control-planes-on-vms" {
+			t.Errorf("no VM control planes expected, got %+v", w)
+		}
+	}
+	// With only VMs available the lint says so.
+	vms := ms[2:4]
+	vms = append(vms, config.Machine{IP: "10.0.0.26", MAC: "aa:aa:aa:aa:aa:26", Arch: "amd64", CPUs: 2, MemBytes: 4 << 30, Virtual: true, Disks: d})
+	_, warnings = config.Design("vms", vms, config.DesignOptions{})
+	found := false
+	for _, w := range warnings {
+		found = found || w.Code == "control-planes-on-vms"
+	}
+	if !found {
+		t.Errorf("expected control-planes-on-vms warning, got %+v", warnings)
+	}
+}

@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from 'preact/hooks'
+import { useLocation } from 'preact-iso'
 import { api, type ClusterRow, type Status } from '../../api'
 import { clusters, connected, loadHealth, operations, statuses } from '../../store'
 import { Tabs } from '../../components/Tabs'
@@ -8,7 +9,6 @@ import { Overview } from './Overview'
 import { Nodes } from './Nodes'
 import { Addons } from './Addons'
 import { PlanReview } from './PlanReview'
-import { ClusterOperations } from './ClusterOperations'
 import { Settings } from './Settings'
 import { Placeholder } from './Placeholder'
 import { Workloads } from './Workloads'
@@ -51,22 +51,22 @@ export function ClusterPage({ name, section = 'overview', sub }: { name: string;
           {runningHere.length > 0 && <Pill tone="warn">{runningHere.length} operation{runningHere.length === 1 ? '' : 's'} running</Pill>}
           <span class="mono text-muted text-[12px]">Talos {spec.talosVersion} · Kubernetes {spec.kubernetesVersion} · {spec.controlPlane.endpoint}</span>
         </div>
-        <Tabs active={section} tabs={sectionList.map(([id, label]) => ({ id, label, href: `/clusters/${name}/${id}`, badge: id === 'operations' ? runningHere.length : undefined }))} />
+        <Tabs active={section} tabs={sectionList.map(([id, label]) => ({ id, label, href: `/clusters/${name}/${id}`, badge: id === 'overview' && runningHere.length ? runningHere.length : undefined }))} />
       </header>
       <div class="p-6 flex flex-col gap-5 max-w-[1300px]">
         <ErrorBox error={error} />
-        {renderSection(section as Section, sub, ctx)}
+        {renderSection(section as Section | 'operations', sub, ctx)}
       </div>
     </div>
   )
 }
 
-function renderSection(section: Section, sub: string | undefined, ctx: ClusterCtx) {
+function renderSection(section: Section | 'operations', sub: string | undefined, ctx: ClusterCtx) {
   switch (section) {
     case 'overview': return <Overview ctx={ctx} />
     case 'nodes': return <Nodes ctx={ctx} />
     case 'addons': return sub ? <PlanReview ctx={ctx} planId={Number(sub)} /> : <Addons ctx={ctx} />
-    case 'operations': return <ClusterOperations ctx={ctx} />
+    case 'operations': return <Redirect to={`/operations?cluster=${ctx.name}`} />
     case 'settings': return <Settings ctx={ctx} />
     case 'workloads': return <Workloads ctx={ctx} />
     case 'network': return <Network ctx={ctx} />
@@ -74,4 +74,11 @@ function renderSection(section: Section, sub: string | undefined, ctx: ClusterCt
     case 'backups': return <Backups ctx={ctx} />
     default: return <Placeholder title="Not found" milestone="">Unknown section.</Placeholder>
   }
+}
+
+/** Old per-cluster Operations URLs land on Activity filtered to the cluster. */
+function Redirect({ to }: { to: string }) {
+  const { route } = useLocation()
+  useEffect(() => { route(to, true) }, [to])
+  return null
 }

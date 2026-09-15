@@ -3,11 +3,14 @@ package api
 import (
 	"bytes"
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"fmt"
 	"log"
+	"net"
 	"net/http"
 	"net/smtp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -24,6 +27,11 @@ func (s *Server) forwardEvent(e store.EventRow) {
 	if !severityAtLeast(e.Severity, v.Alerts.MinSeverity) {
 		return
 	}
+	s.deliver(v, e)
+}
+
+// deliver fans one event out to every configured sink, ignoring the severity floor.
+func (s *Server) deliver(v store.Settings, e store.EventRow) {
 	if v.Alerts.WebhookURL != "" {
 		go func() {
 			if err := postWebhook(v.Alerts.WebhookURL, e); err != nil {
@@ -92,7 +100,7 @@ func sendMail(c store.SMTP, e store.EventRow) error {
 	if port == 0 {
 		port = 587
 	}
-	addr := fmt.Sprintf("%s:%d", c.Host, port)
+	addr := net.JoinHostPort(c.Host, strconv.Itoa(port))
 	msg := strings.Join([]string{
 		"From: " + c.From,
 		"To: " + strings.Join(c.To, ", "),
@@ -105,7 +113,62 @@ func sendMail(c store.SMTP, e store.EventRow) error {
 	if c.Username != "" {
 		auth = smtp.PlainAuth("", c.Username, c.Password, c.Host)
 	}
-	return smtp.SendMail(addr, auth, c.From, c.To, []byte(msg))
+	// smtp.SendMail only does opportunistic STARTTLS; implicit TLS (465) and a
+	// deliberate plaintext mode need the client built by hand.
+	var (
+		cl  *smtp.Client
+		err error
+	)
+	dialer := net.Dialer{Timeout: 15 * time.Second}
+	switch c.Mode() {
+	case "tls":
+		conn, derr := tls.DialWithDialer(&dialer, "tcp", addr, &tls.Config{ServerName: c.Host})
+		if derr != nil {
+			return derr
+		}
+		cl, err = smtp.NewClient(conn, c.Host)
+	default:
+		conn, derr := dialer.Dial("tcp", addr)
+		if derr != nil {
+			return derr
+		}
+		cl, err = smtp.NewClient(conn, c.Host)
+		if err == nil && c.Mode() == "starttls" {
+			if ok, _ := cl.Extension("STARTTLS"); !ok {
+				cl.Close()
+				return fmt.Errorf("%s does not offer STARTTLS; choose implicit TLS or none", addr)
+			}
+			err = cl.StartTLS(&tls.Config{ServerName: c.Host})
+		}
+	}
+	if err != nil {
+		return err
+	}
+	defer cl.Close()
+	if auth != nil {
+		if err := cl.Auth(auth); err != nil {
+			return err
+		}
+	}
+	if err := cl.Mail(c.From); err != nil {
+		return err
+	}
+	for _, to := range c.To {
+		if err := cl.Rcpt(to); err != nil {
+			return err
+		}
+	}
+	wc, err := cl.Data()
+	if err != nil {
+		return err
+	}
+	if _, err := wc.Write([]byte(msg)); err != nil {
+		return err
+	}
+	if err := wc.Close(); err != nil {
+		return err
+	}
+	return cl.Quit()
 }
 
 // handleAlertTest sends a synthetic critical event through the configured sinks.

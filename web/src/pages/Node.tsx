@@ -17,7 +17,7 @@ export function NodePage({ ip: ipParam, mac }: { ip?: string; mac?: string }) {
   const [invErr, setInvErr] = useState<string | null>(null)
   const [k8s, setK8s] = useState<NodeDetail | null>(null)
   const [k8sErr, setK8sErr] = useState<string | null>(null)
-  const [tab, setTab] = useState<TabId>('overview')
+  const [tab, setTab] = useState<TabId>(() => (typeof location !== 'undefined' && location.hash === '#actions' ? 'actions' : 'overview'))
   const [error, setError] = useState<string | null>(null)
   const finished = [...operations.value.values()].filter((o) => o.status !== 'running').length
 

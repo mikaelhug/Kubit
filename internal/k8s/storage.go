@@ -36,6 +36,7 @@ type Claim struct {
 	Class     string `json:"class"`
 	Volume    string `json:"volume,omitempty"`
 	Age       string `json:"age"`
+	AgeSec    int64  `json:"ageSec"`
 }
 
 type Storage struct {
@@ -83,7 +84,7 @@ func (c *Client) Storage(ctx context.Context) (*Storage, error) {
 		return nil, err
 	}
 	for _, pvc := range pvcs.Items {
-		cl := Claim{Namespace: pvc.Namespace, Name: pvc.Name, Phase: string(pvc.Status.Phase), Requested: pvc.Spec.Resources.Requests.Storage().Value(), Capacity: pvc.Status.Capacity.Storage().Value(), Volume: pvc.Spec.VolumeName, Age: age(pvc.CreationTimestamp)}
+		cl := Claim{Namespace: pvc.Namespace, Name: pvc.Name, Phase: string(pvc.Status.Phase), Requested: pvc.Spec.Resources.Requests.Storage().Value(), Capacity: pvc.Status.Capacity.Storage().Value(), Volume: pvc.Spec.VolumeName, Age: age(pvc.CreationTimestamp), AgeSec: int64(metav1.Now().Sub(pvc.CreationTimestamp.Time).Seconds())}
 		if pvc.Spec.StorageClassName != nil {
 			cl.Class = *pvc.Spec.StorageClassName
 		}

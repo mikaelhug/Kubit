@@ -6,6 +6,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -26,7 +27,7 @@ func (m *Manager) snapshotDir(name string) string {
 // healthy, verifies it, seals it with the master key and records it. source is
 // manual | schedule | pre-upgrade; scheduled snapshots are pruned to backup.etcd.keep.
 func (m *Manager) SnapshotEtcd(ctx context.Context, name, source string, sink Sink) (*store.Snapshot, error) {
-	sink.plan(Steps("pick", "Find a healthy control plane", "snapshot", "Stream the etcd snapshot", "verify", "Verify and seal", "prune", "Apply retention")...)
+	sink.plan(Steps("pick", "Find a healthy control plane", "snapshot", "Stream the etcd snapshot", "verify", "Verify and seal", "offsite", "Copy off-site", "prune", "Apply retention")...)
 	c, _, err := m.LoadCluster(ctx, name)
 	if err != nil {
 		return nil, err
@@ -141,6 +142,24 @@ func (m *Manager) SnapshotEtcd(ctx context.Context, name, source string, sink Si
 		return nil, err
 	}
 	sn.TS = ts.Format(time.RFC3339)
+	// A failed copy never fails the snapshot: the local file is the primary; the
+	// caller raises offsite.failed so the gap is visible and forwarded.
+	if st, target, oerr := m.Offsite(ctx); errors.Is(oerr, ErrOffsiteOff) {
+		sink.skip("offsite")
+	} else {
+		_ = sink.run("offsite", func() error {
+			if oerr != nil {
+				sink.emit(Warn, "offsite", "", "off-site target unusable: %v", oerr)
+				return oerr
+			}
+			if cerr := m.CopySnapshotOffsite(ctx, st, &sn); cerr != nil {
+				sink.emit(Warn, "offsite", "", "copy to %s failed: %v", target, cerr)
+				return cerr
+			}
+			sink.emit(Info, "offsite", "", "copied to %s as %s", target, sn.Offsite)
+			return nil
+		})
+	}
 	err = sink.run("prune", func() error {
 		removed, err := m.pruneSnapshots(ctx, name, c.Spec.Backup.Etcd.Keep)
 		if err != nil {
@@ -192,6 +211,9 @@ func (m *Manager) DeleteSnapshot(ctx context.Context, id int64) error {
 	}
 	if err := os.Remove(sn.Path); err != nil && !os.IsNotExist(err) {
 		return err
+	}
+	if err := m.deleteSnapshotOffsite(ctx, sn); err != nil {
+		return fmt.Errorf("remote copy %s: %w", sn.Offsite, err)
 	}
 	return m.Store.DeleteSnapshot(ctx, id)
 }

@@ -10,6 +10,7 @@ export type OpStatus = 'running' | 'done' | 'failed' | 'cancelled'
 export interface Operation { id: number; cluster: string; kind: string; status: OpStatus; log?: string; startedAt: string; finishedAt?: string; steps: Step[]; artifact?: unknown; request?: unknown }
 export interface Message { kind: 'event' | 'operation' | 'status' | 'health'; operationId?: number; event?: Event; operation?: Operation; cluster?: string; status?: Status; health?: HealthEvent }
 export interface HealthEvent { id: number; ts: string; cluster: string; node?: string; severity: 'info' | 'warn' | 'critical'; kind: string; message: string; acked: boolean }
+export interface ServiceHealth { collectedAt: string; metallb: boolean; workloads?: { kind: string; namespace: string; name: string; ready: number; desired: number; available: boolean; ageSec: number }[]; pods?: { namespace: string; name: string; node?: string; owner?: string; phase: string; restarts: number; ageSec: number }[]; claims?: { namespace: string; name: string; phase: string; ageSec: number }[]; services?: { namespace: string; name: string; type: string; hasSelector: boolean; endpoints: number; ageSec: number }[]; ingresses?: { namespace: string; name: string; hasAddress: boolean; ageSec: number }[]; pool?: { range: string; total: number; allocated: number } }
 export interface Sample { ts: string; node?: string; cpuMilli: number; cpuCap: number; memBytes: number; memCap: number; pods: number; ready: boolean; reachable: boolean }
 export interface Workload { kind: string; namespace: string; name: string; ready: number; desired: number; available: boolean; images: string; age: string; selector?: string }
 export interface KService { namespace: string; name: string; type: string; clusterIP: string; externalIPs?: string[]; ports: string[]; endpoints: number; selector?: string; age: string }
@@ -23,8 +24,10 @@ export interface AddonStatus {
   readiness?: { namespace: string; ready: number; total: number; detail?: string[] }
   state: 'disabled' | 'pending' | 'deploying' | 'ready' | 'degraded' | 'failed' | 'orphaned'
 }
-export interface AlertSettings { minSeverity: 'info' | 'warn' | 'critical'; webhookUrl: string; smtp: { host: string; port: number; from: string; to: string[]; username: string; password: string; startTLS: boolean } }
-export interface Settings { factoryUrl: string; discoverySubnets: string[]; watchIntervalSec: number; pxeStatusUrl: string; defaultMetalLBRange: string; alerts: AlertSettings }
+export interface AlertSettings { minSeverity: 'info' | 'warn' | 'critical'; webhookUrl: string; smtp: { host: string; port: number; from: string; to: string[]; username: string; password: string; startTLS: boolean; tls?: 'starttls' | 'tls' | 'none' }; ignoreNamespaces: string[]; heartbeatHours: number }
+export interface OffsiteTarget { type: '' | 'dir' | 's3'; prefix: string; dir: string; endpoint: string; bucket: string; region: string; accessKey: string; secretKey: string; insecure: boolean; pathStyle: boolean; keepBackups: number }
+export interface OffsiteStatus { target: string; enabled: boolean; lastBackup?: string; backups: number; snapshots: number; bytes: number; error?: string }
+export interface Settings { factoryUrl: string; discoverySubnets: string[]; watchIntervalSec: number; pxeStatusUrl: string; defaultMetalLBRange: string; alerts: AlertSettings; offsite: OffsiteTarget }
 export interface PxeStatus { running: boolean; statusUrl: string; error?: string; command?: string; startedAt?: string; interface?: string; ip?: string; httpPort?: number; talosVersion?: string; schematicId?: string; boots?: { mac: string; ip?: string; arch?: string; firstSeen: string; lastSeen: string; stage: string; count: number }[]; log?: string[] }
 export interface Versions { talos: string[]; talosSource: string; kubernetesMinors: string[]; kubernetesLatest: string; machinery: string; minTalos: string; note: string }
 
@@ -34,7 +37,7 @@ export interface NodeSpec { hostname: string; ip: string; mac?: string; uuid?: s
 export interface Pool { name: string; role: 'controlplane' | 'worker'; labels?: Record<string, string>; taints?: Record<string, string>; annotations?: Record<string, string>; extensions?: string[]; schematicID?: string; installDisk?: InstallDisk }
 export interface Warning { level: 'info' | 'warn'; code: string; message: string; node?: string }
 export interface AddonSpec { enabled: boolean; values?: Record<string, unknown> }
-export interface Snapshot { id: number; cluster: string; ts: string; node: string; sizeBytes: number; sha256: string; keys: number; talosVersion?: string; k8sVersion?: string; source: 'manual' | 'schedule' | 'pre-upgrade'; status: 'ok' | 'corrupt' | 'missing' }
+export interface Snapshot { id: number; cluster: string; ts: string; node: string; sizeBytes: number; sha256: string; keys: number; talosVersion?: string; k8sVersion?: string; source: 'manual' | 'schedule' | 'pre-upgrade'; status: 'ok' | 'corrupt' | 'missing'; offsite?: string }
 export interface PlatformSpec { metallb: AddonSpec & { range?: string }; ingressNginx: AddonSpec; gvisor: AddonSpec; metricsServer: AddonSpec; certManager: AddonSpec; argocd: AddonSpec }
 export interface ClusterSpec {
   apiVersion: string; kind: string; metadata: { name: string }
@@ -64,7 +67,7 @@ export interface MaintenanceState { window: string; timezone: string; open: bool
 export interface ClusterRow { name: string; state: string; schematicId: string; createdAt: string; updatedAt: string; spec: ClusterSpec }
 
 export interface Inventory {
-  ip: string; hostname?: string; uuid?: string; serial?: string; cpus: number; memoryBytes: number; kvm: boolean; arch: string; talosVersion: string; platform: string; stage: string; manufacturer?: string; product?: string
+  ip: string; hostname?: string; uuid?: string; serial?: string; cpus: number; memoryBytes: number; kvm: boolean; virtual?: boolean; arch: string; talosVersion: string; platform: string; stage: string; manufacturer?: string; product?: string
   disks: { devPath: string; sizeBytes: number; model?: string; transport?: string; rotational: boolean; readonly: boolean; cdrom: boolean }[]
   links: { name: string; mac: string; up: boolean; addresses?: string[] }[]
   bootTime?: string; extensions?: { name: string; version: string; author?: string }[]
@@ -86,6 +89,7 @@ export interface Status {
   etcd: { members: number; expected: number; healthy: boolean; leader?: string; alarms?: string[] }
   totals: { cpuMilli: number; cpuCapMilli: number; memBytes: number; memCapBytes: number; pods: number; podCap: number; nodesReady: number; nodes: number }
   platform?: { appliedAt?: string; outputs?: Record<string, string>; error?: string }
+  observedAt?: string; lastSnapshotAt?: string; snapshotInterval?: string
 }
 export interface Service { id: string; state: string; healthy: boolean; last: string }
 
@@ -119,7 +123,7 @@ async function req<T>(method: string, path: string, body?: unknown): Promise<T> 
 type OpRef = { operationId: number }
 
 export const api = {
-  version: () => req<{ kubit: string }>('GET', '/version'),
+  version: () => req<{ kubit: string; startedAt?: string; service?: boolean; pid?: number }>('GET', '/version'),
   clusters: () => req<ClusterRow[]>('GET', '/clusters'),
   cluster: (name: string) => req<ClusterRow>('GET', `/clusters/${name}`),
   status: (name: string, fresh = false) => req<Status>('GET', `/clusters/${name}/status${fresh ? '?fresh=true' : ''}`),
@@ -130,6 +134,7 @@ export const api = {
   versions: () => req<Versions>('GET', '/versions'),
   saveClusterForm: (name: string, form: ClusterForm) => req<{ yaml: string }>('PUT', `/clusters/${name}/form`, form),
   settings: () => req<Settings>('GET', '/settings'),
+  serviceHealth: (name: string) => req<{ latest: ServiceHealth | null; alerts: HealthEvent[] }>('GET', `/clusters/${name}/service-health`),
   machine: (mac: string) => req<NodeRow>('GET', `/machines/${mac}`),
   retireMachine: (mac: string) => req<void>('DELETE', `/machines/${mac}`),
   setWOL: (mac: string, enabled: boolean) => req<void>('PUT', `/machines/${mac}/wol`, { enabled }),
@@ -144,6 +149,9 @@ export const api = {
   maintenance: (cluster: string) => req<MaintenanceState>('GET', `/clusters/${cluster}/maintenance`),
   audit: (cluster?: string) => req<AuditEntry[]>('GET', '/audit' + (cluster ? `?cluster=${cluster}` : '')),
   testAlerts: () => req<{ ok: boolean; errors: string[] }>('POST', '/settings/alerts/test'),
+  offsiteStatus: () => req<OffsiteStatus>('GET', '/settings/offsite'),
+  offsiteTest: (t: OffsiteTarget) => req<{ ok: boolean; error?: string; roundTripMs?: number; target?: string }>('POST', '/settings/offsite/test', t),
+  offsiteBackup: () => req<OpRef>('POST', '/settings/offsite/backup'),
   snapshots: (cluster: string) => req<Snapshot[]>('GET', `/clusters/${cluster}/snapshots`),
   takeSnapshot: (cluster: string) => req<OpRef>('POST', `/clusters/${cluster}/snapshots`, { source: 'manual' }),
   deleteSnapshot: (cluster: string, id: number) => req<void>('DELETE', `/clusters/${cluster}/snapshots/${id}`),

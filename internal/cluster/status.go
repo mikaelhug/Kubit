@@ -28,6 +28,11 @@ type Status struct {
 	Etcd     EtcdStatus            `json:"etcd"`
 	Totals   Totals                `json:"totals"`
 	Platform *store.PlatformStatus `json:"platform,omitempty"`
+	// ObservedAt is when this status was computed; LastSnapshotAt and
+	// SnapshotInterval let the UI show how far behind the observer is.
+	ObservedAt       string `json:"observedAt"`
+	LastSnapshotAt   string `json:"lastSnapshotAt,omitempty"`
+	SnapshotInterval string `json:"snapshotInterval,omitempty"`
 }
 
 type NodeStatus struct {
@@ -203,6 +208,9 @@ func (m *Manager) Status(ctx context.Context, name string) (*Status, error) {
 		st.Totals.Pods += ns.Pods
 		st.Totals.PodCap += ns.PodCap
 	}
+	st.ObservedAt = time.Now().UTC().Format(time.RFC3339)
+	st.LastSnapshotAt, _ = m.Store.LatestSnapshotTS(ctx, name)
+	st.SnapshotInterval = c.Spec.Backup.Etcd.Interval
 	return st, nil
 }
 

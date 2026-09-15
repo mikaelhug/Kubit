@@ -5,6 +5,7 @@ import { DataTable, type Column } from '../../components/DataTable'
 import { ConfirmDialog, Dialog, ErrorBox, Field, MaintenanceNotice, Pill, Section } from '../../components/ui'
 import { KVEditor } from '../../components/PoolsEditor'
 import { guessGateway } from '../create/net'
+import { isVirtual, modelOf } from '../create/steps'
 import type { ClusterCtx } from './ClusterPage'
 
 export function Nodes({ ctx }: { ctx: ClusterCtx }) {
@@ -149,7 +150,7 @@ function AddNodeDialog({ cluster, onClose, preselect }: { cluster: ClusterRow; o
       <Field label="Discovered machine (maintenance mode)" hint={candidates.length === 0 ? 'No unassigned machines. Run a discovery under Fleet → Inventory first.' : undefined}>
         <select class="input" value={ip} onChange={(e) => setIp((e.target as HTMLSelectElement).value)}>
           <option value="">Select…</option>
-          {candidates.map((c) => <option key={c.mac} value={c.ip}>{c.ip} · {c.mac} · {c.arch} · {c.inventory?.cpus ?? '?'} CPU · {fmt.bytes(c.inventory?.memoryBytes ?? 0)}{c.inventory?.kvm ? ' · kvm' : ''}</option>)}
+          {candidates.map((c) => <option key={c.mac} value={c.ip}>{modelOf(c)} ({isVirtual(c) ? 'VM' : 'metal'}) · {c.ip} · {c.arch} · {c.inventory?.cpus ?? '?'} CPU · {fmt.bytes(c.inventory?.memoryBytes ?? 0)}{c.inventory?.kvm ? ' · kvm' : ''} · {c.mac}</option>)}
         </select>
       </Field>
       <div class="grid grid-cols-2 gap-3">

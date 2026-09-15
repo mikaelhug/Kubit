@@ -26,6 +26,8 @@ interface Props<T> {
   /** Persisted table id for sort/density preferences. */
   id?: string
   toolbar?: ComponentChildren
+  /** Rows are still being fetched: show placeholders instead of the empty message. */
+  loading?: boolean
 }
 
 function read<T>(key: string, fallback: T): T {
@@ -33,7 +35,7 @@ function read<T>(key: string, fallback: T): T {
 }
 
 /** Sortable, searchable table with sticky header; rows beyond 300 are windowed by page. */
-export function DataTable<T>({ columns, rows, rowKey, empty = 'Nothing to show.', search = true, defaultSort, onRowClick, rowClass, id, toolbar }: Props<T>) {
+export function DataTable<T>({ columns, rows, rowKey, empty = 'Nothing to show.', search = true, defaultSort, onRowClick, rowClass, id, toolbar, loading }: Props<T>) {
   const pref = id ? `kubit.table.${id}` : ''
   const [sort, setSort] = useState<{ id: string; dir: 'asc' | 'desc' } | undefined>(pref ? read(pref + '.sort', defaultSort) : defaultSort)
   const [q, setQ] = useState('')
@@ -98,7 +100,8 @@ export function DataTable<T>({ columns, rows, rowKey, empty = 'Nothing to show.'
             </tr>
           </thead>
           <tbody>
-            {visible.length === 0 && <tr><td colSpan={columns.length} class="text-muted !py-6 text-center">{empty}</td></tr>}
+            {visible.length === 0 && loading && [0, 1, 2].map((i) => <tr key={`sk${i}`} aria-hidden="true">{columns.map((c) => <td key={c.id}><span class="inline-block h-3 rounded bg-panel-2 animate-pulse" style={{ width: `${40 + ((i * 7 + c.id.length * 13) % 50)}%` }} /></td>)}</tr>)}
+            {visible.length === 0 && !loading && <tr><td colSpan={columns.length} class="text-muted !py-6 text-center">{empty}</td></tr>}
             {visible.map((r) => (
               <tr key={rowKey(r)} class={`${onRowClick ? 'cursor-pointer hover:bg-panel-2' : ''} ${rowClass?.(r) ?? ''}`} onClick={() => onRowClick?.(r)}>
                 {columns.map((c) => <td key={c.id} class={`${c.align === 'right' ? 'text-right num' : ''} ${c.mono ? 'mono' : ''}`}>{c.cell(r)}</td>)}

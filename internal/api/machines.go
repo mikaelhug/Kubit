@@ -196,7 +196,7 @@ func (s *Server) designMachines(r *http.Request, macs []string) ([]config.Machin
 		}
 		var inv talos.Inventory
 		_ = json.Unmarshal(m.Hardware, &inv)
-		cm := config.Machine{IP: m.IP, MAC: m.MAC, UUID: m.UUID, Arch: config.Arch(m.Arch), CPUs: inv.CPUs, MemBytes: inv.MemoryBytes, KVM: inv.KVM, Model: strings.TrimSpace(inv.Manufacturer + " " + inv.Product)}
+		cm := config.Machine{IP: m.IP, MAC: m.MAC, UUID: m.UUID, Arch: config.Arch(m.Arch), CPUs: inv.CPUs, MemBytes: inv.MemoryBytes, KVM: inv.KVM, Virtual: inv.Virtual || talos.IsVirtual(inv.Manufacturer, inv.Product), Model: strings.TrimSpace(inv.Manufacturer + " " + inv.Product)}
 		if cm.Arch == "" {
 			cm.Arch = config.ArchAMD64
 		}

@@ -11,6 +11,7 @@ import (
 	"io/fs"
 	"net"
 	"net/http"
+	"os"
 	"strconv"
 	"strings"
 	"sync"
@@ -26,22 +27,26 @@ import (
 )
 
 type Server struct {
-	mux       *http.ServeMux
-	version   string
-	manager   *cluster.Manager
-	store     *store.Store
-	hub       *hub
-	locks     clusterLocks
-	cancels   sync.Map // operation id → context.CancelFunc
-	watcher   *watch.Watcher
-	certCheck throttle
-	crypto    *store.Crypto
+	mux         *http.ServeMux
+	version     string
+	manager     *cluster.Manager
+	store       *store.Store
+	hub         *hub
+	locks       clusterLocks
+	cancels     sync.Map // operation id → context.CancelFunc
+	started     time.Time
+	watcher     *watch.Watcher
+	certCheck   throttle
+	versionsMu  sync.Mutex
+	versionsAt  time.Time
+	latestTalos string
+	crypto      *store.Crypto
 	// token, when set, is required as "Authorization: Bearer" on /api (non-loopback binds).
 	token string
 }
 
 func New(version string, m *cluster.Manager, token string, crypto *store.Crypto) *Server {
-	s := &Server{mux: http.NewServeMux(), version: version, manager: m, store: m.Store, hub: newHub(), token: token, crypto: crypto}
+	s := &Server{mux: http.NewServeMux(), version: version, manager: m, store: m.Store, hub: newHub(), token: token, crypto: crypto, started: time.Now()}
 	if v, err := m.Store.GetSettings(contextBackground()); err == nil {
 		m.Factory.BaseURL = v.FactoryURL
 	}
@@ -86,6 +91,7 @@ func New(version string, m *cluster.Manager, token string, crypto *store.Crypto)
 	s.settingsRoutes()
 	s.machineRoutes()
 	s.etcdRoutes()
+	s.offsiteRoutes()
 	s.certRoutes()
 	s.mux.HandleFunc("GET /api/v1/clusters/{name}/maintenance", s.handleMaintenance)
 	dist, _ := fs.Sub(web.Dist, "dist")
@@ -122,7 +128,7 @@ func Loopback(addr string) bool {
 }
 
 func (s *Server) handleVersion(w http.ResponseWriter, _ *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]string{"kubit": s.version})
+	writeJSON(w, http.StatusOK, map[string]any{"kubit": s.version, "startedAt": s.started.UTC().Format(time.RFC3339), "service": os.Getenv("KUBIT_SERVICE") != "", "pid": os.Getpid()})
 }
 
 func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {

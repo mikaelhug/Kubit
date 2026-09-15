@@ -11,6 +11,21 @@ type SetCluster = (fn: (c: ClusterSpec) => ClusterSpec) => void
 const GiB = 1024 ** 3
 
 export function machineOf(draft: Draft, n: NodeSpec) { return draft.machines.find((m) => m.mac === n.mac) }
+
+/** Model name as a human would say it, with the hypervisor made explicit. */
+export function modelOf(m?: NodeRow) {
+  const inv = m?.inventory
+  const name = [inv?.manufacturer, inv?.product].filter(Boolean).join(' ').replace(/\s+/g, ' ').trim()
+  return name || 'Unknown hardware'
+}
+export function isVirtual(m?: NodeRow) {
+  const inv = m?.inventory
+  if (inv?.virtual) return true
+  return /qemu|kvm|vmware|virtualbox|innotek|xen|virtual machine|apple virtualization|parallels|bochs|proxmox/i.test(`${inv?.manufacturer ?? ''} ${inv?.product ?? ''}`)
+}
+export function TypePill({ m }: { m?: NodeRow }) {
+  return isVirtual(m) ? <Pill tone="info" title="Virtual machine: shares its host's failure domain">VM</Pill> : <Pill tone="muted" title="Bare metal">metal</Pill>
+}
 export function installCandidates(m?: NodeRow) { return (m?.inventory?.disks ?? []).filter((d) => !d.readonly && !d.cdrom && d.transport !== 'usb').sort((a, b) => b.sizeBytes - a.sizeBytes) }
 
 export function machineWarnings(m: NodeRow, all: NodeRow[]): string[] {
@@ -51,20 +66,21 @@ export function MachinesStep({ draft, patch, setError }: { draft: Draft; patch: 
       </div>
       <div class="panel overflow-x-auto">
         <table class="data">
-          <thead><tr><th class="pl-4 w-8"><input type="checkbox" checked={draft.machines.length > 0 && chosen.length === draft.machines.length} onChange={(e) => patch({ selected: (e.target as HTMLInputElement).checked ? draft.machines.map((m) => m.mac) : [] })} aria-label="Select all" /></th><th>MAC</th><th>IP</th><th>Arch</th><th>Talos</th><th class="num">CPU</th><th class="num">RAM</th><th>Install disk</th><th>KVM</th><th>Hardware</th><th>Notes</th></tr></thead>
+          <thead><tr><th class="pl-4 w-8"><input type="checkbox" checked={draft.machines.length > 0 && chosen.length === draft.machines.length} onChange={(e) => patch({ selected: (e.target as HTMLInputElement).checked ? draft.machines.map((m) => m.mac) : [] })} aria-label="Select all" /></th><th>Machine</th><th>Type</th><th>Address</th><th>Arch</th><th class="num">CPU</th><th class="num">RAM</th><th>Install disk</th><th>NICs</th><th>Notes</th></tr></thead>
           <tbody>
-            {draft.machines.length === 0 && <tr><td colSpan={11} class="pl-4 text-muted py-3">{scanning ? 'Scanning…' : 'No unassigned machines in maintenance mode. Boot one from a Talos ISO and scan its subnet.'}</td></tr>}
+            {draft.machines.length === 0 && <tr><td colSpan={10} class="pl-4 text-muted py-3">{scanning ? 'Scanning…' : 'No unassigned machines in maintenance mode. Boot one from a Talos ISO and scan its subnet.'}</td></tr>}
             {draft.machines.map((m) => {
               const disks = installCandidates(m)
               const warns = machineWarnings(m, chosen.length ? chosen : draft.machines)
               return (
                 <tr key={m.mac} class="cursor-pointer" onClick={() => toggle(m.mac)}>
                   <td class="pl-4"><input type="checkbox" class="pointer-events-none" checked={draft.selected.includes(m.mac)} readOnly /></td>
-                  <td class="mono">{m.mac}</td><td class="mono">{m.ip}</td><td>{m.arch}</td><td class="mono">{m.talosVersion}</td>
-                  <td class="num">{m.inventory?.cpus ?? '—'}</td><td class="num">{fmt.bytes(m.inventory?.memoryBytes ?? 0)}</td>
-                  <td class="mono">{disks[0] ? `${disks[0].devPath} ${fmt.bytes(disks[0].sizeBytes)}${disks.length > 1 ? ` +${disks.length - 1}` : ''}` : <span class="text-bad">none</span>}</td>
-                  <td>{m.inventory?.kvm ? <Pill tone="good">yes</Pill> : <span class="text-muted">no</span>}</td>
-                  <td class="text-muted truncate max-w-[200px]">{[m.inventory?.manufacturer, m.inventory?.product].filter(Boolean).join(' ') || '—'}</td>
+                  <td class="whitespace-nowrap"><span class="font-medium">{modelOf(m)}</span><br /><span class="text-[11px] text-muted mono">{m.serial ? `${m.serial} · ` : ''}{m.mac} · Talos {m.talosVersion}</span></td>
+                  <td><TypePill m={m} /></td>
+                  <td class="mono">{m.ip}</td><td>{m.arch}</td>
+                  <td class="num">{m.inventory?.cpus ?? '—'}</td><td class="num">{fmt.bytes(m.inventory?.memoryBytes ?? 0)}{m.inventory?.kvm && <span class="text-[10px] text-muted"> · kvm</span>}</td>
+                  <td class="mono">{disks[0] ? <>{disks[0].devPath} {fmt.bytes(disks[0].sizeBytes)}<span class="text-[10px] text-muted"> {disks[0].transport ?? ''}{disks[0].rotational ? ' hdd' : ''}{disks.length > 1 ? ` +${disks.length - 1}` : ''}</span></> : <span class="text-bad">none</span>}</td>
+                  <td class="num">{m.inventory?.links?.length ?? '—'}{(m.inventory?.links?.length ?? 0) > 0 && <span class="text-[10px] text-muted"> · {m.inventory!.links.filter((l) => l.up).length} up</span>}</td>
                   <td>{warns.length ? <span class="text-warn text-[12px]">{warns.join('; ')}</span> : <span class="text-muted">—</span>}</td>
                 </tr>
               )
@@ -117,7 +133,7 @@ export function DesignStep({ draft, setCluster, reset, busy }: { draft: Draft; s
             <button class="btn !py-1" disabled={busy} onClick={() => reset().catch(() => {})}>Reset to proposal</button>
           </span>
         </div>
-        <p class="text-[13px] text-muted">Kubit put the most alike, smallest machines in the control plane and kept KVM-capable ones as workers for gVisor. Change any cell; pools decide role, labels, taints and installer image.</p>
+        <p class="text-[13px] text-muted">Kubit put bare metal before VMs in the control plane (VMs on one host fail together), then the most alike, smallest machines, and kept KVM-capable ones as workers for gVisor. Change any cell; pools decide role, labels, taints and installer image.</p>
       </div>
       <div class="panel overflow-x-auto">
         <table class="data">
@@ -128,7 +144,7 @@ export function DesignStep({ draft, setCluster, reset, busy }: { draft: Draft; s
               const disks = installCandidates(m)
               return (
                 <tr key={n.mac ?? n.ip}>
-                  <td class="pl-4 whitespace-nowrap"><span class="mono">{n.ip}</span><br /><span class="text-[11px] text-muted mono">{n.mac} · {m?.inventory?.cpus ?? '?'} CPU · {fmt.bytes(m?.inventory?.memoryBytes ?? 0)}{n.kvm ? ' · kvm' : ''}</span></td>
+                  <td class="pl-4 whitespace-nowrap"><span class="flex items-center gap-2"><span class="font-medium">{modelOf(m)}</span><TypePill m={m} /></span><span class="text-[11px] text-muted mono">{n.ip} · {n.mac} · {m?.inventory?.cpus ?? '?'} CPU · {fmt.bytes(m?.inventory?.memoryBytes ?? 0)}{n.kvm ? ' · kvm' : ''}</span></td>
                   <td>
                     <select class="input !py-1" value={n.pool} onChange={(e) => { const p = poolOf((e.target as HTMLSelectElement).value)!; updateNode(i, { pool: p.name, role: p.role }) }}>
                       {pools.map((p) => <option key={p.name} value={p.name}>{p.name}{p.role === 'controlplane' ? ' (control plane)' : ''}</option>)}
