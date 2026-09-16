@@ -11,7 +11,6 @@ import { NewCluster } from './pages/create/NewCluster'
 import { NodePage } from './pages/Node'
 import { Operations } from './pages/Operations'
 import { Inventory } from './pages/fleet/Inventory'
-import { Pxe } from './pages/fleet/Pxe'
 import { GettingStarted } from './pages/GettingStarted'
 import { KubitSettings } from './pages/KubitSettings'
 
@@ -78,7 +77,6 @@ function Shell() {
           <Route path="/nodes/:ip" component={NodePage} />
           <Route path="/machines/:mac" component={NodePage} />
           <Route path="/fleet/inventory" component={Inventory} />
-          <Route path="/fleet/pxe" component={Pxe} />
           <Route path="/start" component={GettingStarted} />
           <Route path="/operations" component={Operations} />
           <Route path="/operations/:id" component={Operations} />

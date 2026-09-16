@@ -3,6 +3,7 @@
 package api
 
 import (
+	"context"
 	"crypto/subtle"
 	"encoding/json"
 	"errors"
@@ -14,11 +15,13 @@ import (
 	"net/http"
 	"net/netip"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/mikael/kubit/internal/boot"
 	"github.com/mikael/kubit/internal/cluster"
 	"github.com/mikael/kubit/internal/config"
 	"github.com/mikael/kubit/internal/store"
@@ -43,12 +46,14 @@ type Server struct {
 	versionsAt  time.Time
 	latestTalos string
 	crypto      *store.Crypto
+	feed        *boot.Feed
+	media       *boot.Cache
 	// token, when set, is required as "Authorization: Bearer" on /api (non-loopback binds).
 	token string
 }
 
 func New(version string, m *cluster.Manager, token string, crypto *store.Crypto) *Server {
-	s := &Server{mux: http.NewServeMux(), version: version, manager: m, store: m.Store, hub: newHub(), token: token, crypto: crypto, started: time.Now()}
+	s := &Server{mux: http.NewServeMux(), version: version, manager: m, store: m.Store, hub: newHub(), token: token, crypto: crypto, started: time.Now(), feed: &boot.Feed{Store: m.Store, Port: 8069}, media: boot.NewCache(filepath.Join(m.Home, "cache"))}
 	if v, err := m.Store.GetSettings(contextBackground()); err == nil {
 		m.Factory.BaseURL = v.FactoryURL
 	}
@@ -885,6 +890,17 @@ func writeErr(w http.ResponseWriter, err error) {
 		status = http.StatusBadRequest
 	}
 	writeJSON(w, status, map[string]string{"error": err.Error()})
+}
+
+// ServeFeed runs the installer feed on addr until ctx ends; the port it binds is
+// what the preseed URLs inside boot media point at.
+func (s *Server) ServeFeed(ctx context.Context, addr string) error {
+	if _, port, err := net.SplitHostPort(addr); err == nil {
+		if p, err := strconv.Atoi(port); err == nil {
+			s.feed.Port = p
+		}
+	}
+	return s.feed.Serve(ctx, addr)
 }
 
 // spaHandler serves static assets and falls back to index.html for client-side routes.

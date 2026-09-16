@@ -18,7 +18,7 @@ import (
 )
 
 func serveCmd() *cobra.Command {
-	var addr, token string
+	var addr, bootAddr, token string
 	var interval, serviceInterval time.Duration
 	cmd := &cobra.Command{
 		Use:   "serve",
@@ -54,8 +54,13 @@ func serveCmd() *cobra.Command {
 			}
 			srv.AttachWatcher(ctx, w)
 			hs := &http.Server{Addr: addr, Handler: srv}
-			errc := make(chan error, 1)
+			errc := make(chan error, 2)
 			go func() { errc <- hs.ListenAndServe() }()
+			go func() {
+				if err := srv.ServeFeed(ctx, bootAddr); err != nil {
+					errc <- fmt.Errorf("installer feed on %s: %w", bootAddr, err)
+				}
+			}()
 			select {
 			case err := <-errc:
 				return err
@@ -70,6 +75,7 @@ func serveCmd() *cobra.Command {
 		},
 	}
 	cmd.Flags().StringVar(&addr, "addr", "127.0.0.1:8080", "listen address")
+	cmd.Flags().StringVar(&bootAddr, "boot-addr", "0.0.0.0:8069", "listen address for the installer feed (preseed and progress for lab hosts being installed; no auth)")
 	cmd.Flags().StringVar(&token, "token", "", "API bearer token (generated when binding beyond loopback)")
 	cmd.Flags().DurationVar(&interval, "watch-interval", 15*time.Second, "how often every cluster is polled for health samples and events")
 	cmd.Flags().DurationVar(&serviceInterval, "service-interval", 0, "how often workloads, pods, claims and services are inspected for alerts (default 4× watch-interval)")

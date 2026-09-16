@@ -13,9 +13,11 @@ import (
 
 	"github.com/device-management-toolkit/go-wsman-messages/v2/pkg/wsman"
 	amtboot "github.com/device-management-toolkit/go-wsman-messages/v2/pkg/wsman/amt/boot"
+	"github.com/device-management-toolkit/go-wsman-messages/v2/pkg/wsman/amt/redirection"
 	"github.com/device-management-toolkit/go-wsman-messages/v2/pkg/wsman/cim/boot"
 	"github.com/device-management-toolkit/go-wsman-messages/v2/pkg/wsman/cim/power"
 	"github.com/device-management-toolkit/go-wsman-messages/v2/pkg/wsman/client"
+	"github.com/device-management-toolkit/go-wsman-messages/v2/pkg/wsman/ips/optin"
 )
 
 // Config is how to reach one machine's AMT; the password is sealed by the store.
@@ -48,14 +50,19 @@ const (
 	PowerOff   Action = "off"
 	Reset      Action = "reset"
 	PowerCycle Action = "cycle"
-	// BootPXE forces one network boot on the next start (then on/reset as needed).
-	BootPXE Action = "pxe"
+	// BootMedia boots once from the virtual CD an IDE-R session presents (on or
+	// reset as needed); the session must already be open.
+	BootMedia Action = "media"
+	// BootTalos is the API's request: Kubit attaches the Talos ISO and issues BootMedia.
+	BootTalos Action = "talos"
 )
 
 // Manager abstracts the backend so the API and tests do not depend on WS-Man.
 type Manager interface {
 	Probe(ctx context.Context) (Info, error)
 	Power(ctx context.Context, a Action) error
+	// PrepareRedirection enables IDE-R and switches user consent off; idempotent.
+	PrepareRedirection(ctx context.Context) error
 }
 
 // Open returns the backend for a config.
@@ -153,8 +160,8 @@ func (a *amt) Power(ctx context.Context, act Action) error {
 		state = power.MasterBusReset
 	case PowerCycle:
 		state = power.PowerCycleOffHard
-	case BootPXE:
-		if err := a.forcePXE(m); err != nil {
+	case BootMedia:
+		if err := a.forceCD(m); err != nil {
 			return err
 		}
 		// A powered-off box needs "on"; a running one a reset. Either way one boot.
@@ -176,20 +183,44 @@ func (a *amt) Power(ctx context.Context, act Action) error {
 	return nil
 }
 
-// forcePXE arms a one-shot network boot: plain BIOS boot settings, the PXE boot
-// source, and the boot configuration role set to "IsNext".
-func (a *amt) forcePXE(m wsman.Messages) error {
+// forceCD arms one boot from the IDE-R CD: boot settings with UseIDER, the CD/DVD
+// boot source, and the boot configuration role set to "IsNext".
+func (a *amt) forceCD(m wsman.Messages) error {
 	if _, err := m.AMT.BootSettingData.Put(amtboot.BootSettingDataRequest{
 		ElementName: "Intel(r) AMT Boot Configuration Settings", InstanceID: "Intel(r) AMT:BootSettingData 0",
-		BootMediaIndex: 0, FirmwareVerbosity: 0, IDERBootDevice: 0, OwningEntity: "Intel(r) AMT",
+		BootMediaIndex: 0, FirmwareVerbosity: 0, UseIDER: true, IDERBootDevice: 1, OwningEntity: "Intel(r) AMT",
 	}); err != nil {
 		return fmt.Errorf("boot settings: %w", describe(err))
 	}
-	if _, err := m.CIM.BootConfigSetting.ChangeBootOrder(boot.PXE); err != nil {
+	if _, err := m.CIM.BootConfigSetting.ChangeBootOrder(boot.CD); err != nil {
 		return fmt.Errorf("boot order: %w", describe(err))
 	}
 	if _, err := m.CIM.BootService.SetBootConfigRole("Intel(r) AMT: Boot Configuration Setting 0", 1); err != nil {
 		return fmt.Errorf("boot role: %w", describe(err))
+	}
+	return nil
+}
+
+func (a *amt) PrepareRedirection(ctx context.Context) error {
+	m := a.msgs(ctx)
+	if _, err := m.AMT.RedirectionService.RequestStateChange(redirection.EnableIDERAndSOL); err != nil {
+		return fmt.Errorf("enable IDE-R: %w", describe(err))
+	}
+	cur, err := m.IPS.OptInService.Get()
+	if err != nil {
+		return nil
+	}
+	o := cur.Body.GetAndPutResponse
+	if o.OptInRequired == uint32(optin.OptInRequiredNone) {
+		return nil
+	}
+	if _, err := m.IPS.OptInService.Put(optin.OptInServiceRequest{
+		CreationClassName: o.CreationClassName, ElementName: o.ElementName, Name: o.Name,
+		SystemName: o.SystemName, SystemCreationClassName: o.SystemCreationClassName,
+		OptInCodeTimeout: o.OptInCodeTimeout, OptInDisplayTimeout: o.OptInDisplayTimeout,
+		OptInRequired: int(optin.OptInRequiredNone), OptInState: o.OptInState,
+	}); err != nil {
+		return fmt.Errorf("user consent is enforced on this machine and could not be switched off (%v): set it to none in MEBx", describe(err))
 	}
 	return nil
 }

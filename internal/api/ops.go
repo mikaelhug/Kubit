@@ -24,7 +24,7 @@ type Message struct {
 	Status      *cluster.Status     `json:"status,omitempty"`
 	Health      *store.EventRow     `json:"health,omitempty"`
 	// Scope names the view that changed for kind "refresh" (workloads, network,
-	// storage, nodes, machines, snapshots, addons, certificates, settings, pxe).
+	// storage, nodes, machines, snapshots, addons, certificates, settings).
 	Scope string `json:"scope,omitempty"`
 	// Typed live-state payloads (one is set per kind).
 	ClusterRow *store.ClusterRow `json:"clusterRow,omitempty"`

@@ -5,7 +5,6 @@ import { Field, Notice, Pill } from '../../components/ui'
 import { Tabs } from '../../components/Tabs'
 import { PoolsEditor } from '../../components/PoolsEditor'
 import { LabHostsSection, MakeLabHostDialog } from '../../components/LabHost'
-import { PxeGate } from '../../components/PxeGate'
 import type { Draft } from './NewCluster'
 import { addrOf, guessGateway, inRange, ip4, parseRange, prefixOf, sameSubnet } from './net'
 import { ageSec } from '../../clock'
@@ -72,7 +71,7 @@ export function MachinesStep({ draft, patch, setError }: { draft: Draft; patch: 
   return (
     <>
       <div class="panel p-4 flex flex-col gap-3">
-        <p class="text-[13px] text-muted">Scan for machines in Talos maintenance mode or with Intel AMT. <a class="text-accent hover:underline" href="/start">ISO downloads</a> · <a class="text-accent hover:underline" href="/fleet/pxe">Network boot</a></p>
+        <p class="text-[13px] text-muted">Scan for machines in Talos maintenance mode or with Intel AMT. <a class="text-accent hover:underline" href="/start">ISO downloads</a></p>
         <div class="flex gap-2">
           <input class="input mono" value={targets} onInput={(e) => setTargets((e.target as HTMLInputElement).value)} placeholder="192.168.1.0/24, 10.0.0.5" aria-label="Subnets or addresses to scan" />
           <button class="btn shrink-0" disabled={scanning || !targets.trim()} onClick={() => api.discover(targets.split(/[,\s]+/).filter(Boolean)).then((r) => watch(r, false)).catch((e) => setError(e.message))}>{scanning ? 'Scanning…' : 'Scan'}</button>
@@ -137,11 +136,10 @@ export function AMTMachines() {
   const [busy, setBusy] = useState<Record<string, boolean>>({})
   const [lab, setLab] = useState<NodeRow | null>(null)
   if (rows.length === 0) return null
-  const [gate, setGate] = useState<{ macs: string[] } | null>(null)
   const bootMacs = (macs: string[]) => {
     setBusy((b) => { const n = { ...b }; macs.forEach((m) => { n[m] = true }); return n })
-    Promise.all(macs.map((mac) => api.power(mac, 'pxe').then((r) => watch(r, false))))
-      .catch((e) => { if (e?.code === 'pxe-down') setGate({ macs }); else toast(e.message, 'error') })
+    Promise.all(macs.map((mac) => api.power(mac, 'talos').then((r) => watch(r, false))))
+      .catch((e) => toast(e.message, 'error'))
       .finally(() => setBusy((b) => { const n = { ...b }; macs.forEach((m) => { n[m] = false }); return n }))
   }
   const boot = (m: NodeRow) => bootMacs([m.mac])
@@ -151,7 +149,7 @@ export function AMTMachines() {
       <div class="flex items-center gap-4 px-4 py-2.5 border-b border-border">
         <span class="font-medium">Via Intel AMT</span>
         <span class="text-[12px] text-muted">not running Talos yet</span>
-        <button class="btn btn-primary !py-1 ml-auto shrink-0 whitespace-nowrap" title="One network boot via AMT; the machine appears above in maintenance mode. Needs kubit pxe on this LAN." disabled={!rows.some((m) => m.oobType)} onClick={bootAll}>Boot all into Talos</button>
+        <button class="btn btn-primary !py-1 ml-auto shrink-0 whitespace-nowrap" title="Boots the Talos ISO over AMT; the machine appears above in maintenance mode." disabled={!rows.some((m) => m.oobType)} onClick={bootAll}>Boot all into Talos</button>
       </div>
       <div><table class="data wrap">
         <thead><tr><th class="pl-4">Machine</th><th>Address</th><th>Power</th><th>Credentials</th><th></th></tr></thead>
@@ -162,13 +160,12 @@ export function AMTMachines() {
               <td class="mono">{m.ip}</td>
               <td><Pill tone={m.state === 'off' ? 'muted' : 'info'}>{m.state === 'amt' ? 'other OS / off' : m.state}</Pill></td>
               <td>{m.oobType ? <Pill tone="good">AMT ok</Pill> : <a class="text-accent hover:underline text-[12px]" href={`/machines/${m.mac}#oob`}>set credentials →</a>}</td>
-              <td class="text-right pr-3 whitespace-nowrap"><button class="btn !py-1" title="Install Debian + KVM on it and carve Talos VMs from it" onClick={() => setLab(m)}>Make lab host</button>{' '}<button class="btn btn-primary !py-1" disabled={!m.oobType || busy[m.mac]} title={m.provision ? 'Armed for a network boot; click to boot again' : ''} onClick={() => boot(m)}>{busy[m.mac] ? 'Starting' : 'Boot into Talos'}</button></td>
+              <td class="text-right pr-3 whitespace-nowrap"><button class="btn !py-1" title="Install Debian + KVM on it and carve Talos VMs from it" onClick={() => setLab(m)}>Make lab host</button>{' '}<button class="btn btn-primary !py-1" disabled={!m.oobType || busy[m.mac]} onClick={() => boot(m)}>{busy[m.mac] ? 'Starting' : 'Boot into Talos'}</button></td>
             </tr>
           ))}
         </tbody>
       </table></div>
       {lab && <MakeLabHostDialog m={lab} onClose={() => setLab(null)} />}
-      {gate && <PxeGate what="Boot into Talos" onClose={() => setGate(null)} onReady={() => { const macs = gate.macs; setGate(null); bootMacs(macs) }} />}
     </div>
   )
 }

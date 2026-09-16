@@ -16,15 +16,10 @@ type Settings struct {
 	FactoryURL       string   `json:"factoryUrl"`
 	DiscoverySubnets []string `json:"discoverySubnets"`
 	WatchIntervalSec int      `json:"watchIntervalSec"`
-	PXEStatusURL     string   `json:"pxeStatusUrl"`
 	DefaultMetalLB   string   `json:"defaultMetalLBRange"`
 	Alerts           Alerts   `json:"alerts"`
 	// Offsite is the second home for snapshots and Kubit backups.
 	Offsite offsite.Target `json:"offsite"`
-	// PXEEnrollment: "open" hands Talos to any unknown machine that network-boots
-	// (onboarding a batch); "closed" only to machines Kubit expects (unassigned ones it
-	// has seen, or members armed with Boot into Talos). Members always boot locally.
-	PXEEnrollment string `json:"pxeEnrollment"`
 	// AMT holds default management credentials: discovery uses them to identify
 	// machines that answer on 16992, so vPro boxes show up with model and power
 	// state before Talos ever ran. Password sealed at rest.
@@ -69,7 +64,7 @@ func (c SMTP) Mode() string {
 }
 
 func DefaultSettings() Settings {
-	return Settings{FactoryURL: "https://factory.talos.dev", DiscoverySubnets: []string{}, WatchIntervalSec: 15, PXEStatusURL: "http://127.0.0.1:8069/status.json", Alerts: Alerts{MinSeverity: "warn", SMTP: SMTP{Port: 587, StartTLS: true, TLS: "starttls", To: []string{}}, IgnoreNamespaces: []string{}, HeartbeatHours: 24}, Offsite: offsite.Target{KeepBackups: 14}, PXEEnrollment: "open", AMT: oob.Config{Type: "amt", User: "admin"}}
+	return Settings{FactoryURL: "https://factory.talos.dev", DiscoverySubnets: []string{}, WatchIntervalSec: 15, Alerts: Alerts{MinSeverity: "warn", SMTP: SMTP{Port: 587, StartTLS: true, TLS: "starttls", To: []string{}}, IgnoreNamespaces: []string{}, HeartbeatHours: 24}, Offsite: offsite.Target{KeepBackups: 14}, AMT: oob.Config{Type: "amt", User: "admin"}}
 }
 
 func (s *Store) GetSettings(ctx context.Context) (Settings, error) {

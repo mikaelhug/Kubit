@@ -18,11 +18,11 @@ const serviceLabel = "dev.kubit.serve"
 
 func serviceCmd() *cobra.Command {
 	cmd := &cobra.Command{Use: "service", Short: "Run the daemon as a user service (launchd on macOS, systemd --user on Linux)"}
-	var addr, pxeIface, kubitURL string
-	var system, pxe bool
+	var addr string
+	var system bool
 	install := &cobra.Command{
 		Use:   "install",
-		Short: "Write the unit for `kubit serve` and start it now and at login (--pxe: the root PXE service instead)",
+		Short: "Write the unit for `kubit serve` and start it now and at login",
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			home, err := homeDir()
 			if err != nil {
@@ -34,17 +34,6 @@ func serviceCmd() *cobra.Command {
 			}
 			if bin, err = filepath.EvalSymlinks(bin); err != nil {
 				return err
-			}
-			if pxe {
-				if os.Geteuid() != 0 {
-					return fmt.Errorf("the PXE service binds ports 67/69: run this once with sudo (sudo %s service install --pxe --iface %s)", bin, pxeIface)
-				}
-				path, err := installPXEUnit(unit{Label: pxeLabel, Binary: bin, Home: home, Iface: pxeIface, KubitURL: kubitURL, Log: filepath.Join(home, "log", "pxe.log"), User: os.Getenv("SUDO_USER")})
-				if err != nil {
-					return err
-				}
-				fmt.Fprintf(cmd.OutOrStdout(), "installed %s\nkubit pxe answers on %s for %s; it is safe to leave running (members boot locally, enrollment gate applies)\n", path, pxeIface, kubitURL)
-				return nil
 			}
 			u := unit{Label: serviceLabel, Binary: bin, Addr: addr, Home: home, Log: filepath.Join(home, "log", "serve.log"), User: os.Getenv("USER")}
 			if err := os.MkdirAll(filepath.Dir(u.Log), 0o700); err != nil {
@@ -64,28 +53,10 @@ func serviceCmd() *cobra.Command {
 	}
 	install.Flags().StringVar(&addr, "addr", "127.0.0.1:8080", "listen address for the service")
 	install.Flags().BoolVar(&system, "system", false, "Linux: install a system unit in /etc/systemd/system (run as root; uses KUBIT_HOME of the invoking user)")
-	install.Flags().BoolVar(&pxe, "pxe", false, "install the always-on PXE server as a root service (needs sudo once)")
-	install.Flags().StringVar(&pxeIface, "iface", "en0", "with --pxe: LAN interface to answer on")
-	install.Flags().StringVar(&kubitURL, "kubit-url", "http://127.0.0.1:8080", "with --pxe: the daemon the PXE server asks about each MAC")
 	uninstall := &cobra.Command{
 		Use:   "uninstall",
-		Short: "Stop the service and remove its unit; ~/.kubit is left untouched (--pxe: the PXE service)",
+		Short: "Stop the service and remove its unit; ~/.kubit is left untouched",
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			if pxe {
-				if runtime.GOOS == "darwin" {
-					_ = run("launchctl", "bootout", "system/"+pxeLabel)
-					err := os.Remove("/Library/LaunchDaemons/" + pxeLabel + ".plist")
-					if err != nil && !os.IsNotExist(err) {
-						return err
-					}
-					fmt.Fprintln(cmd.OutOrStdout(), "removed the PXE service")
-					return nil
-				}
-				_ = run("systemctl", "disable", "--now", "kubit-pxe.service")
-				_ = os.Remove("/etc/systemd/system/kubit-pxe.service")
-				fmt.Fprintln(cmd.OutOrStdout(), "removed the PXE service")
-				return nil
-			}
 			path, err := uninstallUnit(system)
 			if err != nil {
 				return err
@@ -95,7 +66,6 @@ func serviceCmd() *cobra.Command {
 		},
 	}
 	uninstall.Flags().BoolVar(&system, "system", false, "Linux: the system unit")
-	uninstall.Flags().BoolVar(&pxe, "pxe", false, "remove the PXE service")
 	status := &cobra.Command{
 		Use:   "status",
 		Short: "Show whether the service is loaded and running",
@@ -112,84 +82,6 @@ func serviceCmd() *cobra.Command {
 
 type unit struct {
 	Label, Binary, Addr, Home, Log, User string
-	Iface, KubitURL                      string
-}
-
-const pxeLabel = "dev.kubit.pxe"
-
-var launchdPXE = template.Must(template.New("pxe").Parse(`<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-  <key>Label</key><string>{{.Label}}</string>
-  <key>ProgramArguments</key>
-  <array>
-    <string>{{.Binary}}</string><string>pxe</string>
-    <string>--iface</string><string>{{.Iface}}</string>
-    <string>--kubit-url</string><string>{{.KubitURL}}</string>
-  </array>
-  <key>EnvironmentVariables</key>
-  <dict><key>KUBIT_HOME</key><string>{{.Home}}</string></dict>
-  <key>RunAtLoad</key><true/>
-  <key>KeepAlive</key><true/>
-  <key>StandardOutPath</key><string>{{.Log}}</string>
-  <key>StandardErrorPath</key><string>{{.Log}}</string>
-</dict>
-</plist>
-`))
-
-var systemdPXE = template.Must(template.New("pxe-unit").Parse(`[Unit]
-Description=Kubit PXE server (proxyDHCP + TFTP + HTTP boot assets)
-After=network-online.target
-Wants=network-online.target
-
-[Service]
-ExecStart={{.Binary}} pxe --iface {{.Iface}} --kubit-url {{.KubitURL}}
-Environment=KUBIT_HOME={{.Home}}
-Restart=on-failure
-RestartSec=3
-
-[Install]
-WantedBy=multi-user.target
-`))
-
-// installPXEUnit writes and starts the root PXE service (launchd system daemon on
-// macOS, system unit on Linux). The PXE process reads Kubit's cache under KUBIT_HOME
-// of the invoking user, so the log and cache stay with that user's install.
-func installPXEUnit(u unit) (string, error) {
-	if err := os.MkdirAll(filepath.Dir(u.Log), 0o755); err != nil {
-		return "", err
-	}
-	switch runtime.GOOS {
-	case "darwin":
-		path := "/Library/LaunchDaemons/" + pxeLabel + ".plist"
-		body, err := execTemplate(launchdPXE, u)
-		if err != nil {
-			return "", err
-		}
-		if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
-			return "", err
-		}
-		_ = run("launchctl", "bootout", "system/"+pxeLabel)
-		if err := run("launchctl", "bootstrap", "system", path); err != nil {
-			return path, err
-		}
-		return path, run("launchctl", "kickstart", "-k", "system/"+pxeLabel)
-	case "linux":
-		path := "/etc/systemd/system/kubit-pxe.service"
-		body, err := execTemplate(systemdPXE, u)
-		if err != nil {
-			return "", err
-		}
-		if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
-			return "", err
-		}
-		if err := run("systemctl", "daemon-reload"); err != nil {
-			return path, err
-		}
-		return path, run("systemctl", "enable", "--now", "kubit-pxe.service")
-	}
-	return "", fmt.Errorf("unsupported OS %s", runtime.GOOS)
 }
 
 var launchdPlist = template.Must(template.New("plist").Parse(`<?xml version="1.0" encoding="UTF-8"?>

@@ -27,8 +27,7 @@ export interface AddonStatus {
 export interface AlertSettings { minSeverity: 'info' | 'warn' | 'critical'; webhookUrl: string; smtp: { host: string; port: number; from: string; to: string[]; username: string; password: string; startTLS: boolean; tls?: 'starttls' | 'tls' | 'none' }; ignoreNamespaces: string[]; heartbeatHours: number }
 export interface OffsiteTarget { type: '' | 'dir' | 's3'; prefix: string; dir: string; endpoint: string; bucket: string; region: string; accessKey: string; secretKey: string; insecure: boolean; pathStyle: boolean; keepBackups: number }
 export interface OffsiteStatus { target: string; enabled: boolean; lastBackup?: string; backups: number; snapshots: number; bytes: number; error?: string }
-export interface Settings { factoryUrl: string; discoverySubnets: string[]; watchIntervalSec: number; pxeStatusUrl: string; defaultMetalLBRange: string; alerts: AlertSettings; offsite: OffsiteTarget; pxeEnrollment: 'open' | 'closed'; amt: OOBConfig }
-export interface PxeStatus { running: boolean; statusUrl: string; error?: string; command?: string; serviceCommand?: string; startedAt?: string; interface?: string; httpOnly?: boolean; ip?: string; httpPort?: number; talosVersion?: string; schematicId?: string; boots?: { mac: string; ip?: string; arch?: string; firstSeen: string; lastSeen: string; stage: string; count: number }[]; log?: string[] }
+export interface Settings { factoryUrl: string; discoverySubnets: string[]; watchIntervalSec: number; defaultMetalLBRange: string; alerts: AlertSettings; offsite: OffsiteTarget; amt: OOBConfig }
 export interface Versions { talos: string[]; talosSource: string; kubernetesMinors: string[]; kubernetesLatest: string; machinery: string; minTalos: string; note: string }
 
 export interface InstallDisk { path?: string; selector?: { minSize?: string; type?: string; model?: string } }
@@ -96,7 +95,7 @@ export function vmsOf(lh?: LabHost | null): LabVM[] { return lh?.vms ?? [] }
 export function labHostKey(mac: string) { return `labhost:${mac.toLowerCase()}` }
 /** A newer installed kernel or the reboot-required flag: the next Update host will reboot. */
 export function labNeedsReboot(u?: LabUpdates) { return !!u && (u.rebootRequired || (!!u.kernelInstalled && !!u.kernelRunning && u.kernelInstalled !== u.kernelRunning)) }
-export interface NodeRow { ip: string; mac: string; uuid?: string; serial?: string; ipsSeen?: string[]; cluster: string; hostname: string; pool: string; arch: string; role: string; source: string; state: string; talosVersion: string; wol: boolean; oob?: OOBConfig; oobType?: string; provision?: boolean; provisionKind?: string; labhost?: LabHost; host?: string; firstSeen: string; lastSeen: string; inventory?: Inventory }
+export interface NodeRow { ip: string; mac: string; uuid?: string; serial?: string; ipsSeen?: string[]; cluster: string; hostname: string; pool: string; arch: string; role: string; source: string; state: string; talosVersion: string; wol: boolean; oob?: OOBConfig; oobType?: string; labhost?: LabHost; host?: string; firstSeen: string; lastSeen: string; inventory?: Inventory }
 
 export interface NodeStatus { hostname: string; ip: string; role: string; pool: string; seenAt?: string; arch: string; kvm: boolean; talosVersion: string; kubeletVersion: string; ready: boolean; unschedulable: boolean; talosReachable: boolean; talosError?: string; registered: boolean; stage: string; cpuMilli: number; cpuCapMilli: number; memBytes: number; memCapBytes: number; pods: number; podCap: number; gvisor: boolean }
 export interface Status {
@@ -159,7 +158,7 @@ export const api = {
   wake: (mac: string) => req<void>('POST', `/machines/${mac}/wake`),
   saveOOB: (mac: string, c: OOBConfig) => req<void>('PUT', `/machines/${mac}/oob`, c),
   oobTest: (mac: string, c?: OOBConfig) => req<{ ok: boolean; error?: string; info?: OOBInfo }>('POST', `/machines/${mac}/oob/test`, c ?? {}),
-  power: (mac: string, action: 'on' | 'off' | 'reset' | 'cycle' | 'pxe') => req<OpRef>('POST', `/machines/${mac}/power`, { action }),
+  power: (mac: string, action: 'on' | 'off' | 'reset' | 'cycle' | 'talos') => req<OpRef>('POST', `/machines/${mac}/power`, { action }),
   addOOBMachine: (c: OOBConfig) => req<{ machine: NodeRow; info: OOBInfo }>('POST', '/machines/oob', c),
   labProvision: (mac: string, plan?: { manual?: boolean; network?: 'bridge' | 'routed'; vms?: VMPlan; cluster?: { name: string; controlPlanes: 1 | 3; skipPlatform?: boolean } }) => req<OpRef>('POST', `/machines/${mac}/labhost`, plan ?? {}),
   labRelease: (mac: string) => req<void>('DELETE', `/machines/${mac}/labhost`),
@@ -192,7 +191,6 @@ export const api = {
   restoreSnapshot: (cluster: string, id: number) => req<OpRef>('POST', `/clusters/${cluster}/snapshots/${id}/restore?ignoreWindow=true`, { confirm: cluster }),
   savePools: (cluster: string, pools: Pool[]) => req<Pool[]>('PUT', `/clusters/${cluster}/pools`, pools),
   saveSettings: (v: Settings) => req<Settings>('PUT', '/settings', v),
-  pxe: () => req<PxeStatus>('GET', '/pxe'),
   addons: (name: string) => req<AddonStatus[]>('GET', `/clusters/${name}/addons`),
   updateAddon: (name: string, key: string, body: { enabled?: boolean; range?: string; valuesYaml?: string }) => req<AddonStatus[]>('PUT', `/clusters/${name}/addons/${key}`, body),
   workloads: (name: string) => req<Workload[]>('GET', `/clusters/${name}/workloads`),

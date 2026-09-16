@@ -3,7 +3,6 @@ import { useEffect, useState } from 'preact/hooks'
 import { api, fmt, labHostKey, labNeedsReboot, vmsOf, type LabHost, type LabVM, type NodeRow, type Sample, type VMSize } from '../api'
 import { ack, health, hostSamples, loadHealth, machineList, operations, toast, watch } from '../store'
 import { Code, ConfirmDialog, Dialog, ErrorBox, Field, MaintenanceNotice, Meter, Notice, Pill } from './ui'
-import { usePxeGated } from './PxeGate'
 import { Sparkline } from './Sparkline'
 import { EventRow } from '../pages/cluster/Overview'
 
@@ -317,17 +316,16 @@ export function MakeLabHostDialog({ m, onClose }: { m: NodeRow; onClose: () => v
   const manual = !m.oobType
   const cps = cpCount(rows)
   const plan = { manual: manual || undefined, ...(withVMs ? { vms: { each: rows.map(({ key: _k, ...v }) => (withCluster ? v : { ...v, role: 'worker' as const })) }, cluster: withCluster ? { name, controlPlanes: cps as 1 | 3 } : undefined } : {}) }
-  const gated = usePxeGated(() => api.labProvision(m.mac, plan), (r) => { onClose(); watch(r) }, (msg) => setError(msg))
-  if (gated.element) return gated.element
+  const submit = () => api.labProvision(m.mac, plan).then((r) => { onClose(); watch(r) }).catch((e) => setError(e.message))
   const need = withVMs ? totalMem(rows) : 0
   const over = known && withVMs && need > memMiB - RESERVED_MIB
   const nameOk = /^[a-z0-9]([-a-z0-9]*[a-z0-9])?$/.test(name)
   const topologyOk = cps === 1 || cps === 3
   const blocked = over || (withVMs && withCluster && (!nameOk || !topologyOk))
   return (
-    <Dialog title={`Make ${m.hostname || m.ip} a lab host`} width="max-w-2xl" onClose={onClose} footer={<><button class="btn" onClick={onClose}>Cancel</button><button class="btn btn-primary" disabled={blocked} onClick={() => gated.attempt('Make lab host')}>{withVMs && withCluster ? 'Install and create cluster' : withVMs ? 'Install and add VMs' : 'Install'}</button></>}>
+    <Dialog title={`Make ${m.hostname || m.ip} a lab host`} width="max-w-2xl" onClose={onClose} footer={<><button class="btn" onClick={onClose}>Cancel</button><button class="btn btn-primary" disabled={blocked} onClick={submit}>{withVMs && withCluster ? 'Install and create cluster' : withVMs ? 'Install and add VMs' : 'Install'}</button></>}>
       <ErrorBox error={error} />
-      <p class="text-[13px]"><span class="text-bad">The disk is wiped.</span> Debian + KVM installs unattended (≈10 min){manual ? '; you boot the installer with the line shown on the Lab host tab' : ' after a reset via AMT'}.</p>
+      <p class="text-[13px]"><span class="text-bad">The disk is wiped.</span> Debian + KVM installs unattended (≈10 min){manual ? '; you boot the installer with the line shown on the Lab host tab' : ' from a CD attached over AMT'}.</p>
       <label class="flex items-center gap-2 text-[13px] font-medium"><input type="checkbox" checked={withVMs} onChange={(e) => setWithVMs((e.target as HTMLInputElement).checked)} /> Add Talos VMs</label>
       {withVMs && (
         <div class="flex flex-col gap-3">

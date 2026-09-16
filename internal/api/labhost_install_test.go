@@ -3,106 +3,73 @@ package api
 import (
 	"bytes"
 	"context"
-	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 
 	"github.com/mikael/kubit/internal/cluster"
-	"github.com/mikael/kubit/internal/pxe"
+	"github.com/mikael/kubit/internal/oob/ider"
 	"github.com/mikael/kubit/internal/store"
 )
 
-// fakePXE serves a status.json the test mutates as the "machine" progresses.
-type fakePXE struct {
-	mu sync.Mutex
-	st pxe.Status
-}
-
-func (f *fakePXE) ServeHTTP(w http.ResponseWriter, _ *http.Request) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	_ = json.NewEncoder(w).Encode(f.st)
-}
-
-func (f *fakePXE) set(fn func(*pxe.Status)) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	fn(&f.st)
-}
-
-func TestLabWaitBootPhases(t *testing.T) {
+func newTestServer(t *testing.T) (*Server, *store.Store) {
+	t.Helper()
 	c, _ := store.NewCrypto(bytes.Repeat([]byte{8}, 32))
 	dir := t.TempDir()
 	st, err := store.Open(dir, c)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer st.Close()
-	s := New("test", cluster.NewManager(st, dir), "", c)
-	ctx := context.Background()
-	fake := &fakePXE{st: pxe.Status{Boots: []pxe.Boot{}}}
-	srv := httptest.NewServer(fake)
-	defer srv.Close()
-	v, _ := st.GetSettings(ctx)
-	v.PXEStatusURL = srv.URL + "/status.json"
-	if err := st.PutSettings(ctx, v); err != nil {
-		t.Fatal(err)
-	}
-	labBootWait, labIPXEWait, labPollEvery = 300*time.Millisecond, 300*time.Millisecond, 50*time.Millisecond
-	mac := "04:0e:3c:c5:4b:d1"
+	t.Cleanup(func() { st.Close() })
+	return New("test", cluster.NewManager(st, dir), "", c), st
+}
+
+// The boot phase turns IDE-R events into the operator's picture: no first read
+// within the budget names the boot override, a closed session names the session.
+func TestMediaBootPhases(t *testing.T) {
+	labBootWait, labPollEvery = 200*time.Millisecond, 20*time.Millisecond
 	var logs []string
 	sink := func(e clusterEvent) {
 		if e.Kind == "log" {
 			logs = append(logs, e.Message)
 		}
 	}
-
-	// Nothing ever asks to boot: the boot phase names the BIOS/LAN, not SSH.
-	err = s.labWaitBoot(ctx, &pxeWatch{s: s, mac: mac, sink: sink})
-	if err == nil || !strings.Contains(err.Error(), "no network boot request from "+mac) || !strings.Contains(err.Error(), "BIOS boot order") {
-		t.Fatalf("boot phase error: %v", err)
-	}
-
-	// DHCP seen but the kernel never fetched: the transport is blamed.
-	fake.set(func(p *pxe.Status) {
-		p.Boots = []pxe.Boot{{MAC: mac, Arch: "amd64", Stage: "dhcp", LastSeen: time.Now()}}
-		p.Log = []string{"12:00:00 PXE request from " + mac + " (amd64)"}
+	b := &mediaBoot{events: make(chan ider.Event, 16), done: make(chan error, 1), cancel: func() {}, sink: sink, mac: "aa"}
+	b.events <- ider.Event{Kind: ider.Authenticated}
+	b.events <- ider.Event{Kind: ider.Opened, Buffer: 4096}
+	err := phase(context.Background(), sink, b, "aa", "boot", labBootWait, func() (bool, string) {
+		if b.firstRead {
+			return true, "booted"
+		}
+		return false, "the machine never read the virtual CD"
 	})
-	err = s.labWaitBoot(ctx, &pxeWatch{s: s, mac: mac, sink: sink})
-	if err == nil || !strings.Contains(err.Error(), "kernel was never fetched") {
-		t.Fatalf("ipxe phase error: %v", err)
+	if err == nil || !strings.Contains(err.Error(), "never read the virtual CD") {
+		t.Fatalf("boot without reads: %v", err)
 	}
-	if len(logs) == 0 || !strings.Contains(logs[0], "pxe: 12:00:00 PXE request from "+mac) {
-		t.Errorf("PXE log lines about the MAC must be mirrored into the operation: %v", logs)
+	if len(logs) < 2 || !strings.Contains(logs[1], "virtual CD attached (4096-byte reads)") {
+		t.Errorf("session events must reach the log: %v", logs)
 	}
-
-	// Kernel fetched: both phases pass and the IP is learned for the SSH phase.
-	fake.set(func(p *pxe.Status) {
-		p.Boots[0].Stage = "kernel"
-		p.Boots[0].IP = "192.168.5.204"
-	})
-	w := &pxeWatch{s: s, mac: mac, sink: sink}
-	if err := s.labWaitBoot(ctx, w); err != nil {
-		t.Fatalf("healthy boot: %v", err)
+	b.events <- ider.Event{Kind: ider.FirstRead}
+	b.events <- ider.Event{Kind: ider.Progress, Bytes: 3_000_000}
+	if err := phase(context.Background(), sink, b, "aa", "boot", labBootWait, func() (bool, string) {
+		if b.firstRead {
+			return true, "booted"
+		}
+		return false, "x"
+	}); err != nil || b.bytes != 3_000_000 {
+		t.Fatalf("boot with a read: %v (%d bytes)", err, b.bytes)
 	}
-	if w.ip != "192.168.5.204" {
-		t.Errorf("watch must learn the IP from the PXE server, got %q", w.ip)
+	b.events <- ider.Event{Kind: ider.Closed, Reason: "closed by AMT"}
+	err = phase(context.Background(), sink, b, "aa", "load", time.Second, func() (bool, string) { return false, "waiting" })
+	if err == nil || !strings.Contains(err.Error(), "redirection session ended (closed by AMT)") {
+		t.Fatalf("closed session: %v", err)
 	}
 }
 
-func TestLabProgressRoute(t *testing.T) {
-	c, _ := store.NewCrypto(bytes.Repeat([]byte{8}, 32))
-	dir := t.TempDir()
-	st, err := store.Open(dir, c)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer st.Close()
-	s := New("test", cluster.NewManager(st, dir), "", c)
+func TestInstallerFeed(t *testing.T) {
+	s, st := newTestServer(t)
 	ctx := context.Background()
 	mac := "52:54:00:4c:41:01"
 	rec := httptest.NewRecorder()
@@ -114,26 +81,36 @@ func TestLabProgressRoute(t *testing.T) {
 	if err != nil || m.Source != "manual" || m.Arch != "arm64" {
 		t.Fatalf("manual row: %+v %v", m, err)
 	}
-	rec = httptest.NewRecorder()
-	s.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/v1/labhost/progress?mac="+mac+"&stage=installer", nil))
-	if rec.Code != http.StatusNotFound {
-		t.Errorf("progress for a machine that is not a lab host: %d", rec.Code)
+	feed := s.feed.Handler()
+	get := func(path, remote string) *httptest.ResponseRecorder {
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodGet, path, nil)
+		req.Host = "192.168.105.1:8069"
+		req.RemoteAddr = remote
+		feed.ServeHTTP(rec, req)
+		return rec
+	}
+	if rec := get("/labhost/"+mac+"/preseed", "192.168.105.20:1"); rec.Code != http.StatusNotFound {
+		t.Errorf("preseed for a machine that is not installing: %d", rec.Code)
 	}
 	_ = st.SetLabHost(ctx, mac, &store.LabHost{State: "installing"})
-	rec = httptest.NewRecorder()
-	s.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/v1/labhost/progress?mac="+mac+"&stage=packages", nil))
-	if rec.Code != http.StatusNoContent {
+	rec = get("/labhost/"+mac+"/preseed?arch=arm64", "192.168.105.20:1")
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "qemu-system-arm") || !strings.Contains(rec.Body.String(), "http://192.168.105.1:8069/labhost/"+mac+"/progress?stage=installer") {
+		t.Errorf("preseed: %d %s", rec.Code, rec.Body.String()[:200])
+	}
+	if rec := get("/labhost/"+mac+"/progress?stage=packages", "192.168.105.21:1"); rec.Code != http.StatusNoContent {
 		t.Fatalf("progress: %d %s", rec.Code, rec.Body.String())
 	}
 	m, _ = st.GetMachine(ctx, mac)
-	if m.LabHost == nil || m.LabHost.Install == nil || m.LabHost.Install.Stage != "packages" {
-		t.Errorf("stage not recorded: %+v", m.LabHost)
+	if m.LabHost == nil || m.LabHost.Install == nil || m.LabHost.Install.Stage != "packages" || m.IP != "192.168.105.21" {
+		t.Errorf("stage or address not recorded: %+v ip=%s", m.LabHost, m.IP)
 	}
-	// The preseed for an arm64 machine installs the arm emulator and reports progress.
-	rec = httptest.NewRecorder()
-	s.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/v1/labhost/preseed?mac="+mac+"&post=http://192.168.105.1:8069/labhost/"+mac+"/postinstall", nil))
-	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "qemu-system-arm") || !strings.Contains(rec.Body.String(), "http://192.168.105.1:8069/labhost/"+mac+"/progress?stage=installer") {
-		t.Errorf("preseed: %d %s", rec.Code, rec.Body.String()[:200])
+	if rec := get("/labhost/"+mac+"/postinstall", "192.168.105.21:1"); rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "/labhost/"+mac+"/progress?stage=booted") {
+		t.Errorf("postinstall: %d", rec.Code)
+	}
+	_ = st.SetLabHost(ctx, mac, &store.LabHost{State: "ready"})
+	if rec := get("/labhost/"+mac+"/progress?stage=booted", "192.168.105.21:1"); rec.Code != http.StatusNotFound {
+		t.Errorf("a ready host must not accept progress: %d", rec.Code)
 	}
 }
 

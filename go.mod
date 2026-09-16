@@ -6,16 +6,15 @@ require (
 	github.com/coder/websocket v1.8.15
 	github.com/cosi-project/runtime v1.16.3
 	github.com/device-management-toolkit/go-wsman-messages/v2 v2.50.3
-	github.com/insomniacslk/dhcp v0.0.0-20260901064844-234b97448fae
+	github.com/diskfs/go-diskfs v1.9.4
 	github.com/minio/minio-go/v7 v7.3.0
-	github.com/pin/tftp/v3 v3.2.0
 	github.com/siderolabs/talos/pkg/machinery v1.14.1
 	github.com/spf13/cobra v1.10.2
+	github.com/ulikunitz/xz v0.5.15
 	github.com/zalando/go-keyring v0.2.8
 	go.etcd.io/bbolt v1.5.0
 	go.yaml.in/yaml/v4 v4.0.0-rc.6
 	golang.org/x/crypto v0.57.0
-	golang.org/x/sys v0.48.0
 	google.golang.org/grpc v1.83.2
 	google.golang.org/protobuf v1.36.12
 	k8s.io/api v0.37.0
@@ -43,7 +42,9 @@ require (
 	github.com/containernetworking/cni v1.3.1 // indirect
 	github.com/danieljoos/wincred v1.2.3 // indirect
 	github.com/davecgh/go-spew v1.1.2-0.20180830191138-d8f796af33cc // indirect
+	github.com/djherbis/times v1.6.0 // indirect
 	github.com/dustin/go-humanize v1.0.1 // indirect
+	github.com/elliotwutingfeng/asciiset v0.0.0-20260129054604-cfde2086bc57 // indirect
 	github.com/emicklei/go-restful/v3 v3.13.0 // indirect
 	github.com/exponent-io/jsonpath v0.0.0-20210407135951-1de76d718b3f // indirect
 	github.com/fxamacker/cbor/v2 v2.9.4 // indirect
@@ -76,7 +77,6 @@ require (
 	github.com/hashicorp/errwrap v1.1.0 // indirect
 	github.com/hashicorp/go-multierror v1.1.1 // indirect
 	github.com/inconshreveable/mousetrap v1.1.0 // indirect
-	github.com/josharian/native v1.1.0 // indirect
 	github.com/jsimonetti/rtnetlink/v2 v2.2.1-0.20260802200809-43bafec815b3 // indirect
 	github.com/json-iterator/go v1.1.12 // indirect
 	github.com/klauspost/compress v1.19.2 // indirect
@@ -102,7 +102,6 @@ require (
 	github.com/peterbourgon/diskv v2.0.1+incompatible // indirect
 	github.com/petermattis/goid v0.0.0-20260713124913-97594f28f5ca // indirect
 	github.com/philhofer/fwd v1.2.0 // indirect
-	github.com/pierrec/lz4/v4 v4.1.14 // indirect
 	github.com/pkg/browser v0.0.0-20240102092130-5ac0b6a4141c // indirect
 	github.com/planetscale/vtprotobuf v0.6.1-0.20260702190614-8ae5a48058df // indirect
 	github.com/pmezard/go-difflib v1.0.1-0.20181226105442-5d4384ee4fb2 // indirect
@@ -120,7 +119,6 @@ require (
 	github.com/sirupsen/logrus v1.10.0 // indirect
 	github.com/spf13/pflag v1.0.10 // indirect
 	github.com/tinylib/msgp v1.6.4 // indirect
-	github.com/u-root/uio v0.0.0-20230220225925-ffce2a382923 // indirect
 	github.com/x448/float16 v0.8.4 // indirect
 	github.com/xlab/treeprint v1.2.0 // indirect
 	github.com/zeebo/xxh3 v1.1.0 // indirect
@@ -134,6 +132,7 @@ require (
 	golang.org/x/net v0.58.0 // indirect
 	golang.org/x/oauth2 v0.36.0 // indirect
 	golang.org/x/sync v0.23.0 // indirect
+	golang.org/x/sys v0.48.0 // indirect
 	golang.org/x/term v0.46.0 // indirect
 	golang.org/x/text v0.42.0 // indirect
 	golang.org/x/time v0.15.0 // indirect
