@@ -74,7 +74,7 @@ export function PoolsEditor({ pools, onChange, inUse, defaultExtensions }: { poo
                   <input class="input mono" list="known-extensions" value={(p.extensions ?? []).join(', ')} onInput={(e) => { const v = (e.target as HTMLInputElement).value.split(/[,\s]+/).filter(Boolean); update(i, { extensions: v.length ? v : undefined }) }} />
                   <datalist id="known-extensions">{knownExtensions.map((x) => <option key={x} value={x} />)}</datalist>
                 </Field>
-                <Field label="Install disk policy" hint="Default for nodes in the pool; a node's explicit disk wins. Selector: minimum size and/or transport (nvme, sata, virtio).">
+                <Field label="Install disk policy" hint="Pool default; a node's own disk wins. Selector: minimum size and/or transport.">
                   <div class="flex gap-2">
                     <input class="input mono" placeholder="min size, e.g. 100GB" value={p.installDisk?.selector?.minSize ?? ''} onInput={(e) => update(i, { installDisk: sel(p, { minSize: (e.target as HTMLInputElement).value }) })} />
                     <input class="input mono" placeholder="type, e.g. nvme" value={p.installDisk?.selector?.type ?? ''} onInput={(e) => update(i, { installDisk: sel(p, { type: (e.target as HTMLInputElement).value }) })} />

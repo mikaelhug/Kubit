@@ -8,6 +8,7 @@ import { LabHostsSection, MakeLabHostDialog } from '../../components/LabHost'
 import { PxeGate } from '../../components/PxeGate'
 import type { Draft } from './NewCluster'
 import { addrOf, guessGateway, inRange, ip4, parseRange, prefixOf, sameSubnet } from './net'
+import { ageSec } from '../../clock'
 
 type SetCluster = (fn: (c: ClusterSpec) => ClusterSpec) => void
 const GiB = 1024 ** 3
@@ -57,11 +58,7 @@ export function MachinesStep({ draft, patch, setError }: { draft: Draft; patch: 
   const [targets, setTargetsRaw] = useState('')
   const [typed, setTyped] = useState(false)
   const setTargets = (v: string) => { setTyped(true); setTargetsRaw(v) }
-  // The machine list is live state: the watcher probes every candidate each minute, so
-  // last-seen moves while a machine answers; one that fell silent is not offered.
-  const [, tick] = useState(0)
-  useEffect(() => { const t = setInterval(() => tick((n) => n + 1), 30000); return () => clearInterval(t) }, [])
-  const fresh = (n: NodeRow) => Date.now() - new Date(n.lastSeen).getTime() < 3 * 60 * 1000
+  const fresh = (n: NodeRow) => ageSec(n.lastSeen) < 3 * 60
   const all = machineList.value.filter((n) => n.state === 'maintenance' && !n.cluster)
   const free = all.filter(fresh)
   const stale = all.filter((n) => !fresh(n))
@@ -165,7 +162,7 @@ export function AMTMachines() {
               <td class="mono">{m.ip}</td>
               <td><Pill tone={m.state === 'off' ? 'muted' : 'info'}>{m.state === 'amt' ? 'other OS / off' : m.state}</Pill></td>
               <td>{m.oobType ? <Pill tone="good">AMT ok</Pill> : <a class="text-accent hover:underline text-[12px]" href={`/machines/${m.mac}#oob`}>set credentials →</a>}</td>
-              <td class="text-right pr-3 whitespace-nowrap"><button class="btn !py-1" title="Install Debian + KVM on it and carve Talos VMs from it" onClick={() => setLab(m)}>Make lab host</button>{' '}<button class="btn btn-primary !py-1" disabled={!m.oobType || busy[m.mac]} title={m.provision ? 'Armed for a network boot; click to boot again' : ''} onClick={() => boot(m)}>{busy[m.mac] ? 'Starting…' : 'Boot into Talos'}</button></td>
+              <td class="text-right pr-3 whitespace-nowrap"><button class="btn !py-1" title="Install Debian + KVM on it and carve Talos VMs from it" onClick={() => setLab(m)}>Make lab host</button>{' '}<button class="btn btn-primary !py-1" disabled={!m.oobType || busy[m.mac]} title={m.provision ? 'Armed for a network boot; click to boot again' : ''} onClick={() => boot(m)}>{busy[m.mac] ? 'Starting' : 'Boot into Talos'}</button></td>
             </tr>
           ))}
         </tbody>
@@ -214,7 +211,7 @@ export function DesignStep({ draft, setCluster, reset, busy }: { draft: Draft; s
             <button class="btn !py-1" disabled={busy} onClick={() => reset().catch(() => {})}>Reset to proposal</button>
           </span>
         </div>
-        <p class="text-[13px] text-muted">Kubit put bare metal before VMs in the control plane (VMs on one host fail together), then the most alike, smallest machines, and kept KVM-capable ones as workers for gVisor. Change any cell; pools decide role, labels, taints and installer image. Data disks are wiped, formatted (xfs) and mounted at <span class="mono">/var/mnt/data-N</span> for node-local storage.</p>
+        <p class="text-[13px] text-muted">Proposed roles: bare metal first for the control plane, KVM-capable machines as workers. Change any cell. Data disks are wiped and mounted at <span class="mono">/var/mnt/data-N</span>.</p>
       </div>
       <div class="panel scroll-x">
         <table class="data">
@@ -257,7 +254,7 @@ export function DesignStep({ draft, setCluster, reset, busy }: { draft: Draft; s
         </table>
       </div>
       <div class="flex flex-col gap-2">
-        <div><span class="label">Pools</span><p class="text-[13px] text-muted">A pool is a class of machines: it owns the role, labels, taints, system extensions (hence the installer image) and the install-disk policy. Nodes inherit the pool and may add their own labels.</p></div>
+        <div><span class="label">Pools</span><p class="text-[13px] text-muted">A pool owns role, labels, taints, extensions and disk policy. Nodes inherit it.</p></div>
         <PoolsEditor pools={pools} onChange={setPools} inUse={(name) => c.spec.nodes.filter((n) => n.pool === name).length} defaultExtensions={c.spec.extensions} />
       </div>
     </>
@@ -331,7 +328,7 @@ export function NetworkStep({ draft, setCluster }: { draft: Draft; setCluster: S
       </div>
       {checks.length > 0 && <div class="flex flex-col gap-1">{checks.map((k, i) => <Notice key={i} tone={k.tone}>{k.text}</Notice>)}</div>}
       <div class="flex flex-col gap-2">
-        <div><span class="label">Node addressing</span><p class="text-[13px] text-muted">DHCP is the default: the machine keeps asking the LAN's server and Kubit follows it by MAC. Static pins the address in the machine config — use it when the DHCP pool is small, for control planes you want stable without a VIP, or when a VLAN is required.</p></div>
+        <div><span class="label">Node addressing</span><p class="text-[13px] text-muted">DHCP by default; Kubit follows the machine by MAC. Static pins the address in the machine config.</p></div>
         <div class="panel scroll-x">
           <table class="data">
             <thead><tr><th class="pl-4">Node</th><th>Mode</th><th>Address (CIDR)</th><th>Gateway</th><th>DNS</th><th>VLAN</th></tr></thead>
@@ -382,7 +379,7 @@ export function PlatformStep({ draft, setCluster, patch }: { draft: Draft; setCl
   const toggle = (key: keyof ClusterSpec['spec']['platform'], enabled: boolean) => setCluster((c) => ({ ...c, spec: { ...c.spec, platform: { ...c.spec.platform, [key]: { ...c.spec.platform[key], enabled } } } }))
   return (
     <>
-      <div class="panel p-4"><p class="text-[13px] text-muted">Kubit converges these add-ons with OpenTofu after the nodes are Ready. Each can be enabled, configured and planned later under Add-ons; ingress-nginx needs MetalLB for an external address.</p></div>
+      <div class="panel p-4"><p class="text-[13px] text-muted">Applied after the nodes are Ready; each can be changed later under Add-ons. ingress-nginx needs MetalLB.</p></div>
       <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
         {addons.map((a) => {
           const on = c.spec.platform[a.key].enabled
@@ -465,7 +462,7 @@ export function ReviewStep({ draft, setCluster, patch, onCreate, busy }: { draft
       )}
       <div class="flex items-center gap-3 justify-end">
         {errors.length > 0 && <span class="text-[12px] text-warn">{errors.length} warning{errors.length === 1 ? '' : 's'} — creating anyway is allowed</span>}
-        <button class="btn btn-primary" disabled={busy || dirty || !yaml || !!lintErr} title={dirty ? 'Validate the edited YAML first' : ''} onClick={() => onCreate(yaml)}>{busy ? 'Starting…' : `Create ${c.metadata.name}`}</button>
+        <button class="btn btn-primary" disabled={busy || dirty || !yaml || !!lintErr} title={dirty ? 'Validate the edited YAML first' : ''} onClick={() => onCreate(yaml)}>{busy ? 'Starting' : `Create ${c.metadata.name}`}</button>
       </div>
     </>
   )

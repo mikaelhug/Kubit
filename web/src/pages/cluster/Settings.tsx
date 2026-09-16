@@ -32,7 +32,7 @@ export function Settings({ ctx }: { ctx: ClusterCtx }) {
 
   return (
     <div class="flex flex-col gap-6">
-      <Section title="Declaration" actions={<span class="text-[12px] text-muted num">created {new Date(cluster.createdAt).toLocaleDateString()} · changed {fmt.when(cluster.updatedAt)}</span>} help="cluster.yaml is the source of truth. Saving changes only the declaration; Apply node configs pushes machine-level changes (endpoint, VIP, CIDRs, extensions, versions used for new nodes) to every node. Add-ons are reviewed under Add-ons → Plan.">
+      <Section title="Declaration" actions={<span class="text-[12px] text-muted num">created {new Date(cluster.createdAt).toLocaleDateString()} · changed {fmt.when(cluster.updatedAt)}</span>} help="Save changes the declaration; Apply node configs pushes it to the nodes. Add-ons are reviewed under Add-ons → Plan.">
         <ErrorBox error={error} />
         <Tabs active={tab} onSelect={(t) => setTab(t as any)} tabs={[{ id: 'form', label: 'Form' }, { id: 'yaml', label: 'YAML' }]} />
         {tab === 'form' && (
@@ -99,7 +99,7 @@ export function Settings({ ctx }: { ctx: ClusterCtx }) {
 
       <CredentialsSection name={name} />
 
-      <Section title="Export" help="Native Talos artefacts (secrets.yaml, talosconfig, kubeconfig, machine configs) plus an OpenTofu root for the siderolabs/talos provider: everything needed to run this cluster without Kubit.">
+      <Section title="Export" help="Everything needed to run this cluster without Kubit: Talos secrets and configs, kubeconfig, an OpenTofu root.">
         <div class="flex gap-2">
           <button class="btn" onClick={() => api.exportCluster(name).then((r) => toast(`Exported to ${r.dir}`, 'good')).catch((e) => toast(e.message, 'error'))}>Export to ~/.kubit/clusters/{name}/export</button>
           <a class="btn" href={`/api/v1/clusters/${name}/kubeconfig`} download="kubeconfig">Download kubeconfig</a>
@@ -109,7 +109,7 @@ export function Settings({ ctx }: { ctx: ClusterCtx }) {
       <Section title="Danger zone">
         <Notice tone="bad">
           <div class="flex items-center gap-3">
-            <span>Forget removes Kubit's records and secrets for this cluster. The nodes keep running; without the secrets Kubit can never manage them again. Export first.</span>
+            <span>Removes Kubit's records and secrets; the nodes keep running but can never be managed again. Export first.</span>
             <button class="btn btn-danger ml-auto shrink-0" onClick={() => setForget(true)}>Forget cluster</button>
           </div>
         </Notice>
@@ -142,7 +142,7 @@ function CredentialsSection({ name }: { name: string }) {
   const label: Record<string, string> = { talosconfig: 'Admin talosconfig', kubeconfig: 'Admin kubeconfig', 'talos-ca': 'Talos API CA', 'kubernetes-ca': 'Kubernetes CA', 'etcd-ca': 'etcd CA', 'aggregator-ca': 'Aggregator CA' }
   const tone = (d: number) => d <= 7 ? 'bad' : d <= 30 ? 'warn' : 'good'
   return (
-    <Section title="Credentials" help="Client certificates Kubit uses (and hands out via Download/Export) are valid one year; rotating issues a fresh one through the Talos API and replaces the stored copy — the old one keeps working until it expires. CAs are valid ten years and cannot be rotated in place. Kubit raises an alert 30 days before any of these expires.">
+    <Section title="Credentials" help="Client certificates last one year and can be rotated here; CAs last ten. Kubit alerts 30 days before expiry.">
       <ErrorBox error={error} />
       <div class="panel scroll-x">
         <table class="data">
@@ -176,7 +176,7 @@ function PoolsSection({ ctx }: { ctx: ClusterCtx }) {
   const dirty = JSON.stringify(pools) !== JSON.stringify(spec.pools ?? [])
   const save = () => api.savePools(name, pools).then(() => { setError(null); toast('Pools saved. Existing nodes pick up label/taint changes on Apply node configs; a changed extension set applies on the next upgrade or move.', 'good') }).catch((e) => setError(e.message))
   return (
-    <Section title="Pools" help="A pool is a class of nodes: role, labels, taints, system extensions and disk policy. Nodes reference a pool; move a node between pools from its Actions tab." actions={<button class="btn btn-primary" disabled={!dirty} onClick={save}>Save pools</button>}>
+    <Section title="Pools" help="A pool is a class of nodes: role, labels, taints, extensions, disk policy." actions={<button class="btn btn-primary" disabled={!dirty} onClick={save}>Save pools</button>}>
       <ErrorBox error={error} />
       {warnings.length > 0 && <div class="flex flex-col gap-1">{warnings.map((w, i) => <WarningLine key={i} w={w} />)}</div>}
       <PoolsEditor pools={pools} onChange={setPools} inUse={(p) => spec.nodes.filter((n) => n.pool === p).length} defaultExtensions={spec.extensions} />

@@ -45,7 +45,7 @@ export function Addons({ ctx }: { ctx: ClusterCtx }) {
   return (
     <>
       <Section title="Platform add-ons"
-        help="Kubit converges these with OpenTofu from the platform section of cluster.yaml. Configure changes the declaration only; Plan renders what would change for review; Apply executes exactly the reviewed plan."
+        help="Configure changes the declaration, Plan shows what would change, Apply executes the reviewed plan."
         actions={
           <>
             <button class="btn btn-primary" disabled={busy} onClick={plan}>{busy ? 'Working…' : 'Plan changes'}</button>

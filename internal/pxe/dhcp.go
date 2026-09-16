@@ -29,6 +29,9 @@ type Config struct {
 	// onDHCP and onLog feed the status tracker when set.
 	onDHCP func(mac, arch string)
 	onLog  func(line string)
+	// onPlainDHCP sees ordinary (non-PXE) discovers: a machine that asks for an
+	// address without PXE options booted from disk, or its management engine woke.
+	onPlainDHCP func(mac, class string)
 	// Decide asks the daemon what a MAC should boot: "talos" (maintenance mode),
 	// "local" (its own disk — cluster members), or "" when the daemon is unreachable,
 	// which is treated as talos so onboarding works without it.
@@ -87,6 +90,9 @@ func (c Config) handle(conn net.PacketConn, peer net.Addr, m *dhcpv4.DHCPv4) {
 	}
 	pxeClient := strings.HasPrefix(m.ClassIdentifier(), "PXEClient")
 	if !pxeClient && !isIPXE(m) {
+		if c.onPlainDHCP != nil && m.MessageType() == dhcpv4.MessageTypeDiscover {
+			c.onPlainDHCP(m.ClientHWAddr.String(), m.ClassIdentifier())
+		}
 		return
 	}
 	if c.decide(m.ClientHWAddr.String()) == "local" {

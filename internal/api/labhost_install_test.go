@@ -138,12 +138,24 @@ func TestLabProgressRoute(t *testing.T) {
 }
 
 func TestAddVMsControlPlaneSizing(t *testing.T) {
-	r := addVMsRequest{Count: 4, MemMiB: 1536, ControlPlanes: 1, ControlPlaneMemMiB: 2048}
-	if r.memOf(0) != 2048 || r.memOf(1) != 1536 || r.totalMem() != 2048+3*1536 {
-		t.Errorf("sizing: %d %d %d", r.memOf(0), r.memOf(1), r.totalMem())
+	r := addVMsRequest{Count: 4, CPUs: 2, MemMiB: 1536, DiskGiB: 20, ControlPlanes: 1, ControlPlaneMemMiB: 2048}
+	sz := r.sizes()
+	if sz[0].MemMiB != 2048 || sz[0].Role != "controlplane" || sz[1].MemMiB != 1536 || r.totalMem() != 2048+3*1536 || r.controlPlanes() != 1 {
+		t.Errorf("uniform sizing: %+v", sz)
 	}
-	big := addVMsRequest{Count: 2, MemMiB: 4096, ControlPlanes: 1, ControlPlaneMemMiB: 2048}
-	if big.memOf(0) != 4096 {
+	big := addVMsRequest{Count: 2, CPUs: 1, MemMiB: 4096, DiskGiB: 20, ControlPlanes: 1, ControlPlaneMemMiB: 2048}
+	if big.sizes()[0].MemMiB != 4096 {
 		t.Error("the control-plane floor never shrinks a VM")
+	}
+	each := addVMsRequest{Each: []vmSize{{Name: "w1", Role: "worker", CPUs: 2, MemMiB: 1024, DiskGiB: 20}, {Name: "cp", Role: "controlplane", CPUs: 2, MemMiB: 3072, DiskGiB: 20}}}
+	if got := each.sizes(); got[0].Name != "cp" || got[1].Name != "w1" || each.controlPlanes() != 1 || each.totalMem() != 4096 {
+		t.Errorf("per-VM sizing must list control planes first: %+v", got)
+	}
+	if each.validate() != nil {
+		t.Error("valid per-VM request refused")
+	}
+	small := addVMsRequest{Each: []vmSize{{Role: "controlplane", CPUs: 2, MemMiB: 1024, DiskGiB: 20}}}
+	if small.validate() == nil {
+		t.Error("a 1 GiB control plane must be refused")
 	}
 }

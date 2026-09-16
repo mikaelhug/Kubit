@@ -33,7 +33,7 @@ export function KubitSettings() {
           <Field label="Health poll interval (seconds)" hint="How often every cluster is queried for samples and events. Minimum 5."><input class="input num" type="number" min={5} value={s.watchIntervalSec} onInput={(e) => setS({ ...s, watchIntervalSec: Number((e.target as HTMLInputElement).value) })} /></Field>
           <Field label="Discovery subnets" hint="Pre-filled in the scan box (comma-separated CIDRs or addresses)."><input class="input mono" value={s.discoverySubnets.join(', ')} onInput={(e) => setS({ ...s, discoverySubnets: (e.target as HTMLInputElement).value.split(/[,\s]+/).filter(Boolean) })} /></Field>
           <Field label="Default MetalLB range" hint="Suggested pool for new clusters; empty derives one from the first node's subnet."><input class="input mono" value={s.defaultMetalLBRange} onInput={(e) => setS({ ...s, defaultMetalLBRange: (e.target as HTMLInputElement).value })} placeholder="192.168.1.200-192.168.1.220" /></Field>
-          <Field label="Default AMT user" hint="Discovery probes every address that answers on 16992 with these credentials; vPro machines then appear with model and power state before Talos runs."><input class="input mono" value={s.amt?.user ?? 'admin'} onInput={(e) => setS({ ...s, amt: { ...(s.amt ?? { type: 'amt', host: '', tls: false, password: '' }), user: (e.target as HTMLInputElement).value.trim() } })} /></Field>
+          <Field label="Default AMT user" hint="Used by discovery on every address that answers on 16992."><input class="input mono" value={s.amt?.user ?? 'admin'} onInput={(e) => setS({ ...s, amt: { ...(s.amt ?? { type: 'amt', host: '', tls: false, password: '' }), user: (e.target as HTMLInputElement).value.trim() } })} /></Field>
           <Field label="Default AMT password" hint="The MEBx password; sealed with the master key, shown masked."><input class="input mono" type="password" value={s.amt?.password ?? ''} onInput={(e) => setS({ ...s, amt: { ...(s.amt ?? { type: 'amt', host: '', tls: false, user: 'admin' }), password: (e.target as HTMLInputElement).value } })} /></Field>
           <Field label="PXE status URL" hint="Where the separate kubit pxe process publishes its status."><input class="input mono" value={s.pxeStatusUrl} onInput={(e) => setS({ ...s, pxeStatusUrl: (e.target as HTMLInputElement).value })} /></Field>
         </div>
@@ -42,15 +42,15 @@ export function KubitSettings() {
           {dirty && <span class="text-[12px] text-warn">unsaved changes</span>}
         </div>
       </Section>
-      <Section title="Alert forwarding" help="Health events at or above the chosen severity (node unreachable, etcd unhealthy, crashlooping pods, unavailable workloads, pending claims, exhausted LoadBalancer pool, stale backups, expiring credentials, …) are pushed as they happen. The webhook body is JSON with a top-level text field, so Slack, Discord, Teams and generic receivers all work; mail goes through SMTP (STARTTLS, implicit TLS or a plain local relay).">
+      <Section title="Alert forwarding" help="Alerts at or above this severity go to a webhook (Slack, Discord, Teams, generic JSON) and/or e-mail.">
         <div class="panel p-4 grid grid-cols-1 md:grid-cols-2 gap-4">
           <Field label="Minimum severity">
             <select class="input" value={s.alerts.minSeverity} onChange={(e) => setS({ ...s, alerts: { ...s.alerts, minSeverity: (e.target as HTMLSelectElement).value as any } })}>
               <option value="info">info (everything)</option><option value="warn">warn</option><option value="critical">critical only</option>
             </select>
           </Field>
-          <Field label="Heartbeat (hours)" hint="A 'still watching' summary to the sinks this often, regardless of severity; 0 = off. If it stops arriving, the daemon is down — that is the point."><input class="input num" type="number" min={0} value={s.alerts.heartbeatHours ?? 0} onInput={(e) => setS({ ...s, alerts: { ...s.alerts, heartbeatHours: Number((e.target as HTMLInputElement).value) } })} /></Field>
-          <Field label="Ignore namespaces" hint="Workload alerts (crashloops, unavailable deployments, pending claims, empty services) are never raised for these namespaces. Comma-separated."><input class="input mono" value={(s.alerts.ignoreNamespaces ?? []).join(', ')} placeholder="dev, ci" onInput={(e) => setS({ ...s, alerts: { ...s.alerts, ignoreNamespaces: (e.target as HTMLInputElement).value.split(/[,\s]+/).filter(Boolean) } })} /></Field>
+          <Field label="Heartbeat (hours)" hint="A summary this often, regardless of severity; 0 = off. Silence means the daemon is down."><input class="input num" type="number" min={0} value={s.alerts.heartbeatHours ?? 0} onInput={(e) => setS({ ...s, alerts: { ...s.alerts, heartbeatHours: Number((e.target as HTMLInputElement).value) } })} /></Field>
+          <Field label="Ignore namespaces" hint="No workload alerts for these namespaces. Comma-separated."><input class="input mono" value={(s.alerts.ignoreNamespaces ?? []).join(', ')} placeholder="dev, ci" onInput={(e) => setS({ ...s, alerts: { ...s.alerts, ignoreNamespaces: (e.target as HTMLInputElement).value.split(/[,\s]+/).filter(Boolean) } })} /></Field>
           <Field label="Webhook URL" hint="Empty = off."><input class="input mono" value={s.alerts.webhookUrl} placeholder="https://hooks.slack.com/services/…" onInput={(e) => setS({ ...s, alerts: { ...s.alerts, webhookUrl: (e.target as HTMLInputElement).value.trim() } })} /></Field>
           <Field label="SMTP host" hint="Empty = off."><input class="input mono" value={s.alerts.smtp.host} placeholder="smtp.example.com" onInput={(e) => setS({ ...s, alerts: { ...s.alerts, smtp: { ...s.alerts.smtp, host: (e.target as HTMLInputElement).value.trim() } } })} /></Field>
           <div class="grid grid-cols-2 gap-3">
@@ -71,7 +71,7 @@ export function KubitSettings() {
           <button class="btn" disabled={dirty} title={dirty ? 'Save first' : 'Send a test alert through the saved sinks'} onClick={() => api.testAlerts().then((r) => toast(r.ok ? 'Test alert delivered' : r.errors.join('; '), r.ok ? 'good' : 'error')).catch((e) => toast(e.message, 'error'))}>Send test alert</button>
         </div>
       </Section>
-      <Section title="Off-site copies" help="A second home for what disaster recovery needs: every etcd snapshot is copied here as it is taken, and a sealed Kubit backup is uploaded daily. Losing this machine together with the cluster then still leaves a way back. Objects stay encrypted with the master key — keep `kubit key export` somewhere else again (password manager).">
+      <Section title="Off-site copies" help="etcd snapshots and a daily sealed Kubit backup, copied elsewhere. Keep the master key (kubit key export) outside this machine too.">
         <div class="panel p-4 grid grid-cols-1 md:grid-cols-2 gap-4">
           <Field label="Target">
             <select class="input" value={s.offsite.type} onChange={(e) => setS({ ...s, offsite: { ...s.offsite, type: (e.target as HTMLSelectElement).value as any } })}>
@@ -100,7 +100,7 @@ export function KubitSettings() {
           {off?.enabled && <span class="text-[12px] text-muted">{off.error ? <span class="text-bad">{off.error}</span> : `${off.target}: ${off.backups} backup(s), ${off.snapshots} snapshot(s), ${fmt.bytes(off.bytes)} · last backup ${off.lastBackup ? fmt.when(off.lastBackup) : 'never'}`}</span>}
         </div>
       </Section>
-      <Section title="Kubit backup" help="Not the cluster: etcd snapshots live under each cluster\u2019s Backups tab. This is a sealed archive of ~/.kubit: the database (cluster secrets stay encrypted inside it), kubeconfigs, talosconfigs and the OpenTofu roots with their state. Binaries and the asset cache are excluded.">
+      <Section title="Kubit backup" help="Sealed archive of Kubit's own state (database, kubeconfigs, talosconfigs, OpenTofu state). Cluster data is under each cluster's Backups tab.">
         <Notice tone="muted">
           <div class="flex flex-col gap-2">
             <span>The archive is encrypted with this Mac's master key (Keychain: service <span class="mono">kubit</span>). To restore elsewhere, export the key here and set <span class="mono">KUBIT_MASTER_KEY</span> there:</span>

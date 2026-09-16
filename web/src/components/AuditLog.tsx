@@ -20,7 +20,7 @@ export function AuditLog({ cluster }: { cluster?: string }) {
     const el = document.createElement('a'); el.href = url; el.download = `kubit-audit${cluster ? '-' + cluster : ''}.csv`; el.click(); URL.revokeObjectURL(url)
   }
   return (
-    <Section title="Audit log" help="Administrative actions in order: cluster creation, node changes, upgrades, snapshots, restores, credential rotation, settings changes. The single-admin deployment records no user; add a note in your change tracker when several people share this host." actions={<button class="btn" onClick={csv} disabled={rows.length === 0}>Export CSV</button>}>
+    <Section title="Audit log" help="Administrative actions, newest first." actions={<button class="btn" onClick={csv} disabled={rows.length === 0}>Export CSV</button>}>
       <DataTable id={`audit-${cluster ?? 'all'}`} columns={columns} rows={rows} rowKey={(a) => String(a.id)} defaultSort={{ id: 'at', dir: 'desc' }} empty="Nothing recorded yet." />
     </Section>
   )

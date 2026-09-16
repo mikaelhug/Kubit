@@ -31,7 +31,9 @@ func kindsOf(evs []store.EventRow) []string {
 	return out
 }
 
-func disk(pct int64) labhost.Metrics { return labhost.Metrics{DiskUsed: pct, DiskTotal: 100, MemTotal: 100} }
+func disk(pct int64) labhost.Metrics {
+	return labhost.Metrics{DiskUsed: pct, DiskTotal: 100, MemTotal: 100}
+}
 
 // Disk: warns at 85, escalates once at 95, stays quiet in between, clears below 80.
 func TestLabDiskThresholds(t *testing.T) {

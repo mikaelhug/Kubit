@@ -21,7 +21,7 @@ export function GettingStarted() {
     <div class="p-8 max-w-3xl flex flex-col gap-6">
       <div>
         <h1 class="text-2xl font-semibold">Welcome to Kubit</h1>
-        <p class="text-muted mt-1">Three steps from bare machines to a running Talos Kubernetes cluster. Kubit talks to the machines directly; nothing is installed on them until you say so.</p>
+        <p class="text-muted mt-1">Three steps from bare machines to a Talos Kubernetes cluster.</p>
       </div>
       <Step n={1} title="Boot the machines into Talos maintenance mode" done={free > 0}>
         <p>Any mini PC, server or VM. Write the ISO to a USB stick (or attach it to the VM) and boot from it — Talos {talos} starts in memory and waits on port 50000. Nothing touches the disk yet.</p>
@@ -37,14 +37,14 @@ export function GettingStarted() {
         <a class="btn mt-2 self-start" href="/fleet/inventory">Open Inventory →</a>
       </Step>
       <Step n={3} title="Design and create the cluster" done={false}>
-        <p>Pick the machines; Kubit proposes control planes and workers (bare metal first, odd etcd count), a VIP and a LoadBalancer range, and lints the design before anything is written. Add-ons (MetalLB, ingress-nginx, gVisor, metrics-server, cert-manager, Argo CD) are one toggle each.</p>
+        <p>Pick the machines; Kubit proposes roles, a VIP and a LoadBalancer range and lints the design. Add-ons are one toggle each.</p>
         <a class={`btn btn-primary mt-2 self-start ${free === 0 ? 'opacity-60' : ''}`} href="/clusters/new">Create a cluster →</a>
       </Step>
       <div class="panel p-5 text-[13.5px] flex flex-col gap-1">
         <h2 class="font-semibold text-[15px]">One machine, several nodes</h2>
         <p>An AMT machine can become a lab host: Debian + KVM installed by Kubit, Talos VMs carved from it. Scan, then <b>Make lab host</b> in the wizard.</p>
       </div>
-      <p class="text-[12px] text-muted">Afterwards: the cluster runs on its own. Keep Kubit running (or install it as a service) for alerts, scheduled etcd snapshots and off-site copies; export at any time to manage the cluster without Kubit.</p>
+      <p class="text-[12px] text-muted">The cluster runs on its own. Keep Kubit running for alerts, snapshots and off-site copies; export at any time.</p>
     </div>
   )
 }

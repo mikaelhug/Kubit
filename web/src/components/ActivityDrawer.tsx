@@ -3,6 +3,7 @@ import { api, fmt, type Operation } from '../api'
 import { drawerHeight, drawerOpen, drawerTab, loadOperationLog, opEvents, operations, persist, running, toast } from '../store'
 import { Stepper } from './Stepper'
 import { EventLine, Pill, stateTone } from './ui'
+import { elapsed } from '../clock'
 
 /**
  * Bottom drawer with one tab per running (or recently watched) operation: full width,
@@ -94,7 +95,7 @@ export function OperationView({ id, tall }: { id: number; tall?: boolean }) {
     <div class="flex-1 min-h-0 grid grid-cols-[280px_1fr]">
       <div class="border-r border-border overflow-auto p-2 flex flex-col gap-2">
         <div class="flex items-center gap-2 px-2 pt-1">
-          <span class="text-[12px] text-muted num">{fmt.duration(op.startedAt, op.finishedAt)}</span>
+          <span class="text-[12px] text-muted num">{elapsed(op.startedAt, op.finishedAt)}</span>
           {op.status === 'running' && <button class="btn btn-danger !py-0.5 !px-2 text-[12px] ml-auto" onClick={() => api.cancelOperation(id).catch((e) => toast(e.message, 'error'))}>Cancel</button>}
           {op.status !== 'running' && ['cluster.create', 'node.add', 'platform.plan', 'platform.apply', 'discover'].includes(op.kind) && op.status !== 'done' && (
             <button class="btn !py-0.5 !px-2 text-[12px] ml-auto" onClick={() => api.retryOperation(id).then((r) => { drawerTab.value = r.operationId }).catch((e) => toast(e.message, 'error'))}>Retry</button>

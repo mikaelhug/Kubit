@@ -44,7 +44,7 @@ export function Storage({ ctx }: { ctx: ClusterCtx }) {
   return (
     <div class="flex flex-col gap-6">
       <ErrorBox error={error} />
-      {view && view.classes.length === 0 && <Notice tone="warn">No StorageClass: PersistentVolumeClaims cannot be provisioned. A storage add-on (Longhorn or local-path) is planned as a platform card.</Notice>}
+      {view && view.classes.length === 0 && <Notice tone="warn">No StorageClass: claims cannot be provisioned.</Notice>}
       <Section title={`Storage classes (${view?.classes.length ?? 0})`}>
         <DataTable loading={!view && !error} search={false} columns={scols} rows={view?.classes ?? []} rowKey={(c) => c.name} empty="None." />
       </Section>

@@ -52,7 +52,7 @@ export function Nodes({ ctx }: { ctx: ClusterCtx }) {
 
   return (
     <>
-      <Section title="Nodes" help="Talos reachability and Kubernetes readiness are shown separately: a machine can answer Talos while its kubelet is not registered, and vice versa. Machines are tracked by MAC; a node whose DHCP lease moved shows where it was last seen."
+      <Section title="Nodes" help="Talos reachability and Kubernetes readiness, separately."
         actions={<>
           {pools.length > 2 || pool ? (
             <select class="input !py-1 w-auto" value={pool} onChange={(e) => setPool((e.target as HTMLSelectElement).value)} aria-label="Filter by pool">
@@ -196,7 +196,7 @@ function AddNodeDialog({ cluster, onClose, preselect }: { cluster: ClusterRow; o
           )}
         </div>
       )}
-      <p class="text-[12px] text-muted">Runs: preflight → generate config from the cluster's secrets → apply and install → wait for Ready. Progress opens in the Activity drawer.</p>
+      <p class="text-[12px] text-muted">Preflight, config, install, wait for Ready. Progress in Activity.</p>
     </Dialog>
   )
 }
@@ -233,7 +233,7 @@ export function ReaddressDialog({ cluster, n, spec, onClose }: { cluster: Cluste
           <Field label="VLAN"><input class="input mono" type="number" min={0} max={4094} value={network.vlan ?? ''} onInput={(e) => { const v = Number((e.target as HTMLInputElement).value); setNetwork({ ...network, vlan: v > 0 ? v : undefined }) }} /></Field>
         </div>
       )}
-      <p class="text-[12px] text-muted">Applies the node's config without a reboot, waits for the Talos API on the new address and for Kubernetes Ready, then saves cluster.yaml.</p>
+      <p class="text-[12px] text-muted">Applies without a reboot, waits for Talos and Kubernetes on the new address, saves cluster.yaml.</p>
     </Dialog>
   )
 }

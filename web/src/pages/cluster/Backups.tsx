@@ -48,7 +48,7 @@ export function Backups({ ctx }: { ctx: ClusterCtx }) {
   const cps = cluster.spec.spec.nodes.filter((n) => n.role === 'controlplane')
   return (
     <div class="flex flex-col gap-6">
-      <Section title="etcd snapshots" help="Every Kubernetes object lives in etcd. Kubit streams a consistent snapshot over the Talos API, verifies it, compresses and seals it with the master key under ~/.kubit/clusters/<name>/snapshots. Scheduled snapshots are pruned to the retention count; manual ones are kept until deleted."
+      <Section title="etcd snapshots" help="Consistent, verified, sealed snapshots of the cluster state. Scheduled ones are pruned to the retention count; manual ones stay."
         actions={<button class="btn btn-primary" disabled={running || !status?.etcd.healthy} title={!status?.etcd.healthy ? 'etcd must be healthy' : ''} onClick={() => api.takeSnapshot(name).then((r) => watch(r)).catch((e) => toast(e.message, 'error'))}>Take snapshot</button>}>
         <ErrorBox error={error} />
         <div class="grid grid-cols-1 md:grid-cols-3 gap-3">
@@ -59,7 +59,7 @@ export function Backups({ ctx }: { ctx: ClusterCtx }) {
         <DataTable loading={!loaded} id="snapshots" columns={columns} rows={rows} rowKey={(s) => String(s.id)} defaultSort={{ id: 'ts', dir: 'desc' }} empty="No snapshots yet." />
       </Section>
 
-      <Section title="Schedule" help="Snapshots are taken by the daemon when the cluster is ready, etcd is healthy and no other operation is running. Stored in cluster.yaml under backup.etcd.">
+      <Section title="Schedule" help="Taken when the cluster is healthy and idle.">
         <div class="panel p-4 flex flex-wrap items-end gap-4">
           <Field label="Interval" hint="Go duration ≥ 5m, or 0 to disable."><input class="input mono w-32" value={schedule.interval} onInput={(e) => setSchedule({ ...schedule, interval: (e.target as HTMLInputElement).value.trim() })} /></Field>
           <Field label="Keep" hint="Scheduled snapshots retained."><input class="input mono w-24" type="number" min={1} value={schedule.keep} onInput={(e) => setSchedule({ ...schedule, keep: (e.target as HTMLInputElement).value })} /></Field>
@@ -67,7 +67,7 @@ export function Backups({ ctx }: { ctx: ClusterCtx }) {
         </div>
       </Section>
 
-      <Section title="Disaster recovery" help="When etcd quorum is lost for good (majority of control planes destroyed, corrupted data), restore rebuilds the cluster from a snapshot. Everything created after the snapshot is gone; workers keep their pods running until the restored API reconciles them.">
+      <Section title="Disaster recovery" help="Restore rebuilds the cluster from a snapshot when quorum is lost for good. Changes after the snapshot are lost.">
         <Notice tone="warn">Restore wipes the EPHEMERAL partition on all {cps.length} control plane{cps.length === 1 ? '' : 's'} (machine configs on STATE are kept), uploads the snapshot to {cps[0]?.hostname}, bootstraps etcd from it and waits for the other members to rejoin and every node to become Ready. Verified on a 3-control-plane cluster in ~3 minutes. Take a fresh snapshot first if the cluster is still healthy.</Notice>
       </Section>
 

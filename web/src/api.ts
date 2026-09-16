@@ -86,6 +86,8 @@ export interface LabVM { name: string; mac: string; state: string; cpus: number;
 export interface LabCapacity { cpus: number; memMiB: number; diskGiB: number; kvm: boolean; kernel: string; libvirt: string; hostname: string; arch: string; bridge: string; ready: boolean; checkedAt: string }
 export interface LabMetrics { load1: number; cpuPct: number; memUsed: number; memTotal: number; diskUsed: number; diskTotal: number; vmsRunning: number; uptimeSec: number; at: string }
 export interface LabUpdates { count: number; security: number; rebootRequired: boolean; kernelRunning: string; kernelInstalled: string; release: string; unattended: boolean; checkedAt: string }
+export interface VMSize { name?: string; role: 'controlplane' | 'worker'; cpus: number; memMiB: number; diskGiB: number; dataGiB: number }
+export interface VMPlan { each: VMSize[]; prefix?: string }
 export interface LabBootLine { kernel: string; initrd: string; cmdline: string }
 export interface LabInstall { stage: 'installer' | 'partitioning' | 'packages' | 'late-done' | 'booted' | string; at: string }
 export interface LabHost { state: 'installing' | 'setup' | 'ready' | 'updating' | 'error'; error?: string; capacity: LabCapacity; talos?: string; /** null from the daemon while installing; readers use vmsOf */ vms: LabVM[] | null; metrics?: LabMetrics; updates?: LabUpdates; install?: LabInstall; network?: 'bridge' | 'routed'; boot?: LabBootLine; failures?: number; updatedAt: string }
@@ -159,14 +161,14 @@ export const api = {
   oobTest: (mac: string, c?: OOBConfig) => req<{ ok: boolean; error?: string; info?: OOBInfo }>('POST', `/machines/${mac}/oob/test`, c ?? {}),
   power: (mac: string, action: 'on' | 'off' | 'reset' | 'cycle' | 'pxe') => req<OpRef>('POST', `/machines/${mac}/power`, { action }),
   addOOBMachine: (c: OOBConfig) => req<{ machine: NodeRow; info: OOBInfo }>('POST', '/machines/oob', c),
-  labProvision: (mac: string, plan?: { manual?: boolean; vms?: { count: number; cpus: number; memMiB: number; diskGiB: number; dataGiB?: number; prefix?: string }; cluster?: { name: string; controlPlanes: 1 | 3; skipPlatform?: boolean } }) => req<OpRef>('POST', `/machines/${mac}/labhost`, plan ?? {}),
+  labProvision: (mac: string, plan?: { manual?: boolean; network?: 'bridge' | 'routed'; vms?: VMPlan; cluster?: { name: string; controlPlanes: 1 | 3; skipPlatform?: boolean } }) => req<OpRef>('POST', `/machines/${mac}/labhost`, plan ?? {}),
   labRelease: (mac: string) => req<void>('DELETE', `/machines/${mac}/labhost`),
   addMachine: (r: { mac: string; ip?: string; hostname?: string; arch?: string }) => req<NodeRow>('POST', '/machines', r),
   labSamples: (mac: string, range: string) => req<Sample[]>('GET', `/machines/${mac}/labhost/samples?range=${range}`),
   labCheck: (mac: string) => req<LabUpdates>('POST', `/machines/${mac}/labhost/check`),
   labUpdate: (mac: string) => req<OpRef>('POST', `/machines/${mac}/labhost/update?ignoreWindow=true`),
   labReboot: (mac: string) => req<OpRef>('POST', `/machines/${mac}/labhost/reboot?ignoreWindow=true`),
-  labAddVMs: (mac: string, r: { count: number; cpus: number; memMiB: number; diskGiB: number; dataGiB?: number; prefix?: string }) => req<OpRef>('POST', `/machines/${mac}/labhost/vms`, r),
+  labAddVMs: (mac: string, r: VMPlan) => req<OpRef>('POST', `/machines/${mac}/labhost/vms`, r),
   labVM: (mac: string, name: string, action: 'start' | 'stop' | 'kill' | 'reprovision') => req<OpRef>('POST', `/machines/${mac}/labhost/vms/${name}/${action}`),
   labVMResize: (mac: string, name: string, cpus: number, memMiB: number) => req<void>('PUT', `/machines/${mac}/labhost/vms/${name}`, { cpus, memMiB }),
   labVMDelete: (mac: string, name: string) => req<void>('DELETE', `/machines/${mac}/labhost/vms/${name}`),

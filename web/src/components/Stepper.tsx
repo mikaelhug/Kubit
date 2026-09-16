@@ -1,5 +1,5 @@
 import type { Step } from '../api'
-import { fmt } from '../api'
+import { elapsed } from '../clock'
 
 const icon: Record<Step['status'], string> = { pending: '○', running: '◐', done: '●', failed: '✕', skipped: '–', cancelled: '⊘' }
 const color: Record<Step['status'], string> = { pending: 'text-muted', running: 'text-accent', done: 'text-good', failed: 'text-bad', skipped: 'text-muted', cancelled: 'text-warn' }
@@ -18,7 +18,7 @@ export function Stepper({ steps, selected, onSelect, compact }: { steps: Step[];
             <span class={`w-4 text-center ${color[s.status]} ${s.status === 'running' ? 'animate-pulse' : ''}`}>{icon[s.status]}</span>
             <span class={`flex-1 truncate ${s.status === 'pending' || s.status === 'skipped' ? 'text-muted' : ''}`}>{s.title}</span>
             {s.node && !compact && <span class="mono text-muted">{s.node}</span>}
-            <span class="num text-[11px] text-muted w-14 text-right">{s.status === 'skipped' ? 'skipped' : s.status === 'cancelled' ? 'cancelled' : s.startedAt ? fmt.duration(s.startedAt, s.finishedAt) : ''}</span>
+            <span class="num text-[11px] text-muted w-14 text-right">{s.status === 'skipped' ? 'skipped' : s.status === 'cancelled' ? 'cancelled' : s.startedAt ? elapsed(s.startedAt, s.finishedAt) : ''}</span>
           </button>
         </li>
       ))}

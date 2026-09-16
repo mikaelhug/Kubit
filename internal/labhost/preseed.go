@@ -40,7 +40,9 @@ type PreseedParams struct {
 
 // ProgressURL is where the installer reports its stage; derived from PostURL so the
 // pxe proxy needs no extra configuration.
-func (p PreseedParams) ProgressURL() string { return strings.TrimSuffix(p.PostURL, "/postinstall") + "/progress" }
+func (p PreseedParams) ProgressURL() string {
+	return strings.TrimSuffix(p.PostURL, "/postinstall") + "/progress"
+}
 
 // Packages the host needs per arch: the emulator for its own arch and the UEFI
 // firmware the VMs boot from disk with.

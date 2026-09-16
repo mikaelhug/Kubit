@@ -157,8 +157,10 @@ func (s *Server) labWaitBoot(ctx context.Context, watch *pxeWatch) error {
 		}
 	}
 	if err := wait("boot", labBootWait, func() (bool, string) {
-		if b := watch.poll(ctx); b != nil {
+		if b := watch.poll(ctx); b != nil && b.Stage != "nopxe" {
 			return true, fmt.Sprintf("network boot request from %s (%s firmware)", mac, b.Arch)
+		} else if b != nil {
+			return false, fmt.Sprintf("%s asked for an address without PXE (vendor class %q): the machine came up from its disk, or only its management engine did. Check the BIOS boot order (network boot first, UEFI IPv4 PXE enabled) and that the AMT boot override is honoured.", mac, b.Class)
 		}
 		return false, fmt.Sprintf("no network boot request from %s within %s. The machine booted from its disk or another PXE server answered first: check the BIOS boot order and that the AMT boot override is honoured. Kubit's PXE server answers on the interface it was started with — on a laptop that is usually Wi-Fi, and some access points drop DHCP replies; a wired interface is safer.", mac, labBootWait)
 	}); err != nil {

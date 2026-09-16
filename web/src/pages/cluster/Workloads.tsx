@@ -50,7 +50,7 @@ export function Workloads({ ctx }: { ctx: ClusterCtx }) {
 
   return (
     <>
-      <Section title="Workloads" help="Controllers and their pods, all namespaces. Kubit reads; changes to workloads belong to your deployment tooling (ArgoCD if enabled)."
+      <Section title="Workloads" help="Controllers and pods, all namespaces. Read-only."
         actions={
           <select class="input !w-56" value={ns} onChange={(e) => setNs((e.target as HTMLSelectElement).value)}>
             <option value="">All namespaces</option>

@@ -25,7 +25,7 @@ export function Pxe() {
   ]
   return (
     <div class="p-6 flex flex-col gap-5">
-      <Section title="Network boot" help="Machines that network-boot get iPXE over proxyDHCP/TFTP and a script that loads Talos into maintenance mode from a local cache of Image Factory assets; the LAN's own DHCP server keeps handing out addresses. Cluster members are never offered anything (they boot from disk), so the server can stay running. Kubit's daemon cannot bind ports 67/69 itself, so the PXE server runs as a separate root process."
+      <Section title="Network boot" help="Boots machines into Talos maintenance mode next to the LAN's own DHCP. Cluster members are left alone. Runs as a separate root process."
         actions={<EnrollmentSwitch />}>
         {!st && <div class="text-muted">Checking…</div>}
         {st && !st.running && (
@@ -42,7 +42,7 @@ export function Pxe() {
             <div class="panel p-4">
               <KeyValue rows={[
                 ['State', <span class="flex items-center gap-2"><Pill tone="good">running since {fmt.when(st.startedAt ?? '')}</Pill>{st.httpOnly && <Pill tone="warn" title="No DHCP or TFTP: machines must be booted by hand from the boot assets">HTTP only</Pill>}</span>],
-                ['Interface', <span class="flex flex-col"><span class="mono">{st.interface} ({st.ip})</span><span class="text-[11px] text-muted">PXE clients must share this segment. On a Wi-Fi interface the access point has to forward DHCP broadcasts both ways; wired is safer.</span></span>],
+                ['Interface', <span class="flex flex-col"><span class="mono">{st.interface} ({st.ip})</span><span class="text-[11px] text-muted">Clients must share this segment. Wi-Fi works only if the access point forwards DHCP both ways.</span></span>],
                 ['Boot script', <span class="mono">http://{st.ip}:{st.httpPort}/boot.ipxe</span>],
                 ['Talos', <span class="mono">{st.talosVersion}</span>],
                 ['Schematic', <span class="mono text-[12px] break-all">{st.schematicId}</span>],
@@ -56,7 +56,7 @@ export function Pxe() {
         )}
       </Section>
       {st?.running && (
-        <Section title={`Machines seen (${st.boots?.length ?? 0})`} help="A machine reaching the kernel stage boots into maintenance mode within a minute and then appears under Inventory after a scan.">
+        <Section title={`Machines seen (${st.boots?.length ?? 0})`} help="Kernel stage means maintenance mode within a minute; then it appears in Inventory.">
           <DataTable id="pxe" columns={cols} rows={st.boots ?? []} rowKey={(b) => b.mac} defaultSort={{ id: 'last', dir: 'desc' }} empty="No PXE requests yet." />
         </Section>
       )}

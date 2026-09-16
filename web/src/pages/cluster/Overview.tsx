@@ -5,6 +5,7 @@ import { runbookFor } from '../../runbooks'
 import { Sparkline } from '../../components/Sparkline'
 import { Notice, Pill, Section, StatusDot } from '../../components/ui'
 import type { ClusterCtx } from './ClusterPage'
+import { ageSec } from '../../clock'
 
 const recoveryKinds = new Set(['talos.back', 'node.ready', 'api.back', 'etcd.healthy', 'lb.assigned', 'workload.available', 'pod.recovered', 'pvc.bound', 'service.endpoints', 'ingress.address', 'lb.pool-free'])
 
@@ -77,7 +78,7 @@ export function Overview({ ctx }: { ctx: ClusterCtx }) {
           <span class="text-[11px] text-muted">Sampled every 15 s by the daemon (kept 24 h, then hourly for 30 d). Gaps mean the API was unreachable.</span>
         </div>
         <div class="flex flex-col gap-4">
-          <Section title="Recent events" help="Alerts the watcher raised and their recoveries; routine state changes (node Ready, API back, version notes) are not shown.">
+          <Section title="Recent events" help="Alerts and their recoveries.">
             <div class="panel divide-y divide-border/60 max-h-[260px] overflow-auto">
               {notable.length === 0 && <div class="p-4 text-[13px] text-muted">Nothing worth reporting.</div>}
               {notable.slice(0, 30).map((e) => <EventRow key={e.id} e={e} />)}
@@ -134,10 +135,8 @@ export function EventRow({ e, onAck }: { e: HealthEvent; onAck?: () => void }) {
 
 /** How current the watcher's view is, and whether scheduled snapshots are keeping up. */
 function ObserverCard({ status }: { status?: { observedAt?: string; lastSnapshotAt?: string; snapshotInterval?: string } | null }) {
-  const [, tick] = useState(0)
-  useEffect(() => { const t = setInterval(() => tick((n) => n + 1), 15000); return () => clearInterval(t) }, [])
   if (!status?.observedAt) return <Card label="Observer" tone="muted" value="—" sub="no status from the watcher yet" />
-  const seenAgo = (Date.now() - new Date(status.observedAt).getTime()) / 1000
+  const seenAgo = ageSec(status.observedAt)
   const stale = seenAgo > 120
   const interval = parseDuration(status.snapshotInterval ?? '6h')
   const snapAgo = status.lastSnapshotAt ? (Date.now() - new Date(status.lastSnapshotAt).getTime()) / 1000 : null

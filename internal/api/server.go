@@ -888,10 +888,17 @@ func writeErr(w http.ResponseWriter, err error) {
 }
 
 // spaHandler serves static assets and falls back to index.html for client-side routes.
+// Hashed assets may be cached for good; index.html never, so a new daemon build is
+// picked up on the next load instead of after a hard refresh.
 func spaHandler(root http.FileSystem) http.Handler {
 	files := http.FileServer(root)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if f, err := root.Open(r.URL.Path); err == nil {
+		if strings.HasPrefix(r.URL.Path, "/assets/") {
+			w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
+		} else {
+			w.Header().Set("Cache-Control", "no-cache")
+		}
+		if f, err := root.Open(r.URL.Path); err == nil && !strings.HasSuffix(r.URL.Path, "/") {
 			f.Close()
 			files.ServeHTTP(w, r)
 			return

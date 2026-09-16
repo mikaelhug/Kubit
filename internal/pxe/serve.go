@@ -38,6 +38,7 @@ func (s *Server) Track() {
 		s.track = newTracker()
 		s.Config.onDHCP = s.track.dhcp
 		s.Config.onLog = s.track.logf
+		s.Config.onPlainDHCP = s.track.plain
 	}
 }
 

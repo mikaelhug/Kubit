@@ -106,9 +106,14 @@ func (s *Server) handleLabProvision(w http.ResponseWriter, r *http.Request) {
 	mac := strings.ToLower(r.PathValue("mac"))
 	var plan labPlan
 	_ = json.NewDecoder(r.Body).Decode(&plan)
-	if plan.VMs != nil && (plan.VMs.Count < 1 || plan.VMs.CPUs < 1 || plan.VMs.MemMiB < 1024 || plan.VMs.DiskGiB < 8 || plan.VMs.DataGiB < 0) {
-		http.Error(w, "vms: at least 1 VM, 1 vCPU, 1024 MiB, 8 GiB", http.StatusBadRequest)
-		return
+	if plan.VMs != nil {
+		if plan.Cluster != nil && len(plan.VMs.Each) == 0 {
+			plan.VMs.ControlPlanes, plan.VMs.ControlPlaneMemMiB = plan.Cluster.ControlPlanes, minControlPlaneMiB
+		}
+		if err := plan.VMs.validate(); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
 	}
 	if plan.Network != "" && plan.Network != "bridge" && plan.Network != "routed" {
 		http.Error(w, "network must be bridge or routed", http.StatusBadRequest)
@@ -119,15 +124,17 @@ func (s *Server) handleLabProvision(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "a cluster needs vms", http.StatusBadRequest)
 			return
 		}
+		if len(plan.VMs.Each) > 0 {
+			plan.Cluster.ControlPlanes = plan.VMs.controlPlanes()
+		}
 		if plan.Cluster.ControlPlanes != 1 && plan.Cluster.ControlPlanes != 3 {
-			http.Error(w, "controlPlanes must be 1 or 3", http.StatusBadRequest)
+			http.Error(w, "the cluster needs 1 or 3 control planes", http.StatusBadRequest)
 			return
 		}
-		if plan.Cluster.ControlPlanes > plan.VMs.Count {
+		if plan.Cluster.ControlPlanes > len(plan.VMs.sizes()) {
 			http.Error(w, "more control planes than VMs", http.StatusBadRequest)
 			return
 		}
-		plan.VMs.ControlPlanes, plan.VMs.ControlPlaneMemMiB = plan.Cluster.ControlPlanes, max(plan.VMs.MemMiB, minControlPlaneMiB)
 		if _, err := s.store.GetCluster(r.Context(), plan.Cluster.Name); err == nil {
 			http.Error(w, "a cluster with that name exists", http.StatusConflict)
 			return
@@ -427,31 +434,84 @@ type addVMsRequest struct {
 	CPUs    int    `json:"cpus"`
 	MemMiB  int    `json:"memMiB"`
 	DiskGiB int    `json:"diskGiB"`
-	DataGiB int    `json:"dataGiB"` // 0 = no data disk
+	DataGiB int    `json:"dataGiB"`
 	Prefix  string `json:"prefix"`
-	// ControlPlanes: that many of the VMs (the first ones) get at least
-	// ControlPlaneMemMiB — etcd and the API server do not fit in a worker's share.
-	ControlPlanes      int `json:"controlPlanes,omitempty"`
-	ControlPlaneMemMiB int `json:"controlPlaneMemMiB,omitempty"`
+	// Each sizes every VM individually; when set, Count and the uniform sizes above
+	// are ignored. Control planes are listed first so a cluster plan picks them.
+	Each               []vmSize `json:"each,omitempty"`
+	ControlPlanes      int      `json:"controlPlanes,omitempty"`
+	ControlPlaneMemMiB int      `json:"controlPlaneMemMiB,omitempty"`
 }
 
-// The smallest control plane that stays healthy under Kubit's default add-ons.
+type vmSize struct {
+	Name    string `json:"name,omitempty"`
+	Role    string `json:"role,omitempty"`
+	CPUs    int    `json:"cpus"`
+	MemMiB  int    `json:"memMiB"`
+	DiskGiB int    `json:"diskGiB"`
+	DataGiB int    `json:"dataGiB"`
+}
+
 const minControlPlaneMiB = 2048
 
-// memOf is the memory the i-th VM of a request gets.
-func (r addVMsRequest) memOf(i int) int {
-	if i < r.ControlPlanes && r.ControlPlaneMemMiB > r.MemMiB {
-		return r.ControlPlaneMemMiB
+func (r addVMsRequest) sizes() []vmSize {
+	if len(r.Each) > 0 {
+		out := make([]vmSize, 0, len(r.Each))
+		for _, v := range r.Each {
+			if v.Role == "controlplane" {
+				out = append(out, v)
+			}
+		}
+		for _, v := range r.Each {
+			if v.Role != "controlplane" {
+				out = append(out, v)
+			}
+		}
+		return out
 	}
-	return r.MemMiB
+	out := make([]vmSize, r.Count)
+	for i := range out {
+		out[i] = vmSize{CPUs: r.CPUs, MemMiB: r.MemMiB, DiskGiB: r.DiskGiB, DataGiB: r.DataGiB, Role: "worker"}
+		if i < r.ControlPlanes {
+			out[i].Role = "controlplane"
+			out[i].MemMiB = max(r.MemMiB, r.ControlPlaneMemMiB)
+		}
+	}
+	return out
 }
 
 func (r addVMsRequest) totalMem() int {
 	t := 0
-	for i := 0; i < r.Count; i++ {
-		t += r.memOf(i)
+	for _, v := range r.sizes() {
+		t += v.MemMiB
 	}
 	return t
+}
+
+func (r addVMsRequest) controlPlanes() int {
+	n := 0
+	for _, v := range r.sizes() {
+		if v.Role == "controlplane" {
+			n++
+		}
+	}
+	return n
+}
+
+func (r addVMsRequest) validate() error {
+	sz := r.sizes()
+	if len(sz) < 1 || len(sz) > 32 {
+		return fmt.Errorf("vms: between 1 and 32 VMs")
+	}
+	for i, v := range sz {
+		if v.CPUs < 1 || v.MemMiB < 1024 || v.DiskGiB < 8 || v.DataGiB < 0 {
+			return fmt.Errorf("vm %d: at least 1 vCPU, 1024 MiB, 8 GiB disk", i+1)
+		}
+		if v.Role == "controlplane" && v.MemMiB < minControlPlaneMiB {
+			return fmt.Errorf("vm %d: a control plane needs at least %d MiB", i+1, minControlPlaneMiB)
+		}
+	}
+	return nil
 }
 
 // handleLabAddVMs defines and starts VMs, records each as a machine, and waits for
@@ -459,7 +519,7 @@ func (r addVMsRequest) totalMem() int {
 func (s *Server) handleLabAddVMs(w http.ResponseWriter, r *http.Request) {
 	mac := strings.ToLower(r.PathValue("mac"))
 	var req addVMsRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Count < 1 || req.CPUs < 1 || req.MemMiB < 1024 || req.DiskGiB < 8 || req.DataGiB < 0 {
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.validate() != nil {
 		http.Error(w, `body: {"count":4,"cpus":2,"memMiB":3072,"diskGiB":20}; at least 1 vCPU, 1024 MiB, 8 GiB`, http.StatusBadRequest)
 		return
 	}
@@ -509,23 +569,26 @@ func (s *Server) labAddVMs(ctx contextT, host *store.Machine, req addVMsRequest,
 		prefix = "vm"
 	}
 	var created, createdMACs []string
-	for i := 0; i < req.Count; i++ {
-		name := fmt.Sprintf("%s-%02d", prefix, next)
-		for nameTaken(existing, name) {
-			next++
+	for _, size := range req.sizes() {
+		name := size.Name
+		if name == "" || nameTaken(existing, name) {
 			name = fmt.Sprintf("%s-%02d", prefix, next)
+			for nameTaken(existing, name) {
+				next++
+				name = fmt.Sprintf("%s-%02d", prefix, next)
+			}
 		}
-		spec := labhost.VMSpec{Name: name, MAC: labhost.MAC(lh.Index, next), CPUs: req.CPUs, MemMiB: req.memOf(i), DiskGiB: req.DiskGiB, DataGiB: req.DataGiB, Kernel: lh.Kernel, Initrd: lh.Initrd, Arch: lh.Capacity.Arch, Bridge: lh.Capacity.Bridge, Routed: lh.Network == "routed", TCG: !lh.Capacity.KVM}
+		spec := labhost.VMSpec{Name: name, MAC: labhost.MAC(lh.Index, next), CPUs: size.CPUs, MemMiB: size.MemMiB, DiskGiB: size.DiskGiB, DataGiB: size.DataGiB, Kernel: lh.Kernel, Initrd: lh.Initrd, Arch: lh.Capacity.Arch, Bridge: lh.Capacity.Bridge, Routed: lh.Network == "routed", TCG: !lh.Capacity.KVM}
 		if err := lc.Define(ctx, spec); err != nil {
 			return nil, fmt.Errorf("%s: %w", name, err)
 		}
-		hw, _ := json.Marshal(map[string]any{"manufacturer": "Kubit lab", "product": "KVM VM on " + labHostname(host), "virtual": true, "cpus": req.CPUs, "memoryBytes": int64(req.memOf(i)) << 20, "disks": []any{}, "links": []any{}})
+		hw, _ := json.Marshal(map[string]any{"manufacturer": "Kubit lab", "product": "KVM VM on " + labHostname(host), "virtual": true, "cpus": size.CPUs, "memoryBytes": int64(size.MemMiB) << 20, "disks": []any{}, "links": []any{}})
 		_ = s.store.UpsertNode(ctx, store.NodeRow{MAC: spec.MAC, Hostname: name, Source: "lab", State: "booting", Arch: lh.Capacity.Arch, Hardware: hw})
 		_ = s.store.SetMachineHost(ctx, spec.MAC, mac)
 		existing = append(existing, labhost.VM{Name: name, MAC: spec.MAC})
 		created = append(created, name)
 		createdMACs = append(createdMACs, spec.MAC)
-		sink(clusterEvent{Time: time.Now(), Kind: "log", Level: "info", Step: "define", Node: name, Message: fmt.Sprintf("defined and started: %d vCPU, %d MiB, %d GiB%s, %s", req.CPUs, req.memOf(i), req.DiskGiB, map[bool]string{true: fmt.Sprintf(" + %d GiB data", req.DataGiB), false: ""}[req.DataGiB > 0], spec.MAC)})
+		sink(clusterEvent{Time: time.Now(), Kind: "log", Level: "info", Step: "define", Node: name, Message: fmt.Sprintf("defined and started: %s, %d vCPU, %d MiB, %d GiB%s, %s", size.Role, size.CPUs, size.MemMiB, size.DiskGiB, map[bool]string{true: fmt.Sprintf(" + %d GiB data", size.DataGiB), false: ""}[size.DataGiB > 0], spec.MAC)})
 		next++
 	}
 	lh.VMs, _ = lc.List(ctx)
@@ -571,8 +634,8 @@ func (s *Server) labAddVMs(ctx contextT, host *store.Machine, req addVMsRequest,
 		sort.Strings(names)
 		return nil, fmt.Errorf("%s did not reach Talos maintenance mode within 6 minutes (check the VM console on the host: virsh console <name>)", strings.Join(names, ", "))
 	}
-	_ = s.store.Audit(ctx, "", "labhost.vms", fmt.Sprintf("%s +%d", mac, req.Count))
-	sink(clusterEvent{Time: time.Now(), Kind: "log", Level: "done", Step: "vmboot", Message: fmt.Sprintf("%d VM(s) in maintenance mode, ready to be picked for a cluster", req.Count)})
+	_ = s.store.Audit(ctx, "", "labhost.vms", fmt.Sprintf("%s +%d", mac, len(created)))
+	sink(clusterEvent{Time: time.Now(), Kind: "log", Level: "done", Step: "vmboot", Message: fmt.Sprintf("%d VM(s) in maintenance mode, ready to be picked for a cluster", len(created))})
 	return createdMACs, nil
 }
 

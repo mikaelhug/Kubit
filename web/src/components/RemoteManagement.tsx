@@ -25,7 +25,7 @@ export function RemoteManagement({ node }: { node: NodeRow }) {
           <div class="font-medium">Remote management</div>
           <p class="text-[12.5px] text-muted">{cfg ? <>Intel AMT at <span class="mono">{cfg.host}</span> ({cfg.tls ? 'TLS' : 'plain'}) — power control and one-shot network boot, even when the machine is off.</> : 'Not configured. With Intel AMT (vPro) Kubit can power the machine on/off, reset it, and boot it into Talos without touching it.'}</p>
         </div>
-        <button class="btn" onClick={() => setEdit(true)}>{cfg ? 'Edit…' : 'Configure…'}</button>
+        <button class="btn" onClick={() => setEdit(true)}>{cfg ? 'Edit' : 'Configure'}</button>
       </div>
       {cfg && (
         <div class="flex flex-wrap gap-2">
@@ -56,7 +56,7 @@ function OOBDialog({ mac, initial, onClose }: { mac: string; initial: OOBConfig;
   return (
     <Dialog title="Remote management" onClose={onClose} footer={<><button class="btn" onClick={onClose}>Cancel</button>{initial.host && <button class="btn btn-danger" onClick={remove}>Remove</button>}<button class="btn" onClick={test}>Test</button><button class="btn btn-primary" disabled={!c.host || !c.user} onClick={save}>Save</button></>}>
       <ErrorBox error={error} />
-      <Notice tone="muted">Enable AMT in the BIOS, set the MEBx password (Ctrl+P at boot) and allow network access; AMT shares the wired NIC's address and listens on 16992 (plain) or 16993 (TLS).</Notice>
+      <Notice tone="muted">Enable AMT in the BIOS, set the MEBx password, allow network access. Ports 16992 (plain) or 16993 (TLS).</Notice>
       <div class="grid grid-cols-2 gap-3">
         <Field label="Address" hint="IP or DNS name of the machine's wired interface."><input class="input mono" value={c.host} onInput={(e) => setC({ ...c, host: (e.target as HTMLInputElement).value.trim() })} /></Field>
         <Field label="User"><input class="input mono" value={c.user} onInput={(e) => setC({ ...c, user: (e.target as HTMLInputElement).value.trim() })} /></Field>
@@ -77,7 +77,7 @@ export function AddAMTDialog({ onClose }: { onClose: () => void }) {
   return (
     <Dialog title="Add machine via Intel AMT" onClose={onClose} footer={<><button class="btn" onClick={onClose}>Cancel</button><button class="btn btn-primary" disabled={busy || !c.host || !c.password} onClick={add}>{busy ? 'Probing…' : 'Add'}</button></>}>
       <ErrorBox error={error} />
-      <p class="text-[13px] text-muted">Kubit reads the MAC, model and serial from the management engine and creates the machine, so it can be powered on and booted into Talos from here — no USB stick, no keyboard.</p>
+      <p class="text-[13px] text-muted">Kubit reads MAC, model and serial from AMT and adds the machine; power and network boot are then remote.</p>
       <div class="grid grid-cols-2 gap-3">
         <Field label="AMT address"><input class="input mono" value={c.host} placeholder="192.168.1.50" onInput={(e) => setC({ ...c, host: (e.target as HTMLInputElement).value.trim() })} /></Field>
         <Field label="User"><input class="input mono" value={c.user} onInput={(e) => setC({ ...c, user: (e.target as HTMLInputElement).value.trim() })} /></Field>

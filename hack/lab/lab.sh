@@ -113,7 +113,7 @@ cmd_create() {
     -d "{\"mac\":\"$mac\",\"hostname\":\"lab$n\",\"arch\":\"$ARCH\"}" > /dev/null
   # vmnet drops frames from MACs other than the VM's own, so the nested Talos VMs
   # cannot sit on the bridge; they go on a routed libvirt network and the Mac needs a route.
-  local plan=${PLAN:-'{"manual":true,"network":"routed","vms":{"count":4,"cpus":2,"memMiB":2048,"diskGiB":20},"cluster":{"name":"lab","controlPlanes":1}}'}
+  local plan=${PLAN:-'{"manual":true,"network":"routed","vms":{"each":[{"role":"controlplane","cpus":2,"memMiB":2048,"diskGiB":20},{"role":"worker","cpus":2,"memMiB":2048,"diskGiB":20},{"role":"worker","cpus":2,"memMiB":2048,"diskGiB":20},{"role":"worker","cpus":2,"memMiB":2048,"diskGiB":20}]},"cluster":{"name":"lab","controlPlanes":1}}'}
   if [ "${NO_PLAN:-}" = 1 ]; then plan='{"manual":true}'; fi
   local op
   op=$(curl -fsS -X POST "$KUBIT/api/v1/machines/$mac/labhost" -H 'Content-Type: application/json' -d "$plan") || {

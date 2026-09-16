@@ -1,6 +1,6 @@
 import type { ComponentChildren } from 'preact'
 import { useEffect, useState } from 'preact/hooks'
-import { api, fmt, labHostKey, labNeedsReboot, vmsOf, type LabHost, type LabVM, type NodeRow, type Sample } from '../api'
+import { api, fmt, labHostKey, labNeedsReboot, vmsOf, type LabHost, type LabVM, type NodeRow, type Sample, type VMSize } from '../api'
 import { ack, health, hostSamples, loadHealth, machineList, operations, toast, watch } from '../store'
 import { Code, ConfirmDialog, Dialog, ErrorBox, Field, MaintenanceNotice, Meter, Notice, Pill } from './ui'
 import { usePxeGated } from './PxeGate'
@@ -11,42 +11,62 @@ const RESERVED_MIB = 2048
 // MiB to bytes without the 32-bit `<<` that wraps at 2 GiB.
 const mib = (n: number) => n * 1048576
 
-/** Sizes VMs against what the host has left; the suggestion is one control plane plus workers. */
+type VMRow = VMSize & { key: number }
+let vmKey = 0
+const defaultVM = (role: VMSize['role'], mem = 3072): VMRow => ({ key: ++vmKey, role, cpus: 2, memMiB: role === 'controlplane' ? Math.max(mem, 2048) : mem, diskGiB: 20, dataGiB: 0 })
+export const MIN_CP_MIB = 2048
+
+/** One editable row per VM. Control planes must have 2 GiB; roles matter only when a cluster is planned. */
+export function VMTable({ rows, onChange, roles }: { rows: VMRow[]; onChange: (rows: VMRow[]) => void; roles: boolean }) {
+  const set = (i: number, patch: Partial<VMSize>) => onChange(rows.map((r, j) => (j === i ? { ...r, ...patch } : r)))
+  const num = (i: number, k: 'cpus' | 'memMiB' | 'diskGiB' | 'dataGiB', min: number, step = 1) => (
+    <input class="input num !py-1 w-full" type="number" min={min} step={step} value={rows[i][k]} onInput={(e) => set(i, { [k]: Number((e.target as HTMLInputElement).value) })} />
+  )
+  return (
+    <div class="flex flex-col gap-2">
+      <table class="data wrap">
+        <thead><tr><th class="pl-3 w-8">#</th>{roles && <th class="w-36">Role</th>}<th class="w-20">vCPU</th><th class="w-28">RAM (MiB)</th><th class="w-24">Disk (GiB)</th><th class="w-24" title="0 = none; mounted at /var/mnt/data-1">Data (GiB)</th><th class="w-8"></th></tr></thead>
+        <tbody>
+          {rows.map((r, i) => (
+            <tr key={r.key}>
+              <td class="pl-3 text-muted num">{i + 1}</td>
+              {roles && <td><select class="input !py-1 w-full" value={r.role} onChange={(e) => { const role = (e.target as HTMLSelectElement).value as VMSize['role']; set(i, { role, memMiB: role === 'controlplane' ? Math.max(r.memMiB, MIN_CP_MIB) : r.memMiB }) }}><option value="controlplane">control plane</option><option value="worker">worker</option></select></td>}
+              <td>{num(i, 'cpus', 1)}</td>
+              <td>{num(i, 'memMiB', r.role === 'controlplane' ? MIN_CP_MIB : 1024, 256)}</td>
+              <td>{num(i, 'diskGiB', 8)}</td>
+              <td>{num(i, 'dataGiB', 0, 10)}</td>
+              <td class="pr-2"><button class="btn !px-2 !py-1" title="Remove" disabled={rows.length <= 1} onClick={() => onChange(rows.filter((_, j) => j !== i))}>✕</button></td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+      <div><button class="btn !py-1" onClick={() => onChange([...rows, defaultVM('worker', rows[rows.length - 1]?.memMiB)])}>+ Add VM</button></div>
+    </div>
+  )
+}
+
+const totalMem = (rows: VMSize[]) => rows.reduce((s, v) => s + v.memMiB, 0)
+const cpCount = (rows: VMSize[]) => rows.filter((v) => v.role === 'controlplane').length
+
+/** Add VMs to a running lab host. */
 export function AddVMsDialog({ host, onClose }: { host: NodeRow; onClose: () => void }) {
   const lh = host.labhost!
   const vms = vmsOf(lh)
   const used = vms.reduce((s, v) => s + v.memMiB, 0)
   const freeMiB = Math.max(0, lh.capacity.memMiB - RESERVED_MIB - used)
-  const [count, setCount] = useState(Math.min(4, Math.max(1, Math.floor(freeMiB / 3072))))
-  const [cpus, setCpus] = useState(2)
-  const [mem, setMem] = useState(3072)
-  const [disk, setDisk] = useState(20)
-  const [data, setData] = useState(0)
-  const [prefix, setPrefix] = useState('vm')
+  const [rows, setRows] = useState<VMRow[]>(() => Array.from({ length: Math.min(4, Math.max(1, Math.floor(freeMiB / 3072))) }, () => defaultVM('worker')))
   const [error, setError] = useState<string | null>(null)
-  const need = count * mem
+  const need = totalMem(rows)
   const over = need > freeMiB
-  const overCpu = count * cpus > lh.capacity.cpus * 2
-  const committed = (lh.vms ?? []).reduce((s, v) => s + v.diskGiB + (v.dataGiB ?? 0), 0)
-  const commit = committed + count * (disk + data)
-  const submit = () => api.labAddVMs(host.mac, { count, cpus, memMiB: mem, diskGiB: disk, dataGiB: data, prefix }).then((r) => { onClose(); watch(r) }).catch((e) => setError(e.message))
+  const overCpu = rows.reduce((s, v) => s + v.cpus, 0) > lh.capacity.cpus * 2
+  const submit = () => api.labAddVMs(host.mac, { each: rows.map(({ key: _k, ...v }) => v) }).then((r) => { onClose(); watch(r) }).catch((e) => setError(e.message))
   return (
-    <Dialog title={`Add VMs on ${lh.capacity.hostname || host.hostname}`} onClose={onClose} footer={<><button class="btn" onClick={onClose}>Cancel</button><button class="btn btn-primary" disabled={over || count < 1} onClick={submit}>Create {count} VM{count === 1 ? '' : 's'}</button></>}>
+    <Dialog title={`Add VMs on ${lh.capacity.hostname || host.hostname}`} width="max-w-2xl" onClose={onClose} footer={<><button class="btn" onClick={onClose}>Cancel</button><button class="btn btn-primary" disabled={over} onClick={submit}>Create {rows.length} VM{rows.length === 1 ? '' : 's'}</button></>}>
       <ErrorBox error={error} />
-      <div class="grid grid-cols-2 gap-3">
-        <Field label="How many"><input class="input num" type="number" min={1} max={32} value={count} onInput={(e) => setCount(Number((e.target as HTMLInputElement).value))} /></Field>
-        <Field label="Name prefix"><input class="input mono" value={prefix} onInput={(e) => setPrefix((e.target as HTMLInputElement).value.trim())} /></Field>
-        <Field label="vCPUs each" hint={`${lh.capacity.cpus} on the host; oversubscribing 2× is fine for a lab.`}><input class="input num" type="number" min={1} max={16} value={cpus} onInput={(e) => setCpus(Number((e.target as HTMLInputElement).value))} /></Field>
-        <Field label="RAM each (MiB)" hint="Control planes want 2 GiB+, workers 1 GiB+; 3 GiB is a comfortable lab node."><input class="input num" type="number" min={1024} step={256} value={mem} onInput={(e) => setMem(Number((e.target as HTMLInputElement).value))} /></Field>
-        <Field label="Disk each (GiB)" hint="Thin-provisioned; only used space costs."><input class="input num" type="number" min={8} value={disk} onInput={(e) => setDisk(Number((e.target as HTMLInputElement).value))} /></Field>
-        <Field label="Data disk each (GiB)" hint="0 = none. A second disk the cluster can claim for node-local storage."><input class="input num" type="number" min={0} step={10} value={data} onInput={(e) => setData(Number((e.target as HTMLInputElement).value))} /></Field>
-      </div>
-      <Meter label={`Memory: ${fmt.bytes(mib(need))} of ${fmt.bytes(mib(freeMiB))} free (host keeps 2 GiB)`} used={need} cap={Math.max(freeMiB, 1)} format={(n) => fmt.bytes(mib(n))} />
-      {commit > lh.capacity.diskGiB + committed && <Notice tone="warn">VM disks may grow to {commit} GiB, more than the host has. Fine while they stay small; Kubit alerts before the host fills.</Notice>}
-      {over && <Notice tone="bad">Not enough memory: reduce the count or the RAM per VM.</Notice>}
+      <VMTable rows={rows} onChange={setRows} roles={false} />
+      <Meter label={`Memory: ${fmt.bytes(mib(need))} of ${fmt.bytes(mib(freeMiB))} free`} used={need} cap={Math.max(freeMiB, 1)} format={(n) => fmt.bytes(mib(n))} />
+      {over && <Notice tone="bad">Not enough memory.</Notice>}
       {overCpu && <Notice tone="warn">More than 2× the host's CPUs; the VMs will contend.</Notice>}
-      {count >= 4 && <Notice tone="muted">Suggestion for {count}: 1 control plane + {count - 1} workers (no HA — the host is one failure domain anyway), or 3 control planes + {count - 3} workers to rehearse HA.</Notice>}
-      <p class="text-[12px] text-muted">The VMs boot Talos into maintenance mode straight from the host and appear as machines within a minute or two. Nothing is installed on their disks until you create or adopt a cluster.</p>
     </Dialog>
   )
 }
@@ -237,7 +257,7 @@ function HostSystem({ host, lh, busy }: { host: NodeRow; lh: LabHost; busy: bool
         <ConfirmDialog title={`Update ${lh.capacity.hostname}`} action="Update host" onClose={() => setConfirm(null)} onConfirm={() => start(api.labUpdate(host.mac))} impact={
           <>
             <p>Installs {u ? `${u.count} package update${u.count === 1 ? '' : 's'}` : 'pending package updates'} with apt.</p>
-            {reboot ? <><p class="text-warn">A reboot is required.</p>{downtime}</> : <p>No reboot expected; VMs keep running. If the upgrade brings a new kernel, the host reboots afterwards and the VMs stop for a few minutes.</p>}
+            {reboot ? <><p class="text-warn">A reboot is required.</p>{downtime}</> : <p>No reboot expected; VMs keep running. A new kernel would reboot the host and stop the VMs for a few minutes.</p>}
             {clusters.map((c) => <MaintenanceNotice key={c} cluster={c} />)}
           </>
         } />
@@ -290,57 +310,39 @@ export function MakeLabHostDialog({ m, onClose }: { m: NodeRow; onClose: () => v
   const memMiB = Math.floor((m.inventory?.memoryBytes ?? 0) / (1 << 20))
   const known = memMiB > 0
   const [withVMs, setWithVMs] = useState(true)
-  const [count, setCount] = useState(4)
-  const [cpus, setCpus] = useState(2)
-  const [mem, setMem] = useState(3072)
-  const [disk, setDisk] = useState(20)
-  const [data, setData] = useState(0)
   const [withCluster, setWithCluster] = useState(true)
+  const [rows, setRows] = useState<VMRow[]>(() => [defaultVM('controlplane'), defaultVM('worker'), defaultVM('worker'), defaultVM('worker')])
   const [name, setName] = useState('lab')
-  const [cps, setCps] = useState<1 | 3>(1)
   const [error, setError] = useState<string | null>(null)
   const manual = !m.oobType
-  const plan = { manual: manual || undefined, ...(withVMs ? { vms: { count, cpus, memMiB: mem, diskGiB: disk, dataGiB: data }, cluster: withCluster ? { name, controlPlanes: cps } : undefined } : {}) }
+  const cps = cpCount(rows)
+  const plan = { manual: manual || undefined, ...(withVMs ? { vms: { each: rows.map(({ key: _k, ...v }) => (withCluster ? v : { ...v, role: 'worker' as const })) }, cluster: withCluster ? { name, controlPlanes: cps as 1 | 3 } : undefined } : {}) }
   const gated = usePxeGated(() => api.labProvision(m.mac, plan), (r) => { onClose(); watch(r) }, (msg) => setError(msg))
   if (gated.element) return gated.element
-  const need = withVMs ? (withCluster ? cps * Math.max(mem, 2048) + (count - cps) * mem : count * mem) : 0
+  const need = withVMs ? totalMem(rows) : 0
   const over = known && withVMs && need > memMiB - RESERVED_MIB
   const nameOk = /^[a-z0-9]([-a-z0-9]*[a-z0-9])?$/.test(name)
+  const topologyOk = cps === 1 || cps === 3
+  const blocked = over || (withVMs && withCluster && (!nameOk || !topologyOk))
   return (
-    <Dialog title={`Make ${m.hostname || m.ip} a lab host`} onClose={onClose} footer={<><button class="btn" onClick={onClose}>Cancel</button><button class="btn btn-primary" disabled={over || (withVMs && withCluster && (!nameOk || cps > count))} onClick={() => gated.attempt('Make lab host')}>{withVMs && withCluster ? 'Install and create cluster' : withVMs ? 'Install and add VMs' : 'Install'}</button></>}>
+    <Dialog title={`Make ${m.hostname || m.ip} a lab host`} width="max-w-2xl" onClose={onClose} footer={<><button class="btn" onClick={onClose}>Cancel</button><button class="btn btn-primary" disabled={blocked} onClick={() => gated.attempt('Make lab host')}>{withVMs && withCluster ? 'Install and create cluster' : withVMs ? 'Install and add VMs' : 'Install'}</button></>}>
       <ErrorBox error={error} />
-      <ul class="list-disc pl-5 text-[13px] flex flex-col gap-1">
-        <li class="text-bad">The disk is wiped.</li>
-        <li>Debian + KVM installs unattended over the network (≈10 min).</li>
-        {manual ? <li>No remote management on this machine: you boot the installer yourself. The exact kernel, initrd and command line appear in Activity once you confirm.</li> : <li>Reset via AMT; the installer reports each stage to Activity.</li>}
-      </ul>
-      <label class="flex items-center gap-2 text-[13px] font-medium"><input type="checkbox" checked={withVMs} onChange={(e) => setWithVMs((e.target as HTMLInputElement).checked)} /> Then add Talos VMs</label>
+      <p class="text-[13px]"><span class="text-bad">The disk is wiped.</span> Debian + KVM installs unattended (≈10 min){manual ? '; you boot the installer with the line shown on the Lab host tab' : ' after a reset via AMT'}.</p>
+      <label class="flex items-center gap-2 text-[13px] font-medium"><input type="checkbox" checked={withVMs} onChange={(e) => setWithVMs((e.target as HTMLInputElement).checked)} /> Add Talos VMs</label>
       {withVMs && (
-        <div class="grid grid-cols-5 gap-3 pl-6">
-          <Field label="Count"><input class="input num" type="number" min={1} max={32} value={count} onInput={(e) => setCount(Number((e.target as HTMLInputElement).value))} /></Field>
-          <Field label="vCPUs"><input class="input num" type="number" min={1} value={cpus} onInput={(e) => setCpus(Number((e.target as HTMLInputElement).value))} /></Field>
-          <Field label="RAM (MiB)"><input class="input num" type="number" min={1024} step={256} value={mem} onInput={(e) => setMem(Number((e.target as HTMLInputElement).value))} /></Field>
-          <Field label="Disk (GiB)"><input class="input num" type="number" min={8} value={disk} onInput={(e) => setDisk(Number((e.target as HTMLInputElement).value))} /></Field>
-          <Field label="Data disk (GiB)" hint="0 = none; the cluster mounts it at /var/mnt/data-1."><input class="input num" type="number" min={0} step={10} value={data} onInput={(e) => setData(Number((e.target as HTMLInputElement).value))} /></Field>
-          {known && <div class="col-span-5"><Meter label={`Memory: ${fmt.bytes(mib(count * mem))} of ${fmt.bytes(mib(memMiB - RESERVED_MIB))}`} used={count * mem} cap={Math.max(1, memMiB - RESERVED_MIB)} format={(n) => fmt.bytes(mib(n))} /></div>}
+        <div class="flex flex-col gap-3">
+          <VMTable rows={rows} onChange={setRows} roles={withCluster} />
+          {known ? <Meter label={`Memory: ${fmt.bytes(mib(need))} of ${fmt.bytes(mib(memMiB - RESERVED_MIB))} (host keeps 2 GiB)`} used={need} cap={Math.max(1, memMiB - RESERVED_MIB)} format={(n) => fmt.bytes(mib(n))} /> : <span class="text-[12px] text-muted">{fmt.bytes(mib(need))} of memory for VMs; checked against the host after the install.</span>}
           {over && <Notice tone="bad">Not enough memory.</Notice>}
         </div>
       )}
-      {withVMs && <label class="flex items-center gap-2 text-[13px] font-medium"><input type="checkbox" checked={withCluster} onChange={(e) => setWithCluster((e.target as HTMLInputElement).checked)} /> Then create a cluster from them</label>}
-      {withVMs && withCluster && data > 0 && <p class="text-[12px] text-muted pl-6">Each node gets its data disk as a Talos volume; pods reach it through hostPath or a local-path StorageClass.</p>}
-      {withVMs && withCluster && mem < 2048 && <Notice tone="muted">Control planes get 2 GiB regardless; workers use the size above.</Notice>}
+      {withVMs && <label class="flex items-center gap-2 text-[13px] font-medium"><input type="checkbox" checked={withCluster} onChange={(e) => setWithCluster((e.target as HTMLInputElement).checked)} /> Create a cluster from them</label>}
       {withVMs && withCluster && (
-        <div class="grid grid-cols-2 gap-3 pl-6">
+        <div class="grid grid-cols-2 gap-3 items-end">
           <Field label="Cluster name"><input class="input mono" value={name} onInput={(e) => setName((e.target as HTMLInputElement).value.toLowerCase())} /></Field>
-          <Field label="Topology">
-            <select class="input" value={cps} onChange={(e) => setCps(Number((e.target as HTMLSelectElement).value) as 1 | 3)}>
-              <option value={1}>1 control plane, {Math.max(0, count - 1)} workers</option>
-              <option value={3} disabled={count < 3}>3 control planes, {Math.max(0, count - 3)} workers</option>
-            </select>
-          </Field>
+          <div class="text-[13px] pb-2">{topologyOk ? <span>{cps} control plane{cps === 1 ? '' : 's'}, {rows.length - cps} worker{rows.length - cps === 1 ? '' : 's'}</span> : <span class="text-bad">Choose 1 or 3 control planes.</span>}</div>
         </div>
       )}
-      <p class="text-[12px] text-muted">Runs unattended; progress in Activity.</p>
     </Dialog>
   )
 }

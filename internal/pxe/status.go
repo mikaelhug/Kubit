@@ -2,6 +2,7 @@ package pxe
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"sort"
 	"sync"
@@ -16,8 +17,10 @@ type Boot struct {
 	Arch      string    `json:"arch,omitempty"`
 	FirstSeen time.Time `json:"firstSeen"`
 	LastSeen  time.Time `json:"lastSeen"`
-	// Stage: dhcp (firmware asked), ipxe (iPXE fetched the script), kernel (assets served)
+	// Stage: nopxe (asked for an address without PXE), dhcp (firmware asked),
+	// ipxe (iPXE fetched the script), kernel (assets served)
 	Stage string `json:"stage"`
+	Class string `json:"class,omitempty"`
 	Count int    `json:"count"`
 }
 
@@ -56,12 +59,39 @@ func (t *tracker) dhcp(mac, arch string) {
 	}
 	b.LastSeen = time.Now()
 	b.Count++
-	if b.Stage == "" {
+	if b.Stage == "" || b.Stage == "nopxe" {
 		b.Stage = "dhcp"
 	}
 	if arch != "" {
 		b.Arch = arch
 	}
+}
+
+// plain records a DHCP discover without PXE options: the machine is up but not
+// network-booting. Logged once a minute per MAC so a chatty client does not flood.
+func (t *tracker) plain(mac, class string) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	b := t.boots[mac]
+	if b == nil {
+		b = &Boot{MAC: mac, FirstSeen: time.Now(), Stage: "nopxe"}
+		t.boots[mac] = b
+	}
+	if b.Stage != "nopxe" {
+		return
+	}
+	recent := time.Since(b.LastSeen) < time.Minute
+	b.LastSeen = time.Now()
+	b.Count++
+	b.Class = class
+	if recent {
+		return
+	}
+	what := "no vendor class"
+	if class != "" {
+		what = "vendor class " + class
+	}
+	t.log = append(t.log, time.Now().Format("15:04:05")+fmt.Sprintf(" %s asked for an address without PXE (%s): it is booting from disk or its management engine woke", mac, what))
 }
 
 // http records a script or asset fetch. The IP is all HTTP knows; it is attributed to

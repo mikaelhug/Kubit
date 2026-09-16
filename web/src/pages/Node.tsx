@@ -8,6 +8,7 @@ import { LabHostPanel, MakeLabHostDialog } from '../components/LabHost'
 import { Tabs } from '../components/Tabs'
 import { DataTable, type Column } from '../components/DataTable'
 import { Breadcrumbs, ConfirmDialog, Dialog, ErrorBox, Field, KeyValue, MaintenanceNotice, Meter, Notice, Pill, Section, StatusDot, stateTone } from '../components/ui'
+import { elapsed } from '../clock'
 
 type TabId = 'overview' | 'hardware' | 'kubernetes' | 'services' | 'logs' | 'actions' | 'labhost'
 
@@ -87,7 +88,7 @@ function OverviewTab({ inv, invErr, k8s, k8sErr, node, spec }: { inv: Inventory 
             ['Version', <span class="mono">{inv.talosVersion}</span>],
             ['Stage', <Pill tone={inv.stage === 'running' ? 'good' : 'warn'}>{inv.stage}</Pill>],
             ['Platform', inv.platform],
-            ['Booted', inv.bootTime ? `${fmt.datetime(inv.bootTime)} (up ${fmt.duration(inv.bootTime)})` : '—'],
+            ['Booted', inv.bootTime ? `${fmt.datetime(inv.bootTime)} (up ${elapsed(inv.bootTime)})` : '—'],
             ['Machine', [inv.manufacturer, inv.product].filter(Boolean).join(' ') || '—'],
             ['Extensions', inv.extensions?.filter((e) => e.name !== 'schematic').map((e) => `${e.name} ${e.version}`).join(', ') || 'none'],
             ['Install disk', spec ? <span class="mono">{spec.installDisk?.path ?? (spec.installDisk?.selector ? JSON.stringify(spec.installDisk.selector) : 'pool policy')}</span> : '—'],
@@ -217,7 +218,7 @@ function ServicesTab({ ip, cluster }: { ip: string; cluster?: string }) {
   const tick = statuses.value.get(cluster ?? '')?.observedAt
   useEffect(() => { api.services(ip).then(setServices).catch((e) => setError(e.message)) }, [ip, tick])
   return (
-    <Section title="Talos services" help="System services on the machine (apid, etcd, kubelet, containerd…). Unhealthy is reported by the service's own health check.">
+    <Section title="Talos services" help="Talos system services and their own health checks.">
       <ErrorBox error={error} />
       <DataTable search={false} columns={[
         { id: 'id', header: 'Service', mono: true, sort: (s) => s.id, cell: (s) => s.id },
@@ -294,7 +295,7 @@ function ActionsTab({ node, k8s, inv, cluster, spec, talosVersion }: { node: Nod
       <Action title={k8s?.unschedulable ? 'Uncordon' : 'Cordon'} what={k8s?.unschedulable ? 'Allow new pods to be scheduled here again.' : 'Stop new pods from being scheduled here. Running pods are untouched.'}
         button={k8s?.unschedulable ? 'Uncordon' : 'Cordon'} disabled={!k8s} onClick={() => run(k8s?.unschedulable ? api.uncordon(name, host) : api.cordon(name, host))} />
       <Action title="Drain" what={`Cordon, then evict ${pods} running pod${pods === 1 ? '' : 's'} (DaemonSet pods stay). Use before maintenance; uncordon afterwards.`} button="Drain" disabled={!k8s} onClick={() => setConfirm('drain')} />
-      <Action title="Reboot" what="Reboot through the Talos API and wait for the node to come back Ready. Pods on it restart elsewhere only if you drain first." button="Reboot" disabled={!inv} onClick={() => setConfirm('reboot')} secondary={{ label: 'Drain, reboot, uncordon', onClick: () => setConfirm('reboot-drain') }} />
+      <Action title="Reboot" what="Reboot via the Talos API and wait for Ready. Drain first to move pods." button="Reboot" disabled={!inv} onClick={() => setConfirm('reboot')} secondary={{ label: 'Drain, reboot, uncordon', onClick: () => setConfirm('reboot-drain') }} />
       <Action title="Upgrade Talos on this node" what={needsUpgrade ? `This node runs ${inv?.talosVersion}; the cluster declares ${talosVersion}. Upgrades just this node (A/B slot, automatic rollback on boot failure).` : `Already on the cluster's declared version ${talosVersion}. Change the version under the cluster's Settings to upgrade.`} button="Upgrade" disabled={!needsUpgrade} onClick={() => setConfirm('upgrade')} />
       <Action title="Rename" what="Change the hostname and the Kubernetes Node name. Pods are drained once and the old Node object is deleted; no reboot." button="Rename" disabled={!inv || !k8s} onClick={() => { setTo(host); setConfirm('rename') }} />
       <Action title="Move to another pool" what={pools.length ? `Same-role pools: ${pools.map((p) => p.name).join(', ')}. Labels and taints follow the pool; a different extension set means a re-image.` : `No other ${cp ? 'control-plane' : 'worker'} pool exists. Add one under Settings → Pools.`} button="Move" disabled={!inv || pools.length === 0} onClick={() => { setPool(pools[0]?.name ?? ''); setConfirm('pool') }} />
@@ -358,7 +359,7 @@ function MachineActions({ node }: { node: NodeRow | null }) {
       <Action title="Wake-on-LAN" what={node.wol ? 'Enabled: Kubit can send a magic packet from this host to power the machine on.' : 'Off. Enable when the firmware supports WoL on the uplink NIC.'} button={node.wol ? 'Wake now' : 'Enable'}
         onClick={() => (node.wol ? api.wake(node.mac).then(() => toast('Magic packet sent', 'good')) : api.setWOL(node.mac, true).then(refresh)).catch((e) => toast(e.message, 'error'))}
         secondary={node.wol ? { label: 'Disable', onClick: () => api.setWOL(node.mac, false).then(refresh).catch((e) => toast(e.message, 'error')) } : undefined} />
-      <Action title="Retire" what="Forget this machine: its hardware record and address history are deleted. It reappears on the next scan if it is still on the network." button="Retire" onClick={() => setRetire(true)} />
+      <Action title="Retire" what="Delete this machine's record. It reappears on the next scan if still on the network." button="Retire" onClick={() => setRetire(true)} />
       {retire && <ConfirmDialog title={`Retire ${node.hostname || node.mac}`} action="Retire" tone="danger" onClose={() => setRetire(false)} onConfirm={() => api.retireMachine(node.mac).then(() => route('/fleet/inventory')).catch((e) => toast(e.message, 'error'))}
         impact={<p>Deletes the inventory row for <span class="mono">{node.mac}</span>. Nothing is sent to the machine.</p>} />}
     </div>
