@@ -2,6 +2,7 @@ import { LocationProvider, Router, Route, useLocation } from 'preact-iso'
 import { useEffect } from 'preact/hooks'
 import { clusters, connected, daemon, drawerHeight, drawerOpen, reconnectAttempt, resyncing, running } from './store'
 import { connectLive } from './live'
+import { now } from './clock'
 import { Pill, stateTone } from './components/ui'
 import { ActivityDrawer } from './components/ActivityDrawer'
 import { Toasts } from './components/Toasts'
@@ -11,6 +12,7 @@ import { NewCluster } from './pages/create/NewCluster'
 import { NodePage } from './pages/Node'
 import { Operations } from './pages/Operations'
 import { Inventory } from './pages/fleet/Inventory'
+import { Pxe } from './pages/fleet/Pxe'
 import { GettingStarted } from './pages/GettingStarted'
 import { KubitSettings } from './pages/KubitSettings'
 
@@ -61,9 +63,8 @@ function Shell() {
         <NavLink href="/operations" path={path}>Activity {running.value.length > 0 && <Pill tone="warn">{running.value.length}</Pill>}</NavLink>
         <NavLink href="/settings" path={path}>Settings</NavLink>
         <div class="mt-auto px-4 py-2.5 text-[11px] text-muted border-t border-border flex items-center gap-2">
-          <span class={`inline-block h-1.5 w-1.5 rounded-full ${connected.value ? (resyncing.value ? 'bg-warn animate-pulse' : 'bg-good') : 'bg-bad animate-pulse'}`} />
-          {connected.value ? (resyncing.value ? 'resyncing…' : 'live') : `reconnecting${reconnectAttempt.value > 1 ? ` (${reconnectAttempt.value})` : ''}…`}
-          <DaemonMode />
+          <span class={`inline-block h-1.5 w-1.5 rounded-full shrink-0 ${connected.value ? (resyncing.value ? 'bg-warn animate-pulse' : 'bg-good') : 'bg-bad animate-pulse'}`} title={connected.value ? (resyncing.value ? 'resyncing' : 'live') : `reconnecting${reconnectAttempt.value > 1 ? ` (${reconnectAttempt.value})` : ''}`} />
+          <DaemonUptime />
           <span class="ml-auto flex items-center gap-2"><ThemeToggle /><button class="hover:text-text" title="Jump to… (⌘K)" onClick={() => window.dispatchEvent(new KeyboardEvent('keydown', { key: 'k', metaKey: true }))}>⌘K</button><button class="hover:text-text" title="Keyboard shortcuts" onClick={() => window.dispatchEvent(new KeyboardEvent('keydown', { key: '?' }))}>?</button></span>
         </div>
       </nav>
@@ -77,6 +78,7 @@ function Shell() {
           <Route path="/nodes/:ip" component={NodePage} />
           <Route path="/machines/:mac" component={NodePage} />
           <Route path="/fleet/inventory" component={Inventory} />
+          <Route path="/fleet/pxe" component={Pxe} />
           <Route path="/start" component={GettingStarted} />
           <Route path="/operations" component={Operations} />
           <Route path="/operations/:id" component={Operations} />
@@ -99,9 +101,12 @@ function Home() {
   return <GettingStarted />
 }
 
-/** Whether the daemon is a supervised service (alerts and snapshots keep running unattended) or a foreground process. */
-function DaemonMode() {
+function DaemonUptime() {
   const v = daemon.value
   if (!v) return null
-  return <span title={`kubit ${v.version}, up since ${new Date(v.startedAt).toLocaleString()}`}>· {v.service ? 'service' : 'foreground'}</span>
+  const s = Math.max(0, Math.floor((now.value - new Date(v.startedAt).getTime()) / 1000))
+  const pad = (n: number) => String(n).padStart(2, '0')
+  const clock = `${pad(Math.floor(s / 3600) % 24)}:${pad(Math.floor(s / 60) % 60)}:${pad(s % 60)}`
+  const days = Math.floor(s / 86400)
+  return <span class="num whitespace-nowrap" title={`kubit ${v.version} (${v.service ? 'service' : 'foreground'}), up since ${new Date(v.startedAt).toLocaleString()}`}>uptime {days > 0 ? `${days}d ` : ''}{clock}</span>
 }

@@ -28,6 +28,7 @@ export function GettingStarted() {
         <div class="flex flex-wrap gap-2 mt-2">
           <a class="btn btn-primary" href={iso('amd64')}>Download ISO · amd64 (Intel/AMD)</a>
           <a class="btn" href={iso('arm64')}>Download ISO · arm64</a>
+          <a class="btn" href="/fleet/pxe">Network boot instead (PXE) →</a>
         </div>
         <p class="text-[12px] text-muted mt-2">Images come from the Talos Image Factory ({factory}); the installer used later carries the extensions your cluster declares.</p>
       </Step>

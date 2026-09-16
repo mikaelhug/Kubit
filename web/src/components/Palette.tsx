@@ -30,7 +30,7 @@ export function Palette() {
       for (const [id, label] of sectionList) out.push({ label: `${c.name} › ${label}`, href: `/clusters/${c.name}/${id}`, group: 'Clusters' })
       for (const n of c.spec.spec.nodes) out.push({ label: n.hostname, hint: `${c.name} · ${n.ip} · ${n.pool ?? n.role}`, href: n.mac ? `/machines/${n.mac}` : `/nodes/${n.ip}`, group: 'Nodes' })
     }
-    out.push({ label: 'New cluster', href: '/clusters/new', group: 'Kubit' }, { label: 'Inventory', href: '/fleet/inventory', group: 'Kubit' }, { label: 'Activity', href: '/operations', group: 'Kubit' }, { label: 'Kubit settings', href: '/settings', group: 'Kubit' }, { label: 'Getting started', href: '/start', group: 'Kubit' })
+    out.push({ label: 'New cluster', href: '/clusters/new', group: 'Kubit' }, { label: 'Inventory', href: '/fleet/inventory', group: 'Kubit' }, { label: 'Network boot (PXE)', href: '/fleet/pxe', group: 'Kubit' }, { label: 'Activity', href: '/operations', group: 'Kubit' }, { label: 'Kubit settings', href: '/settings', group: 'Kubit' }, { label: 'Getting started', href: '/start', group: 'Kubit' })
     return out
   }, [clusters.value])
 

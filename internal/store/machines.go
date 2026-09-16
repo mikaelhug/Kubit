@@ -31,9 +31,13 @@ type Machine struct {
 	TalosVersion string   `json:"talosVersion"`
 	WOL          bool     `json:"wol"`
 	// OOB is the out-of-band config (password redacted on the API); OOBType is a
-	// cheap "has remote management" for lists.
-	OOB     *oob.Config `json:"oob,omitempty"`
-	OOBType string      `json:"oobType,omitempty"`
+	// cheap "has remote management" for lists. Provision marks a machine that PXE
+	// must hand Talos to on its next boot even though it is a cluster member.
+	OOB       *oob.Config `json:"oob,omitempty"`
+	OOBType   string      `json:"oobType,omitempty"`
+	Provision bool        `json:"provision"`
+	// ProvisionKind says what the armed network boot should load: talos | labhost.
+	ProvisionKind string `json:"provisionKind,omitempty"`
 	// LabHost is set on machines Kubit turned into KVM hosts; Host on the VMs they run.
 	LabHost   *LabHost `json:"labhost,omitempty"`
 	Host      string   `json:"host,omitempty"`
@@ -54,15 +58,16 @@ func MachineKey(mac, ip string) string {
 	return "ip:" + ip
 }
 
-const machineCols = `mac, uuid, serial, COALESCE(ip,''), ips_seen, COALESCE(cluster,''), hostname, pool, role, arch, source, state, hardware, talos_version, wol, first_seen, COALESCE(last_seen,''), updated_at, oob, labhost, host`
+const machineCols = `mac, uuid, serial, COALESCE(ip,''), ips_seen, COALESCE(cluster,''), hostname, pool, role, arch, source, state, hardware, talos_version, wol, first_seen, COALESCE(last_seen,''), updated_at, oob, provision, labhost, host, provision_kind`
 
 func scanMachine(sc interface{ Scan(...any) error }) (*Machine, error) {
 	var m Machine
 	var hw, seen, oobRaw, lab string
-	var wol int
-	if err := sc.Scan(&m.MAC, &m.UUID, &m.Serial, &m.IP, &seen, &m.Cluster, &m.Hostname, &m.Pool, &m.Role, &m.Arch, &m.Source, &m.State, &hw, &m.TalosVersion, &wol, &m.FirstSeen, &m.LastSeen, &m.UpdatedAt, &oobRaw, &lab, &m.Host); err != nil {
+	var wol, prov int
+	if err := sc.Scan(&m.MAC, &m.UUID, &m.Serial, &m.IP, &seen, &m.Cluster, &m.Hostname, &m.Pool, &m.Role, &m.Arch, &m.Source, &m.State, &hw, &m.TalosVersion, &wol, &m.FirstSeen, &m.LastSeen, &m.UpdatedAt, &oobRaw, &prov, &lab, &m.Host, &m.ProvisionKind); err != nil {
 		return nil, err
 	}
+	m.Provision = prov == 1
 	if lab != "" {
 		var l LabHost
 		if json.Unmarshal([]byte(lab), &l) == nil {
@@ -139,6 +144,7 @@ func (s *Store) UpsertNode(ctx context.Context, n Machine) error {
 			hardware      = CASE WHEN excluded.hardware = '{}' THEN machines.hardware ELSE excluded.hardware END,
 			talos_version = CASE WHEN excluded.talos_version = '' THEN machines.talos_version ELSE excluded.talos_version END,
 			last_seen     = excluded.last_seen,
+			provision     = CASE WHEN excluded.state = 'maintenance' THEN 0 ELSE machines.provision END,
 			updated_at    = strftime('%Y-%m-%dT%H:%M:%fZ','now')`,
 		key, n.UUID, n.Serial, n.IP, string(seenJSON), cluster, n.Hostname, n.Pool, n.Role, n.Arch, n.Source, n.State, hw, n.TalosVersion)
 	return s.done(err, Change{Table: "machines", Cluster: n.Cluster, Key: key, Op: "put"})
@@ -262,6 +268,19 @@ func (s *Store) MachineOOB(ctx context.Context, mac string) (*oob.Config, error)
 	c := *m.OOB
 	c.Password = s.unseal(c.Password)
 	return &c, nil
+}
+
+// SetMachineProvision arms or clears the one-shot network-boot hand-off; kind says
+// what to serve (talos | labhost).
+func (s *Store) SetMachineProvision(ctx context.Context, mac string, on bool, kind ...string) error {
+	k := ""
+	if on && len(kind) > 0 {
+		k = kind[0]
+	} else if on {
+		k = "talos"
+	}
+	_, err := s.db.ExecContext(ctx, `UPDATE machines SET provision = ?, provision_kind = ? WHERE mac = ?`, b2i(on), k, strings.ToLower(mac))
+	return s.done(err, Change{Table: "machines", Key: strings.ToLower(mac), Op: "put"})
 }
 
 // LabHost is the state of a machine Kubit runs as a KVM host.

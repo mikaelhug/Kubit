@@ -3,8 +3,10 @@ package api
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
+	"os"
 	"time"
 
 	"github.com/mikael/kubit/internal/store"
@@ -16,6 +18,7 @@ func (s *Server) settingsRoutes() {
 	r.HandleFunc("PUT /api/v1/settings", s.handlePutSettings)
 	r.HandleFunc("POST /api/v1/settings/alerts/test", s.handleAlertTest)
 	r.HandleFunc("GET /api/v1/audit", s.handleAudit)
+	r.HandleFunc("GET /api/v1/pxe", s.handlePXEStatus)
 	r.HandleFunc("GET /api/v1/backup", s.handleBackup)
 }
 
@@ -88,6 +91,63 @@ func (s *Server) applySettings(v store.Settings) {
 // handlePXEStatus proxies the pxe process's status page; the process runs separately
 // (it needs root for ports 67/69/4011), so "not running" is a normal answer.
 // pxeCommand is the foreground command a terminal user runs; binary path resolved so
+// it can be pasted as is.
+func pxeCommand(host string) string {
+	bin := "kubit"
+	if p, err := os.Executable(); err == nil {
+		bin = p
+	}
+	return fmt.Sprintf("sudo %s pxe --iface en0 --kubit-url http://%s", bin, host)
+}
+
+// pxeHTTPCommand is the no-root variant for machines the operator boots by hand.
+func pxeHTTPCommand(host string) string {
+	bin := "kubit"
+	if p, err := os.Executable(); err == nil {
+		bin = p
+	}
+	return fmt.Sprintf("%s pxe --http-only --iface en0 --kubit-url http://%s", bin, host)
+}
+
+// pxeRunning asks the separate PXE process for its status page.
+func (s *Server) pxeRunning(ctx contextT) bool {
+	v, err := s.store.GetSettings(ctx)
+	if err != nil || v.PXEStatusURL == "" {
+		return false
+	}
+	client := &http.Client{Timeout: 2 * time.Second}
+	resp, err := client.Get(v.PXEStatusURL)
+	if err != nil {
+		return false
+	}
+	resp.Body.Close()
+	return resp.StatusCode == http.StatusOK
+}
+
+func (s *Server) handlePXEStatus(w http.ResponseWriter, r *http.Request) {
+	v, err := s.store.GetSettings(r.Context())
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+	client := &http.Client{Timeout: 2 * time.Second}
+	resp, err := client.Get(v.PXEStatusURL)
+	if err != nil {
+		writeJSON(w, http.StatusOK, map[string]any{"running": false, "statusUrl": v.PXEStatusURL, "error": err.Error(),
+			"command": pxeCommand(r.Host), "serviceCommand": fmt.Sprintf("sudo kubit service install --pxe --iface en0 --kubit-url http://%s", r.Host)})
+		return
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
+	var st map[string]any
+	if err := json.Unmarshal(body, &st); err != nil {
+		writeJSON(w, http.StatusOK, map[string]any{"running": false, "statusUrl": v.PXEStatusURL, "error": "unexpected response from " + v.PXEStatusURL})
+		return
+	}
+	st["running"] = true
+	st["statusUrl"] = v.PXEStatusURL
+	writeJSON(w, http.StatusOK, st)
+}
 
 // handleBackup streams a sealed backup of the Kubit home.
 func (s *Server) handleBackup(w http.ResponseWriter, r *http.Request) {

@@ -11,10 +11,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/mikael/kubit/internal/boot"
 	"github.com/mikael/kubit/internal/cluster"
 	"github.com/mikael/kubit/internal/config"
 	"github.com/mikael/kubit/internal/labhost"
+	"github.com/mikael/kubit/internal/oob"
 	"github.com/mikael/kubit/internal/store"
 	"github.com/mikael/kubit/internal/talos"
 )
@@ -28,10 +28,62 @@ func (s *Server) labhostRoutes() {
 	r.HandleFunc("POST /api/v1/machines/{mac}/labhost/vms/{name}/{action}", s.handleLabVMAction)
 	r.HandleFunc("PUT /api/v1/machines/{mac}/labhost/vms/{name}", s.handleLabVMResize)
 	r.HandleFunc("DELETE /api/v1/machines/{mac}/labhost/vms/{name}", s.handleLabVMDelete)
+	r.HandleFunc("GET /api/v1/labhost/preseed", s.handleLabPreseed)
+	r.HandleFunc("GET /api/v1/labhost/postinstall", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/plain")
+		_, _ = w.Write([]byte(labhost.PostInstall(labhost.PreseedParams{PostURL: r.URL.Query().Get("post")}.ProgressURL())))
+	})
+	r.HandleFunc("GET /api/v1/labhost/progress", s.handleLabProgress)
 	r.HandleFunc("POST /api/v1/machines", s.handleMachineAdd)
 }
 
-func labHostname(m *store.Machine) string { return boot.Hostname(m) }
+// handleLabPreseed is fetched (via the pxe process) by the Debian installer.
+func (s *Server) handleLabPreseed(w http.ResponseWriter, r *http.Request) {
+	mac := strings.ToLower(r.URL.Query().Get("mac"))
+	m, err := s.store.GetMachine(r.Context(), mac)
+	if err != nil {
+		http.Error(w, "unknown machine", http.StatusNotFound)
+		return
+	}
+	_, pub, err := s.store.SSHKey(r.Context())
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+	disk := ""
+	if len(m.Hardware) > 2 {
+		var inv talos.Inventory
+		if json.Unmarshal(m.Hardware, &inv) == nil {
+			if cands := inv.InstallCandidates(); len(cands) > 0 {
+				sort.Slice(cands, func(i, j int) bool { return cands[i].SizeBytes > cands[j].SizeBytes })
+				disk = cands[0].DevPath
+			}
+		}
+	}
+	arch := r.URL.Query().Get("arch")
+	if arch == "" {
+		arch = m.Arch
+	}
+	out, err := labhost.Preseed(labhost.PreseedParams{Hostname: labHostname(m), Disk: disk, PublicKey: pub, PostURL: r.URL.Query().Get("post"), Timezone: r.URL.Query().Get("tz"), Arch: arch})
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+	w.Header().Set("Content-Type", "text/plain")
+	_, _ = w.Write([]byte(out))
+}
+
+func labHostname(m *store.Machine) string {
+	if m.Serial != "" {
+		return "lab-" + strings.ToLower(strings.Map(func(r rune) rune {
+			if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') {
+				return r
+			}
+			return -1
+		}, m.Serial))
+	}
+	return "lab-" + strings.ReplaceAll(m.MAC[9:], ":", "")
+}
 
 // labPlan is the optional "and then" of a provision: carve VMs and create a cluster
 // from them, so the operator can start it and come back to a running cluster.
@@ -102,13 +154,12 @@ func (s *Server) handleLabProvision(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "a lab host is installed through its remote management: configure Intel AMT on this machine, or choose to boot it yourself", http.StatusConflict)
 		return
 	}
-	target := m.IP
-	if c != nil && c.Host != "" {
-		target = c.Host
-	}
-	feedBase, err := s.feed.Base(target)
-	if err != nil {
-		writeErr(w, fmt.Errorf("no route to %s: %w", target, err))
+	if !s.pxeRunning(r.Context()) {
+		cmd := pxeCommand(r.Host)
+		if plan.Manual {
+			cmd = pxeHTTPCommand(r.Host)
+		}
+		writeJSON(w, http.StatusConflict, map[string]string{"error": "The PXE server is not running, so the machine would find nothing to boot. Start it in a terminal (it can stay open): " + cmd, "code": "pxe-down", "command": cmd})
 		return
 	}
 	kind := "labhost.provision"
@@ -116,13 +167,20 @@ func (s *Server) handleLabProvision(w http.ResponseWriter, r *http.Request) {
 		kind = "labhost.cluster"
 	}
 	id, err := s.runOperation("", kind, map[string]any{"mac": mac, "plan": plan}, func(ctx contextT, sink clusterSink) (result any, err error) {
-		steps := cluster.Steps("prepare", "Build the installer CD")
+		defer func() {
+			if err != nil {
+				_ = s.store.SetMachineProvision(context.Background(), mac, false)
+			}
+		}()
+		armWhat := "Arm a Debian network boot and reset via AMT"
 		if plan.Manual {
-			steps = append(steps, cluster.Steps("arm", "You boot the machine", "installer", "Installer running")...)
-		} else {
-			steps = append(steps, cluster.Steps("media", "Attach the CD over AMT", "power", "Boot from it", "boot", "Firmware reads the CD", "load", "Installer loads")...)
+			armWhat = "Arm the Debian install; you boot the machine"
 		}
-		steps = append(steps, cluster.Steps("install", "Unattended Debian install", "ssh", "Reboot into Debian, SSH", "setup", "Verify KVM, record capacity, fetch Talos boot assets")...)
+		steps := cluster.Steps("arm", armWhat)
+		if !plan.Manual {
+			steps = append(steps, cluster.Steps("boot", "Network boot request seen", "ipxe", "Installer kernel fetched")...)
+		}
+		steps = append(steps, cluster.Steps("installer", "Installer running", "install", "Unattended Debian install", "ssh", "Reboot into Debian, SSH", "setup", "Verify KVM, record capacity, fetch Talos boot assets")...)
 		if plan.VMs != nil {
 			steps = append(steps, cluster.Steps("define", "Create the VMs", "vmboot", "Wait for Talos maintenance mode")...)
 		}
@@ -130,15 +188,45 @@ func (s *Server) handleLabProvision(w http.ResponseWriter, r *http.Request) {
 			steps = append(steps, cluster.Steps("cluster", "Design and create the cluster")...)
 		}
 		sink(clusterEvent{Time: time.Now(), Kind: "steps", Level: "info", Steps: steps})
-		sink(clusterEvent{Time: time.Now(), Kind: "step", Step: "prepare", Status: cluster.StepRunning})
+		sink(clusterEvent{Time: time.Now(), Kind: "step", Step: "arm", Status: cluster.StepRunning})
 		if _, _, err := s.store.SSHKey(ctx); err != nil {
+			return nil, err
+		}
+		if err := s.store.SetMachineProvision(ctx, mac, true, "labhost"); err != nil {
 			return nil, err
 		}
 		if err := s.store.SetLabHost(ctx, mac, &store.LabHost{State: "installing", Index: s.store.NextLabHostIndex(ctx), Network: plan.Network}); err != nil {
 			return nil, err
 		}
 		_ = s.store.SetNodeState(ctx, m.IP, "labhost")
-		fail := func(err error) (any, error) {
+		if plan.Manual {
+			if st, err := s.pxeStatus(ctx); err == nil {
+				base := fmt.Sprintf("http://%s:%d", st.IP, st.HTTPPort)
+				arch := m.Arch
+				if arch == "" {
+					arch = "amd64"
+				}
+				boot := store.BootLine{Kernel: fmt.Sprintf("%s/assets/debian/%s/linux", base, arch), Initrd: fmt.Sprintf("%s/assets/debian/%s/initrd.gz", base, arch), Cmdline: labhost.KernelArgs(fmt.Sprintf("%s/labhost/%s/preseed?arch=%s", base, mac, arch), labHostname(m))}
+				if h, err := s.store.GetMachine(ctx, mac); err == nil && h.LabHost != nil {
+					h.LabHost.Boot = &boot
+					_ = s.store.SetLabHost(ctx, mac, h.LabHost)
+				}
+				sink(clusterEvent{Time: time.Now(), Kind: "log", Level: "info", Step: "arm", Message: fmt.Sprintf("boot the machine now with kernel %s, initrd %s, cmdline: %s", boot.Kernel, boot.Initrd, boot.Cmdline)})
+			}
+		} else {
+			mgr, err := oob.Open(*c)
+			if err != nil {
+				return nil, err
+			}
+			if err := mgr.Power(ctx, oob.BootPXE); err != nil {
+				return nil, err
+			}
+			sink(clusterEvent{Time: time.Now(), Kind: "log", Level: "info", Step: "arm", Message: "reset via AMT; kubit pxe will hand it the Debian installer (hostname " + labHostname(m) + ")"})
+		}
+		sink(clusterEvent{Time: time.Now(), Kind: "step", Step: "arm", Status: cluster.StepDone})
+
+		lc, err := s.labWaitInstall(ctx, m, plan.Manual, sink)
+		if err != nil {
 			msg := err.Error()
 			if errors.Is(err, context.Canceled) {
 				msg = "install cancelled; Make lab host again to retry"
@@ -146,56 +234,6 @@ func (s *Server) handleLabProvision(w http.ResponseWriter, r *http.Request) {
 			_ = s.store.SetLabHost(context.Background(), mac, &store.LabHost{State: "error", Error: msg})
 			return nil, err
 		}
-		arch := m.Arch
-		if arch == "" {
-			arch = "amd64"
-		}
-		hostname := labHostname(m)
-		cmdline := labhost.KernelArgs(fmt.Sprintf("%s/labhost/%s/preseed?arch=%s", feedBase, mac, arch), hostname)
-		if plan.Manual {
-			boot := store.BootLine{Kernel: labhost.NetbootURL(arch, "linux"), Initrd: labhost.NetbootURL(arch, "initrd.gz"), Cmdline: cmdline}
-			if h, err := s.store.GetMachine(ctx, mac); err == nil && h.LabHost != nil {
-				h.LabHost.Boot = &boot
-				_ = s.store.SetLabHost(ctx, mac, h.LabHost)
-			}
-			sink(clusterEvent{Time: time.Now(), Kind: "step", Step: "prepare", Status: cluster.StepDone})
-			sink(clusterEvent{Time: time.Now(), Kind: "step", Step: "arm", Status: cluster.StepRunning})
-			sink(clusterEvent{Time: time.Now(), Kind: "log", Level: "info", Step: "arm", Message: fmt.Sprintf("boot the machine now with kernel %s, initrd %s, cmdline: %s", boot.Kernel, boot.Initrd, boot.Cmdline)})
-			sink(clusterEvent{Time: time.Now(), Kind: "step", Step: "arm", Status: cluster.StepDone})
-			lc, err := s.labWaitInstall(ctx, m, nil, sink)
-			if err != nil {
-				return fail(err)
-			}
-			return s.labFinish(ctx, m, lc, plan, sink)
-		}
-		iso, err := s.media.DebianISO(ctx, arch, hostname, cmdline)
-		if err != nil {
-			return fail(fmt.Errorf("installer CD: %w", err))
-		}
-		sink(clusterEvent{Time: time.Now(), Kind: "log", Level: "info", Step: "prepare", Message: "installer CD built for " + hostname + " (" + arch + ")"})
-		sink(clusterEvent{Time: time.Now(), Kind: "step", Step: "prepare", Status: cluster.StepDone})
-		b, err := s.bootFromMedia(ctx, m, c, iso, sink)
-		if err != nil {
-			return fail(err)
-		}
-		lc, err := s.labWaitInstall(ctx, m, b, sink)
-		b.stop()
-		if err != nil {
-			return fail(err)
-		}
-		return s.labFinish(ctx, m, lc, plan, sink)
-	})
-	if err != nil {
-		writeErr(w, err)
-		return
-	}
-	writeJSON(w, http.StatusAccepted, map[string]any{"operationId": id})
-}
-
-// labFinish is everything after SSH answers: setup, VMs, cluster.
-func (s *Server) labFinish(ctx contextT, m *store.Machine, lc *labhost.Client, plan labPlan, sink clusterSink) (any, error) {
-	mac := m.MAC
-	{
 		defer lc.Close()
 		sink(clusterEvent{Time: time.Now(), Kind: "step", Step: "setup", Status: cluster.StepRunning})
 		// Re-read the row: the install phase updated its address and the plan's
@@ -252,7 +290,12 @@ func (s *Server) labFinish(ctx contextT, m *store.Machine, lc *labhost.Client, p
 		sink(clusterEvent{Time: time.Now(), Kind: "log", Level: "done", Step: "cluster", Message: fmt.Sprintf("cluster %s creation started as operation #%d (%d control planes, %d workers)", c.Metadata.Name, opID, len(c.ControlPlanes()), len(c.Workers()))})
 		sink(clusterEvent{Time: time.Now(), Kind: "step", Step: "cluster", Status: cluster.StepDone})
 		return map[string]any{"cluster": c.Metadata.Name, "operationId": opID}, nil
+	})
+	if err != nil {
+		writeErr(w, err)
+		return
 	}
+	writeJSON(w, http.StatusAccepted, map[string]any{"operationId": id})
 }
 
 // labDesign proposes a cluster for the lab VMs with the requested control-plane count
@@ -776,3 +819,10 @@ func (s *Server) handleLabRelease(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
+// pxeDecision extension: an armed lab host boots the Debian installer.
+func labBoot(m *store.Machine) (string, bool) {
+	if m != nil && m.Provision && m.ProvisionKind == "labhost" {
+		return "debian", true
+	}
+	return "", false
+}

@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"io"
 	"net/http"
 	"sort"
 	"strconv"
@@ -38,6 +39,7 @@ func (s *Server) AttachWatcher(ctx context.Context, w *watch.Watcher) {
 	w.OnRefresh = func(name, scope string) { s.refresh(name, scope) }
 	w.OnHostSample = func(mac string, sm store.Sample) { s.hub.publish(Message{Kind: "hostSample", Key: mac, Sample: &sm}) }
 	s.attachLive(ctx)
+	go s.watchPXE(ctx)
 	go s.watchVersions(ctx)
 	go w.Run(ctx)
 }
@@ -64,6 +66,35 @@ func (s *Server) watchVersions(ctx context.Context) {
 	}
 }
 
+// watchPXE polls the separate pxe process's status page on the daemon's side and
+// pushes a refresh only when it changed, so the console never polls it.
+func (s *Server) watchPXE(ctx context.Context) {
+	var last string
+	client := &http.Client{Timeout: 2 * time.Second}
+	t := time.NewTicker(5 * time.Second)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+		}
+		v, err := s.store.GetSettings(ctx)
+		if err != nil || v.PXEStatusURL == "" {
+			continue
+		}
+		body := ""
+		if resp, err := client.Get(v.PXEStatusURL); err == nil {
+			b, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+			resp.Body.Close()
+			body = string(b)
+		}
+		if body != last {
+			last = body
+			s.refresh("", "pxe")
+		}
+	}
+}
 
 func (s *Server) healthRoutes() {
 	r := s.mux

@@ -1,13 +1,15 @@
 #!/usr/bin/env bash
 # Dev harness: a Debian lab host as an arm64 VM on Apple Virtualization.framework
 # (vfkit, nested virtualisation), installed exactly the way Kubit installs a real
-# one — same preseed, same post-install — booted by hand. The installer must run in UEFI
+# one — same preseed, same post-install — minus PXE. The installer must run in UEFI
 # mode (partman-efi and grub-efi need it, and the disk has to boot under EFI later),
 # and vfkit's direct kernel loader is not EFI, so a small FAT boot volume carries
 # systemd-boot + the netboot kernel/initrd + one entry with the preseed URL.
 #
-# Prerequisite: `kubit serve --addr 127.0.0.1:8090`; its installer feed listens on
-# 0.0.0.0:8069 and the VM reaches it at vmnet's host address, 192.168.105.1.
+# Prerequisites: `kubit serve` on :8090 and, in another terminal,
+#   kubit pxe --http-only --ip 192.168.105.1 --kubit-url http://127.0.0.1:8090
+# (192.168.105.1 is vmnet's host side; the interface only exists while a VM runs,
+# hence --ip instead of --iface).
 #
 # Usage:
 #   lab.sh create <n> [cpus] [mem_mib] [disk_gib]   register the MAC in Kubit, run Make lab host (manual), boot the installer (4 vCPU / 12 GiB / 40 GiB; 4 Talos VMs × 2 GiB)
@@ -21,7 +23,7 @@ set -euo pipefail
 HERE=$(cd "$(dirname "$0")" && pwd)
 STATE=${STATE:-$HERE/state}
 KUBIT=${KUBIT:-http://127.0.0.1:8090}
-FEED=${FEED:-http://192.168.105.1:8069}
+PXE=${PXE:-http://192.168.105.1:8069}
 SUITE=${SUITE:-trixie}
 MIRROR=${MIRROR:-http://deb.debian.org/debian}
 ARCH=arm64
@@ -106,7 +108,7 @@ cmd_create() {
   echo "$cpus $mem" > "$d/spec"
   truncate -s "${disk}G" "$d/disk.raw"
   # Register the machine and let Kubit arm the install; Kubit prints the boot line,
-  # which is what we boot with (the same cmdline the installer CD would carry).
+  # which is what we boot with (the same cmdline the PXE script would carry).
   curl -fsS -X POST "$KUBIT/api/v1/machines" -H 'Content-Type: application/json' \
     -d "{\"mac\":\"$mac\",\"hostname\":\"lab$n\",\"arch\":\"$ARCH\"}" > /dev/null
   # vmnet drops frames from MACs other than the VM's own, so the nested Talos VMs
@@ -115,9 +117,9 @@ cmd_create() {
   if [ "${NO_PLAN:-}" = 1 ]; then plan='{"manual":true}'; fi
   local op
   op=$(curl -fsS -X POST "$KUBIT/api/v1/machines/$mac/labhost" -H 'Content-Type: application/json' -d "$plan") || {
-    echo "Make lab host refused ($op)" >&2; exit 1; }
+    echo "Make lab host refused; is 'kubit pxe --http-only' running? ($op)" >&2; exit 1; }
   echo "kubit operation: $op"
-  local cmdline="auto=true priority=critical url=$FEED/labhost/$mac/preseed?arch=$ARCH interface=auto netcfg/get_hostname=lab$n netcfg/get_domain=lab DEBIAN_FRONTEND=text console=hvc0 ---"
+  local cmdline="auto=true priority=critical url=$PXE/labhost/$mac/preseed?arch=$ARCH interface=auto netcfg/get_hostname=lab$n netcfg/get_domain=lab DEBIAN_FRONTEND=text console=hvc0 ---"
   boot_volume "$d" "$cmdline"
   local args=()
   while IFS= read -r a; do args+=("$a"); done < <(common_args "$n")

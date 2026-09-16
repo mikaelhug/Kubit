@@ -1,4 +1,4 @@
-package boot
+package pxe
 
 import (
 	"context"
@@ -10,6 +10,13 @@ import (
 	"strings"
 	"sync"
 )
+
+// iPXE binaries come from the project's own build server; pinned by name, cached on disk.
+var ipxeURLs = map[string]string{
+	FileBIOS:  "https://boot.ipxe.org/undionly.kpxe",
+	FileX64:   "https://boot.ipxe.org/x86_64-efi/ipxe.efi",
+	FileARM64: "https://boot.ipxe.org/arm64-efi/ipxe.efi",
+}
 
 // Cache fetches files once into dir and serves them from there afterwards, so a
 // fleet of machines booting at once hits the Image Factory a single time.
@@ -74,4 +81,13 @@ func (c *Cache) Path(ctx context.Context, url string) (string, error) {
 	}
 	f.Close()
 	return path, os.Rename(tmp, path)
+}
+
+// IPXEBinary resolves one of the TFTP boot files.
+func (c *Cache) IPXEBinary(ctx context.Context, name string) (string, error) {
+	url, ok := ipxeURLs[name]
+	if !ok {
+		return "", fmt.Errorf("%s: not a boot file", name)
+	}
+	return c.Path(ctx, url)
 }
