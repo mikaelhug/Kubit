@@ -91,6 +91,7 @@ function OverviewTab({ inv, invErr, k8s, k8sErr, node, spec }: { inv: Inventory 
             ['Machine', [inv.manufacturer, inv.product].filter(Boolean).join(' ') || '—'],
             ['Extensions', inv.extensions?.filter((e) => e.name !== 'schematic').map((e) => `${e.name} ${e.version}`).join(', ') || 'none'],
             ['Install disk', spec ? <span class="mono">{spec.installDisk?.path ?? (spec.installDisk?.selector ? JSON.stringify(spec.installDisk.selector) : 'pool policy')}</span> : '—'],
+            ...(spec?.dataDisks?.length ? [['Data disks', <span class="mono">{spec.dataDisks.map((d, i) => `${d} → /var/mnt/data-${i + 1}`).join(' · ')}</span>] as [string, any]] : []),
             ['Identity', node ? <span class="mono text-[12px]">{node.mac}{node.uuid ? ` · ${node.uuid}` : ''}{node.serial ? ` · ${node.serial}` : ''}</span> : '—'],
             ['Addresses seen', node ? <span class="mono text-[12px]">{[...new Set([...(node.ipsSeen ?? []), node.ip])].join(' → ')}</span> : '—'],
             ['Last seen', node ? fmt.datetime(node.lastSeen) : '—'],
@@ -352,7 +353,7 @@ function MachineActions({ node }: { node: NodeRow | null }) {
       <Action title="Adopt into a cluster" what={ready.length ? `Join ${ready.map((c) => c.name).join(', ')} as a new node.` : 'No ready cluster yet; create one with this machine.'} button={ready.length ? 'Adopt…' : 'New cluster'} disabled={node.state !== 'maintenance'}
         onClick={() => { if (!ready.length) { route('/clusters/new'); return } const t = ready.length === 1 ? ready[0].name : prompt(`Adopt into which cluster? (${ready.map((c) => c.name).join(', ')})`, ready[0].name); if (t && ready.find((c) => c.name === t)) route(`/clusters/${t}/nodes?adopt=${node.ip}`) }} />
       <RemoteManagement node={node} />
-      {!node.labhost && <Action title="Make lab host" what="Install Debian + KVM/libvirt on this machine (disk wiped) and carve Talos VMs from it. Needs AMT and kubit pxe on the LAN for the install." button="Make lab host" disabled={!node.oobType} onClick={() => setLab(true)} />}
+      {!node.labhost && <Action title="Make lab host" what={node.oobType ? 'Install Debian + KVM/libvirt on this machine (disk wiped) and carve Talos VMs from it. Reset via AMT; kubit pxe serves the installer.' : 'Install Debian + KVM/libvirt on this machine (disk wiped) and carve Talos VMs from it. No remote management here: you boot the installer yourself with the boot line Kubit prints.'} button="Make lab host" onClick={() => setLab(true)} />}
       {lab && <MakeLabHostDialog m={node} onClose={() => setLab(false)} />}
       <Action title="Wake-on-LAN" what={node.wol ? 'Enabled: Kubit can send a magic packet from this host to power the machine on.' : 'Off. Enable when the firmware supports WoL on the uplink NIC.'} button={node.wol ? 'Wake now' : 'Enable'}
         onClick={() => (node.wol ? api.wake(node.mac).then(() => toast('Magic packet sent', 'good')) : api.setWOL(node.mac, true).then(refresh)).catch((e) => toast(e.message, 'error'))}

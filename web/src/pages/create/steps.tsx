@@ -165,7 +165,7 @@ export function AMTMachines() {
               <td class="mono">{m.ip}</td>
               <td><Pill tone={m.state === 'off' ? 'muted' : 'info'}>{m.state === 'amt' ? 'other OS / off' : m.state}</Pill></td>
               <td>{m.oobType ? <Pill tone="good">AMT ok</Pill> : <a class="text-accent hover:underline text-[12px]" href={`/machines/${m.mac}#oob`}>set credentials →</a>}</td>
-              <td class="text-right pr-3 whitespace-nowrap"><button class="btn !py-1" disabled={!m.oobType} title="Install Debian + KVM on it and carve Talos VMs from it" onClick={() => setLab(m)}>Make lab host</button>{' '}<button class="btn btn-primary !py-1" disabled={!m.oobType || busy[m.mac]} title={m.provision ? 'Armed for a network boot; click to boot again' : ''} onClick={() => boot(m)}>{busy[m.mac] ? 'Starting…' : 'Boot into Talos'}</button></td>
+              <td class="text-right pr-3 whitespace-nowrap"><button class="btn !py-1" title="Install Debian + KVM on it and carve Talos VMs from it" onClick={() => setLab(m)}>Make lab host</button>{' '}<button class="btn btn-primary !py-1" disabled={!m.oobType || busy[m.mac]} title={m.provision ? 'Armed for a network boot; click to boot again' : ''} onClick={() => boot(m)}>{busy[m.mac] ? 'Starting…' : 'Boot into Talos'}</button></td>
             </tr>
           ))}
         </tbody>
@@ -493,6 +493,8 @@ export function Summary({ draft }: { draft: Draft }) {
     rows.push(['Endpoint', c.spec.controlPlane.vip ? `VIP ${c.spec.controlPlane.vip}` : c.spec.controlPlane.endpoint || '—'])
     const st = c.spec.nodes.filter((n) => n.network).length
     rows.push(['Addressing', st === 0 ? 'DHCP' : st === c.spec.nodes.length ? 'static' : `${st} static, ${c.spec.nodes.length - st} DHCP`])
+    const data = c.spec.nodes.reduce((s, n) => s + (n.dataDisks?.length ?? 0), 0)
+    if (data) rows.push(['Data disks', `${data} on ${c.spec.nodes.filter((n) => n.dataDisks?.length).length} node${c.spec.nodes.filter((n) => n.dataDisks?.length).length === 1 ? '' : 's'}`])
     rows.push(['Talos', `${c.spec.talosVersion} · k8s ${c.spec.kubernetesVersion}`])
     const on = draft.skipPlatform ? [] : addons.filter((a) => c.spec.platform[a.key].enabled).map((a) => a.title)
     rows.push(['Add-ons', on.length ? on.join(', ') : draft.skipPlatform ? 'skipped' : 'none'])

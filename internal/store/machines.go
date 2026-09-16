@@ -296,9 +296,28 @@ type LabHost struct {
 	VMs       []labhost.VM     `json:"vms"`
 	Metrics   *labhost.Metrics `json:"metrics,omitempty"`
 	Updates   *labhost.Updates `json:"updates,omitempty"`
+	// Install is the installer's last reported stage while State is installing.
+	Install *InstallProgress `json:"install,omitempty"`
+	// Network is how VMs reach the LAN: bridge (default) or routed.
+	Network string `json:"network,omitempty"`
+	// Boot is what a manually booted install needs to be started with.
+	Boot *BootLine `json:"boot,omitempty"`
 	// Failures counts consecutive SSH failures; the watcher alerts on the third.
 	Failures  int    `json:"failures,omitempty"`
 	UpdatedAt string `json:"updatedAt"`
+}
+
+// BootLine is the installer kernel, initrd and command line for a manual boot.
+type BootLine struct {
+	Kernel  string `json:"kernel"`
+	Initrd  string `json:"initrd"`
+	Cmdline string `json:"cmdline"`
+}
+
+// InstallProgress is what the Debian installer last told Kubit.
+type InstallProgress struct {
+	Stage string `json:"stage"` // installer | partitioning | packages | late-done | booted
+	At    string `json:"at"`
 }
 
 // SetLabHost stores the lab-host state (nil clears the role).
@@ -360,8 +379,20 @@ func (s *Store) SetMachineWOL(ctx context.Context, mac string, on bool) error {
 
 // DeleteMachine forgets a machine that will not come back.
 func (s *Store) DeleteMachine(ctx context.Context, mac string) error {
+	_ = s.DeleteLabHostHistory(ctx, mac)
 	_, err := s.db.ExecContext(ctx, `DELETE FROM machines WHERE mac = ?`, strings.ToLower(mac))
 	return s.done(err, Change{Table: "machines", Key: strings.ToLower(mac), Op: "delete"})
+}
+
+// DeleteLabHostHistory drops the samples and events filed under a lab host's
+// pseudo-cluster; called when the role is released or the machine retired.
+func (s *Store) DeleteLabHostHistory(ctx context.Context, mac string) error {
+	key := LabHostKey(mac)
+	if _, err := s.db.ExecContext(ctx, `DELETE FROM samples WHERE cluster = ?`, key); err != nil {
+		return err
+	}
+	_, err := s.db.ExecContext(ctx, `DELETE FROM events WHERE cluster = ?`, key)
+	return err
 }
 
 // DeleteNode forgets the machine at an IP.

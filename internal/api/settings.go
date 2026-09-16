@@ -100,6 +100,15 @@ func pxeCommand(host string) string {
 	return fmt.Sprintf("sudo %s pxe --iface en0 --kubit-url http://%s", bin, host)
 }
 
+// pxeHTTPCommand is the no-root variant for machines the operator boots by hand.
+func pxeHTTPCommand(host string) string {
+	bin := "kubit"
+	if p, err := os.Executable(); err == nil {
+		bin = p
+	}
+	return fmt.Sprintf("%s pxe --http-only --iface en0 --kubit-url http://%s", bin, host)
+}
+
 // pxeRunning asks the separate PXE process for its status page.
 func (s *Server) pxeRunning(ctx contextT) bool {
 	v, err := s.store.GetSettings(ctx)

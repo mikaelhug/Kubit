@@ -51,11 +51,20 @@ func TestParseUpdatesAndNeedsReboot(t *testing.T) {
 }
 
 func TestPostInstallEnablesUnattendedUpgrades(t *testing.T) {
-	if !strings.Contains(PostInstall, `Unattended-Upgrade "1"`) {
-		t.Error("post-install must switch unattended-upgrades on")
+	post := PostInstall("http://10.0.0.2:8069/labhost/aa/progress")
+	for _, want := range []string{`Unattended-Upgrade "1"`, "kubit-booted.service", "http://10.0.0.2:8069/labhost/aa/progress?stage=booted", "/var/lib/kubit/READY"} {
+		if !strings.Contains(post, want) {
+			t.Errorf("post-install missing %q", want)
+		}
 	}
-	out, _ := Preseed(PreseedParams{Hostname: "x", PublicKey: "k", PostURL: "u"})
-	if !strings.Contains(out, "unattended-upgrades") {
-		t.Error("preseed must install unattended-upgrades")
+	out, _ := Preseed(PreseedParams{Hostname: "x", PublicKey: "k", PostURL: "http://10.0.0.2:8069/labhost/aa/postinstall"})
+	for _, want := range []string{"unattended-upgrades", "qemu-system-x86 ovmf", `stage=installer`, `stage=packages`, `stage=late-done`, "http://10.0.0.2:8069/labhost/aa/progress?stage="} {
+		if !strings.Contains(out, want) {
+			t.Errorf("amd64 preseed missing %q", want)
+		}
+	}
+	arm, _ := Preseed(PreseedParams{Hostname: "x", PublicKey: "k", PostURL: "u", Arch: "arm64"})
+	if !strings.Contains(arm, "qemu-system-arm qemu-efi-aarch64") || strings.Contains(arm, "qemu-system-x86") {
+		t.Error("arm64 preseed must install the arm emulator and AAVMF")
 	}
 }

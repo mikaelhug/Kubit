@@ -25,6 +25,7 @@ type Boot struct {
 type Status struct {
 	StartedAt    time.Time `json:"startedAt"`
 	Interface    string    `json:"interface"`
+	HTTPOnly     bool      `json:"httpOnly"`
 	IP           string    `json:"ip"`
 	HTTPPort     int       `json:"httpPort"`
 	TalosVersion string    `json:"talosVersion"`
@@ -109,7 +110,7 @@ func (t *tracker) logf(line string) {
 func (t *tracker) status(s *Server) Status {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	st := Status{StartedAt: t.started, Interface: s.Interface, IP: s.IP.String(), HTTPPort: s.HTTPPort, TalosVersion: s.Profile.TalosVersion, SchematicID: s.Profile.SchematicID, Log: append([]string{}, t.log...), Boots: []Boot{}}
+	st := Status{StartedAt: t.started, Interface: s.Interface, HTTPOnly: s.HTTPOnly, IP: s.IP.String(), HTTPPort: s.HTTPPort, TalosVersion: s.Profile.TalosVersion, SchematicID: s.Profile.SchematicID, Log: append([]string{}, t.log...), Boots: []Boot{}}
 	for _, b := range t.boots {
 		st.Boots = append(st.Boots, *b)
 	}

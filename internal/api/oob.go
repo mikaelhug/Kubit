@@ -180,7 +180,7 @@ func (s *Server) handleOOBPower(w http.ResponseWriter, r *http.Request) {
 					_ = s.store.SetMachineProvision(context.Background(), mac, false)
 				}
 			}()
-			sink(clusterEvent{Time: time.Now(), Kind: "steps", Level: "info", Steps: cluster.Steps("power", "Arm a network boot and reset via AMT", "wait", "Wait for Talos maintenance mode")})
+			sink(clusterEvent{Time: time.Now(), Kind: "steps", Level: "info", Steps: cluster.Steps("power", "Arm a network boot and reset via AMT", "boot", "Network boot request seen", "ipxe", "Talos kernel fetched", "wait", "Wait for Talos maintenance mode")})
 		}
 		sink(clusterEvent{Time: time.Now(), Kind: "step", Step: "power", Status: cluster.StepRunning})
 		mgr, err := oob.Open(*c)
@@ -202,13 +202,22 @@ func (s *Server) handleOOBPower(w http.ResponseWriter, r *http.Request) {
 		if req.Action != oob.BootPXE {
 			return nil, nil
 		}
+		// The PXE server's view first: whether the box asked to network-boot at all
+		// and whether it fetched the kernel, so a BIOS or LAN problem is named in
+		// minutes, not after the maintenance-mode timeout.
+		watch := &pxeWatch{s: s, mac: mac, sink: sink}
+		if err := s.labWaitBoot(ctx, watch); err != nil {
+			return nil, err
+		}
 		// Talos normally comes up on the same lease (same MAC); probe that address and
 		// the AMT address until maintenance mode answers, then record it like a scan.
 		sink(clusterEvent{Time: time.Now(), Kind: "step", Step: "wait", Status: cluster.StepRunning})
 		candidates := []string{m.IP, c.Host}
 		deadline := time.Now().Add(8 * time.Minute)
 		for time.Now().Before(deadline) {
-			for _, ip := range candidates {
+			watch.step = "wait"
+			watch.poll(ctx)
+			for _, ip := range uniq(m.IP, c.Host, watch.ip) {
 				if ip == "" {
 					continue
 				}

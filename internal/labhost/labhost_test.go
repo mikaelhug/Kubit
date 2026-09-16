@@ -35,9 +35,20 @@ func TestDomainXMLAndMAC(t *testing.T) {
 			t.Errorf("domain xml missing %q", want)
 		}
 	}
+	if !strings.Contains(xml, "<domain type='kvm'>") || !strings.Contains(xml, "/usr/share/OVMF/OVMF_CODE_4M.fd") || !strings.Contains(xml, "<cpu mode='host-passthrough'/>") {
+		t.Error("amd64 domain must be KVM with OVMF and host CPU")
+	}
 	disk, _ := DomainXML(VMSpec{Name: "v", MAC: MAC(1, 2), CPUs: 1, MemMiB: 1024, DiskGiB: 10, Arch: "arm64"})
 	if !strings.Contains(disk, "<boot dev='hd'/>") || strings.Contains(disk, "<kernel>") || !strings.Contains(disk, "aarch64") {
 		t.Error("disk-boot arm64 domain wrong")
+	}
+	// Without a UEFI loader an arm64 virt machine has nothing to boot a disk with.
+	if !strings.Contains(disk, "/usr/share/AAVMF/AAVMF_CODE.fd") || !strings.Contains(disk, "<nvram template='/usr/share/AAVMF/AAVMF_VARS.fd'>/var/lib/kubit/vms/v.nvram</nvram>") {
+		t.Error("arm64 domain must carry AAVMF")
+	}
+	tcg, _ := DomainXML(VMSpec{Name: "t", MAC: MAC(1, 4), CPUs: 1, MemMiB: 1024, DiskGiB: 10, Arch: "arm64", TCG: true})
+	if !strings.Contains(tcg, "<domain type='qemu'>") || !strings.Contains(tcg, "<cpu mode='maximum'/>") {
+		t.Error("TCG domain must not ask for KVM or the host CPU")
 	}
 	if strings.Contains(xml, "vdb") {
 		t.Error("no data disk unless asked")

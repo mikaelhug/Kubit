@@ -36,6 +36,9 @@ type Config struct {
 	// KubitURL/KubitToken let the HTTP side fetch per-machine files (lab-host
 	// preseeds) from the daemon on behalf of the installer.
 	KubitURL, KubitToken string
+	// HTTPOnly serves just the HTTP side (assets, preseed proxy, status): no DHCP or
+	// TFTP, no root. For machines booted by hand — a VM harness, a USB installer.
+	HTTPOnly bool
 	// Interface to answer on; its IPv4 address becomes next-server and the HTTP host.
 	Interface string
 	IP        net.IP

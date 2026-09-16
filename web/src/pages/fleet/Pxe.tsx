@@ -6,7 +6,7 @@ import { Code, KeyValue, Notice, Pill, Section, type Tone } from '../../componen
 
 type Boot = NonNullable<PxeStatus['boots']>[number]
 const stageTone: Record<string, Tone> = { dhcp: 'warn', ipxe: 'info', kernel: 'good' }
-const stageText: Record<string, string> = { dhcp: 'firmware asked (DHCP)', ipxe: 'iPXE fetched boot script', kernel: 'Talos kernel downloaded' }
+const stageText: Record<string, string> = { dhcp: 'firmware asked (DHCP)', ipxe: 'iPXE fetched boot script', debian: 'Debian installer script fetched', kernel: 'kernel downloaded' }
 
 /** State of the separate `kubit pxe` process and what has booted through it. */
 export function Pxe() {
@@ -41,8 +41,8 @@ export function Pxe() {
           <div class="grid grid-cols-1 lg:grid-cols-2 gap-4">
             <div class="panel p-4">
               <KeyValue rows={[
-                ['State', <Pill tone="good">running since {fmt.when(st.startedAt ?? '')}</Pill>],
-                ['Interface', <span class="mono">{st.interface} ({st.ip})</span>],
+                ['State', <span class="flex items-center gap-2"><Pill tone="good">running since {fmt.when(st.startedAt ?? '')}</Pill>{st.httpOnly && <Pill tone="warn" title="No DHCP or TFTP: machines must be booted by hand from the boot assets">HTTP only</Pill>}</span>],
+                ['Interface', <span class="flex flex-col"><span class="mono">{st.interface} ({st.ip})</span><span class="text-[11px] text-muted">PXE clients must share this segment. On a Wi-Fi interface the access point has to forward DHCP broadcasts both ways; wired is safer.</span></span>],
                 ['Boot script', <span class="mono">http://{st.ip}:{st.httpPort}/boot.ipxe</span>],
                 ['Talos', <span class="mono">{st.talosVersion}</span>],
                 ['Schematic', <span class="mono text-[12px] break-all">{st.schematicId}</span>],

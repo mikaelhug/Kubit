@@ -24,6 +24,23 @@ type VMSpec struct {
 	Initrd string `json:"-"`
 	Arch   string `json:"-"`
 	Bridge string `json:"-"`
+	// Routed puts the VM on Kubit's own libvirt network (RoutedSubnet, DHCP from
+	// dnsmasq, egress masqueraded by the host) instead of the LAN bridge: for hosts
+	// whose uplink drops frames from other MACs (Wi-Fi, port security, a VM under
+	// vmnet). Kubit's host then needs a route to RoutedSubnet via the lab host.
+	Routed bool `json:"-"`
+	// TCG runs the VM under software emulation when the host has no /dev/kvm (dev
+	// harnesses without nested virtualisation); slow, never the default.
+	TCG bool `json:"-"`
+}
+
+// Firmware is the UEFI code image and variable template libvirt boots the VM with.
+// UEFI on both arches so Talos's installed sd-boot is what runs after SetDiskBoot.
+func Firmware(arch string) (code, vars string) {
+	if arch == "arm64" {
+		return "/usr/share/AAVMF/AAVMF_CODE.fd", "/usr/share/AAVMF/AAVMF_VARS.fd"
+	}
+	return "/usr/share/OVMF/OVMF_CODE_4M.fd", "/usr/share/OVMF/OVMF_VARS_4M.fd"
 }
 
 // VM is what the host reports about a defined VM.
@@ -42,19 +59,21 @@ type VM struct {
 // MAC gives VM n on lab host h a stable, recognisable address (locally administered).
 func MAC(host, n int) string { return fmt.Sprintf("52:54:00:6b:%02x:%02x", host&0xff, n&0xff) }
 
-var domainTmpl = template.Must(template.New("domain").Parse(`<domain type='kvm'>
+var domainTmpl = template.Must(template.New("domain").Parse(`<domain type='{{.Type}}'>
   <name>{{.Name}}</name>
   <memory unit='MiB'>{{.MemMiB}}</memory>
   <vcpu>{{.CPUs}}</vcpu>
   <os>
     <type arch='{{.QemuArch}}' machine='{{.Machine}}'>hvm</type>
+    <loader readonly='yes' type='pflash'>{{.Loader}}</loader>
+    <nvram template='{{.Vars}}'>{{.NVRAM}}</nvram>
 {{if .Kernel}}    <kernel>{{.Kernel}}</kernel>
     <initrd>{{.Initrd}}</initrd>
     <cmdline>talos.platform=metal console=ttyS0 console=tty0 init_on_alloc=1 slab_nomerge pti=on</cmdline>
 {{else}}    <boot dev='hd'/>
 {{end}}  </os>
   <features><acpi/><apic/></features>
-  <cpu mode='host-passthrough'/>
+  <cpu mode='{{.CPUMode}}'/>
   <clock offset='utc'/>
   <on_reboot>restart</on_reboot>
   <devices>
@@ -69,9 +88,11 @@ var domainTmpl = template.Must(template.New("domain").Parse(`<domain type='kvm'>
       <source file='{{.Data}}'/>
       <target dev='vdb' bus='virtio'/>
     </disk>
-{{end}}    <interface type='bridge'>
+{{end}}{{if .Routed}}    <interface type='network'>
+      <source network='kubit'/>
+{{else}}    <interface type='bridge'>
       <source bridge='{{.Bridge}}'/>
-      <mac address='{{.MAC}}'/>
+{{end}}      <mac address='{{.MAC}}'/>
       <model type='virtio'/>
     </interface>
     <serial type='pty'><target port='0'/></serial>
@@ -92,10 +113,15 @@ func DomainXML(s VMSpec) (string, error) {
 	if bridge == "" {
 		bridge = "br0"
 	}
+	loader, vars := Firmware(s.Arch)
+	typ, cpu := "kvm", "host-passthrough"
+	if s.TCG {
+		typ, cpu = "qemu", "maximum"
+	}
 	data := struct {
 		VMSpec
-		QemuArch, Machine, Emulator, Disk, Data, Bridge string
-	}{s, qarch, machine, emulator, DiskPath(s.Name), "", bridge}
+		QemuArch, Machine, Emulator, Disk, Data, Bridge, Type, CPUMode, Loader, Vars, NVRAM string
+	}{s, qarch, machine, emulator, DiskPath(s.Name), "", bridge, typ, cpu, loader, vars, VMDir + "/" + s.Name + ".nvram"}
 	if s.DataGiB > 0 {
 		data.Data = DataPath(s.Name)
 	}
@@ -137,6 +163,46 @@ func (c *Client) Define(ctx context.Context, s VMSpec) error {
 		return err
 	}
 	_, err = c.Run(ctx, "virsh start "+s.Name+" >/dev/null")
+	return err
+}
+
+// RoutedSubnet is Kubit's libvirt network for routed VMs; the host is .1.
+const RoutedSubnet = "192.168.123.0/24"
+
+// routedNetwork is an "open" libvirt network: dnsmasq for DHCP, no firewall rules of
+// libvirt's own (its NAT mode rejects new inbound connections, which Kubit needs to
+// reach the VMs). Forwarding and egress masquerade come from kubit-vmnet.service.
+const routedNetwork = `<network>
+  <name>kubit</name>
+  <forward mode='open'/>
+  <bridge name='kubitbr0' stp='off' delay='0'/>
+  <ip address='192.168.123.1' netmask='255.255.255.0'>
+    <dhcp><range start='192.168.123.100' end='192.168.123.200'/></dhcp>
+  </ip>
+</network>
+`
+
+const routedUnit = `[Unit]
+Description=Kubit routed VM network: forwarding and egress masquerade
+After=libvirtd.service network-online.target
+Wants=network-online.target
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/bin/sh -c 'sysctl -qw net.ipv4.ip_forward=1; nft list table ip kubit >/dev/null 2>&1 || nft add table ip kubit; nft list chain ip kubit post >/dev/null 2>&1 || nft add chain ip kubit post "{ type nat hook postrouting priority 100 ; }"; nft flush chain ip kubit post; nft add rule ip kubit post ip saddr 192.168.123.0/24 ip daddr != 192.168.123.0/24 masquerade'
+[Install]
+WantedBy=multi-user.target
+`
+
+// EnsureRouted defines and starts the kubit network and the forwarding unit.
+func (c *Client) EnsureRouted(ctx context.Context) error {
+	if err := c.Put(ctx, "/var/lib/kubit/network.xml", []byte(routedNetwork), "644"); err != nil {
+		return err
+	}
+	if err := c.Put(ctx, "/etc/systemd/system/kubit-vmnet.service", []byte(routedUnit), "644"); err != nil {
+		return err
+	}
+	_, err := c.Run(ctx, "virsh net-info kubit >/dev/null 2>&1 || virsh net-define /var/lib/kubit/network.xml >/dev/null; virsh net-autostart kubit >/dev/null; virsh net-info kubit | grep -q 'Active:.*yes' || virsh net-start kubit >/dev/null; systemctl daemon-reload; systemctl enable --now kubit-vmnet.service >/dev/null 2>&1; nft list chain ip kubit post | grep -q masquerade")
 	return err
 }
 
@@ -188,7 +254,7 @@ func (c *Client) Stop(ctx context.Context, name string, force bool) error {
 
 // Delete destroys, undefines and removes the disk.
 func (c *Client) Delete(ctx context.Context, name string) error {
-	_, err := c.Run(ctx, fmt.Sprintf("virsh destroy %s >/dev/null 2>&1; virsh undefine %s --nvram >/dev/null 2>&1 || virsh undefine %s >/dev/null 2>&1; rm -f %s %s %s/%s.xml", name, name, name, DiskPath(name), DataPath(name), VMDir, name))
+	_, err := c.Run(ctx, fmt.Sprintf("virsh destroy %s >/dev/null 2>&1; virsh undefine %s --nvram >/dev/null 2>&1 || virsh undefine %s >/dev/null 2>&1; rm -f %s %s %s/%s.xml %s/%s.nvram", name, name, name, DiskPath(name), DataPath(name), VMDir, name, VMDir, name))
 	return err
 }
 
@@ -200,7 +266,7 @@ func (c *Client) Resize(ctx context.Context, name string, cpus, memMiB int) erro
 
 // List reports every VM defined under Kubit's naming with its state and lease.
 func (c *Client) List(ctx context.Context) ([]VM, error) {
-	out, err := c.Run(ctx, `for d in $(virsh list --all --name); do [ -z "$d" ] && continue; st=$(virsh domstate $d | head -1); x=$(virsh dumpxml $d --inactive); mac=$(echo "$x" | grep -o "mac address='[^']*'" | head -1 | cut -d"'" -f2); mem=$(echo "$x" | grep -o "<memory unit='[A-Za-z]*'>[0-9]*" | grep -o "[0-9]*$"); unit=$(echo "$x" | grep -o "<memory unit='[A-Za-z]*'" | cut -d"'" -f2); cpu=$(echo "$x" | grep -o "<vcpu[^>]*>[0-9]*" | grep -o "[0-9]*$"); boot=$(echo "$x" | grep -q "<kernel>" && echo talos || echo disk); disk=$(qemu-img info --output=json `+VMDir+`/$d.qcow2 2>/dev/null | grep -o '"virtual-size": [0-9]*' | grep -o '[0-9]*$'); data=$(qemu-img info --output=json `+VMDir+`/$d-data.qcow2 2>/dev/null | grep -o '"virtual-size": [0-9]*' | grep -o '[0-9]*$'); ip=$(virsh domifaddr $d --source arp 2>/dev/null | awk '/ipv4/{print $4}' | head -1 | cut -d/ -f1); echo "$d|$st|$mac|$mem|$unit|$cpu|$boot|$disk|$ip|$data"; done`)
+	out, err := c.Run(ctx, `for d in $(virsh list --all --name); do [ -z "$d" ] && continue; st=$(virsh domstate $d | head -1); x=$(virsh dumpxml $d --inactive); mac=$(echo "$x" | grep -o "mac address='[^']*'" | head -1 | cut -d"'" -f2); mem=$(echo "$x" | grep -o "<memory unit='[A-Za-z]*'>[0-9]*" | grep -o "[0-9]*$"); unit=$(echo "$x" | grep -o "<memory unit='[A-Za-z]*'" | cut -d"'" -f2); cpu=$(echo "$x" | grep -o "<vcpu[^>]*>[0-9]*" | grep -o "[0-9]*$"); boot=$(echo "$x" | grep -q "<kernel>" && echo talos || echo disk); disk=$(qemu-img info --output=json `+VMDir+`/$d.qcow2 2>/dev/null | grep -o '"virtual-size": [0-9]*' | grep -o '[0-9]*$'); data=$(qemu-img info --output=json `+VMDir+`/$d-data.qcow2 2>/dev/null | grep -o '"virtual-size": [0-9]*' | grep -o '[0-9]*$'); ip=$( (virsh domifaddr $d --source lease 2>/dev/null; virsh domifaddr $d --source arp 2>/dev/null) | awk '/ipv4/{print $4}' | head -1 | cut -d/ -f1); echo "$d|$st|$mac|$mem|$unit|$cpu|$boot|$disk|$ip|$data"; done`)
 	if err != nil {
 		return nil, err
 	}

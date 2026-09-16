@@ -76,3 +76,14 @@
   tell which VM is eating the disk when `labhost.disk-low` fires.
 - Lab host: `hack/seedlab` fills a scratch `KUBIT_HOME` with a fake host for UI work;
   it is dev-only and not wired into the build.
+- Storage consumer for data disks: opt-in `localPath` platform add-on (rancher local-path-provisioner with `nodePathMap` → `/var/mnt/data-*`) so PVCs land on the data volumes without hostPath; Longhorn/OpenEBS stay user-deployed.
+- Hardware tab for AMT-only machines: state that inventory arrives once the machine boots Talos (AMT exposes no disks/RAM); the row is otherwise blank.
+- Data-disk selectors by serial/WWN instead of dev_path (Talos `disk.serial`): dev paths can shift on multi-controller boxes; inventory would need the serial first.
+- Lab harness: the installer and the installed system take different vmnet leases
+  (different DHCP client ids), so `lab.sh route` must be re-run after the install;
+  Kubit itself copes (the SSH phase re-reads the row and the progress report carries
+  the current address). A fixed lease per MAC in vmnet would remove the step.
+- Lab hosts: the routed network's subnet (192.168.123.0/24) is fixed; make it a
+  setting if a site already uses it.
+- Boot into Talos and the lab install share `labWaitBoot`; the same phase machine
+  could serve `discover` when it waits for a PXE-booted machine.

@@ -5,7 +5,7 @@ import { DataTable, type Column } from '../../components/DataTable'
 import { ConfirmDialog, Dialog, ErrorBox, Field, MaintenanceNotice, Pill, Section } from '../../components/ui'
 import { KVEditor } from '../../components/PoolsEditor'
 import { guessGateway } from '../create/net'
-import { isVirtual, modelOf } from '../create/steps'
+import { dataCandidates, installCandidates, isVirtual, modelOf } from '../create/steps'
 import type { ClusterCtx } from './ClusterPage'
 
 export function Nodes({ ctx }: { ctx: ClusterCtx }) {
@@ -119,6 +119,7 @@ function AddNodeDialog({ cluster, onClose, preselect }: { cluster: ClusterRow; o
   const [taints, setTaints] = useState<Record<string, string> | undefined>()
   const [network, setNetwork] = useState<NodeNetwork | undefined>()
   const [more, setMore] = useState(false)
+  const [dataDisks, setDataDisks] = useState<string[]>([])
   const [error, setError] = useState<string | null>(null)
   const candidates = machineList.value.filter((n) => n.state === 'maintenance' && !n.cluster)
   const selected = candidates.find((c) => c.ip === ip)
@@ -126,14 +127,15 @@ function AddNodeDialog({ cluster, onClose, preselect }: { cluster: ClusterRow; o
   const role = p?.role ?? 'worker'
   useEffect(() => {
     if (!selected) return
-    const cand = selected.inventory?.disks.filter((d) => !d.readonly && !d.cdrom && d.transport !== 'usb').sort((a, b) => b.sizeBytes - a.sizeBytes)
-    if (cand && cand[0]) setDisk(cand[0].devPath)
+    const cand = installCandidates(selected)
+    if (cand[0]) setDisk(cand[0].devPath)
+    setDataDisks([])
     const n = cluster.spec.spec.nodes.filter((x) => x.pool === pool).length + 1
     setHostname(`${cluster.name}-${pool === 'controlplane' ? 'cp' : pool}-${String(n).padStart(2, '0')}`)
   }, [selected, pool, cluster])
   const submit = () => {
     if (!selected) return
-    const node: NodeSpec = { hostname, ip, mac: selected.mac, uuid: selected.uuid, pool, arch: selected.arch, kvm: !!selected.inventory?.kvm, installDisk: disk ? { path: disk } : undefined, labels, taints, network }
+    const node: NodeSpec = { hostname, ip, mac: selected.mac, uuid: selected.uuid, pool, arch: selected.arch, kvm: !!selected.inventory?.kvm, installDisk: disk ? { path: disk } : undefined, dataDisks: dataDisks.length ? dataDisks : undefined, labels, taints, network }
     api.addNode(cluster.name, node).then((r) => { onClose(); watch(r) }).catch((e) => setError(e.message))
   }
   const cps = cluster.spec.spec.nodes.filter((x) => x.role === 'controlplane').length
@@ -161,12 +163,19 @@ function AddNodeDialog({ cluster, onClose, preselect }: { cluster: ClusterRow; o
         <Field label="Hostname"><input class="input mono" value={hostname} onInput={(e) => setHostname((e.target as HTMLInputElement).value)} /></Field>
       </div>
       <Field label="Install disk" hint={p?.installDisk ? 'Empty follows the pool\'s disk policy.' : 'Wiped and installed with Talos.'}>
-        <select class="input mono" value={disk} onChange={(e) => setDisk((e.target as HTMLSelectElement).value)}>
+        <select class="input mono" value={disk} onChange={(e) => { const v = (e.target as HTMLSelectElement).value; setDisk(v); setDataDisks(dataDisks.filter((d) => d !== v)) }}>
           {p?.installDisk && <option value="">pool policy ({Object.values(p.installDisk.selector ?? {}).join(' ')})</option>}
           {selected?.inventory?.disks.filter((d) => !d.readonly && !d.cdrom).map((d) => <option key={d.devPath} value={d.devPath}>{d.devPath} · {fmt.bytes(d.sizeBytes)} {d.model ? `· ${d.model}` : ''} {d.transport ? `· ${d.transport}` : ''}</option>)}
           {!selected && <option value="">—</option>}
         </select>
       </Field>
+      {selected && dataCandidates(selected, disk).length > 0 && (
+        <Field label="Data disks" hint="Wiped, formatted (xfs) and mounted at /var/mnt/data-N for node-local storage.">
+          <div class="flex flex-col gap-1 text-[13px] mono">
+            {dataCandidates(selected, disk).map((d) => <label key={d.devPath} class="flex items-center gap-2"><input type="checkbox" checked={dataDisks.includes(d.devPath)} onChange={(e) => setDataDisks((e.target as HTMLInputElement).checked ? dataCandidates(selected, disk).map((x) => x.devPath).filter((x) => x === d.devPath || dataDisks.includes(x)) : dataDisks.filter((x) => x !== d.devPath))} />{d.devPath} <span class="text-muted">{fmt.bytes(d.sizeBytes)}{d.model ? ` · ${d.model}` : ''}</span></label>)}
+          </div>
+        </Field>
+      )}
       <button class="text-[12px] text-accent text-left hover:underline" onClick={() => setMore(!more)}>{more ? '▾' : '▸'} Labels, taints and addressing</button>
       {more && (
         <div class="grid grid-cols-2 gap-3">

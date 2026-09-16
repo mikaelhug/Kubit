@@ -108,6 +108,7 @@ spec:
       arch: arm64                  # amd64 | arm64
       kvm: true                    # /dev/kvm present → also labelled for runsc-kvm
       installDisk: { path: /dev/vda }   # or a selector; empty = pool policy
+      dataDisks: [/dev/vdb, /dev/vdc]   # whole disks → xfs volumes at /var/mnt/data-1, data-2
       labels: { rack: a1 }         # merged over the pool's; taints:/annotations: likewise
     - hostname: gpu-01
       ip: 192.168.64.150
@@ -142,6 +143,17 @@ default `RouteConfig` (+ `VLANConfig`) on the alias, `ResolverConfig`, `TimeSync
 and, on control planes with a VIP, `Layer2VIPConfig`. `config.Lint` reports advisory
 findings (even/single control planes, small disks, mixed arch, ranges off-subnet or
 overlapping, VIP or MetalLB range taken by another stored cluster).
+
+**Disk roles.** A node has one install disk and any number of *data disks*
+(`dataDisks`, up to 8, never the install disk). Each data disk becomes a
+`UserVolumeConfig` `data-N` of type `disk` — whole disk, xfs, selector
+`disk.dev_path == "<path>" && !system_disk` — that Talos formats on first use and
+mounts at `/var/mnt/data-N`; the node is labelled `kubit.dev/data-disks: N`. Adding a
+data disk to an existing node is a plain **Apply** (no reboot). The wizard's Design
+step lists every non-install disk per machine with a checkbox (*Use all* claims the
+lot), the add-node dialog does the same, and the node page shows path → mount. Kubit
+stops at the Talos layer: pods reach the volumes through `hostPath` or a StorageClass
+the operator deploys (local-path-provisioner pointed at `/var/mnt/data-*`, or a CSI).
 
 ## Secrets
 
@@ -473,8 +485,11 @@ puts Debian + `qemu-kvm` + `libvirt` on the largest disk with `br0` bridged onto
 LAN and Kubit's SSH key (minted once, sealed in settings) for user `kubit`. The
 `labhost.provision` operation waits for SSH, verifies `/dev/kvm` and the bridge,
 records capacity and fetches the Talos kernel/initramfs onto the host
-(`/var/lib/kubit/boot`). Then **Add VMs…** (count, vCPU, RAM, disk; memory checked
-against what is free, host keeps 2 GiB): each VM is a libvirt domain that boots Talos
+(`/var/lib/kubit/boot`). Then **Add VMs…** (count, vCPU, RAM, disk, optional data
+disk; memory checked against what is free, host keeps 2 GiB): each VM is a libvirt
+domain — `vda` for Talos, a second thin qcow2 `vdb` when a data disk was asked for,
+which the lab plan claims as `/var/mnt/data-1` on every node (`vda` stays the install
+disk even when the data disk is larger) — that boots Talos
 **directly from the kernel/initramfs** — no PXE, no ISO — into maintenance mode, and
 is a machine row from the start (source `lab`, MAC `52:54:00:6b:HH:NN`, `host` = the
 lab host). They are picked in the wizard like any machine; when the cluster installs a
@@ -484,6 +499,55 @@ operation; hostnames `<name>-cp-NN` / `<name>-worker-NN`, no VIP for a single co
 plane) and the operator comes back to a running cluster. The machine page's *Lab
 host* tab has the VM table (start/stop/re-provision/delete/resize), *Add VMs* and
 *Release*. Lint reports an all-VMs-on-one-host control plane as `lab-cluster` (info).
+
+### Watching an install, and installing without AMT
+
+The install is not a blind wait any more. The preseed reports each stage back
+(`early_command` → `installer`, partman → `partitioning`, `late_command` →
+`packages` … `late-done`, a one-shot unit on first boot → `booted`) through the pxe
+proxy's `/labhost/<mac>/progress` to `GET /api/v1/labhost/progress`, which lands on
+`LabHost.Install` (live in the Lab host tab and the wizard row). The operation runs
+phases with their own budgets and diagnoses — `boot` (PXE saw the MAC, 3 min: else
+"check BIOS boot order / AMT override / Wi-Fi interface"), `ipxe` (kernel fetched,
+2 min: else "TFTP/HTTP blocked"), `installer` (5 min: else "installer never reached
+the network"), `install` (30 min: else "stopped after <stage>; attach a screen"),
+`ssh` (5 min: else "booted the old OS / key not installed") — and every PXE log line
+about the MAC is mirrored into the operation as it appears. *Boot into Talos* gets
+the same `boot` and `ipxe` phases. `internal/api/labhost_install.go`.
+
+A machine without remote management can still become a lab host: *Make lab host*
+offers a **manual** plan (`{"manual": true}`) — Kubit arms the row and prints the
+kernel, initrd and command line to boot with; you boot it (VM console, USB). For
+that, `kubit pxe --http-only [--ip ADDR]` serves just the HTTP side (assets, preseed,
+progress) without root; `POST /api/v1/machines {mac, ip, hostname, arch}` registers
+a machine Kubit has not seen. `hack/lab/lab.sh` is exactly this on a vfkit VM:
+`lab.sh create 1` registers the MAC, calls *Make lab host* (manual, default plan: 4
+VMs + cluster `lab`), builds a FAT boot volume with systemd-boot + the netboot
+installer + the preseed URL (the installer must run in UEFI mode for partman-efi and
+grub-efi; vfkit's own kernel loader is not EFI), and boots it with nested
+virtualisation so the Talos VMs get real KVM. The preseed installs per-arch packages
+(`qemu-system-x86 ovmf` / `qemu-system-arm qemu-efi-aarch64`), the domain XML carries
+the matching UEFI loader (`OVMF_CODE_4M` / `AAVMF_CODE`) so disk boot works on both
+arches, and grub also lands on the removable EFI path. `KUBIT_LAB_ALLOW_TCG=1` lets
+`setup` continue without `/dev/kvm` (VMs under software emulation) — dev only.
+
+**Sizing.** A plan that creates VMs and a cluster gives its control planes at least
+2 GiB (`minControlPlaneMiB`) whatever the per-VM size says, and both the plan path
+and *Add VMs* refuse a set that exceeds host memory minus the 2 GiB reserve — an
+overcommitted host does not fail loudly, its guests swap until kube-scheduler dies
+and the cluster sits at NotReady (found in the harness; the memory alert fired, the
+refusal is what prevents it). While a manual install waits for its machine, the Lab
+host tab shows the kernel, initrd and command line to boot with (copy buttons).
+
+**Routed VM network.** The plan's `network: "routed"` (default `bridge`) puts the VMs
+on a Kubit-owned libvirt network instead of `br0`: `kubit`, `192.168.123.0/24`,
+dnsmasq DHCP, `<forward mode='open'/>` so libvirt adds no firewall rules of its own
+(its NAT mode rejects new inbound connections, which is exactly what Kubit needs to
+reach the VMs), plus `kubit-vmnet.service` on the host for `ip_forward` and an
+nftables masquerade for egress. Kubit's own host then needs a route to that subnet
+via the lab host — the `setup` step logs it. For uplinks that drop frames from other
+MACs: Wi-Fi hosts, switch ports with port security, and the vfkit harness (vmnet
+filters foreign MACs, which is why `lab.sh` uses it and has `lab.sh route`).
 
 ### Host metrics, alerts and updates
 
@@ -582,4 +646,6 @@ virtualisation in the VMs); ArgoCD and cert-manager add-ons.
 - [~] M14 — Out-of-band: Intel AMT backend (probe, power on/off/reset/cycle, one-shot PXE boot), per-machine remote-management config sealed at rest, *Add via AMT* in Inventory, `machine.power` operations; member-aware PXE (no offer + iPXE exit for members, `/pxe/decide`, enrollment open/closed, one-shot arming cleared on maintenance sighting; unit-tested). **AMT itself is unverified** — no vPro hardware here; the WS-Man calls follow Intel's reference client and need one run against an EliteDesk
 - [~] M15 — Lab hosts: `internal/labhost` (preseed, SSH client, virsh domain lifecycle, direct kernel boot), PXE Debian profile + preseed proxy, lab-host API/operations, watcher refresh, install-time disk-boot switch, wizard/machine-page/Inventory UI. **Unverified on hardware** (needs the EliteDesk): the Debian install and every virsh call; unit-tested rendering only
 - [~] M16 — Lab host operations: host metrics (SSH tick → `samples` under `labhost:<mac>`, live `hostSample`), disk/memory/unreachable/updates alerts with runbooks and hysteresis (unit-tested), hourly apt check, unattended security upgrades in the preseed, `labhost.update` / `labhost.reboot` operations (VMs parked, autostart, cluster Ready wait, maintenance-window gate), *Lab host* tab with utilisation cards, System panel and confirm dialogs, Inventory alert pill, heartbeat line. **Verified with a seeded host only** (`hack/seedlab`): parsing, thresholds, UI, the failure path of the operation; the real upgrade/reboot path needs the EliteDesk
+- [~] M17 — Disk roles: `dataDisks` per node → Talos `UserVolumeConfig` whole-disk xfs volumes at `/var/mnt/data-N` (generation and validation unit-tested), wizard Design step and add-node dialog with per-disk checkboxes, node page mounts, lab VMs with an optional second qcow2 (`vdb`) that the lab plan claims automatically, `vda` pinned as the install disk for VMs. **Unverified on a live node**: the volume actually formatting and mounting needs a machine with a spare disk
+- [~] M17 — Lab install observable: installer progress reports, phased waits with diagnoses, PXE log mirrored into operations, manual (no-AMT) mode, `kubit pxe --http-only`/`--ip`, `POST /machines`, per-arch preseed packages, UEFI loaders in domain XML, `hack/lab/lab.sh` vfkit harness (EFI via systemd-boot volume, nested virt). routed VM network (`kubit` libvirt network + masquerade unit). **Verified in the VM harness**: EFI install via systemd-boot volume (3 min), every progress stage, SSH, setup with nested KVM, four Talos VMs to maintenance mode on the routed network, cluster `lab` Ready with MetalLB/ingress in 9 minutes, and M16's *Update host* (VMs parked, reboot, autostart, 4/4 Ready again in 2 min). See NOTES/backlog for what was found. PXE on the EliteDesk still to be run with the new diagnostics
 - [ ] M7 — tests, CI, packaging, docs

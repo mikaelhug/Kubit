@@ -2,7 +2,9 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
 	"log"
+	"net"
 	"net/http"
 	neturl "net/url"
 	"os"
@@ -22,6 +24,8 @@ func pxeCmd() *cobra.Command {
 		extensions                     []string
 		httpPort                       int
 		kubitURL                       string
+		httpOnly                       bool
+		advertise                      string
 	)
 	cmd := &cobra.Command{
 		Use:   "pxe",
@@ -32,7 +36,13 @@ kernel and initramfs for the given schematic, cached from the Image Factory. Boo
 machines land in maintenance mode and show up in 'kubit discover'.`,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			ip, err := pxe.InterfaceIPv4(iface)
-			if err != nil {
+			if advertise != "" {
+				// An interface that appears later (vmnet's bridge100 exists only while
+				// a VM runs) can still be advertised in boot lines and preseed URLs.
+				if ip = net.ParseIP(advertise); ip == nil {
+					return fmt.Errorf("--ip %q is not an IPv4 address", advertise)
+				}
+			} else if err != nil {
 				return err
 			}
 			f := factory.New()
@@ -47,7 +57,7 @@ machines land in maintenance mode and show up in 'kubit discover'.`,
 			}
 			logger := log.New(os.Stderr, "", log.LstdFlags)
 			srv := &pxe.Server{
-				Config:  pxe.Config{Interface: iface, IP: ip, HTTPPort: httpPort, Log: logger, Decide: pxeDecider(kubitURL, os.Getenv("KUBIT_TOKEN"), logger), KubitURL: kubitURL, KubitToken: os.Getenv("KUBIT_TOKEN")},
+				Config:  pxe.Config{Interface: iface, IP: ip, HTTPPort: httpPort, Log: logger, Decide: pxeDecider(kubitURL, os.Getenv("KUBIT_TOKEN"), logger), KubitURL: kubitURL, KubitToken: os.Getenv("KUBIT_TOKEN"), HTTPOnly: httpOnly},
 				Profile: pxe.Profile{SchematicID: schematic, TalosVersion: talosVersion},
 				Cache:   pxe.NewCache(filepath.Join(home, "cache")),
 				Factory: f,
@@ -60,6 +70,8 @@ machines land in maintenance mode and show up in 'kubit discover'.`,
 	cmd.Flags().StringSliceVar(&extensions, "extensions", []string{"siderolabs/gvisor"}, "system extensions for the default schematic")
 	cmd.Flags().StringVar(&talosVersion, "talos-version", "v1.14.0", "Talos release to boot")
 	cmd.Flags().IntVar(&httpPort, "http-port", 8069, "port for the iPXE script and boot assets")
+	cmd.Flags().StringVar(&advertise, "ip", "", "address to advertise in boot scripts and preseed URLs (default: the interface's IPv4)")
+	cmd.Flags().BoolVar(&httpOnly, "http-only", false, "serve only HTTP (boot assets, lab-host preseed and progress) on --http-port; no DHCP/TFTP, no root. For machines you boot yourself")
 	cmd.Flags().StringVar(&kubitURL, "kubit-url", "http://127.0.0.1:8080", "daemon to ask whether a MAC should boot Talos or its own disk (cluster members boot locally); KUBIT_TOKEN for its bearer token")
 	return cmd
 }

@@ -47,11 +47,16 @@ func (s *Server) Run(ctx context.Context) error {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	errc := make(chan error, 3)
-	go func() { errc <- s.ServeDHCP(ctx) }()
-	go func() { errc <- s.serveTFTP(ctx) }()
-	go func() { errc <- s.serveHTTP(ctx) }()
-	s.Log.Printf("pxe: proxyDHCP on %s (%s), TFTP :69, HTTP :%d, Talos %s schematic %s",
-		s.Interface, s.IP, s.HTTPPort, s.Profile.TalosVersion, s.Profile.SchematicID)
+	if s.HTTPOnly {
+		go func() { errc <- s.serveHTTP(ctx) }()
+		s.Log.Printf("pxe: HTTP only on %s (%s) :%d — no DHCP/TFTP; boot machines by hand from http://%s:%d/", s.Interface, s.IP, s.HTTPPort, s.IP, s.HTTPPort)
+	} else {
+		go func() { errc <- s.ServeDHCP(ctx) }()
+		go func() { errc <- s.serveTFTP(ctx) }()
+		go func() { errc <- s.serveHTTP(ctx) }()
+		s.Log.Printf("pxe: proxyDHCP on %s (%s), TFTP :69, HTTP :%d, Talos %s schematic %s",
+			s.Interface, s.IP, s.HTTPPort, s.Profile.TalosVersion, s.Profile.SchematicID)
+	}
 	select {
 	case <-ctx.Done():
 		return nil
@@ -117,7 +122,7 @@ func (s *Server) Handler() http.Handler {
 		if mac != "" && s.Config.decide(mac) == "debian" {
 			// Lab host: the Debian installer with Kubit's preseed, no Talos.
 			base := fmt.Sprintf("http://%s:%d", s.IP, s.HTTPPort)
-			args := labhost.KernelArgs(fmt.Sprintf("%s/labhost/%s/preseed", base, mac), "")
+			args := labhost.KernelArgs(fmt.Sprintf("%s/labhost/%s/preseed?arch=%s", base, mac, arch), "")
 			fmt.Fprintf(w, "#!ipxe\nkernel %s/assets/debian/%s/linux %s\ninitrd %s/assets/debian/%s/initrd.gz\nboot\n", base, arch, args, base, arch)
 			s.track.http(hostOf(r.RemoteAddr), arch, "debian")
 			s.track.logf(fmt.Sprintf("%s (%s) fetched the Debian installer script (lab host)", hostOf(r.RemoteAddr), mac))
@@ -149,19 +154,28 @@ func (s *Server) Handler() http.Handler {
 			http.Error(w, err.Error(), http.StatusBadGateway)
 			return
 		}
+		if file == "linux" {
+			s.track.http(hostOf(r.RemoteAddr), arch, "kernel")
+		}
 		s.track.logf(fmt.Sprintf("%s downloading Debian %s %s", hostOf(r.RemoteAddr), arch, file))
 		http.ServeFile(w, r, path)
 	})
-	// The installer fetches its preseed and post-install script through this proxy;
-	// only the pxe process holds the daemon's token.
+	// The installer fetches its preseed and post-install script through this proxy
+	// and reports progress the same way; only the pxe process holds the daemon's token.
 	mux.HandleFunc("GET /labhost/{mac}/{file}", func(w http.ResponseWriter, r *http.Request) {
 		mac, file := r.PathValue("mac"), r.PathValue("file")
-		if s.KubitURL == "" || (file != "preseed" && file != "postinstall") {
+		if s.KubitURL == "" || (file != "preseed" && file != "postinstall" && file != "progress") {
 			http.NotFound(w, r)
 			return
 		}
 		base := fmt.Sprintf("http://%s:%d", s.IP, s.HTTPPort)
-		u := fmt.Sprintf("%s/api/v1/labhost/%s?mac=%s&post=%s/labhost/%s/postinstall", strings.TrimRight(s.KubitURL, "/"), file, url.QueryEscape(mac), base, mac)
+		q := url.Values{"mac": {mac}, "post": {base + "/labhost/" + mac + "/postinstall"}, "ip": {hostOf(r.RemoteAddr)}}
+		for _, k := range []string{"arch", "stage"} {
+			if v := r.URL.Query().Get(k); v != "" {
+				q.Set(k, v)
+			}
+		}
+		u := fmt.Sprintf("%s/api/v1/labhost/%s?%s", strings.TrimRight(s.KubitURL, "/"), file, q.Encode())
 		req, _ := http.NewRequestWithContext(r.Context(), "GET", u, nil)
 		if s.KubitToken != "" {
 			req.Header.Set("Authorization", "Bearer "+s.KubitToken)
@@ -175,7 +189,11 @@ func (s *Server) Handler() http.Handler {
 		w.Header().Set("Content-Type", "text/plain")
 		w.WriteHeader(resp.StatusCode)
 		_, _ = io.Copy(w, resp.Body)
-		s.track.logf(fmt.Sprintf("%s fetched %s for %s", hostOf(r.RemoteAddr), file, mac))
+		if file == "progress" {
+			s.track.logf(fmt.Sprintf("%s (%s) installer: %s", hostOf(r.RemoteAddr), mac, r.URL.Query().Get("stage")))
+		} else {
+			s.track.logf(fmt.Sprintf("%s fetched %s for %s", hostOf(r.RemoteAddr), file, mac))
+		}
 	})
 	mux.HandleFunc("GET /assets/{schematic}/{version}/{file}", func(w http.ResponseWriter, r *http.Request) {
 		schematic, version, file := r.PathValue("schematic"), r.PathValue("version"), r.PathValue("file")

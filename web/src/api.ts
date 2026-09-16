@@ -28,7 +28,7 @@ export interface AlertSettings { minSeverity: 'info' | 'warn' | 'critical'; webh
 export interface OffsiteTarget { type: '' | 'dir' | 's3'; prefix: string; dir: string; endpoint: string; bucket: string; region: string; accessKey: string; secretKey: string; insecure: boolean; pathStyle: boolean; keepBackups: number }
 export interface OffsiteStatus { target: string; enabled: boolean; lastBackup?: string; backups: number; snapshots: number; bytes: number; error?: string }
 export interface Settings { factoryUrl: string; discoverySubnets: string[]; watchIntervalSec: number; pxeStatusUrl: string; defaultMetalLBRange: string; alerts: AlertSettings; offsite: OffsiteTarget; pxeEnrollment: 'open' | 'closed'; amt: OOBConfig }
-export interface PxeStatus { running: boolean; statusUrl: string; error?: string; command?: string; serviceCommand?: string; startedAt?: string; interface?: string; ip?: string; httpPort?: number; talosVersion?: string; schematicId?: string; boots?: { mac: string; ip?: string; arch?: string; firstSeen: string; lastSeen: string; stage: string; count: number }[]; log?: string[] }
+export interface PxeStatus { running: boolean; statusUrl: string; error?: string; command?: string; serviceCommand?: string; startedAt?: string; interface?: string; httpOnly?: boolean; ip?: string; httpPort?: number; talosVersion?: string; schematicId?: string; boots?: { mac: string; ip?: string; arch?: string; firstSeen: string; lastSeen: string; stage: string; count: number }[]; log?: string[] }
 export interface Versions { talos: string[]; talosSource: string; kubernetesMinors: string[]; kubernetesLatest: string; machinery: string; minTalos: string; note: string }
 
 export interface InstallDisk { path?: string; selector?: { minSize?: string; type?: string; model?: string } }
@@ -86,7 +86,9 @@ export interface LabVM { name: string; mac: string; state: string; cpus: number;
 export interface LabCapacity { cpus: number; memMiB: number; diskGiB: number; kvm: boolean; kernel: string; libvirt: string; hostname: string; arch: string; bridge: string; ready: boolean; checkedAt: string }
 export interface LabMetrics { load1: number; cpuPct: number; memUsed: number; memTotal: number; diskUsed: number; diskTotal: number; vmsRunning: number; uptimeSec: number; at: string }
 export interface LabUpdates { count: number; security: number; rebootRequired: boolean; kernelRunning: string; kernelInstalled: string; release: string; unattended: boolean; checkedAt: string }
-export interface LabHost { state: 'installing' | 'setup' | 'ready' | 'updating' | 'error'; error?: string; capacity: LabCapacity; talos?: string; /** null from the daemon while installing; readers use vmsOf */ vms: LabVM[] | null; metrics?: LabMetrics; updates?: LabUpdates; failures?: number; updatedAt: string }
+export interface LabBootLine { kernel: string; initrd: string; cmdline: string }
+export interface LabInstall { stage: 'installer' | 'partitioning' | 'packages' | 'late-done' | 'booted' | string; at: string }
+export interface LabHost { state: 'installing' | 'setup' | 'ready' | 'updating' | 'error'; error?: string; capacity: LabCapacity; talos?: string; /** null from the daemon while installing; readers use vmsOf */ vms: LabVM[] | null; metrics?: LabMetrics; updates?: LabUpdates; install?: LabInstall; network?: 'bridge' | 'routed'; boot?: LabBootLine; failures?: number; updatedAt: string }
 export function vmsOf(lh?: LabHost | null): LabVM[] { return lh?.vms ?? [] }
 /** Samples and events of a lab host are filed under this pseudo-cluster. */
 export function labHostKey(mac: string) { return `labhost:${mac.toLowerCase()}` }
@@ -157,8 +159,9 @@ export const api = {
   oobTest: (mac: string, c?: OOBConfig) => req<{ ok: boolean; error?: string; info?: OOBInfo }>('POST', `/machines/${mac}/oob/test`, c ?? {}),
   power: (mac: string, action: 'on' | 'off' | 'reset' | 'cycle' | 'pxe') => req<OpRef>('POST', `/machines/${mac}/power`, { action }),
   addOOBMachine: (c: OOBConfig) => req<{ machine: NodeRow; info: OOBInfo }>('POST', '/machines/oob', c),
-  labProvision: (mac: string, plan?: { vms?: { count: number; cpus: number; memMiB: number; diskGiB: number; dataGiB?: number; prefix?: string }; cluster?: { name: string; controlPlanes: 1 | 3; skipPlatform?: boolean } }) => req<OpRef>('POST', `/machines/${mac}/labhost`, plan ?? {}),
+  labProvision: (mac: string, plan?: { manual?: boolean; vms?: { count: number; cpus: number; memMiB: number; diskGiB: number; dataGiB?: number; prefix?: string }; cluster?: { name: string; controlPlanes: 1 | 3; skipPlatform?: boolean } }) => req<OpRef>('POST', `/machines/${mac}/labhost`, plan ?? {}),
   labRelease: (mac: string) => req<void>('DELETE', `/machines/${mac}/labhost`),
+  addMachine: (r: { mac: string; ip?: string; hostname?: string; arch?: string }) => req<NodeRow>('POST', '/machines', r),
   labSamples: (mac: string, range: string) => req<Sample[]>('GET', `/machines/${mac}/labhost/samples?range=${range}`),
   labCheck: (mac: string) => req<LabUpdates>('POST', `/machines/${mac}/labhost/check`),
   labUpdate: (mac: string) => req<OpRef>('POST', `/machines/${mac}/labhost/update?ignoreWindow=true`),
