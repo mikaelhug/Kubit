@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"time"
 )
 
 // iPXE binaries come from the project's own build server; pinned by name, cached on disk.
@@ -57,7 +58,11 @@ func (c *Cache) Path(ctx context.Context, url string) (string, error) {
 	if err := os.MkdirAll(c.Dir, 0o700); err != nil {
 		return "", err
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	// The download is shared by every concurrent waiter, so it must not be cancelled
+	// when the first caller (one booting machine) disconnects — detach from its ctx.
+	dctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Minute)
+	defer cancel()
+	req, err := http.NewRequestWithContext(dctx, http.MethodGet, url, nil)
 	if err != nil {
 		return "", err
 	}
@@ -74,12 +79,18 @@ func (c *Cache) Path(ctx context.Context, url string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	if _, err := io.Copy(f, resp.Body); err != nil {
-		f.Close()
+	n, err := io.Copy(f, resp.Body)
+	f.Close()
+	if err != nil {
 		os.Remove(tmp)
 		return "", err
 	}
-	f.Close()
+	// A 200 with a truncated/empty body would otherwise be cached and served to the
+	// whole fleet as a valid kernel/initrd; refuse it.
+	if n == 0 {
+		os.Remove(tmp)
+		return "", fmt.Errorf("%s: empty response body", url)
+	}
 	return path, os.Rename(tmp, path)
 }
 

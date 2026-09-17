@@ -70,6 +70,7 @@ func TestValidateRejects(t *testing.T) {
 		"bad metallb range":  strings.Replace(sampleCluster, "192.168.64.200-192.168.64.220", "192.168.64.220-192.168.64.200", 1),
 		"uppercase hostname": strings.Replace(sampleCluster, "hostname: cp-01", "hostname: CP-01", 1),
 		"talos too old":      strings.Replace(sampleCluster, "spec:\n", "spec:\n  talosVersion: v1.13.10\n", 1),
+		"static without dns": strings.Replace(sampleCluster, `mac: "52:54:00:4b:49:01", installDisk: { path: /dev/vda }`, `mac: "52:54:00:4b:49:01", installDisk: { path: /dev/vda }, network: { addresses: ["192.168.64.2/24"] }`, 1),
 	}
 	for name, doc := range cases {
 		if _, err := config.Parse([]byte(doc)); err == nil {

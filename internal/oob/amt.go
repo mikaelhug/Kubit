@@ -93,8 +93,10 @@ func (a *amt) tracef(format string, args ...any) {
 
 func (a *amt) msgs(ctx context.Context) wsman.Messages {
 	timeout := 15 * time.Second
-	if d, ok := ctx.Deadline(); ok && time.Until(d) < timeout {
-		timeout = time.Until(d)
+	if d, ok := ctx.Deadline(); ok {
+		if rem := time.Until(d); rem > 0 && rem < timeout {
+			timeout = rem
+		}
 	}
 	return wsman.NewMessages(client.Parameters{
 		Target: a.c.Host, Username: a.c.User, Password: a.c.Password,
@@ -190,9 +192,30 @@ func (a *amt) Power(ctx context.Context, act Action) error {
 		return fmt.Errorf("AMT at %s: %w", a.c.Host, describe(err))
 	}
 	if rv := resp.Body.RequestPowerStateChangeResponse.ReturnValue; rv != 0 {
-		return fmt.Errorf("AMT refused the power request (return value %d); the machine may already be in that state", rv)
+		return fmt.Errorf("AMT refused the power request: %s", powerReturn(int(rv)))
 	}
 	return nil
+}
+
+// powerReturn maps a CIM RequestPowerStateChange return value to something an operator
+// can act on, instead of always blaming "already in that state".
+func powerReturn(rv int) string {
+	switch rv {
+	case 1:
+		return "not supported by this firmware"
+	case 2:
+		return "unknown/unspecified error"
+	case 4:
+		return "cannot complete in the current power state (it may already be there)"
+	case 5:
+		return "invalid state transition requested"
+	case 6:
+		return "timeout"
+	case 2049:
+		return "access denied — the AMT account lacks the power-administration realm"
+	default:
+		return fmt.Sprintf("return value %d", rv)
+	}
 }
 
 // forcePXE arms one network boot the way Intel's console does: clear the boot
@@ -266,11 +289,11 @@ func describe(err error) error {
 	s := err.Error()
 	switch {
 	case strings.Contains(s, "401"):
-		return errors.New("authentication failed (check the MEBx user/password)")
+		return fmt.Errorf("authentication failed (check the MEBx user/password): %w", err)
 	case strings.Contains(s, "connection refused"):
-		return errors.New("port closed: AMT is not enabled or network access is off in MEBx")
+		return fmt.Errorf("port closed: AMT is not enabled or network access is off in MEBx: %w", err)
 	case strings.Contains(s, "no route") || strings.Contains(s, "timeout") || strings.Contains(s, "deadline"):
-		return errors.New("no answer: wrong address, or the machine has no standby power")
+		return fmt.Errorf("no answer: wrong address, or the machine has no standby power: %w", err)
 	}
 	return err
 }

@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"strings"
 	"text/template"
+	"time"
 )
 
 // VMSpec sizes one Talos VM.
@@ -59,6 +60,16 @@ type VM struct {
 // MAC gives VM n on lab host h a stable, recognisable address (locally administered).
 func MAC(host, n int) string { return fmt.Sprintf("52:54:00:6b:%02x:%02x", host&0xff, n&0xff) }
 
+// serialConsole is the kernel console for the VM's serial port: arm64's virt machine
+// exposes a PL011 as ttyAMA0, x86 a 16550 as ttyS0. Wrong here means `virsh console`
+// shows nothing on that arch.
+func serialConsole(arch string) string {
+	if arch == "arm64" {
+		return "console=ttyAMA0"
+	}
+	return "console=ttyS0"
+}
+
 var domainTmpl = template.Must(template.New("domain").Parse(`<domain type='{{.Type}}'>
   <name>{{.Name}}</name>
   <memory unit='MiB'>{{.MemMiB}}</memory>
@@ -69,7 +80,7 @@ var domainTmpl = template.Must(template.New("domain").Parse(`<domain type='{{.Ty
     <nvram template='{{.Vars}}'>{{.NVRAM}}</nvram>
 {{if .Kernel}}    <kernel>{{.Kernel}}</kernel>
     <initrd>{{.Initrd}}</initrd>
-    <cmdline>talos.platform=metal console=ttyS0 console=tty0 init_on_alloc=1 slab_nomerge pti=on</cmdline>
+    <cmdline>talos.platform=metal {{.Console}} console=tty0 init_on_alloc=1 slab_nomerge pti=on</cmdline>
 {{else}}    <boot dev='hd'/>
 {{end}}  </os>
   <features><acpi/><apic/></features>
@@ -120,8 +131,8 @@ func DomainXML(s VMSpec) (string, error) {
 	}
 	data := struct {
 		VMSpec
-		QemuArch, Machine, Emulator, Disk, Data, Bridge, Type, CPUMode, Loader, Vars, NVRAM string
-	}{s, qarch, machine, emulator, DiskPath(s.Name), "", bridge, typ, cpu, loader, vars, VMDir + "/" + s.Name + ".nvram"}
+		QemuArch, Machine, Emulator, Disk, Data, Bridge, Type, CPUMode, Loader, Vars, NVRAM, Console string
+	}{s, qarch, machine, emulator, DiskPath(s.Name), "", bridge, typ, cpu, loader, vars, VMDir + "/" + s.Name + ".nvram", serialConsole(s.Arch)}
 	if s.DataGiB > 0 {
 		data.Data = DataPath(s.Name)
 	}
@@ -162,8 +173,7 @@ func (c *Client) Define(ctx context.Context, s VMSpec) error {
 	if _, err := c.Run(ctx, "virsh autostart "+s.Name+" >/dev/null"); err != nil {
 		return err
 	}
-	_, err = c.Run(ctx, "virsh start "+s.Name+" >/dev/null")
-	return err
+	return c.Start(ctx, s.Name)
 }
 
 // RoutedSubnet is Kubit's libvirt network for routed VMs; the host is .1.
@@ -214,33 +224,88 @@ func (c *Client) SetDiskBoot(ctx context.Context, name string) error {
 		return err
 	}
 	xml := kernelBlock.ReplaceAllString(out, "<boot dev='hd'/>")
+	if xml == out {
+		return fmt.Errorf("%s: no Talos kernel block found in the domain XML — cannot switch to disk boot (libvirt XML format may have changed)", name)
+	}
 	if err := c.Put(ctx, VMDir+"/"+name+".xml", []byte(xml), "644"); err != nil {
 		return err
 	}
-	_, err = c.Run(ctx, "virsh define "+VMDir+"/"+name+".xml >/dev/null")
-	return err
+	if _, err := c.Run(ctx, "virsh define "+VMDir+"/"+name+".xml >/dev/null"); err != nil {
+		return err
+	}
+	if after, err := c.Run(ctx, "virsh dumpxml "+name+" --inactive"); err == nil && strings.Contains(after, "<kernel>") {
+		return fmt.Errorf("%s: disk boot did not take — the domain still has a Talos kernel after redefine", name)
+	}
+	return nil
 }
 
 var kernelBlock = regexp.MustCompile(`(?s)<kernel>.*?</kernel>\s*<initrd>.*?</initrd>\s*<cmdline>.*?</cmdline>`)
 
 // SetTalosBoot puts a VM back on the maintenance-mode kernel (re-provisioning).
-func (c *Client) SetTalosBoot(ctx context.Context, name, kernel, initrd string) error {
+func (c *Client) SetTalosBoot(ctx context.Context, name, kernel, initrd, arch string) error {
 	out, err := c.Run(ctx, "virsh dumpxml "+name+" --inactive")
 	if err != nil {
 		return err
 	}
-	block := fmt.Sprintf("<kernel>%s</kernel>\n    <initrd>%s</initrd>\n    <cmdline>talos.platform=metal console=ttyS0 console=tty0</cmdline>", kernel, initrd)
+	block := fmt.Sprintf("<kernel>%s</kernel>\n    <initrd>%s</initrd>\n    <cmdline>talos.platform=metal %s console=tty0</cmdline>", kernel, initrd, serialConsole(arch))
 	xml := strings.Replace(out, "<boot dev='hd'/>", block, 1)
+	if xml == out {
+		return fmt.Errorf("%s: no <boot dev='hd'/> found in the domain XML — cannot switch to Talos boot (libvirt XML format may have changed)", name)
+	}
 	if err := c.Put(ctx, VMDir+"/"+name+".xml", []byte(xml), "644"); err != nil {
 		return err
 	}
-	_, err = c.Run(ctx, "virsh define "+VMDir+"/"+name+".xml >/dev/null")
-	return err
+	if _, err := c.Run(ctx, "virsh define "+VMDir+"/"+name+".xml >/dev/null"); err != nil {
+		return err
+	}
+	if after, err := c.Run(ctx, "virsh dumpxml "+name+" --inactive"); err == nil && !strings.Contains(after, "<kernel>") {
+		return fmt.Errorf("%s: Talos boot did not take — the domain has no kernel after redefine", name)
+	}
+	return nil
 }
 
+// Start starts a VM and confirms it is running. Attaching the first tap to the LAN
+// bridge resets the host's own network for a moment, which can kill the SSH
+// connection carrying this very command — the start still happens on the host. A
+// dropped control connection is therefore not a failure: reconnect and let the
+// domain's state decide. A real refusal (out of memory, bad XML) surfaces as before.
 func (c *Client) Start(ctx context.Context, name string) error {
-	_, err := c.Run(ctx, "virsh start "+name+" >/dev/null || virsh domstate "+name+" | grep -q running")
-	return err
+	_, err := c.Run(ctx, "virsh start "+name+" >/dev/null")
+	if err == nil {
+		return nil
+	}
+	if !connDropped(err) {
+		// Not a network blip: it may already be running (idempotent), else it failed.
+		if st, e := c.DomState(ctx, name); e == nil && st == "running" {
+			return nil
+		}
+		return err
+	}
+	if err := c.reconnect(ctx, 45*time.Second); err != nil {
+		return fmt.Errorf("starting %s reset the host's network and it did not come back: %w", name, err)
+	}
+	deadline := time.Now().Add(30 * time.Second)
+	for {
+		if st, e := c.DomState(ctx, name); e == nil && st == "running" {
+			return nil
+		} else if e != nil && connDropped(e) {
+			_ = c.reconnect(ctx, 45*time.Second)
+		}
+		if time.Now().After(deadline) {
+			return fmt.Errorf("%s did not reach running after the host's network reset", name)
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(2 * time.Second):
+		}
+	}
+}
+
+// DomState is libvirt's word for a VM: running | shut off | paused | …
+func (c *Client) DomState(ctx context.Context, name string) (string, error) {
+	out, err := c.Run(ctx, "virsh domstate "+name)
+	return strings.TrimSpace(out), err
 }
 
 func (c *Client) Stop(ctx context.Context, name string, force bool) error {
@@ -254,7 +319,11 @@ func (c *Client) Stop(ctx context.Context, name string, force bool) error {
 
 // Delete destroys, undefines and removes the disk.
 func (c *Client) Delete(ctx context.Context, name string) error {
-	_, err := c.Run(ctx, fmt.Sprintf("virsh destroy %s >/dev/null 2>&1; virsh undefine %s --nvram >/dev/null 2>&1 || virsh undefine %s >/dev/null 2>&1; rm -f %s %s %s/%s.xml %s/%s.nvram", name, name, name, DiskPath(name), DataPath(name), VMDir, name, VMDir, name))
+	// destroy/undefine may fail because the domain is already gone (idempotent cleanup),
+	// so the exit status can't be trusted directly — instead verify afterwards that the
+	// domain no longer exists, which catches a genuine undefine failure (ghost domain)
+	// without failing on an already-absent one.
+	_, err := c.Run(ctx, fmt.Sprintf("virsh destroy %s >/dev/null 2>&1; virsh undefine %s --nvram >/dev/null 2>&1 || virsh undefine %s >/dev/null 2>&1; rm -f %s %s %s/%s.xml %s/%s.nvram; if virsh dominfo %s >/dev/null 2>&1; then echo 'domain still defined after undefine' >&2; exit 1; fi", name, name, name, DiskPath(name), DataPath(name), VMDir, name, VMDir, name, name))
 	return err
 }
 

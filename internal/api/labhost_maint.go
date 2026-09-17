@@ -52,7 +52,7 @@ func (s *Server) handleLabCheck(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	host.LabHost.Updates = &u
-	_ = s.store.SetLabHost(ctx, host.MAC, host.LabHost)
+	_ = s.store.UpdateLabHost(ctx, host.MAC, func(lh *store.LabHost) { lh.Updates = &u })
 	writeJSON(w, http.StatusOK, u)
 }
 
@@ -133,15 +133,20 @@ const (
 func (s *Server) labMaintain(ctx context.Context, host *store.Machine, upgrade bool, affected []string, sink clusterSink) error {
 	mac := host.MAC
 	// The watcher's tick would count the reboot as failures; park it until done.
-	setState := func(state string) {
-		if h, err := s.store.GetMachine(ctx, mac); err == nil && h.LabHost != nil {
-			h.LabHost.State = state
-			_ = s.store.SetLabHost(ctx, mac, h.LabHost)
+	// Merge only State so a concurrent watcher tick cannot clobber it, and use a
+	// detached context so the "ready" restore still runs if the op was cancelled.
+	setState := func(c context.Context, state string) {
+		_ = s.store.UpdateLabHost(c, mac, func(lh *store.LabHost) { lh.State = state })
+		if h, err := s.store.GetMachine(c, mac); err == nil && h.LabHost != nil {
 			host = h
 		}
 	}
-	setState("updating")
-	defer setState("ready")
+	setState(ctx, "updating")
+	defer func() {
+		rctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer cancel()
+		setState(rctx, "ready")
+	}()
 
 	lc, err := s.manager.LabDial(ctx, host)
 	if err != nil {
@@ -188,7 +193,8 @@ func (s *Server) labMaintain(ctx context.Context, host *store.Machine, upgrade b
 	if upgrade && !u.NeedsReboot() {
 		logf("reboot", cluster.Done, "no reboot needed; VMs untouched")
 		step("reboot", cluster.StepSkipped)
-		_ = s.store.SetLabHost(ctx, mac, host.LabHost)
+		updates := host.LabHost.Updates
+		_ = s.store.UpdateLabHost(ctx, mac, func(lh *store.LabHost) { lh.Updates = updates })
 		return nil
 	}
 
@@ -230,12 +236,23 @@ func (s *Server) labMaintain(ctx context.Context, host *store.Machine, upgrade b
 			_ = lc.Start(ctx, v.Name)
 		}
 	}
-	host.LabHost.VMs, _ = lc.List(ctx)
-	if m, err := lc.Metrics(ctx); err == nil {
-		host.LabHost.Metrics = &m
+	vms, listErr := lc.List(ctx)
+	m, metricsErr := lc.Metrics(ctx)
+	_ = s.store.UpdateLabHost(ctx, mac, func(lh *store.LabHost) {
+		if listErr == nil {
+			lh.VMs = vms
+		}
+		if metricsErr == nil {
+			lh.Metrics = &m
+		}
+	})
+	nowRunning := 0
+	if metricsErr == nil {
+		nowRunning = m.VMsRunning
+	} else if host.LabHost.Metrics != nil {
+		nowRunning = host.LabHost.Metrics.VMsRunning
 	}
-	_ = s.store.SetLabHost(ctx, mac, host.LabHost)
-	logf("resume", cluster.Done, "%d VMs running", host.LabHost.Metrics.VMsRunning)
+	logf("resume", cluster.Done, "%d VMs running", nowRunning)
 	step("resume", cluster.StepDone)
 
 	if len(affected) == 0 {

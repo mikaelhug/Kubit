@@ -417,6 +417,9 @@ export function ReviewStep({ draft, setCluster, patch, onCreate, busy }: { draft
   }, [key]) // eslint-disable-line
   const applyYaml = () => api.validate(yaml).then((v) => { setCluster(() => v.cluster); toast('Declaration updated from YAML', 'good') }).catch((e) => setLintErr(e.message))
   const errors = draft.warnings.filter((w) => w.level !== 'info')
+  // Findings that guarantee an unusable or failing cluster block Create; the rest stay advisory.
+  const blocking = ['no-disk', 'no-schedulable-nodes', 'control-plane-undersized']
+  const blockers = draft.warnings.filter((w) => blocking.includes(w.code))
   return (
     <>
       <Tabs active={tab} onSelect={(t) => setTab(t as any)} tabs={[{ id: 'summary', label: 'Summary' }, { id: 'yaml', label: 'cluster.yaml' }]} />
@@ -461,8 +464,8 @@ export function ReviewStep({ draft, setCluster, patch, onCreate, busy }: { draft
         </>
       )}
       <div class="flex items-center gap-3 justify-end">
-        {errors.length > 0 && <span class="text-[12px] text-warn">{errors.length} warning{errors.length === 1 ? '' : 's'} — creating anyway is allowed</span>}
-        <button class="btn btn-primary" disabled={busy || dirty || !yaml || !!lintErr} title={dirty ? 'Validate the edited YAML first' : ''} onClick={() => onCreate(yaml)}>{busy ? 'Starting' : `Create ${c.metadata.name}`}</button>
+        {blockers.length > 0 ? <span class="text-[12px] text-bad">{blockers.length} issue{blockers.length === 1 ? '' : 's'} must be fixed before creating</span> : errors.length > 0 && <span class="text-[12px] text-warn">{errors.length} warning{errors.length === 1 ? '' : 's'} — creating anyway is allowed</span>}
+        <button class="btn btn-primary" disabled={busy || dirty || !yaml || !!lintErr || blockers.length > 0} title={blockers.length > 0 ? blockers[0].message : dirty ? 'Validate the edited YAML first' : ''} onClick={() => onCreate(yaml)}>{busy ? 'Starting' : `Create ${c.metadata.name}`}</button>
       </div>
     </>
   )

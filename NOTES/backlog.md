@@ -82,6 +82,63 @@
   no address for bridged VMs (libvirt has none; the machine row has it) — show the
   row's IP there. Resize applies on next boot only; no live migration; no multi-host
   scheduling.
+- Lab VM start on a bridge (EliteDesk, 2026-09-17): `virsh start` for the first VM
+  enslaves its tap to `br0`, which briefly resets the host's uplink; because the
+  host's management IP lives on `br0`, the in-flight SSH command dies with an SSH
+  `ExitMissingError` ("exited without exit status") although the VM does start. The
+  labhost client now re-dials on a dropped control connection and `Start` reconnects
+  and confirms the domain reached `running` instead of failing the provision
+  (`internal/labhost`). Open: if the reset also changes the host's DHCP lease/address
+  the reconnect to the old IP fails — re-discover the host by MAC then. Routed VM
+  networking (separate `kubitbr0`, host IP untouched) avoids the blip entirely and is
+  the alternative if bridged proves too flaky.
+- Provisioning deep review (2026-09-17): a 5-reviewer adversarial pass over the whole
+  chain fixed S1-S3 issues — the S1 re-image (a ready lab host kept `provision=1` and
+  `pxeDecision` served Debian; now cleared on setup, `labBoot` gated to `installing`,
+  and the ready->local branch moved ahead of the arm flag), the disk-boot boot-loop
+  (`SetDiskBoot`/`SetTalosBoot` now assert the XML changed and are set BEFORE the apply
+  reboot, failure fatal), `WaitForReboot` fast-fails a maintenance reboot, a preflight
+  control-plane RAM floor (2 GiB), PXE fail-closed on a daemon outage, download
+  integrity + detached ctx, and the lab-host state-race root cause (`store.UpdateLabHost`
+  per-host merge used by the watcher/maintenance/resize/delete; per-host op locks; a
+  restart reconciler; partial-VM-leak reap; fresh-read overcommit). Deferred (lower
+  severity, some need hardware/Talos verification):
+  - resume can't find a DHCP node whose lease moved between a failed run and the retry
+    (`create.go pendingInstall`) — re-discover by MAC like `labAddVMs` does.
+  - VLAN branch emits no explicit parent-link `up` (`generate.go`) — verify whether the
+    target Talos release brings a VLAN parent up implicitly before adding a LinkConfig.
+  - NetworkStep does not validate per-node static address/gateway/VLAN inline; a bad CIDR
+    is only caught at Create (`web/src/pages/create/steps.tsx`).
+  - PXE tracker attributes an HTTP fetch to the most-recent DHCP client without an IP
+    (telemetry only under concurrent boots) — attribute by MAC via the asset URL.
+  - `labhost.MAC(host,n)` caps host and index at 255; timeouts are process-global not
+    per-cluster; the labhost SSH host key is not pinned after first contact.
+- Lab cluster role assignment was wrong (EliteDesk, 2026-09-17): `config.Design`
+  picks the *smallest* machine as control plane (right for a mixed bare-metal fleet),
+  but `labDesign` then took the first N of that order, so the control-plane role
+  landed on a 1 GiB worker VM instead of the 2 GiB VM the plan sized for it — etcd
+  bootstrapped but 0/3 nodes ever went Ready and the API server died. `labDesign` now
+  assigns roles by the VM's planned role (matched by MAC) and points the endpoint at a
+  control-plane node (`internal/api/labhost.go`, regression test
+  `TestLabDesignControlPlaneIsThePlannedVM`). Open: no path to re-run VMs+cluster on an
+  already-installed lab host without re-PXE — a fix iteration reinstalls Debian.
+- Lab-host provision is now preflighted and self-cleaning (2026-09-17): before it
+  arms anything it refuses when the PXE server is down, on a different /24 than the
+  machine's AMT (`pxe-segment`), or when AMT will not answer (`amt-down`); on any
+  failure or cancel the operation releases the host (VMs deleted, record and arm
+  cleared, machine back to `configured`) instead of leaving a dangling `error`
+  record, and the reason shows in Activity. `internal/api/labhost.go`. Residual: the
+  pxe process -> daemon link (`--kubit-url` for `/pxe/decide`) is not preflighted; a
+  wrong URL makes the proxy serve Talos to everything. The old failures were timing —
+  the PXE server started after the arm / was restarted mid-provision (wiping its boot
+  tracker), or the op was cancelled before the box's ~90s-late boot, so it booted
+  un-armed and got Talos. Keep `kubit pxe` up (ideally the root service) across a run.
+- Talos boot assets on a lab host could be silently truncated: `EnsureTalosBoot`'s
+  command ended in `ls -l`, so a failed/partial `curl` (initramfs came back 0 bytes on
+  the EliteDesk after a transient) still returned success, and the VMs booted nothing
+  and hung "booting". Now each file is fetched to `.part`, renamed on success, and an
+  empty result is a hard error (`internal/labhost/client.go`); a stale 0-byte file
+  self-heals on the next setup because `-s` re-triggers the download.
 - Discovery and AMT: a scan of the LAN also finds the engine's own lease of a known
   machine; the row now keeps its OS address and only `oob.host` moves. Still open:
   `discoverAMT` rewrites the machine's sealed AMT credentials with the settings'

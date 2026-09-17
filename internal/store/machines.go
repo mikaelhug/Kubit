@@ -322,6 +322,33 @@ type InstallProgress struct {
 
 // SetLabHost stores the lab-host state (nil clears the role).
 func (s *Store) SetLabHost(ctx context.Context, mac string, l *LabHost) error {
+	lk := s.labLock(strings.ToLower(mac))
+	lk.Lock()
+	defer lk.Unlock()
+	return s.setLabHostLocked(ctx, mac, l)
+}
+
+// UpdateLabHost reads the machine's lab-host record, applies mutate and writes it back
+// under the per-host lock, so a writer merges its change into the current record
+// instead of clobbering the whole blob (which loses a concurrent writer's fields).
+// mutate is not called when the machine has no lab-host record.
+func (s *Store) UpdateLabHost(ctx context.Context, mac string, mutate func(*LabHost)) error {
+	mac = strings.ToLower(mac)
+	lk := s.labLock(mac)
+	lk.Lock()
+	defer lk.Unlock()
+	m, err := s.GetMachine(ctx, mac)
+	if err != nil {
+		return err
+	}
+	if m.LabHost == nil {
+		return nil
+	}
+	mutate(m.LabHost)
+	return s.setLabHostLocked(ctx, mac, m.LabHost)
+}
+
+func (s *Store) setLabHostLocked(ctx context.Context, mac string, l *LabHost) error {
 	raw := ""
 	if l != nil {
 		if l.VMs == nil {

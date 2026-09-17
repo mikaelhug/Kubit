@@ -163,14 +163,42 @@ func (s *Server) handleLabProvision(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusConflict, map[string]string{"error": "The PXE server is not running, so the machine would find nothing to boot. Start it in a terminal (it can stay open): " + cmd, "code": "pxe-down", "command": cmd})
 		return
 	}
+	// Preflight the links before anything is armed: a PXE server on another segment
+	// or an AMT that will not answer means the network boot never reaches the machine,
+	// and a half-armed provision is worse than none.
+	if !plan.Manual {
+		if st, err := s.pxeStatus(r.Context()); err == nil && st.IP != "" && differentSubnet(st.IP, c.Host) {
+			writeJSON(w, http.StatusConflict, map[string]string{"error": fmt.Sprintf("The PXE server is on %s, not on %s's segment — the machine's network boot request cannot reach it. Run kubit pxe on the interface facing the machine.", st.IP, c.Host), "code": "pxe-segment"})
+			return
+		}
+		mgr, err := oob.Open(*c)
+		if err != nil {
+			writeErr(w, err)
+			return
+		}
+		if err := probeAMT(r.Context(), mgr); err != nil {
+			writeJSON(w, http.StatusConflict, map[string]string{"error": fmt.Sprintf("Intel AMT at %s is not answering (%v). Check the machine has standby power and the AMT credentials are right, then try again.", c.Host, err), "code": "amt-down"})
+			return
+		}
+	}
 	kind := "labhost.provision"
 	if plan.Cluster != nil {
 		kind = "labhost.cluster"
 	}
-	id, err := s.runOperation("", kind, map[string]any{"mac": mac, "plan": plan}, func(ctx contextT, sink clusterSink) (result any, err error) {
+	id, err := s.runOperation("labhost:"+mac, kind, map[string]any{"mac": mac, "plan": plan}, func(ctx contextT, sink clusterSink) (result any, err error) {
 		defer func() {
-			if err != nil {
-				_ = s.store.SetMachineProvision(context.Background(), mac, false)
+			if err == nil {
+				return
+			}
+			// The provision did not finish: surface why and release the host so it is
+			// not left half-armed with a dangling lab-host record.
+			sink(clusterEvent{Time: time.Now(), Kind: "log", Level: cluster.Warn, Message: "provision failed, releasing the host: " + err.Error()})
+			rctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
+			if host, e := s.store.GetMachine(rctx, mac); e == nil {
+				s.releaseLabHost(rctx, host)
+			} else {
+				_ = s.store.SetMachineProvision(rctx, mac, false)
 			}
 		}()
 		armWhat := "Arm a Debian network boot and reset via AMT"
@@ -230,11 +258,9 @@ func (s *Server) handleLabProvision(w http.ResponseWriter, r *http.Request) {
 
 		lc, err := s.labWaitInstall(ctx, m, plan.Manual, sink)
 		if err != nil {
-			msg := err.Error()
 			if errors.Is(err, context.Canceled) {
-				msg = "install cancelled; Make lab host again to retry"
+				err = fmt.Errorf("install cancelled: %w", err)
 			}
-			_ = s.store.SetLabHost(context.Background(), mac, &store.LabHost{State: "error", Error: msg})
 			return nil, err
 		}
 		defer lc.Close()
@@ -247,10 +273,13 @@ func (s *Server) handleLabProvision(w http.ResponseWriter, r *http.Request) {
 		}
 		lh, err := s.labSetup(ctx, lc, m, sink)
 		if err != nil {
-			_ = s.store.SetLabHost(ctx, mac, &store.LabHost{State: "error", Error: err.Error(), Index: lh.Index})
 			return nil, err
 		}
 		_ = s.store.UpsertNode(ctx, store.NodeRow{MAC: mac, IP: m.IP, Source: "labhost", State: "labhost", Hostname: lh.Capacity.Hostname, Arch: lh.Capacity.Arch})
+		// The one-shot network-boot arm is consumed: a ready lab host must never be
+		// handed the Debian installer again, or a stray network boot would re-image
+		// the running host and its VMs.
+		_ = s.store.SetMachineProvision(ctx, mac, false)
 		_ = s.store.Audit(ctx, "", "labhost.provision", mac)
 		sink(clusterEvent{Time: time.Now(), Kind: "log", Level: "done", Step: "setup", Message: fmt.Sprintf("lab host ready: %d CPUs, %d MiB RAM, %d GiB free for VMs", lh.Capacity.CPUs, lh.Capacity.MemMiB, lh.Capacity.DiskGiB)})
 		sink(clusterEvent{Time: time.Now(), Kind: "step", Step: "setup", Status: cluster.StepDone})
@@ -273,7 +302,17 @@ func (s *Server) handleLabProvision(w http.ResponseWriter, r *http.Request) {
 		// The cluster is its own operation (per-cluster lock, its own steps); this one
 		// ends once it is started.
 		sink(clusterEvent{Time: time.Now(), Kind: "step", Step: "cluster", Status: cluster.StepRunning})
-		c, err := s.labDesign(ctx, plan.Cluster.Name, macs, plan.Cluster.ControlPlanes)
+		// Which VMs were created as control planes: the lab plan sizes them on purpose
+		// (RAM >= minControlPlaneMiB), so the role must follow the plan, not Design's
+		// smallest-machine heuristic.
+		cpMACs := map[string]bool{}
+		sizes := plan.VMs.sizes()
+		for i, mac := range macs {
+			if i < len(sizes) && sizes[i].Role == "controlplane" {
+				cpMACs[strings.ToLower(mac)] = true
+			}
+		}
+		c, err := s.labDesign(ctx, plan.Cluster.Name, macs, cpMACs)
 		if err != nil {
 			return nil, err
 		}
@@ -303,7 +342,7 @@ func (s *Server) handleLabProvision(w http.ResponseWriter, r *http.Request) {
 
 // labDesign proposes a cluster for the lab VMs with the requested control-plane count
 // and hostnames <name>-cp-NN / <name>-worker-NN.
-func (s *Server) labDesign(ctx contextT, name string, macs []string, controlPlanes int) (*config.Cluster, error) {
+func (s *Server) labDesign(ctx contextT, name string, macs []string, cpMACs map[string]bool) (*config.Cluster, error) {
 	var ms []config.Machine
 	for _, mac := range macs {
 		m, err := s.store.GetMachine(ctx, mac)
@@ -321,12 +360,18 @@ func (s *Server) labDesign(ctx contextT, name string, macs []string, controlPlan
 	}
 	v, _ := s.store.GetSettings(ctx)
 	c, _ := config.Design(name, ms, config.DesignOptions{MetalLBRange: v.DefaultMetalLB, DataDisks: true})
+	// Roles follow the plan (the control plane was sized larger on purpose), matched by
+	// MAC, not Design's ordering; the endpoint is a control-plane node, not Nodes[0].
 	cps, workers := 0, 0
+	var cpIP string
 	for i := range c.Spec.Nodes {
 		n := &c.Spec.Nodes[i]
-		if i < controlPlanes {
+		if cpMACs[strings.ToLower(n.MAC)] {
 			cps++
 			n.Pool, n.Role, n.Hostname = "controlplane", config.RoleControlPlane, fmt.Sprintf("%s-cp-%02d", name, cps)
+			if cpIP == "" {
+				cpIP = n.IP
+			}
 		} else {
 			workers++
 			n.Pool, n.Role, n.Hostname = "worker", config.RoleWorker, fmt.Sprintf("%s-worker-%02d", name, workers)
@@ -334,9 +379,9 @@ func (s *Server) labDesign(ctx contextT, name string, macs []string, controlPlan
 	}
 	sched := true
 	c.Spec.ControlPlane.AllowScheduling = &sched
-	if controlPlanes == 1 {
+	if cps == 1 {
 		c.Spec.ControlPlane.VIP = ""
-		c.Spec.ControlPlane.Endpoint = "https://" + c.Spec.Nodes[0].IP + ":6443"
+		c.Spec.ControlPlane.Endpoint = "https://" + cpIP + ":6443"
 	}
 	// Round-trip through Parse so every default (endpoint, pools, versions) is filled
 	// exactly as for a declaration written by hand.
@@ -536,11 +581,11 @@ func (s *Server) handleLabAddVMs(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	lh := host.LabHost
-	if need := req.totalMem(); need > lh.Capacity.MemMiB-2048-usedMem(lh) {
-		http.Error(w, fmt.Sprintf("%d MiB requested, %d MiB free (host keeps 2 GiB)", need, lh.Capacity.MemMiB-2048-usedMem(lh)), http.StatusUnprocessableEntity)
+	if need := req.totalMem(); need > lh.Capacity.MemMiB-hostReserveMiB-usedMem(lh) {
+		http.Error(w, fmt.Sprintf("%d MiB requested, %d MiB free (host keeps 2 GiB)", need, lh.Capacity.MemMiB-hostReserveMiB-usedMem(lh)), http.StatusUnprocessableEntity)
 		return
 	}
-	id, err := s.runOperation("", "labhost.vms", req, func(ctx contextT, sink clusterSink) (any, error) {
+	id, err := s.runOperation("labhost:"+mac, "labhost.vms", req, func(ctx contextT, sink clusterSink) (any, error) {
 		return s.labAddVMs(ctx, host, req, sink)
 	})
 	if err != nil {
@@ -552,12 +597,18 @@ func (s *Server) handleLabAddVMs(w http.ResponseWriter, r *http.Request) {
 
 // labAddVMs defines, starts and waits for the VMs; returns the MACs of the new VMs.
 func (s *Server) labAddVMs(ctx contextT, host *store.Machine, req addVMsRequest, sink clusterSink) ([]string, error) {
-	lh := host.LabHost
 	mac := host.MAC
+	// Re-read under the operation lock so the capacity check sees VMs added by any add
+	// that ran between this request being admitted and now (two concurrent adds must
+	// not both pass against the same pre-state).
+	if fresh, err := s.store.GetMachine(ctx, mac); err == nil && fresh.LabHost != nil {
+		host = fresh
+	}
+	lh := host.LabHost
 	// Overcommitted memory does not fail loudly: the guests swap, kube-scheduler
 	// dies, nodes stay NotReady. Refuse here so the plan path is held to the same
 	// reserve as the dialog.
-	if need, free := req.totalMem(), lh.Capacity.MemMiB-2048-usedMem(lh); need > free {
+	if need, free := req.totalMem(), lh.Capacity.MemMiB-hostReserveMiB-usedMem(lh); need > free {
 		return nil, fmt.Errorf("the VMs need %d MiB, but the host has %d MiB free for VMs (%d MiB total, 2 GiB kept for the host); the host is installed — add smaller or fewer VMs from its Lab host tab", need, free, lh.Capacity.MemMiB)
 	}
 	lc, err := s.manager.LabDial(ctx, host)
@@ -583,6 +634,12 @@ func (s *Server) labAddVMs(ctx contextT, host *store.Machine, req addVMsRequest,
 		}
 		spec := labhost.VMSpec{Name: name, MAC: labhost.MAC(lh.Index, next), CPUs: size.CPUs, MemMiB: size.MemMiB, DiskGiB: size.DiskGiB, DataGiB: size.DataGiB, Kernel: lh.Kernel, Initrd: lh.Initrd, Arch: lh.Capacity.Arch, Bridge: lh.Capacity.Bridge, Routed: lh.Network == "routed", TCG: !lh.Capacity.KVM}
 		if err := lc.Define(ctx, spec); err != nil {
+			// Reap what this add already started so a mid-loop failure does not leave
+			// orphan domains and machine rows the release path cannot see.
+			for i, n := range created {
+				_ = lc.Delete(ctx, n)
+				_ = s.store.DeleteMachine(ctx, createdMACs[i])
+			}
 			return nil, fmt.Errorf("%s: %w", name, err)
 		}
 		hw, _ := json.Marshal(map[string]any{"manufacturer": "Kubit lab", "product": "KVM VM on " + labHostname(host), "virtual": true, "cpus": size.CPUs, "memoryBytes": int64(size.MemMiB) << 20, "disks": []any{}, "links": []any{}})
@@ -594,8 +651,10 @@ func (s *Server) labAddVMs(ctx contextT, host *store.Machine, req addVMsRequest,
 		sink(clusterEvent{Time: time.Now(), Kind: "log", Level: "info", Step: "define", Node: name, Message: fmt.Sprintf("defined and started: %s, %d vCPU, %d MiB, %d GiB%s, %s", size.Role, size.CPUs, size.MemMiB, size.DiskGiB, map[bool]string{true: fmt.Sprintf(" + %d GiB data", size.DataGiB), false: ""}[size.DataGiB > 0], spec.MAC)})
 		next++
 	}
-	lh.VMs, _ = lc.List(ctx)
-	_ = s.store.SetLabHost(ctx, mac, lh)
+	if vms, err := lc.List(ctx); err == nil {
+		lh.VMs = vms
+	}
+	_ = s.store.UpdateLabHost(ctx, mac, func(l *store.LabHost) { l.VMs = lh.VMs })
 	// Talos in maintenance mode appears within a minute or two. libvirt knows the
 	// address on the routed network (its own leases); on the bridge the LAN's DHCP
 	// does, so the discovery subnets are swept and the VMs matched by MAC.
@@ -646,7 +705,7 @@ func (s *Server) labAddVMs(ctx contextT, host *store.Machine, req addVMsRequest,
 			sink(clusterEvent{Time: time.Now(), Kind: "log", Level: "info", Step: "vmboot", Node: vm.Name, Message: "Talos maintenance mode at " + vm.IP})
 		}
 		lh.VMs = vms
-		_ = s.store.SetLabHost(ctx, mac, lh)
+		_ = s.store.UpdateLabHost(ctx, mac, func(l *store.LabHost) { l.VMs = vms })
 	}
 	if len(pending) > 0 {
 		names := make([]string, 0, len(pending))
@@ -667,6 +726,41 @@ func usedMem(lh *store.LabHost) int {
 		n += vm.MemMiB
 	}
 	return n
+}
+
+// hostReserveMiB is RAM kept for the lab host itself, never handed to VMs.
+const hostReserveMiB = 2048
+
+// reconcileLabHosts fixes lab-host records whose operation a daemon restart killed: an
+// install that was mid-flight is released (nothing will resume it, and the record would
+// otherwise show "Installing…" forever), and a maintenance run's "updating" is returned
+// to "ready" for the watcher to re-verify. Called once at startup.
+func (s *Server) reconcileLabHosts(ctx context.Context) {
+	rows, err := s.store.ListNodes(ctx, "")
+	if err != nil {
+		return
+	}
+	for i := range rows {
+		host := &rows[i]
+		if host.LabHost == nil {
+			continue
+		}
+		switch host.LabHost.State {
+		case "installing", "setup":
+			s.releaseLabHost(ctx, host)
+		case "updating":
+			_ = s.store.UpdateLabHost(ctx, host.MAC, func(lh *store.LabHost) { lh.State = "ready" })
+		}
+	}
+}
+
+// refreshLabVMs re-lists the host's VMs and merges them into the record. A List error
+// leaves the previous list intact rather than wiping it (which would break release
+// cleanup and memory accounting).
+func (s *Server) refreshLabVMs(ctx context.Context, lc *labhost.Client, mac string) {
+	if vms, err := lc.List(ctx); err == nil {
+		_ = s.store.UpdateLabHost(ctx, mac, func(lh *store.LabHost) { lh.VMs = vms })
+	}
 }
 
 func nameTaken(vms []labhost.VM, name string) bool {
@@ -712,7 +806,7 @@ func (s *Server) handleLabVMAction(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "not a lab host", http.StatusNotFound)
 		return
 	}
-	id, err := s.runOperation("", "labhost.vm."+action, map[string]string{"host": mac, "vm": name}, func(ctx contextT, sink clusterSink) (any, error) {
+	id, err := s.runOperation("labhost:"+mac, "labhost.vm."+action, map[string]string{"host": mac, "vm": name}, func(ctx contextT, sink clusterSink) (any, error) {
 		lc, err := s.manager.LabDial(ctx, host)
 		if err != nil {
 			return nil, err
@@ -729,9 +823,17 @@ func (s *Server) handleLabVMAction(w http.ResponseWriter, r *http.Request) {
 			if vm := s.vmRow(ctx, host, name); vm != nil && vm.Cluster != "" {
 				return nil, fmt.Errorf("%s is a member of %s; remove it from the cluster first", name, vm.Cluster)
 			}
-			if err = lc.SetTalosBoot(ctx, name, host.LabHost.Kernel, host.LabHost.Initrd); err == nil {
-				_ = lc.Stop(ctx, name, true)
-				err = lc.Start(ctx, name)
+			if err = lc.SetTalosBoot(ctx, name, host.LabHost.Kernel, host.LabHost.Initrd, host.LabHost.Capacity.Arch); err != nil {
+				break
+			}
+			if err = lc.Stop(ctx, name, true); err != nil {
+				break
+			}
+			if err = lc.Start(ctx, name); err != nil {
+				break
+			}
+			if vm := s.vmRow(ctx, host, name); vm != nil && vm.IP != "" {
+				_ = s.store.SetNodeState(ctx, vm.IP, "booting")
 			}
 		default:
 			return nil, fmt.Errorf("unknown action %q", action)
@@ -739,8 +841,7 @@ func (s *Server) handleLabVMAction(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			return nil, err
 		}
-		host.LabHost.VMs, _ = lc.List(ctx)
-		_ = s.store.SetLabHost(ctx, mac, host.LabHost)
+		s.refreshLabVMs(ctx, lc, mac)
 		return nil, nil
 	})
 	if err != nil {
@@ -768,12 +869,21 @@ func (s *Server) handleLabVMResize(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer lc.Close()
+	curMem := 0
+	for _, v := range host.LabHost.VMs {
+		if v.Name == name {
+			curMem = v.MemMiB
+		}
+	}
+	if newUsed := usedMem(host.LabHost) - curMem + req.MemMiB; newUsed > host.LabHost.Capacity.MemMiB-hostReserveMiB {
+		http.Error(w, fmt.Sprintf("resizing %s to %d MiB would overcommit the host (%d MiB total, 2 GiB reserved)", name, req.MemMiB, host.LabHost.Capacity.MemMiB), http.StatusUnprocessableEntity)
+		return
+	}
 	if err := lc.Resize(r.Context(), name, req.CPUs, req.MemMiB); err != nil {
 		writeErr(w, err)
 		return
 	}
-	host.LabHost.VMs, _ = lc.List(r.Context())
-	_ = s.store.SetLabHost(r.Context(), mac, host.LabHost)
+	s.refreshLabVMs(r.Context(), lc, mac)
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -801,8 +911,7 @@ func (s *Server) handleLabVMDelete(w http.ResponseWriter, r *http.Request) {
 	if vm := s.vmRow(r.Context(), host, name); vm != nil {
 		_ = s.store.DeleteMachine(r.Context(), vm.MAC)
 	}
-	host.LabHost.VMs, _ = lc.List(r.Context())
-	_ = s.store.SetLabHost(r.Context(), mac, host.LabHost)
+	s.refreshLabVMs(r.Context(), lc, mac)
 	_ = s.store.Audit(r.Context(), "", "labhost.vm.delete", mac+" "+name)
 	w.WriteHeader(http.StatusNoContent)
 }
@@ -821,29 +930,71 @@ func (s *Server) handleLabRelease(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	// A host that never finished installing has nothing to clean up; do not hang the
-	// request on an SSH timeout for it.
-	if host.LabHost.State == "ready" || len(host.LabHost.VMs) > 0 {
-		ctx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
-		defer cancel()
-		if lc, err := s.manager.LabDial(ctx, host); err == nil {
-			for _, v := range host.LabHost.VMs {
-				_ = lc.Delete(ctx, v.Name)
-				_ = s.store.DeleteMachine(ctx, v.MAC)
-			}
-			lc.Close()
-		}
-	}
-	_ = s.store.SetLabHost(r.Context(), mac, nil)
-	_ = s.store.DeleteLabHostHistory(r.Context(), mac)
-	_ = s.store.SetNodeState(r.Context(), host.IP, "configured")
+	s.releaseLabHost(r.Context(), host)
 	_ = s.store.Audit(r.Context(), "", "labhost.release", mac)
 	w.WriteHeader(http.StatusNoContent)
 }
 
+// releaseLabHost forgets a machine's lab-host role: deletes its VMs (best effort),
+// drops the record and its history, clears the network-boot arm, and marks the
+// machine configured again. Used by the Release button and by a failed provision.
+func (s *Server) releaseLabHost(ctx context.Context, host *store.Machine) {
+	if host.LabHost != nil && (host.LabHost.State == "ready" || len(host.LabHost.VMs) > 0) {
+		// A host that never finished installing has nothing to clean up; do not hang
+		// on an SSH timeout for it.
+		dctx, cancel := context.WithTimeout(ctx, 20*time.Second)
+		if lc, err := s.manager.LabDial(dctx, host); err == nil {
+			for _, v := range host.LabHost.VMs {
+				_ = lc.Delete(dctx, v.Name)
+				_ = s.store.DeleteMachine(dctx, v.MAC)
+			}
+			lc.Close()
+		}
+		cancel()
+	}
+	_ = s.store.SetLabHost(ctx, host.MAC, nil)
+	_ = s.store.DeleteLabHostHistory(ctx, host.MAC)
+	_ = s.store.SetMachineProvision(ctx, host.MAC, false)
+	_ = s.store.SetNodeState(ctx, host.IP, "configured")
+}
+
 // pxeDecision extension: an armed lab host boots the Debian installer.
+// probeAMT confirms the machine's management engine answers before a provision arms
+// anything, with one retry to ride out a box that is only just waking.
+func probeAMT(ctx context.Context, mgr oob.Manager) error {
+	var err error
+	for attempt := 0; attempt < 2; attempt++ {
+		pctx, cancel := context.WithTimeout(ctx, 8*time.Second)
+		_, err = mgr.Probe(pctx)
+		cancel()
+		if err == nil {
+			return nil
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(2 * time.Second):
+		}
+	}
+	return err
+}
+
+// differentSubnet reports whether two IPv4 addresses are on different /24s. Unparseable
+// input answers false: the preflight only refuses on a confident mismatch.
+func differentSubnet(a, b string) bool {
+	x, e1 := netip.ParseAddr(a)
+	y, e2 := netip.ParseAddr(b)
+	if e1 != nil || e2 != nil || !x.Is4() || !y.Is4() {
+		return false
+	}
+	xa, ya := x.As4(), y.As4()
+	return xa[0] != ya[0] || xa[1] != ya[1] || xa[2] != ya[2]
+}
+
 func labBoot(m *store.Machine) (string, bool) {
-	if m != nil && m.Provision && m.ProvisionKind == "labhost" {
+	// Only while the install is in flight: a ready/failed lab host that is still armed
+	// (e.g. the clear did not run) must not be re-imaged on a stray network boot.
+	if m != nil && m.Provision && m.ProvisionKind == "labhost" && (m.LabHost == nil || m.LabHost.State == "installing") {
 		return "debian", true
 	}
 	return "", false

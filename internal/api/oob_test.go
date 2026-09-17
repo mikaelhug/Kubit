@@ -55,9 +55,16 @@ func TestPXEDecision(t *testing.T) {
 	if decide("aa:aa:aa:aa:aa:07") != "talos" {
 		t.Error("a failed lab host is an ordinary known machine again")
 	}
+	// Armed and mid-install → the Debian installer.
+	_ = s.SetLabHost(ctx, "aa:aa:aa:aa:aa:07", &store.LabHost{State: "installing"})
 	_ = s.SetMachineProvision(ctx, "aa:aa:aa:aa:aa:07", true, "labhost")
 	if decide("aa:aa:aa:aa:aa:07") != "debian" {
-		t.Error("an armed lab host gets the Debian installer")
+		t.Error("a lab host mid-install gets the Debian installer")
+	}
+	// S1 regression: a READY lab host still carrying a stale arm must NOT be re-imaged.
+	_ = s.SetLabHost(ctx, "aa:aa:aa:aa:aa:07", &store.LabHost{State: "ready"})
+	if decide("aa:aa:aa:aa:aa:07") != "local" {
+		t.Error("a ready lab host must boot its own disk even if still armed")
 	}
 	// Discovery seeing it in maintenance mode clears the arming.
 	_ = s.UpsertNode(ctx, store.NodeRow{IP: "10.0.0.6", MAC: "aa:aa:aa:aa:aa:06", Source: "scan", State: "maintenance"})

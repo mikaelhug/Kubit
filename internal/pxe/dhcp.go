@@ -176,12 +176,16 @@ func (c Config) logf(format string, args ...any) {
 
 func (c Config) decide(mac string) string {
 	if c.Decide == nil {
+		// No daemon wired up: standalone onboarding mode, serve Talos to everything.
 		return "talos"
 	}
 	if d := c.Decide(strings.ToLower(mac)); d != "" {
 		return d
 	}
-	return "talos"
+	// Daemon configured but unreachable: fail closed. Offering Talos here would pull a
+	// cluster member or a running lab host into maintenance mode (or re-image it)
+	// during an outage; no offer lets it boot its own disk.
+	return "local"
 }
 
 // listenShared binds a UDP port with SO_REUSEADDR/SO_REUSEPORT so the proxy can sit on

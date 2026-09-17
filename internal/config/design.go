@@ -138,6 +138,9 @@ func Lint(c *Cluster, machines []Machine) []Warning {
 	if len(cps) >= 3 && c.Spec.ControlPlane.VIP == "" {
 		warn("warn", "no-vip", "", "No control plane VIP: the API endpoint follows %s; if it fails, kubeconfig and joining nodes lose the API.", cps[0].IP)
 	}
+	if len(cps) == 1 && c.Spec.ControlPlane.VIP == "" && (cps[0].Network == nil || len(cps[0].Network.Addresses) == 0) {
+		warn("warn", "dhcp-endpoint", cps[0].Hostname, "The API endpoint follows the control plane's DHCP lease (%s); reserve it or give the node a static address so the cluster survives a lease change.", cps[0].IP)
+	}
 	byPool := map[string]map[Arch]bool{}
 	for _, n := range c.Spec.Nodes {
 		if byPool[n.Pool] == nil {
@@ -167,6 +170,13 @@ func Lint(c *Cluster, machines []Machine) []Warning {
 			warn("info", "lab-cluster", "", "All control planes are VMs on one lab host: a lab, not HA — the host is a single failure domain.")
 		} else {
 			warn("warn", "control-planes-on-vms", "", "%d control planes are virtual machines; if they share a hypervisor, one host failure takes etcd quorum with it. Spread them over hosts or use bare metal.", virtualCPs)
+		}
+	}
+	// A control plane below the etcd/API-server floor is a hard failure at create time
+	// (preflight enforces it); flag it here too so the wizard shows it before Create.
+	for _, n := range cps {
+		if m, ok := byMAC[strings.ToLower(n.MAC)]; ok && m.MemBytes > 0 && m.MemBytes < 2<<30 {
+			warn("warn", "control-plane-undersized", n.Hostname, "Control plane %s has under 2 GiB RAM; a control plane cannot run etcd and the API server on that — provisioning will refuse it.", n.Hostname)
 		}
 	}
 	var subnet netip.Prefix

@@ -496,6 +496,9 @@ func (c *Cluster) Validate() error {
 					errs = append(errs, fmt.Errorf("%s.network.nameservers %q: %w", p, ns, err))
 				}
 			}
+			if len(nn.Nameservers) == 0 && len(c.Spec.Network.Nameservers) == 0 {
+				errs = append(errs, fmt.Errorf("%s uses static addressing but no nameservers are set (on the node or the cluster) — the node would have no DNS and image pulls would fail; add network.nameservers", p))
+			}
 			if nn.VLAN > 4094 {
 				errs = append(errs, fmt.Errorf("%s.network.vlan %d out of range", p, nn.VLAN))
 			}

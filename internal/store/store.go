@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"sync"
 
 	_ "modernc.org/sqlite"
 )
@@ -18,6 +19,25 @@ type Store struct {
 	crypto *Crypto
 	n      notifier
 	dsn    string
+
+	labMu    sync.Mutex
+	labLocks map[string]*sync.Mutex // per-MAC, serialises lab-host record writes
+}
+
+// labLock returns the per-MAC mutex that serialises reads-modify-writes of a machine's
+// lab-host record between operations, HTTP handlers and the watcher.
+func (s *Store) labLock(mac string) *sync.Mutex {
+	s.labMu.Lock()
+	defer s.labMu.Unlock()
+	if s.labLocks == nil {
+		s.labLocks = map[string]*sync.Mutex{}
+	}
+	m, ok := s.labLocks[mac]
+	if !ok {
+		m = &sync.Mutex{}
+		s.labLocks[mac] = m
+	}
+	return m
 }
 
 // Open creates dir (0700) if needed, opens dir/kubit.db and applies migrations.

@@ -104,6 +104,7 @@ func (c *Client) BootID(ctx context.Context) (string, error) {
 func WaitForReboot(ctx context.Context, ip string, talosconfig []byte, prevBootID string, timeout time.Duration) error {
 	deadline := time.Now().Add(timeout)
 	var last error
+	sawCreds := false
 	for time.Now().Before(deadline) {
 		if err := ctx.Err(); err != nil {
 			return err
@@ -116,9 +117,20 @@ func WaitForReboot(ctx context.Context, ip string, talosconfig []byte, prevBootI
 			case err == nil && id != prevBootID:
 				return nil
 			case err == nil:
+				// Cluster creds accepted in maintenance mode before the reboot.
+				sawCreds = true
 				last = NotReady("still on the pre-install boot")
 			default:
 				last = err
+				// mTLS worked before and now fails: if the node is answering
+				// maintenance mode again, it rebooted into the RAM installer instead of
+				// the installed disk (e.g. the disk-boot switch did not take). Fail fast
+				// with a legible message rather than grinding to the deadline.
+				if sawCreds {
+					if r := Probe(ctx, ip, 2*time.Second); r.Err == nil && r.State == StateMaintenance {
+						return fmt.Errorf("%s rebooted into maintenance mode, not the installed system — the disk-boot switch did not take", ip)
+					}
+				}
 			}
 		}
 		select {

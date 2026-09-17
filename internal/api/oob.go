@@ -267,12 +267,14 @@ func (s *Server) pxeDecision(ctx context.Context, mac string) (string, string) {
 		return boot, "armed as lab host: Debian installer"
 	}
 	switch {
+	case m.LabHost != nil && (m.LabHost.State == "ready" || m.LabHost.State == "updating"):
+		// An installed lab host always boots its own disk, even if a stale arm flag
+		// lingered — never re-image or disrupt a running host on a network boot.
+		return "local", "lab host"
 	case m.Provision:
 		return "talos", "armed with Boot into Talos"
 	case m.Cluster != "":
 		return "local", "member of cluster " + m.Cluster
-	case m.LabHost != nil && (m.LabHost.State == "ready" || m.LabHost.State == "updating"):
-		return "local", "lab host"
 	default:
 		return "talos", "known, unassigned machine"
 	}

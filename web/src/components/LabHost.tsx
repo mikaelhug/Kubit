@@ -48,6 +48,17 @@ export function VMTable({ rows, onChange, roles }: { rows: VMRow[]; onChange: (r
 const totalMem = (rows: VMSize[]) => rows.reduce((s, v) => s + v.memMiB, 0)
 const cpCount = (rows: VMSize[]) => rows.filter((v) => v.role === 'controlplane').length
 
+/** Mirrors the server's per-VM floors so the dialog blocks a plan the API would 400. */
+const rowsProblem = (rows: VMSize[]): string | null => {
+  for (const v of rows) {
+    if (v.cpus < 1) return 'every VM needs at least 1 vCPU'
+    if (v.diskGiB < 8) return 'every VM needs at least 8 GiB disk'
+    if (v.role === 'controlplane' && v.memMiB < MIN_CP_MIB) return 'a control plane needs at least 2048 MiB'
+    if (v.memMiB < 1024) return 'every VM needs at least 1024 MiB'
+  }
+  return null
+}
+
 /** Add VMs to a running lab host. */
 export function AddVMsDialog({ host, onClose }: { host: NodeRow; onClose: () => void }) {
   const lh = host.labhost!
@@ -59,13 +70,15 @@ export function AddVMsDialog({ host, onClose }: { host: NodeRow; onClose: () => 
   const need = totalMem(rows)
   const over = need > freeMiB
   const overCpu = rows.reduce((s, v) => s + v.cpus, 0) > lh.capacity.cpus * 2
+  const problem = rowsProblem(rows)
   const submit = () => api.labAddVMs(host.mac, { each: rows.map(({ key: _k, ...v }) => v) }).then((r) => { onClose(); watch(r) }).catch((e) => setError(e.message))
   return (
-    <Dialog title={`Add VMs on ${lh.capacity.hostname || host.hostname}`} width="max-w-2xl" onClose={onClose} footer={<><button class="btn" onClick={onClose}>Cancel</button><button class="btn btn-primary" disabled={over} onClick={submit}>Create {rows.length} VM{rows.length === 1 ? '' : 's'}</button></>}>
+    <Dialog title={`Add VMs on ${lh.capacity.hostname || host.hostname}`} width="max-w-2xl" onClose={onClose} footer={<><button class="btn" onClick={onClose}>Cancel</button><button class="btn btn-primary" disabled={over || !!problem} onClick={submit}>Create {rows.length} VM{rows.length === 1 ? '' : 's'}</button></>}>
       <ErrorBox error={error} />
       <VMTable rows={rows} onChange={setRows} roles={false} />
       <Meter label={`Memory: ${fmt.bytes(mib(need))} of ${fmt.bytes(mib(freeMiB))} free`} used={need} cap={Math.max(freeMiB, 1)} format={(n) => fmt.bytes(mib(n))} />
       {over && <Notice tone="bad">Not enough memory.</Notice>}
+      {!over && problem && <Notice tone="bad">{problem}.</Notice>}
       {overCpu && <Notice tone="warn">More than 2× the host's CPUs; the VMs will contend.</Notice>}
     </Dialog>
   )
@@ -325,7 +338,8 @@ export function MakeLabHostDialog({ m, onClose }: { m: NodeRow; onClose: () => v
   const over = known && withVMs && need > memMiB - RESERVED_MIB
   const nameOk = /^[a-z0-9]([-a-z0-9]*[a-z0-9])?$/.test(name)
   const topologyOk = cps === 1 || cps === 3
-  const blocked = over || (withVMs && withCluster && (!nameOk || !topologyOk))
+  const vmProblem = withVMs ? rowsProblem(withCluster ? rows : rows.map((v) => ({ ...v, role: 'worker' as const }))) : null
+  const blocked = over || !!vmProblem || (withVMs && withCluster && (!nameOk || !topologyOk))
   return (
     <Dialog title={`Make ${m.hostname || m.ip} a lab host`} width="max-w-2xl" onClose={onClose} footer={<><button class="btn" onClick={onClose}>Cancel</button><button class="btn btn-primary" disabled={blocked} onClick={() => gated.attempt('Make lab host')}>{withVMs && withCluster ? 'Install and create cluster' : withVMs ? 'Install and add VMs' : 'Install'}</button></>}>
       <ErrorBox error={error} />
@@ -336,6 +350,7 @@ export function MakeLabHostDialog({ m, onClose }: { m: NodeRow; onClose: () => v
           <VMTable rows={rows} onChange={setRows} roles={withCluster} />
           {known ? <Meter label={`Memory: ${fmt.bytes(mib(need))} of ${fmt.bytes(mib(memMiB - RESERVED_MIB))} (host keeps 2 GiB)`} used={need} cap={Math.max(1, memMiB - RESERVED_MIB)} format={(n) => fmt.bytes(mib(n))} /> : <span class="text-[12px] text-muted">{fmt.bytes(mib(need))} of memory for VMs; checked against the host after the install.</span>}
           {over && <Notice tone="bad">Not enough memory.</Notice>}
+          {!over && vmProblem && <Notice tone="bad">{vmProblem}.</Notice>}
         </div>
       )}
       {withVMs && <label class="flex items-center gap-2 text-[13px] font-medium"><input type="checkbox" checked={withCluster} onChange={(e) => setWithCluster((e.target as HTMLInputElement).checked)} /> Create a cluster from them</label>}

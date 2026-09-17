@@ -171,3 +171,38 @@ func TestMachineIdentityFollowsMAC(t *testing.T) {
 		t.Errorf(".5 must now belong to machine 2, got %s", m2.MAC)
 	}
 }
+
+func TestUpdateLabHostMergesConcurrentWriters(t *testing.T) {
+	s := open(t)
+	defer s.Close()
+	ctx := context.Background()
+	mac := "52:54:00:6b:01:01"
+	if err := s.UpsertNode(ctx, store.NodeRow{IP: "10.0.0.2", MAC: mac, State: "labhost", Source: "labhost"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SetLabHost(ctx, mac, &store.LabHost{State: "ready"}); err != nil {
+		t.Fatal(err)
+	}
+	// One writer touches State, another touches Failures, concurrently: with a blind
+	// full-blob write one would clobber the other; the per-host merge keeps both.
+	done := make(chan struct{}, 2)
+	go func() {
+		_ = s.UpdateLabHost(ctx, mac, func(l *store.LabHost) { l.State = "updating" })
+		done <- struct{}{}
+	}()
+	go func() { _ = s.UpdateLabHost(ctx, mac, func(l *store.LabHost) { l.Failures = 7 }); done <- struct{}{} }()
+	<-done
+	<-done
+	m, err := s.GetMachine(ctx, mac)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if m.LabHost.State != "updating" || m.LabHost.Failures != 7 {
+		t.Fatalf("merge lost a field: state=%q failures=%d", m.LabHost.State, m.LabHost.Failures)
+	}
+	// A machine with no lab-host record is a no-op, not a panic.
+	_ = s.UpsertNode(ctx, store.NodeRow{IP: "10.0.0.3", MAC: "52:54:00:6b:01:02", State: "maintenance"})
+	if err := s.UpdateLabHost(ctx, "52:54:00:6b:01:02", func(l *store.LabHost) { l.State = "x" }); err != nil {
+		t.Fatalf("update on a non-lab-host must be a no-op: %v", err)
+	}
+}

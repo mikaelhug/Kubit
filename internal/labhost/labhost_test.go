@@ -38,6 +38,17 @@ func TestDomainXMLAndMAC(t *testing.T) {
 	if !strings.Contains(xml, "<domain type='kvm'>") || !strings.Contains(xml, "/usr/share/OVMF/OVMF_CODE_4M.fd") || !strings.Contains(xml, "<cpu mode='host-passthrough'/>") {
 		t.Error("amd64 domain must be KVM with OVMF and host CPU")
 	}
+	if !strings.Contains(xml, "console=ttyS0") {
+		t.Error("amd64 serial console must be ttyS0")
+	}
+	// arm64's virt UART is ttyAMA0, not ttyS0, or virsh console shows nothing.
+	armk, _ := DomainXML(VMSpec{Name: "a", MAC: MAC(1, 5), CPUs: 1, MemMiB: 1024, DiskGiB: 10, Kernel: "/k", Initrd: "/i", Arch: "arm64"})
+	if !strings.Contains(armk, "console=ttyAMA0") || strings.Contains(armk, "console=ttyS0") {
+		t.Errorf("arm64 serial console must be ttyAMA0, not ttyS0")
+	}
+	if serialConsole("arm64") != "console=ttyAMA0" || serialConsole("amd64") != "console=ttyS0" {
+		t.Error("serialConsole arch mapping wrong")
+	}
 	disk, _ := DomainXML(VMSpec{Name: "v", MAC: MAC(1, 2), CPUs: 1, MemMiB: 1024, DiskGiB: 10, Arch: "arm64"})
 	if !strings.Contains(disk, "<boot dev='hd'/>") || strings.Contains(disk, "<kernel>") || !strings.Contains(disk, "aarch64") {
 		t.Error("disk-boot arm64 domain wrong")

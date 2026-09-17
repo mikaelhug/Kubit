@@ -53,6 +53,7 @@ func New(version string, m *cluster.Manager, token string, crypto *store.Crypto)
 		m.Factory.BaseURL = v.FactoryURL
 	}
 	_ = s.store.MarkStaleOperations(contextBackground())
+	s.reconcileLabHosts(contextBackground())
 	r := s.mux
 	r.HandleFunc("GET /api/v1/version", s.handleVersion)
 	r.HandleFunc("GET /api/v1/ws", s.handleLive)

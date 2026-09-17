@@ -32,21 +32,24 @@ func LabVMName(vm *store.Machine) string {
 
 // labDiskBoot flips a lab VM to boot from its disk once Talos has been told to
 // install: the post-install reboot must land in the installed system.
-func (m *Manager) labDiskBoot(ctx context.Context, n storeMachineRef) error {
+// labDiskBoot switches a lab VM's persistent domain to disk boot. It returns
+// (false, nil) for a machine that is not a lab VM (bare metal), so the caller can tell
+// a real switch from a no-op.
+func (m *Manager) labDiskBoot(ctx context.Context, n storeMachineRef) (bool, error) {
 	vm, err := m.Store.GetMachine(ctx, n.MAC)
 	if err != nil || vm.Host == "" {
-		return nil
+		return false, nil
 	}
 	host, err := m.Store.GetMachine(ctx, vm.Host)
 	if err != nil {
-		return err
+		return false, err
 	}
 	c, err := m.LabDial(ctx, host)
 	if err != nil {
-		return err
+		return false, err
 	}
 	defer c.Close()
-	return c.SetDiskBoot(ctx, labVMNameFrom(host, vm))
+	return true, c.SetDiskBoot(ctx, labVMNameFrom(host, vm))
 }
 
 type storeMachineRef struct{ MAC string }

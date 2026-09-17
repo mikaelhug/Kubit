@@ -300,7 +300,15 @@ func (w *Watcher) labTick(ctx context.Context, host *store.Machine) {
 			}
 		}
 	}
-	_ = w.Store.SetLabHost(tctx, host.MAC, host.LabHost)
+	// Merge only the fields this tick computed; never touch State/Error, which an
+	// operation (e.g. an in-flight maintenance run) may have changed to "updating".
+	_ = w.Store.UpdateLabHost(tctx, host.MAC, func(lh *store.LabHost) {
+		lh.Failures = host.LabHost.Failures
+		lh.Capacity = host.LabHost.Capacity
+		lh.VMs = host.LabHost.VMs
+		lh.Metrics = host.LabHost.Metrics
+		lh.Updates = host.LabHost.Updates
+	})
 	for _, vm := range vms {
 		row, err := w.Store.GetMachine(tctx, vm.MAC)
 		if err != nil {
@@ -332,13 +340,19 @@ const labUnreachableAfter = 3
 
 func (w *Watcher) labFailed(ctx context.Context, host *store.Machine, err error) {
 	log.Printf("lab host %s: %v", host.MAC, err)
-	host.LabHost.Failures++
 	key := store.LabHostKey(host.MAC)
-	if host.LabHost.Failures == labUnreachableAfter {
+	// Bump only Failures against the current record; leave State/VMs/etc. alone so a
+	// failing tick during a maintenance reboot does not un-park the host.
+	var failures int
+	_ = w.Store.UpdateLabHost(ctx, host.MAC, func(lh *store.LabHost) {
+		lh.Failures++
+		failures = lh.Failures
+	})
+	host.LabHost.Failures = failures
+	if failures == labUnreachableAfter {
 		w.emit(ctx, key, []store.EventRow{{Cluster: key, Severity: "critical", Kind: "labhost.unreachable", Message: fmt.Sprintf("%s: no SSH for %d checks (%v)", labName(host), labUnreachableAfter, err)}})
 	}
 	_ = w.Store.AddSamples(ctx, key, time.Now(), []store.Sample{{Reachable: false}})
-	_ = w.Store.SetLabHost(ctx, host.MAC, host.LabHost)
 }
 
 // Thresholds on the filesystem carrying thin-provisioned VM disks: at 100 % every VM

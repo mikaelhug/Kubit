@@ -168,8 +168,16 @@ func TestMembersGetNoOffer(t *testing.T) {
 	m.ClientHWAddr = net.HardwareAddr{0x52, 0x54, 0x00, 0x4b, 0x49, 0x02}
 	conn = &fakeConn{}
 	c.handle(conn, &net.UDPAddr{IP: net.IPv4zero, Port: 68}, m)
+	if conn.sent != nil {
+		t.Fatal("a machine the daemon can't classify (unreachable) must get no offer — fail closed, don't re-image")
+	}
+
+	// With no daemon wired up at all (Decide nil) it is standalone onboarding: serve Talos.
+	open := Config{IP: net.IPv4(10, 0, 0, 2), HTTPPort: 8069, Log: log.New(io.Discard, "", 0)}
+	conn = &fakeConn{}
+	open.handle(conn, &net.UDPAddr{IP: net.IPv4zero, Port: 68}, m)
 	if conn.sent == nil {
-		t.Fatal("an unknown machine (daemon undecided) must still be offered Talos")
+		t.Fatal("with no decider configured, standalone mode must offer Talos")
 	}
 }
 

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
@@ -153,7 +154,12 @@ func (m *Manager) resume(ctx context.Context, c *config.Cluster, recheck bool, s
 	}
 
 	if err := sink.run("ready", func() error { return m.waitReady(ctx, c, c.Spec.Nodes, sink) }); err != nil {
-		return fail(err)
+		// etcd and the API are already up (StateBootstrapped). Nodes not going Ready in
+		// time is a degraded cluster, not a failed one — leave it Bootstrapped (a re-run
+		// or the nodes catching up on CNI/image pulls recovers it) rather than mislabel
+		// a live cluster as failed.
+		sink.emit(Warn, "ready", "", "%v — the cluster is up (etcd + API) but not all nodes are Ready yet; it stays usable and Create can be re-run", err)
+		return err
 	}
 	sink.emit(Done, "ready", "", "cluster %s is up: %d control planes, %d workers", name, len(c.ControlPlanes()), len(c.Workers()))
 	return nil
@@ -195,17 +201,36 @@ func (m *Manager) pendingInstall(ctx context.Context, c *config.Cluster, talosco
 	return pending, cfgs, nil
 }
 
+// sameNodes reports whether two cluster specs describe the same set of machines. It
+// compares stable identity (MAC when present, else hostname) and role — never IP, which
+// the install itself rewrites for static nodes and which DHCP changes across leases, so
+// a retry of the same cluster is not rejected as "a different node set".
 func sameNodes(a, b *config.Cluster) bool {
 	if len(a.Spec.Nodes) != len(b.Spec.Nodes) {
 		return false
 	}
-	for i := range a.Spec.Nodes {
-		if a.Spec.Nodes[i].Hostname != b.Spec.Nodes[i].Hostname || a.Spec.Nodes[i].IP != b.Spec.Nodes[i].IP || a.Spec.Nodes[i].Role != b.Spec.Nodes[i].Role {
+	id := func(n config.Node) string {
+		if n.MAC != "" {
+			return "mac:" + strings.ToLower(n.MAC) + "/" + string(n.Role)
+		}
+		return "host:" + n.Hostname + "/" + string(n.Role)
+	}
+	seen := map[string]bool{}
+	for _, n := range a.Spec.Nodes {
+		seen[id(n)] = true
+	}
+	for _, n := range b.Spec.Nodes {
+		if !seen[id(n)] {
 			return false
 		}
 	}
 	return true
 }
+
+// minControlPlaneBytes is the RAM below which a Talos control plane cannot carry etcd
+// and the API server; enforced in preflight so an undersized CP fails before install
+// rather than after the 0/N-Ready timeout.
+const minControlPlaneBytes = 2 << 30
 
 // preflight checks every target answers the maintenance API before anything is written.
 func (m *Manager) preflight(ctx context.Context, c *config.Cluster, nodes []config.Node, sink Sink) error {
@@ -218,6 +243,8 @@ func (m *Manager) preflight(ctx context.Context, c *config.Cluster, nodes []conf
 			return fmt.Errorf("%s (%s) is %s, not in maintenance mode", n.Hostname, n.IP, r.State)
 		case r.Inventory.Arch != string(n.Arch):
 			return fmt.Errorf("%s (%s) is %s, declared %s", n.Hostname, n.IP, r.Inventory.Arch, n.Arch)
+		case n.Role == config.RoleControlPlane && r.Inventory.MemoryBytes > 0 && r.Inventory.MemoryBytes < minControlPlaneBytes:
+			return fmt.Errorf("%s (%s) is a control plane with only %s RAM; a control plane needs at least 2 GiB (etcd + API server) — give it more or make it a worker", n.Hostname, n.IP, humanBytes(r.Inventory.MemoryBytes))
 		}
 		sink.emit(Info, "preflight", n.Hostname, "%s in maintenance mode, Talos %s %s, %d CPU, %s RAM", n.IP, r.Inventory.TalosVersion, r.Inventory.Arch, r.Inventory.CPUs, humanBytes(r.Inventory.MemoryBytes))
 	}
@@ -284,6 +311,20 @@ func (m *Manager) installOne(ctx context.Context, n config.Node, cfg []byte, tal
 		tc.Close()
 		return fmt.Errorf("boot id: %w", err)
 	}
+	// A lab VM boots Talos from RAM; its persistent libvirt domain must be switched to
+	// disk boot BEFORE the apply triggers the install-reboot, or the reboot re-reads the
+	// old definition and lands back in the RAM installer. A failure here cannot be
+	// recovered by proceeding, so it is fatal (bare-metal nodes are a no-op).
+	if n.MAC != "" {
+		switched, derr := m.labDiskBoot(ctx, storeMachineRef{MAC: n.MAC})
+		if derr != nil {
+			tc.Close()
+			return fmt.Errorf("%s: switch to disk boot: %w", n.Hostname, derr)
+		}
+		if switched {
+			sink.emit(Info, "install", n.Hostname, "lab VM set to boot from disk")
+		}
+	}
 	err = tc.Apply(ctx, cfg)
 	tc.Close()
 	if err != nil {
@@ -294,15 +335,6 @@ func (m *Manager) installOne(ctx context.Context, n config.Node, cfg []byte, tal
 		sink.emit(Info, "install", n.Hostname, "config applied, installing to disk and rebooting; expecting it on static %s", target)
 	} else {
 		sink.emit(Info, "install", n.Hostname, "config applied, installing to disk and rebooting")
-	}
-	// A lab VM boots Talos from RAM until now; from the install reboot on it must
-	// boot its disk.
-	if n.MAC != "" {
-		if err := m.labDiskBoot(ctx, storeMachineRef{MAC: n.MAC}); err != nil {
-			sink.emit(Warn, "install", n.Hostname, "lab VM: could not switch to disk boot: %v", err)
-		} else if vm, err := m.Store.GetMachine(ctx, n.MAC); err == nil && vm.Host != "" {
-			sink.emit(Info, "install", n.Hostname, "lab VM switched to boot from disk")
-		}
 	}
 	if err := talos.WaitForReboot(ctx, target, talosconfig, bootID, m.Timeouts.Install); err != nil {
 		return err
