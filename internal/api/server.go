@@ -946,7 +946,13 @@ func (s *Server) discoverAMT(ctx contextT, addrs []netip.Addr, talosResults []ta
 		}
 		row := store.NodeRow{IP: r.IP, MAC: r.MAC, Source: "amt", State: "amt"}
 		if existing, err := s.store.GetMachine(ctx, r.MAC); err == nil && existing.State != "" && existing.State != "amt" {
-			row.State = existing.State // a known machine that is simply off/in another OS right now
+			// A known machine that is off or in another OS right now: the engine's
+			// address goes to its remote-management config below, the row keeps the
+			// address its OS answers on (AMT usually holds a lease of its own).
+			row.State, row.Source = existing.State, existing.Source
+			if existing.IP != "" {
+				row.IP = existing.IP
+			}
 		}
 		if r.Info != nil {
 			row.Serial = r.Info.Serial

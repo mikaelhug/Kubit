@@ -62,17 +62,20 @@ func TestLabWaitBootPhases(t *testing.T) {
 	}
 
 	// Nothing ever asks to boot: the boot phase names the BIOS/LAN, not SSH.
-	err = s.labWaitBoot(ctx, &pxeWatch{s: s, mac: mac, sink: sink})
+	err = s.labWaitBoot(ctx, newPXEWatch(s, mac, sink))
 	if err == nil || !strings.Contains(err.Error(), "no network boot request from "+mac) || !strings.Contains(err.Error(), "BIOS boot order") {
 		t.Fatalf("boot phase error: %v", err)
 	}
 
-	// DHCP seen but the kernel never fetched: the transport is blamed.
+	// DHCP seen but the kernel never fetched: the transport is blamed. Only lines and
+	// boots newer than the watch count, so the watch is primed before they appear.
+	w0 := newPXEWatch(s, mac, sink)
+	w0.poll(ctx)
 	fake.set(func(p *pxe.Status) {
 		p.Boots = []pxe.Boot{{MAC: mac, Arch: "amd64", Stage: "dhcp", LastSeen: time.Now()}}
 		p.Log = []string{"12:00:00 PXE request from " + mac + " (amd64)"}
 	})
-	err = s.labWaitBoot(ctx, &pxeWatch{s: s, mac: mac, sink: sink})
+	err = s.labWaitBoot(ctx, w0)
 	if err == nil || !strings.Contains(err.Error(), "kernel was never fetched") {
 		t.Fatalf("ipxe phase error: %v", err)
 	}
@@ -81,16 +84,23 @@ func TestLabWaitBootPhases(t *testing.T) {
 	}
 
 	// Kernel fetched: both phases pass and the IP is learned for the SSH phase.
+	w := newPXEWatch(s, mac, sink)
 	fake.set(func(p *pxe.Status) {
 		p.Boots[0].Stage = "kernel"
 		p.Boots[0].IP = "192.168.5.204"
+		p.Boots[0].LastSeen = time.Now()
 	})
-	w := &pxeWatch{s: s, mac: mac, sink: sink}
 	if err := s.labWaitBoot(ctx, w); err != nil {
 		t.Fatalf("healthy boot: %v", err)
 	}
 	if w.ip != "192.168.5.204" {
 		t.Errorf("watch must learn the IP from the PXE server, got %q", w.ip)
+	}
+
+	// A boot left over from an earlier attempt does not count for a new watch.
+	fake.set(func(p *pxe.Status) { p.Boots[0].LastSeen = time.Now().Add(-time.Hour) })
+	if err := s.labWaitBoot(ctx, newPXEWatch(s, mac, sink)); err == nil || !strings.Contains(err.Error(), "no network boot request") {
+		t.Errorf("stale boot must not satisfy the boot phase: %v", err)
 	}
 }
 

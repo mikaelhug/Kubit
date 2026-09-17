@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/insomniacslk/dhcp/dhcpv4"
 	"github.com/insomniacslk/dhcp/iana"
@@ -81,6 +82,23 @@ func TestProxyReplyOffersBootFileWithoutAddress(t *testing.T) {
 	if udp, ok := conn.to.(*net.UDPAddr); !ok || !udp.IP.Equal(net.IPv4bcast) {
 		t.Errorf("unaddressed client must be answered by broadcast, got %v", conn.to)
 	}
+	if reply.Options.Has(dhcpv4.OptionVendorSpecificInformation) {
+		t.Error("UEFI firmware must not get the option 43 discovery bypass; it comes back to :4011")
+	}
+
+	// BIOS firmware gets the bypass and its machine identifier echoed; a boot-server
+	// REQUEST on :4011 is acknowledged with the client's address kept.
+	conn = &fakeConn{}
+	guid := append([]byte{0}, make([]byte, 16)...)
+	req := discover(t, dhcpv4.WithOption(dhcpv4.OptClassIdentifier("PXEClient:Arch:00000:UNDI:002001")), dhcpv4.WithOption(dhcpv4.OptClientArch(iana.INTEL_X86PC)), dhcpv4.WithGeneric(dhcpv4.OptionClientMachineIdentifier, guid), dhcpv4.WithMessageType(dhcpv4.MessageTypeRequest), dhcpv4.WithClientIP(net.IPv4(10, 0, 0, 9)))
+	c.handle(conn, &net.UDPAddr{IP: net.IPv4(10, 0, 0, 9), Port: 4011}, req)
+	reply, _ = dhcpv4.FromBytes(conn.sent)
+	if reply == nil || reply.MessageType() != dhcpv4.MessageTypeAck || reply.BootFileName != FileBIOS || !reply.ClientIPAddr.Equal(net.IPv4(10, 0, 0, 9)) {
+		t.Errorf("boot-server request must be ACKed with the file and ciaddr: %v", reply)
+	}
+	if reply != nil && (!reply.Options.Has(dhcpv4.OptionVendorSpecificInformation) || string(reply.Options.Get(dhcpv4.OptionClientMachineIdentifier)) != string(guid)) {
+		t.Error("BIOS reply needs the option 43 bypass and the echoed option 97")
+	}
 
 	// A non-PXE DHCP client must be ignored: this is a proxy, never the LAN's DHCP server.
 	conn = &fakeConn{}
@@ -152,5 +170,20 @@ func TestMembersGetNoOffer(t *testing.T) {
 	c.handle(conn, &net.UDPAddr{IP: net.IPv4zero, Port: 68}, m)
 	if conn.sent == nil {
 		t.Fatal("an unknown machine (daemon undecided) must still be offered Talos")
+	}
+}
+
+func TestTrackerNewBootAfterSilence(t *testing.T) {
+	tr := newTracker()
+	tr.dhcp("aa:bb:cc:dd:ee:ff", "amd64")
+	tr.http("10.0.0.9", "amd64", "kernel")
+	b := tr.boots["aa:bb:cc:dd:ee:ff"]
+	if b.Stage != "kernel" || b.IP != "10.0.0.9" {
+		t.Fatalf("first boot: %+v", b)
+	}
+	b.LastSeen = time.Now().Add(-2 * time.Minute)
+	tr.dhcp("aa:bb:cc:dd:ee:ff", "amd64")
+	if b.Stage != "dhcp" || b.IP != "" || b.Count != 1 || tr.byIP["10.0.0.9"] != "" {
+		t.Errorf("a PXE request after a minute of silence starts a new boot: %+v", b)
 	}
 }

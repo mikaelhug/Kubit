@@ -77,6 +77,7 @@ export function LabHostPanel({ host }: { host: NodeRow }) {
   const [add, setAdd] = useState(false)
   const [release, setRelease] = useState(false)
   const [del, setDel] = useState<LabVM | null>(null)
+  const [retry, setRetry] = useState(false)
   if (!lh) return null
   const vms = vmsOf(lh)
   const rows = machineList.value
@@ -85,7 +86,8 @@ export function LabHostPanel({ host }: { host: NodeRow }) {
   const run = (p: Promise<{ operationId: number }>) => p.then((r) => watch(r, false)).catch((e) => toast(e.message, 'error'))
   return (
     <div class="flex flex-col gap-4">
-      {lh.state === 'error' && <Notice tone="bad">Lab host setup failed: {lh.error}</Notice>}
+      {lh.state === 'error' && <Notice tone="bad"><span class="flex items-center gap-3">Lab host setup failed: {lh.error}<button class="btn !py-1 ml-auto shrink-0" onClick={() => setRetry(true)}>Make lab host</button></span></Notice>}
+      {retry && <MakeLabHostDialog m={host} onClose={() => setRetry(false)} />}
       {lh.state === 'installing' && <Notice tone="warn">Installing Debian{lh.install ? <> · {installStage(lh.install.stage)} · {fmt.when(lh.install.at)}</> : ' · waiting for the machine to boot the installer'}. Details in Activity.</Notice>}
       {lh.state === 'installing' && !lh.install && lh.boot && (
         <div class="panel p-4 flex flex-col gap-2">

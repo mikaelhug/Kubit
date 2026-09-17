@@ -62,11 +62,30 @@
 - AMT: verify Probe/Power/BootPXE against a real vPro box (first run, then `Boot into
   Talos` end to end with `kubit pxe` running). If BootPXE's BootSettingData Put is
   rejected by older firmware (AMT < 11), fall back to ChangeBootOrder + SetBootConfigRole
-  alone. KVM (VNC over AMT) and IDE-R remote ISO are not implemented.
-- Lab host: first real run on the EliteDesk will shake out preseed details (partman on
-  NVMe with an existing Windows EFI partition, the bridge interface name, Debian 13
-  netboot paths). Keep `virsh console` handy. Resize applies on next boot only; no
-  live migration; no multi-host scheduling.
+  alone. KVM (VNC over AMT) is not implemented.
+- IDE-R (virtual CD over AMT) was implemented in M18 and reverted. Its EliteDesk
+  verdict ("the CD boot cannot be forced") is unproven: every forced boot until
+  2026-09-16 referenced the boot configuration as `Intel(r) AMT: Boot Configuration
+  Setting 0`, which AMT answers with `4 Invalid Reference`, so the `IsNextSingleUse`
+  role was never set and the BIOS ignored every override — PXE and CD alike. What
+  still stands: `AMT_BootCapabilities.ForceCDorDVDBoot=false` and `CIM_BootSourceSetting`
+  listing only Force Hard-drive and Force PXE. The code lives in commit 7e278d2
+  (`internal/oob/ider`, `internal/boot`, `kubit boot`) plus the stash "ide-r
+  diagnostics wip" if it is ever retried with the fixed role call.
+- Lab host, EliteDesk run 2026-09-16: partman, bridge and netboot paths all worked
+  first time. Left over: the host came up as `DESKTOP-DEV86LM` (the router's DHCP
+  name for the MAC won over `netcfg/hostname`; pass `netcfg/get_hostname` on the
+  kernel line in the PXE path too, as the manual boot line already does); *Make lab
+  host* accepts a VM plan the host cannot hold (4×3 GiB on 7.7 GiB) and only finds
+  out after the install — cap the plan by a RAM guess (AMT exposes none) or let the
+  dialog say the plan is checked after install more prominently. The VM table shows
+  no address for bridged VMs (libvirt has none; the machine row has it) — show the
+  row's IP there. Resize applies on next boot only; no live migration; no multi-host
+  scheduling.
+- Discovery and AMT: a scan of the LAN also finds the engine's own lease of a known
+  machine; the row now keeps its OS address and only `oob.host` moves. Still open:
+  `discoverAMT` rewrites the machine's sealed AMT credentials with the settings'
+  defaults whenever the defaults work — per-machine credentials should win.
 - Lab host without AMT (USB-installed Debian): add "adopt existing host" that only
   needs SSH access with Kubit's key.
 - Lab host updates: VMs defined before M16 lack `virsh autostart`; `labhost.update`

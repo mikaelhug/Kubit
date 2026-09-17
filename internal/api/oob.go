@@ -183,7 +183,9 @@ func (s *Server) handleOOBPower(w http.ResponseWriter, r *http.Request) {
 			sink(clusterEvent{Time: time.Now(), Kind: "steps", Level: "info", Steps: cluster.Steps("power", "Arm a network boot and reset via AMT", "boot", "Network boot request seen", "ipxe", "Talos kernel fetched", "wait", "Wait for Talos maintenance mode")})
 		}
 		sink(clusterEvent{Time: time.Now(), Kind: "step", Step: "power", Status: cluster.StepRunning})
-		mgr, err := oob.Open(*c)
+		mgr, err := oob.Open(*c, oob.WithTrace(func(line string) {
+			sink(clusterEvent{Time: time.Now(), Kind: "log", Level: "info", Step: "power", Message: "amt: " + line})
+		}))
 		if err != nil {
 			return nil, err
 		}
@@ -205,7 +207,7 @@ func (s *Server) handleOOBPower(w http.ResponseWriter, r *http.Request) {
 		// The PXE server's view first: whether the box asked to network-boot at all
 		// and whether it fetched the kernel, so a BIOS or LAN problem is named in
 		// minutes, not after the maintenance-mode timeout.
-		watch := &pxeWatch{s: s, mac: mac, sink: sink}
+		watch := newPXEWatch(s, mac, sink)
 		if err := s.labWaitBoot(ctx, watch); err != nil {
 			return nil, err
 		}
@@ -269,6 +271,8 @@ func (s *Server) pxeDecision(ctx context.Context, mac string) (string, string) {
 		return "talos", "armed with Boot into Talos"
 	case m.Cluster != "":
 		return "local", "member of cluster " + m.Cluster
+	case m.LabHost != nil && (m.LabHost.State == "ready" || m.LabHost.State == "updating"):
+		return "local", "lab host"
 	default:
 		return "talos", "known, unassigned machine"
 	}

@@ -58,19 +58,38 @@ type Manager interface {
 	Power(ctx context.Context, a Action) error
 }
 
+// Option tunes a backend; WithTrace receives one line per boot-related request and
+// reply so an operation log shows what AMT was asked and answered.
+type Option func(*amt)
+
+func WithTrace(fn func(string)) Option { return func(a *amt) { a.trace = fn } }
+
 // Open returns the backend for a config.
-func Open(c Config) (Manager, error) {
+func Open(c Config, opts ...Option) (Manager, error) {
 	switch c.Type {
 	case "amt":
 		if c.Host == "" || c.User == "" || c.Password == "" {
 			return nil, errors.New("AMT needs host, user and password")
 		}
-		return &amt{c: c}, nil
+		a := &amt{c: c}
+		for _, o := range opts {
+			o(a)
+		}
+		return a, nil
 	}
 	return nil, errors.New("no out-of-band management configured")
 }
 
-type amt struct{ c Config }
+type amt struct {
+	c     Config
+	trace func(string)
+}
+
+func (a *amt) tracef(format string, args ...any) {
+	if a.trace != nil {
+		a.trace(fmt.Sprintf(format, args...))
+	}
+}
 
 func (a *amt) msgs(ctx context.Context) wsman.Messages {
 	timeout := 15 * time.Second
@@ -176,21 +195,69 @@ func (a *amt) Power(ctx context.Context, act Action) error {
 	return nil
 }
 
-// forcePXE arms a one-shot network boot: plain BIOS boot settings, the PXE boot
-// source, and the boot configuration role set to "IsNext".
+// forcePXE arms one network boot the way Intel's console does: clear the boot
+// source, write the boot settings with every one-shot option off, give the boot
+// configuration the IsNextSingleUse role (without it the BIOS ignores the source),
+// set the PXE source. Every step's reply is traced.
 func (a *amt) forcePXE(m wsman.Messages) error {
-	if _, err := m.AMT.BootSettingData.Put(amtboot.BootSettingDataRequest{
-		ElementName: "Intel(r) AMT Boot Configuration Settings", InstanceID: "Intel(r) AMT:BootSettingData 0",
-		BootMediaIndex: 0, FirmwareVerbosity: 0, IDERBootDevice: 0, OwningEntity: "Intel(r) AMT",
-	}); err != nil {
-		return fmt.Errorf("boot settings: %w", describe(err))
+	if _, err := m.CIM.BootConfigSetting.ChangeBootOrder(""); err != nil {
+		a.tracef("boot source clear: %v", describe(err))
 	}
-	if _, err := m.CIM.BootConfigSetting.ChangeBootOrder(boot.PXE); err != nil {
-		return fmt.Errorf("boot order: %w", describe(err))
+	if err := a.putBootSettings(m); err != nil {
+		a.tracef("%v; continuing with the source and role alone", err)
 	}
-	if _, err := m.CIM.BootService.SetBootConfigRole("Intel(r) AMT: Boot Configuration Setting 0", 1); err != nil {
+	role, err := m.CIM.BootService.SetBootConfigRole(bootConfigInstance, 1)
+	if err != nil {
 		return fmt.Errorf("boot role: %w", describe(err))
 	}
+	if rv := role.Body.SetBootConfigRole_OUTPUT.ReturnValue; rv != 0 {
+		return fmt.Errorf("boot role IsNextSingleUse refused (return value %d)", rv)
+	}
+	a.tracef("boot role IsNextSingleUse: return 0")
+	order, err := m.CIM.BootConfigSetting.ChangeBootOrder(boot.PXE)
+	if err != nil {
+		return fmt.Errorf("boot source: %w", describe(err))
+	}
+	if rv := order.Body.ChangeBootOrder_OUTPUT.ReturnValue; rv != 0 {
+		return fmt.Errorf("boot source Force PXE Boot refused (return value %d)", rv)
+	}
+	a.tracef("boot source Force PXE Boot: return 0")
+	return nil
+}
+
+// bootConfigInstance is the one CIM_BootConfigSetting AMT has (AMT 6.0+).
+const bootConfigInstance = "Intel(r) AMT: Boot Configuration 0"
+
+// putBootSettings writes AMT_BootSettingData back the way the firmware reported it,
+// one-shot options switched off. A fixed property set is refused by AMT 11/12 as
+// InvalidRepresentation; a refused mirrored write is retried with the AMT 11 base set.
+func (a *amt) putBootSettings(m wsman.Messages) error {
+	cur, err := m.AMT.BootSettingData.Get()
+	if err != nil {
+		return fmt.Errorf("boot settings: %w", describe(err))
+	}
+	props, err := bootProperties(cur.XMLOutput)
+	if err != nil {
+		return fmt.Errorf("boot settings: %w", err)
+	}
+	a.tracef("boot settings as read: %s", summarize(props))
+	err = a.put(m, "mirrored", bootSettingsBody(props))
+	if err != nil && strings.Contains(err.Error(), "InvalidRepresentation") {
+		err = a.put(m, "base set", bootSettingsBody(baseOnly(props)))
+	}
+	return err
+}
+
+func (a *amt) put(m wsman.Messages, attempt, body string) error {
+	creator := m.AMT.BootSettingData.Base.WSManMessageCreator
+	header := creator.CreateHeader("http://schemas.xmlsoap.org/ws/2004/09/transfer/Put", amtboot.AMTBootSettingData, nil, "", "")
+	msg := &client.Message{XMLInput: creator.CreateXML(header, body)}
+	a.tracef("boot settings put (%s): %s", attempt, body)
+	if err := m.AMT.BootSettingData.Base.Execute(msg); err != nil {
+		a.tracef("boot settings reply: %s", strings.TrimSpace(msg.XMLOutput))
+		return fmt.Errorf("boot settings: %w", describe(err))
+	}
+	a.tracef("boot settings accepted (%s)", attempt)
 	return nil
 }
 

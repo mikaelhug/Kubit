@@ -3,7 +3,6 @@ package pxe
 import (
 	"context"
 	"fmt"
-	"github.com/mikael/kubit/internal/labhost"
 	"io"
 	"net"
 	"net/http"
@@ -13,6 +12,7 @@ import (
 	"time"
 
 	"github.com/mikael/kubit/internal/factory"
+	"github.com/mikael/kubit/internal/labhost"
 	"github.com/pin/tftp/v3"
 )
 
@@ -119,21 +119,24 @@ func (s *Server) Handler() http.Handler {
 			fmt.Fprintf(w, "#!ipxe\nchain %s?arch=${buildarch}&mac=${net0/mac}\n", s.ScriptURL())
 			return
 		}
-		mac := r.URL.Query().Get("mac")
-		if mac != "" && s.Config.decide(mac) == "debian" {
+		mac, decision := r.URL.Query().Get("mac"), ""
+		if mac != "" {
+			decision = s.Config.decide(mac)
+		}
+		switch decision {
+		case "debian":
 			// Lab host: the Debian installer with Kubit's preseed, no Talos.
 			base := fmt.Sprintf("http://%s:%d", s.IP, s.HTTPPort)
 			args := labhost.KernelArgs(fmt.Sprintf("%s/labhost/%s/preseed?arch=%s", base, mac, arch), "")
-			fmt.Fprintf(w, "#!ipxe\nkernel %s/assets/debian/%s/linux %s\ninitrd %s/assets/debian/%s/initrd.gz\nboot\n", base, arch, args, base, arch)
+			fmt.Fprintf(w, "#!ipxe\nkernel %s/assets/debian/%s/linux initrd=initrd.gz %s\ninitrd %s/assets/debian/%s/initrd.gz\nboot\n", base, arch, args, base, arch)
 			s.track.http(hostOf(r.RemoteAddr), arch, "debian")
 			s.track.logf(fmt.Sprintf("%s (%s) fetched the Debian installer script (lab host)", hostOf(r.RemoteAddr), mac))
 			return
-		}
-		if mac != "" && s.Config.decide(mac) == "local" {
+		case "local":
 			// Second line of defence (the DHCP layer normally never offered): exit
 			// iPXE so the firmware continues with the next boot device.
-			fmt.Fprint(w, "#!ipxe\necho Kubit: this machine is a cluster member, booting from disk\nexit\n")
-			s.track.logf(fmt.Sprintf("%s (%s) is a cluster member; iPXE exits to local boot", hostOf(r.RemoteAddr), mac))
+			fmt.Fprint(w, "#!ipxe\necho Kubit: this machine boots from its own disk\nexit\n")
+			s.track.logf(fmt.Sprintf("%s (%s) boots from its own disk; iPXE exits", hostOf(r.RemoteAddr), mac))
 			return
 		}
 		base := fmt.Sprintf("http://%s:%d/assets/%s/%s", s.IP, s.HTTPPort, s.Profile.SchematicID, s.Profile.TalosVersion)

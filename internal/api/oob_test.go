@@ -44,6 +44,21 @@ func TestPXEDecision(t *testing.T) {
 	if decide("aa:aa:aa:aa:aa:06") != "talos" {
 		t.Error("an armed member gets talos once")
 	}
+	v.PXEEnrollment = "open"
+	_ = s.PutSettings(ctx, v)
+	_ = s.UpsertNode(ctx, store.NodeRow{IP: "10.0.0.7", MAC: "aa:aa:aa:aa:aa:07", State: "labhost"})
+	_ = s.SetLabHost(ctx, "aa:aa:aa:aa:aa:07", &store.LabHost{State: "ready"})
+	if decide("aa:aa:aa:aa:aa:07") != "local" {
+		t.Error("an installed lab host boots its own disk")
+	}
+	_ = s.SetLabHost(ctx, "aa:aa:aa:aa:aa:07", &store.LabHost{State: "error", Error: "x"})
+	if decide("aa:aa:aa:aa:aa:07") != "talos" {
+		t.Error("a failed lab host is an ordinary known machine again")
+	}
+	_ = s.SetMachineProvision(ctx, "aa:aa:aa:aa:aa:07", true, "labhost")
+	if decide("aa:aa:aa:aa:aa:07") != "debian" {
+		t.Error("an armed lab host gets the Debian installer")
+	}
 	// Discovery seeing it in maintenance mode clears the arming.
 	_ = s.UpsertNode(ctx, store.NodeRow{IP: "10.0.0.6", MAC: "aa:aa:aa:aa:aa:06", Source: "scan", State: "maintenance"})
 	m, _ := s.GetMachine(ctx, "aa:aa:aa:aa:aa:06")

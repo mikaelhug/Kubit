@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"net/netip"
 	"os"
 	"sort"
 	"strings"
@@ -214,7 +215,9 @@ func (s *Server) handleLabProvision(w http.ResponseWriter, r *http.Request) {
 				sink(clusterEvent{Time: time.Now(), Kind: "log", Level: "info", Step: "arm", Message: fmt.Sprintf("boot the machine now with kernel %s, initrd %s, cmdline: %s", boot.Kernel, boot.Initrd, boot.Cmdline)})
 			}
 		} else {
-			mgr, err := oob.Open(*c)
+			mgr, err := oob.Open(*c, oob.WithTrace(func(line string) {
+				sink(clusterEvent{Time: time.Now(), Kind: "log", Level: "info", Step: "arm", Message: "amt: " + line})
+			}))
 			if err != nil {
 				return nil, err
 			}
@@ -593,10 +596,16 @@ func (s *Server) labAddVMs(ctx contextT, host *store.Machine, req addVMsRequest,
 	}
 	lh.VMs, _ = lc.List(ctx)
 	_ = s.store.SetLabHost(ctx, mac, lh)
-	// Talos in maintenance mode appears on the VMs' leases within a minute or two.
+	// Talos in maintenance mode appears within a minute or two. libvirt knows the
+	// address on the routed network (its own leases); on the bridge the LAN's DHCP
+	// does, so the discovery subnets are swept and the VMs matched by MAC.
 	pending := map[string]bool{}
 	for _, n := range created {
 		pending[n] = true
+	}
+	var subnets []netip.Addr
+	if v, err := s.store.GetSettings(ctx); err == nil {
+		subnets, _ = talos.ExpandTargets(v.DiscoverySubnets)
 	}
 	deadline := time.Now().Add(6 * time.Minute)
 	for len(pending) > 0 && time.Now().Before(deadline) {
@@ -609,19 +618,32 @@ func (s *Server) labAddVMs(ctx contextT, host *store.Machine, req addVMsRequest,
 		if err != nil {
 			continue
 		}
-		for _, vm := range vms {
-			if !pending[vm.Name] || vm.IP == "" {
+		byMAC := map[string]*labhost.VM{}
+		var results []talos.ScanResult
+		for i := range vms {
+			byMAC[strings.ToLower(vms[i].MAC)] = &vms[i]
+			if pending[vms[i].Name] && vms[i].IP != "" {
+				results = append(results, talos.Probe(ctx, vms[i].IP, 2*time.Second))
+			}
+		}
+		if len(results) < len(pending) && len(subnets) > 0 {
+			results = append(results, talos.Scan(ctx, subnets, 64, 2*time.Second)...)
+		}
+		for _, res := range results {
+			if res.Err != nil || res.State != talos.StateMaintenance || res.Inventory == nil {
 				continue
 			}
-			res := talos.Probe(ctx, vm.IP, 2*time.Second)
-			if res.Err == nil && res.State == talos.StateMaintenance {
-				row := rowFromScan(res)
-				row.Source = "lab"
-				_ = s.store.UpsertNode(ctx, row)
-				_ = s.store.SetMachineHost(ctx, vm.MAC, mac)
-				delete(pending, vm.Name)
-				sink(clusterEvent{Time: time.Now(), Kind: "log", Level: "info", Step: "vmboot", Node: vm.Name, Message: "Talos maintenance mode at " + vm.IP})
+			vm := byMAC[strings.ToLower(res.Inventory.PrimaryMAC())]
+			if vm == nil || !pending[vm.Name] {
+				continue
 			}
+			vm.IP = res.IP
+			row := rowFromScan(res)
+			row.Source = "lab"
+			_ = s.store.UpsertNode(ctx, row)
+			_ = s.store.SetMachineHost(ctx, vm.MAC, mac)
+			delete(pending, vm.Name)
+			sink(clusterEvent{Time: time.Now(), Kind: "log", Level: "info", Step: "vmboot", Node: vm.Name, Message: "Talos maintenance mode at " + vm.IP})
 		}
 		lh.VMs = vms
 		_ = s.store.SetLabHost(ctx, mac, lh)

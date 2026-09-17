@@ -88,32 +88,11 @@ func (c Config) handle(conn net.PacketConn, peer net.Addr, m *dhcpv4.DHCPv4) {
 	if m.OpCode != dhcpv4.OpcodeBootRequest {
 		return
 	}
-	pxeClient := strings.HasPrefix(m.ClassIdentifier(), "PXEClient")
-	if !pxeClient && !isIPXE(m) {
+	mac, ipxe := m.ClientHWAddr.String(), isIPXE(m)
+	if !ipxe && !strings.HasPrefix(m.ClassIdentifier(), "PXEClient") {
 		if c.onPlainDHCP != nil && m.MessageType() == dhcpv4.MessageTypeDiscover {
-			c.onPlainDHCP(m.ClientHWAddr.String(), m.ClassIdentifier())
+			c.onPlainDHCP(mac, m.ClassIdentifier())
 		}
-		return
-	}
-	if c.decide(m.ClientHWAddr.String()) == "local" {
-		// No offer at all: the firmware moves on to its disk without loading iPXE.
-		c.Log.Printf("pxe: %s is a cluster member; letting it boot locally", m.ClientHWAddr)
-		if c.onLog != nil {
-			c.onLog(fmt.Sprintf("%s is a cluster member: no offer, boots from disk", m.ClientHWAddr))
-		}
-		return
-	}
-	var (
-		file string
-		ok   bool
-	)
-	if isIPXE(m) {
-		file, ok = c.ScriptURL(), true
-	} else {
-		file, ok = bootFile(m)
-	}
-	if !ok {
-		c.Log.Printf("pxe: %s asks with unsupported architecture %v", m.ClientHWAddr, m.ClientArch())
 		return
 	}
 	var mt dhcpv4.MessageType
@@ -125,17 +104,39 @@ func (c Config) handle(conn net.PacketConn, peer net.Addr, m *dhcpv4.DHCPv4) {
 	default:
 		return
 	}
-	reply, err := dhcpv4.NewReplyFromRequest(m,
+	if c.decide(mac) == "local" {
+		// No offer at all: the firmware moves on to its disk without loading iPXE.
+		c.Log.Printf("pxe: %s: no offer, boots from its own disk", mac)
+		c.logf("%s: no offer, boots from its own disk (Kubit's decision)", mac)
+		return
+	}
+	file, ok := c.ScriptURL(), true
+	if !ipxe {
+		file, ok = bootFile(m)
+	}
+	if !ok {
+		c.Log.Printf("pxe: %s asks with unsupported architecture %v", mac, m.ClientArch())
+		c.logf("%s network-boots with an architecture Kubit has no iPXE for (%v)", mac, m.ClientArch())
+		return
+	}
+	mods := []dhcpv4.Modifier{
 		dhcpv4.WithMessageType(mt),
 		dhcpv4.WithServerIP(c.IP),
+		dhcpv4.WithClientIP(m.ClientIPAddr),
 		dhcpv4.WithOption(dhcpv4.OptServerIdentifier(c.IP)),
 		dhcpv4.WithOption(dhcpv4.OptClassIdentifier("PXEClient")),
 		dhcpv4.WithOption(dhcpv4.OptTFTPServerName(c.IP.String())),
 		dhcpv4.WithOption(dhcpv4.OptBootFileName(file)),
+		dhcpv4.WithOptionCopied(m, dhcpv4.OptionClientMachineIdentifier),
+	}
+	if ipxe || file == FileBIOS {
 		// PXE vendor options (43): discovery control bit 3 = "use boot filename as is",
-		// which spares the firmware a boot-server menu round trip.
-		dhcpv4.WithOption(dhcpv4.OptGeneric(dhcpv4.OptionVendorSpecificInformation, []byte{6, 1, 8, 0xff})),
-	)
+		// which spares BIOS firmware and iPXE the boot-server round trip. UEFI firmware
+		// is not told: some ignore an offer that tries to bypass boot-server discovery,
+		// while all of them come back to :4011 when option 43 is absent.
+		mods = append(mods, dhcpv4.WithOption(dhcpv4.OptGeneric(dhcpv4.OptionVendorSpecificInformation, []byte{6, 1, 8, 0xff})))
+	}
+	reply, err := dhcpv4.NewReplyFromRequest(m, mods...)
 	if err != nil {
 		c.Log.Printf("pxe: build reply: %v", err)
 		return
@@ -146,27 +147,30 @@ func (c Config) handle(conn net.PacketConn, peer net.Addr, m *dhcpv4.DHCPv4) {
 	dest := peer
 	if m.GatewayIPAddr != nil && !m.GatewayIPAddr.IsUnspecified() {
 		dest = &net.UDPAddr{IP: m.GatewayIPAddr, Port: dhcpv4.ServerPort}
-	} else if udp, ok := peer.(*net.UDPAddr); ok && (udp.IP.IsUnspecified() || udp.IP == nil) {
+	} else if udp, ok := peer.(*net.UDPAddr); ok && (udp.IP == nil || udp.IP.IsUnspecified()) {
 		dest = &net.UDPAddr{IP: net.IPv4bcast, Port: dhcpv4.ClientPort}
 	}
 	if _, err := conn.WriteTo(reply.ToBytes(), dest); err != nil {
-		c.Log.Printf("pxe: reply to %s: %v", m.ClientHWAddr, err)
+		c.Log.Printf("pxe: reply to %s: %v", mac, err)
 		return
 	}
-	c.Log.Printf("pxe: %s (%v) → %s", m.ClientHWAddr, m.ClientArch(), file)
+	c.Log.Printf("pxe: %s (%v) → %s", mac, m.ClientArch(), file)
 	if c.onDHCP != nil {
 		arch := ""
-		if !isIPXE(m) {
-			if strings.Contains(strings.ToLower(file), "arm64") {
-				arch = "arm64"
-			} else {
-				arch = "amd64"
-			}
+		switch file {
+		case FileBIOS, FileX64:
+			arch = "amd64"
+		case FileARM64:
+			arch = "arm64"
 		}
-		c.onDHCP(m.ClientHWAddr.String(), arch)
+		c.onDHCP(mac, arch)
 	}
+	c.logf("%s (%v) offered %s", mac, m.ClientArch(), file)
+}
+
+func (c Config) logf(format string, args ...any) {
 	if c.onLog != nil {
-		c.onLog(fmt.Sprintf("%s (%v) offered %s", m.ClientHWAddr, m.ClientArch(), file))
+		c.onLog(fmt.Sprintf(format, args...))
 	}
 }
 

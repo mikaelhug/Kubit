@@ -49,6 +49,8 @@ func newTracker() *tracker {
 	return &tracker{started: time.Now(), boots: map[string]*Boot{}, byIP: map[string]string{}}
 }
 
+// dhcp records a PXE request. One after a minute of silence is a new boot of the
+// same machine, not a continuation of the last one.
 func (t *tracker) dhcp(mac, arch string) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
@@ -56,6 +58,9 @@ func (t *tracker) dhcp(mac, arch string) {
 	if b == nil {
 		b = &Boot{MAC: mac, FirstSeen: time.Now()}
 		t.boots[mac] = b
+	} else if time.Since(b.LastSeen) > time.Minute {
+		delete(t.byIP, b.IP)
+		*b = Boot{MAC: mac, FirstSeen: time.Now()}
 	}
 	b.LastSeen = time.Now()
 	b.Count++

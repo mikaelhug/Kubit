@@ -85,14 +85,21 @@ func (s *Server) pxeStatus(ctx context.Context) (*pxe.Status, error) {
 }
 
 // pxeWatch mirrors new PXE log lines about a machine into an operation as they
-// appear, so the Activity drawer reads like the console nobody is sitting at.
+// appear, so the Activity drawer reads like the console nobody is sitting at. The
+// PXE server's log and boot table outlive earlier attempts, so only what it saw
+// after the watch was created counts.
 type pxeWatch struct {
-	s    *Server
-	mac  string
-	ip   string
-	seen int
-	sink clusterSink
-	step string
+	s     *Server
+	mac   string
+	ip    string
+	since time.Time
+	seen  int
+	sink  clusterSink
+	step  string
+}
+
+func newPXEWatch(s *Server, mac string, sink clusterSink) *pxeWatch {
+	return &pxeWatch{s: s, mac: mac, sink: sink, since: time.Now(), seen: -1}
 }
 
 func (p *pxeWatch) poll(ctx context.Context) *pxe.Boot {
@@ -100,8 +107,18 @@ func (p *pxeWatch) poll(ctx context.Context) *pxe.Boot {
 	if err != nil {
 		return nil
 	}
-	if len(st.Log) < p.seen {
-		p.seen = 0
+	if p.seen < 0 || len(st.Log) < p.seen {
+		p.seen = len(st.Log)
+	}
+	var boot *pxe.Boot
+	for i := range st.Boots {
+		if strings.EqualFold(st.Boots[i].MAC, p.mac) && st.Boots[i].LastSeen.After(p.since) {
+			boot = &st.Boots[i]
+			if boot.IP != "" {
+				p.ip = boot.IP
+			}
+			break
+		}
 	}
 	for _, line := range st.Log[p.seen:] {
 		if strings.Contains(line, p.mac) || (p.ip != "" && strings.Contains(line, p.ip+" ")) {
@@ -109,15 +126,7 @@ func (p *pxeWatch) poll(ctx context.Context) *pxe.Boot {
 		}
 	}
 	p.seen = len(st.Log)
-	for i := range st.Boots {
-		if strings.EqualFold(st.Boots[i].MAC, p.mac) {
-			if st.Boots[i].IP != "" {
-				p.ip = st.Boots[i].IP
-			}
-			return &st.Boots[i]
-		}
-	}
-	return nil
+	return boot
 }
 
 // Phase timeouts: each is the longest a healthy install spends there, with margin.
@@ -180,7 +189,7 @@ func (s *Server) labWaitBoot(ctx context.Context, watch *pxeWatch) error {
 // operator booted the installer themselves).
 func (s *Server) labWaitInstall(ctx context.Context, m *store.Machine, manual bool, sink clusterSink) (*labhost.Client, error) {
 	mac := m.MAC
-	watch := &pxeWatch{s: s, mac: mac, sink: sink}
+	watch := newPXEWatch(s, mac, sink)
 	stageAt := func() (string, time.Time) {
 		row, err := s.store.GetMachine(ctx, mac)
 		if err != nil || row.LabHost == nil || row.LabHost.Install == nil {

@@ -279,8 +279,10 @@ boot.ipxe.org into `~/.kubit/cache`) over TFTP, and on `:8069` an iPXE script th
 boots the Talos kernel/initramfs of the profile with `talos.platform=metal`. Boot
 assets are proxied from the Image Factory through the same cache, so a rack of machines
 downloads them once. iPXE's own DHCP round is recognised (user class / option 175) and
-pointed at the script instead of the binary. Needs root for UDP 67/69/4011 and a host on
-the machines' L2 segment.
+pointed at the script instead of the binary. BIOS firmware and iPXE get the option 43
+discovery bypass; UEFI firmware gets a plain proxy offer and comes back to the boot
+server on :4011 (the variant every firmware supports). Needs root for UDP 67/69/4011
+and a host on the machines' L2 segment.
 
 ## Console (web UI)
 
@@ -455,6 +457,15 @@ in maintenance mode. Credentials are sealed per machine (`machines.oob`); the ba
 `internal/oob` over WS-Management (`github.com/device-management-toolkit/go-wsman-messages`,
 digest auth, 16992/16993). Setup on the box: enable AMT in the BIOS, set the MEBx
 password (Ctrl+P), allow network access. The `machine.power` operation shows in Activity.
+*Boot into Talos* arms one network boot the way Intel's own console does (verified on
+an EliteDesk 800 G3, AMT 11): clear the boot source, write `AMT_BootSettingData` back
+as the firmware reported it with IDE-R/SOL and the other one-shot options off (a
+fixed property set is refused by AMT 11/12 as `InvalidRepresentation`; a refused write
+is retried with the AMT 11 base set), give `Intel(r) AMT: Boot Configuration 0` the
+`IsNextSingleUse` role, set `Force PXE Boot`, reset. The role call is the one that
+makes the BIOS honour the source; AMT answers a wrong instance name with `4 Invalid
+Reference` and boots normally, so a non-zero return fails the operation. Every request
+and reply is mirrored into the operation log as `amt:` lines.
 
 Install the PXE server once as a root service — `sudo kubit service install --pxe
 --iface en0 --kubit-url http://127.0.0.1:8080` (launchd system daemon / systemd unit;
@@ -622,15 +633,15 @@ overwrite) and needs the same master key: `kubit key export` prints it for
 - [x] Phase 5 — `node remove`, `upgrade talos|kubernetes`, `status` (Talos 1.14.0→1.15.0-alpha.0 and Kubernetes 1.36.0→1.37.0 verified on a VM)
 - [x] Phase 6 — `kubit cluster export`
 - [x] Phase 7 — web UI (`kubit serve`): dashboard, create wizard, add/remove/upgrade dialogs, node logs, operations
-- [x] Phase 8 — `kubit pxe` (proxyDHCP + TFTP + HTTP; unit-tested, not yet booted a physical machine)
+- [x] Phase 8 — `kubit pxe` (proxyDHCP + TFTP + HTTP; verified 2026-09-16 on an HP EliteDesk 800 G3: AMT-forced UEFI PXE → iPXE → Debian installer, 7 min to a ready lab host)
 
 Verified on vmnet-helper VMs: 3-control-plane create with a VIP (etcd 3/3 in 20 s, API
 via the VIP, platform applied), `node add` worker and control plane, `node remove`
 worker and — with `--force` — a control plane (graceful etcd leave, membership 3→2, node
 back in maintenance mode), quorum guard refusing 3→2 without `--force`.
 
-Not yet exercised: `kubit pxe` against a physical machine; `runsc-kvm` (no nested
-virtualisation in the VMs); ArgoCD and cert-manager add-ons.
+Not yet exercised: `runsc-kvm` (no nested virtualisation in the VMs); ArgoCD and
+cert-manager add-ons.
 - [x] M1 — structured operations, Activity drawer, plan review/apply, IA skeleton, component library
 - [x] M2 — node page: Overview (Talos + etcd member + Kubernetes requests), Hardware, Kubernetes (conditions, pods with usage, labels), Services, Logs, Actions (cordon/uncordon/drain/reboot[-with-drain]/upgrade node) — verified drain→reboot→uncordon on ha-worker-01
 - [x] M3 — `internal/watch`: per-cluster poll (15 s, `--watch-interval`), `samples` (24 h fine / 30 d hourly) and `events` tables, SSE `status`/`health` pushes (UI no longer polls while connected), alerts with ack and auto-resolve on recovery, Overview capacity sparklines (1h–7d), `/versions` feed (Image Factory releases ≥ 1.14, Kubernetes minors supported by the built machinery) in Settings — verified: VM stop raised `talos.unreachable` within 15 s without reload, `node.notready` after the kubelet grace period, both cleared by `talos.back`/`node.ready` on restart
@@ -647,5 +658,5 @@ virtualisation in the VMs); ArgoCD and cert-manager add-ons.
 - [~] M15 — Lab hosts: `internal/labhost` (preseed, SSH client, virsh domain lifecycle, direct kernel boot), PXE Debian profile + preseed proxy, lab-host API/operations, watcher refresh, install-time disk-boot switch, wizard/machine-page/Inventory UI. **Unverified on hardware** (needs the EliteDesk): the Debian install and every virsh call; unit-tested rendering only
 - [~] M16 — Lab host operations: host metrics (SSH tick → `samples` under `labhost:<mac>`, live `hostSample`), disk/memory/unreachable/updates alerts with runbooks and hysteresis (unit-tested), hourly apt check, unattended security upgrades in the preseed, `labhost.update` / `labhost.reboot` operations (VMs parked, autostart, cluster Ready wait, maintenance-window gate), *Lab host* tab with utilisation cards, System panel and confirm dialogs, Inventory alert pill, heartbeat line. **Verified with a seeded host only** (`hack/seedlab`): parsing, thresholds, UI, the failure path of the operation; the real upgrade/reboot path needs the EliteDesk
 - [~] M17 — Disk roles: `dataDisks` per node → Talos `UserVolumeConfig` whole-disk xfs volumes at `/var/mnt/data-N` (generation and validation unit-tested), wizard Design step and add-node dialog with per-disk checkboxes, node page mounts, lab VMs with an optional second qcow2 (`vdb`) that the lab plan claims automatically, `vda` pinned as the install disk for VMs. **Unverified on a live node**: the volume actually formatting and mounting needs a machine with a spare disk
-- [~] M17 — Lab install observable: installer progress reports, phased waits with diagnoses, PXE log mirrored into operations, manual (no-AMT) mode, `kubit pxe --http-only`/`--ip`, `POST /machines`, per-arch preseed packages, UEFI loaders in domain XML, `hack/lab/lab.sh` vfkit harness (EFI via systemd-boot volume, nested virt). routed VM network (`kubit` libvirt network + masquerade unit). **Verified in the VM harness**: EFI install via systemd-boot volume (3 min), every progress stage, SSH, setup with nested KVM, four Talos VMs to maintenance mode on the routed network, cluster `lab` Ready with MetalLB/ingress in 9 minutes, and M16's *Update host* (VMs parked, reboot, autostart, 4/4 Ready again in 2 min). See NOTES/backlog for what was found. PXE on the EliteDesk still to be run with the new diagnostics
+- [~] M17 — Lab install observable: installer progress reports, phased waits with diagnoses, PXE log mirrored into operations, manual (no-AMT) mode, `kubit pxe --http-only`/`--ip`, `POST /machines`, per-arch preseed packages, UEFI loaders in domain XML, `hack/lab/lab.sh` vfkit harness (EFI via systemd-boot volume, nested virt). routed VM network (`kubit` libvirt network + masquerade unit). **Verified in the VM harness**: EFI install via systemd-boot volume (3 min), every progress stage, SSH, setup with nested KVM, four Talos VMs to maintenance mode on the routed network, cluster `lab` Ready with MetalLB/ingress in 9 minutes, and M16's *Update host* (VMs parked, reboot, autostart, 4/4 Ready again in 2 min). **Verified on the EliteDesk (2026-09-16)**: AMT one-shot PXE, every phase with the PXE log mirrored, Debian installed and SSH-ready in 7 min, three bridged Talos VMs to maintenance mode; the VM plan has to fit the real host (7.7 GiB RAM). Bridged VMs get no address from libvirt (no leases, no ARP until the host talks to them), so the VM wait sweeps the discovery subnets and matches Talos nodes by MAC. See NOTES/backlog for what was found
 - [ ] M7 — tests, CI, packaging, docs
