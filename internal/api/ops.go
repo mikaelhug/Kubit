@@ -10,13 +10,14 @@ import (
 
 	"github.com/mikael/kubit/internal/cluster"
 	"github.com/mikael/kubit/internal/store"
+	"github.com/mikael/kubit/internal/watch"
 )
 
 // Message is what SSE subscribers receive: an operation event, an operation status
 // change, or (later) cluster status and health events.
 type Message struct {
 	Seq         int64               `json:"seq,omitempty"`
-	Kind        string              `json:"kind"` // hello | resync | event | operation | status | health | refresh | cluster | clusterRemoved | machine | machineRemoved | snapshot | snapshotRemoved | audit | settings | healthAck | healthResolved | versions | hostSample
+	Kind        string              `json:"kind"` // hello | resync | event | operation | status | health | refresh | cluster | clusterRemoved | machine | machineRemoved | snapshot | snapshotRemoved | audit | settings | healthAck | healthResolved | versions | hostSample | observer
 	OperationID int64               `json:"operationId,omitempty"`
 	Event       *cluster.Event      `json:"event,omitempty"`
 	Operation   *store.OperationRow `json:"operation,omitempty"`
@@ -27,15 +28,16 @@ type Message struct {
 	// storage, nodes, machines, snapshots, addons, certificates, settings, pxe).
 	Scope string `json:"scope,omitempty"`
 	// Typed live-state payloads (one is set per kind).
-	ClusterRow *store.ClusterRow `json:"clusterRow,omitempty"`
-	Machine    *nodeView         `json:"machine,omitempty"`
-	Snapshot   *store.Snapshot   `json:"snapshot,omitempty"`
-	Audit      *store.AuditEntry `json:"audit,omitempty"`
-	Settings   *store.Settings   `json:"settings,omitempty"`
-	Sample     *store.Sample     `json:"sample,omitempty"` // hostSample: Key is the lab host's MAC
-	Key        string            `json:"key,omitempty"`    // removed row key, or event id for healthAck ("*" = all)
-	Node       string            `json:"node,omitempty"`   // healthResolved: object; refresh: unused
-	Hello      *Hello            `json:"hello,omitempty"`
+	ClusterRow *store.ClusterRow    `json:"clusterRow,omitempty"`
+	Machine    *nodeView            `json:"machine,omitempty"`
+	Snapshot   *store.Snapshot      `json:"snapshot,omitempty"`
+	Audit      *store.AuditEntry    `json:"audit,omitempty"`
+	Settings   *store.Settings      `json:"settings,omitempty"`
+	Sample     *store.Sample        `json:"sample,omitempty"` // hostSample: Key is the lab host's MAC
+	Key        string               `json:"key,omitempty"`    // removed row key, or event id for healthAck ("*" = all)
+	Node       string               `json:"node,omitempty"`   // healthResolved: object; refresh: unused
+	Hello      *Hello               `json:"hello,omitempty"`
+	Observer   *watch.ObserverState `json:"observer,omitempty"`
 }
 
 // Hello opens every live connection: what the client needs to decide between replay

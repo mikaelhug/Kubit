@@ -8,6 +8,13 @@ interface Ctx { cluster: string; node?: string; nodeHref?: string }
 
 export function runbookFor(kind: string, c: Ctx): Runbook | null {
   if (c.cluster.startsWith('labhost:')) return labRunbook(kind, c.cluster.slice('labhost:'.length))
+  if (kind === 'observer.offline') {
+    return { title: "Kubit's own host cannot reach the LAN", why: 'Every probe failed with a no-route error and the default gateway did not answer either: the link is down, the host has no address, or this process is not allowed to use the local network. Nothing is known about the clusters meanwhile; alerts are paused.', steps: [
+      { text: 'Check the link and address of the machine running kubit.' },
+      { text: 'macOS: System Settings → Privacy & Security → Local Network must allow the app that started kubit; a daemon started from a terminal inherits that terminal\'s permission.' },
+      { text: 'Run kubit as a service on an always-on machine so it has its own identity and never sleeps.', link: { label: 'Settings', href: '/settings/general' } },
+    ] }
+  }
   const nodes = `/clusters/${c.cluster}/nodes`
   const node = c.nodeHref ? { label: `Open ${c.node}`, href: c.nodeHref + '#actions' } : { label: 'Nodes', href: nodes }
   switch (kind) {

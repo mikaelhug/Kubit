@@ -195,9 +195,12 @@
   IP before the cluster is reported ready (reliability plan P2).
 - ArgoCD/cert-manager still ship without resource requests; give them the same
   treatment before enabling by default.
-- Two daemons on one KUBIT_HOME (e.g. `kubit serve` on :8080 and a dev one on :8090)
-  both run the watcher: samples land twice a minute and alerts can be raised twice.
-  Detect the sibling (pid file / lock) and refuse or run watcher-less.
+- Observer (2026-09-19): the daemon should run on an always-on host. Candidates: the lab
+  host itself (Debian, already managed) or a NUC; `kubit service install` on Linux is
+  written but unverified. The console tells when the host sleeps (Home notice from
+  `observer.gaps24h`) but cannot prevent it. Also open: `GET /observer` reports the
+  process's own view only; a per-node "last contact" for machines that are not cluster
+  members (maintenance rows) comes from discovery's `lastSeen` and is not shown as such.
 - Console rework leftovers (2026-09-19): Home computes update notices from
   `api.versions()` per page load rather than the daemon's `versions` message carrying
   the latest Kubernetes too; Inventory's *Boot all into Talos* fires one power op per

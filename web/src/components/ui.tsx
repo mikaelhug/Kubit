@@ -1,6 +1,7 @@
 import type { ComponentChildren } from 'preact'
 import { useEffect, useState } from 'preact/hooks'
 import { api, type MaintenanceState } from '../api'
+import { ageSec } from '../clock'
 import type { Event, Level } from '../api'
 
 export type Tone = 'good' | 'warn' | 'bad' | 'info' | 'muted'
@@ -25,11 +26,21 @@ export function stateTone(state: string): Tone {
 }
 
 /** The cluster pill: the lifecycle state, overridden by the watcher's verdict once ready. */
-export function ClusterPill({ state, status }: { state: string; status?: { health?: string; openAlerts?: number } | null }) {
+export function ClusterPill({ state, status }: { state: string; status?: { health?: string; openAlerts?: number; observerError?: string } | null }) {
   const h = state === 'ready' && status?.health && status.health !== 'healthy' ? status.health : ''
   const label = h || state
-  const title = h === 'degraded' ? `${status?.openAlerts ?? 0} open alert${status?.openAlerts === 1 ? '' : 's'}` : h === 'down' ? 'API, etcd or a node is unreachable' : undefined
+  const title = h === 'degraded' ? `${status?.openAlerts ?? 0} open alert${status?.openAlerts === 1 ? '' : 's'}` : h === 'down' ? 'A confirmed outage: API, etcd or a node' : h === 'unknown' ? `Kubit cannot reach the network${status?.observerError ? ` (${status.observerError})` : ''}` : undefined
   return <Pill tone={stateTone(label)} title={title}>{label}</Pill>
+}
+
+/** How long ago the observer last saw anything of this object, ticking from the clock. */
+export function SeenAgo({ contact, observed, blind }: { contact?: string; observed?: string; blind?: boolean }) {
+  const at = contact || observed
+  if (!at) return <span class="text-[12px] text-muted">not observed yet</span>
+  const s = Math.floor(ageSec(at))
+  const text = s < 60 ? `${s} s` : s < 3600 ? `${Math.round(s / 60)} min` : `${Math.round(s / 3600)} h`
+  const stale = blind || s > 120
+  return <span class={`text-[12px] num ${stale ? 'text-warn' : 'text-muted'}`} title={`Last contact ${new Date(at).toLocaleString()}`}>{stale && blind ? `not seen for ${text}` : `seen ${text} ago`}</span>
 }
 
 export function StatusDot({ tone, pulse }: { tone: Tone; pulse?: boolean }) {

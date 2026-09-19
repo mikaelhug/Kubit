@@ -24,6 +24,9 @@ type Sample struct {
 
 // LabHostKey is the pseudo-cluster under which a lab host's samples and events are
 // filed, so the history and alert paths built for clusters serve hosts unchanged.
+// KubitKey files events about Kubit itself (observer, heartbeat, test alerts).
+const KubitKey = "kubit"
+
 func LabHostKey(mac string) string { return "labhost:" + strings.ToLower(mac) }
 
 func (s *Store) AddSamples(ctx context.Context, cluster string, ts time.Time, samples []Sample) error {

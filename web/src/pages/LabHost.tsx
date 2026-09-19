@@ -6,7 +6,7 @@ import { AddVMsDialog, HostAlerts, HostMetrics, HostStateNotice, HostSystem, Hos
 import { RemoteManagement } from '../components/RemoteManagement'
 import { HardwareTab } from './Node'
 import { Tabs } from '../components/Tabs'
-import { AlertPill, Breadcrumbs, KeyValue, Pill, Section, stateTone } from '../components/ui'
+import { AlertPill, Breadcrumbs, KeyValue, Pill, Section, SeenAgo, stateTone } from '../components/ui'
 import { hostName, modelOf } from '../machine'
 
 type TabId = 'overview' | 'vms' | 'hardware' | 'actions'
@@ -36,7 +36,7 @@ export function LabHostPage({ mac, tab = 'overview' }: { mac: string; tab?: stri
           <AlertPill e={alert} />
           {host.oobType && <Pill tone="info">{host.oobType === 'redfish' ? 'BMC' : 'AMT'}</Pill>}
           {running.map((o) => <Pill key={o.id} tone="warn">{fmt.kind(o.kind)} running</Pill>)}
-          <span class="mono text-muted text-[12px]">{[host.ip, host.mac, lh.capacity.arch || host.arch].filter(Boolean).join(' · ')} · {vms.filter((v) => v.state === 'running').length}/{vms.length} VMs running</span>
+          {lh.metrics?.at && <SeenAgo contact={lh.metrics.at} blind={lh.failures ? lh.failures >= 3 : false} />}
         </div>
         <Tabs active={shown} tabs={tabs.map((t) => ({ ...t, href: `/labhosts/${host.mac}/${t.id}`, badge: t.id === 'vms' ? vms.length : undefined }))} />
       </header>

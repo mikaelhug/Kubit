@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'preact/hooks'
-import { api, fmt, labHostKey, type HealthEvent, type NodeRow, type OffsiteStatus, type PxeStatus, type Versions } from '../api'
-import { authState, clusters, health, latestTalos, loadAllHealth, machineList, operations, refreshKey, settings, statuses, ack } from '../store'
+import { api, fmt, kubitKey, labHostKey, type HealthEvent, type NodeRow, type OffsiteStatus, type PxeStatus, type Versions } from '../api'
+import { authState, clusters, health, latestTalos, loadAllHealth, machineList, observer, operations, refreshKey, settings, statuses, ack } from '../store'
 import { ClusterPill, Notice, Pill, Section, StatusDot, stateTone } from '../components/ui'
 import { EventRow, verLess } from './cluster/Overview'
 import { groupOf, hostName, type MachineGroup } from '../machine'
@@ -14,7 +14,7 @@ export function Home() {
   const machines = machineList.value
   const hosts = machines.filter((m) => m.labhost)
   const physical = machines.filter((m) => !m.host)
-  const keys = [...list.map((c) => c.name), ...hosts.map((h) => labHostKey(h.mac))]
+  const keys = [kubitKey, ...list.map((c) => c.name), ...hosts.map((h) => labHostKey(h.mac))]
   useEffect(() => { loadAllHealth(keys) }, [keys.join(',')]) // eslint-disable-line
   const [versions, setVersions] = useState<Versions | null>(null)
   useEffect(() => { api.versions().then(setVersions).catch(() => {}) }, [latestTalos.value])
@@ -34,8 +34,12 @@ export function Home() {
   const groups: { key: string; label: string; href: string; alerts: HealthEvent[] }[] = [
     ...list.map((c) => ({ key: c.name, label: c.name, href: `/clusters/${c.name}/overview`, alerts: alertsOf(c.name) })),
     ...hosts.map((h) => ({ key: labHostKey(h.mac), label: hostName(h), href: `/labhosts/${h.mac}/overview`, alerts: alertsOf(labHostKey(h.mac)) })),
+    { key: kubitKey, label: 'Kubit', href: '/settings/general', alerts: alertsOf(kubitKey).filter((e) => e.kind !== 'test') },
   ].filter((g) => g.alerts.length > 0)
   const notices: { tone: 'warn' | 'bad' | 'info'; text: preact.ComponentChildren }[] = []
+  const obs = observer.value
+  if (!obs.online) notices.push({ tone: 'bad', text: <>Kubit cannot reach the local network{obs.since ? ` since ${fmt.when(obs.since)}` : ''}{obs.error ? ` (${obs.error})` : ''}. Cluster alerts are paused. <a class="underline" href="/settings/general">Why</a></> })
+  if (obs.gaps24h >= 3) notices.push({ tone: 'warn', text: <>Observation paused {obs.gaps24h} times in 24 h: Kubit's host sleeps. Run Kubit on an always-on machine (<span class="mono">kubit service install</span>).</> })
   if (authState.value.setup) notices.push({ tone: 'warn', text: <>No accounts: anyone reaching this address is an administrator. <a class="underline" href="/settings/accounts">Add the first account</a></> })
   if (armed && pxe && !pxe.running) notices.push({ tone: 'bad', text: <>A machine is armed for a network boot but the PXE server is not running. <a class="underline" href="/fleet/network-boot">Network boot</a></> })
   if (off?.error) notices.push({ tone: 'bad', text: <>Off-site copies failing: {off.error} <a class="underline" href="/settings/offsite">Off-site</a></> })

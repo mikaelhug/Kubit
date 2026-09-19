@@ -53,7 +53,7 @@ export function Nodes({ ctx }: { ctx: ClusterCtx }) {
 
   return (
     <>
-      <Section title="Nodes" help="Talos reachability and Kubernetes readiness, separately."
+      <Section title="Nodes"
         actions={<>
           {pools.length > 2 || pool ? (
             <select class="input !py-1 w-auto" value={pool} onChange={(e) => setPool((e.target as HTMLSelectElement).value)} aria-label="Filter by pool">

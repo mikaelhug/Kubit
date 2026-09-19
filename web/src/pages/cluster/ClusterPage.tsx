@@ -3,7 +3,7 @@ import { useLocation } from 'preact-iso'
 import { api, type ClusterRow, type Status } from '../../api'
 import { clusters, loadHealth, operations, statuses } from '../../store'
 import { Tabs } from '../../components/Tabs'
-import { ClusterPill, ErrorBox, Pill } from '../../components/ui'
+import { ClusterPill, ErrorBox, Pill, SeenAgo } from '../../components/ui'
 import { sectionList, type Section } from '../../app'
 import { Overview } from './Overview'
 import { Nodes } from './Nodes'
@@ -16,7 +16,6 @@ import { Network } from './Network'
 import { Storage } from './Storage'
 import { Backups } from './Backups'
 import { Lifecycle } from './Lifecycle'
-import { ageSec } from '../../clock'
 
 export interface ClusterCtx { name: string; cluster: ClusterRow; status: Status | null; refresh: () => void; error: string | null }
 
@@ -33,7 +32,6 @@ export function ClusterPage({ name, section = 'overview', sub }: { name: string;
   // only covers the moment before the first tick.
   if (!cluster) return <div class="p-8 text-muted">{error ?? `Cluster ${name} is not known.`}</div>
   const ctx: ClusterCtx = { name, cluster, status, refresh, error }
-  const spec = cluster.spec.spec
   const runningHere = [...operations.value.values()].filter((o) => o.cluster === name && o.status === 'running')
 
   return (
@@ -42,10 +40,9 @@ export function ClusterPage({ name, section = 'overview', sub }: { name: string;
         <div class="flex flex-wrap items-center gap-3 mb-3">
           <h1 class="text-xl font-semibold">{name}</h1>
           <ClusterPill state={cluster.state} status={status} />
-          {status && <Pill tone={status.apiReachable ? 'good' : 'bad'} title={status.apiError}>{status.apiReachable ? 'API reachable' : 'API unreachable'}</Pill>}
-          {status?.observedAt && <Observed at={status.observedAt} />}
           {runningHere.length > 0 && <Pill tone="warn">{runningHere.length} operation{runningHere.length === 1 ? '' : 's'} running</Pill>}
-          <span class="mono text-muted text-[12px]">Talos {spec.talosVersion} · Kubernetes {spec.kubernetesVersion} · {spec.controlPlane.endpoint}</span>
+          <SeenAgo contact={status?.lastContactAt} observed={status?.observedAt} blind={!!status && (status.observer === 'offline' || (!status.apiReachable && !status.nodes.some((n) => n.talosReachable)))} />
+          <CheckNow name={name} />
         </div>
         <Tabs active={section} tabs={sectionList.map(([id, label]) => ({ id, label, href: `/clusters/${name}/${id}`, badge: id === 'overview' && runningHere.length ? runningHere.length : undefined }))} />
       </header>
@@ -73,11 +70,11 @@ function renderSection(section: Section | 'operations', sub: string | undefined,
   }
 }
 
-/** How far behind the watcher is; ticks from the shared clock. */
-function Observed({ at }: { at: string }) {
-  const s = Math.floor(ageSec(at))
-  const stale = s > 120
-  return <span class={`text-[12px] num ${stale ? 'text-warn' : 'text-muted'}`} title="When the health watcher last observed this cluster">observed {s < 60 ? `${s} s` : `${Math.round(s / 60)} min`} ago</span>
+/** A live probe of the cluster right now, outside the watcher's tick. */
+function CheckNow({ name }: { name: string }) {
+  const [busy, setBusy] = useState(false)
+  const check = () => { setBusy(true); api.status(name, true).then((st) => { const sm = new Map(statuses.value); sm.set(name, { ...(statuses.value.get(name) ?? st), ...st, health: statuses.value.get(name)?.health, openAlerts: statuses.value.get(name)?.openAlerts, lastContactAt: st.apiReachable || st.nodes.some((n) => n.talosReachable) ? st.observedAt : statuses.value.get(name)?.lastContactAt }); statuses.value = sm }).catch(() => {}).finally(() => setBusy(false)) }
+  return <button class="btn !py-0.5 !px-2 text-[11px]" disabled={busy} title="Probe the Talos and Kubernetes APIs now" onClick={check}>{busy ? 'Checking' : 'Check now'}</button>
 }
 
 /** Old per-cluster Operations URLs land on Activity filtered to the cluster. */

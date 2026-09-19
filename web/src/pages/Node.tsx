@@ -8,7 +8,7 @@ import { LabVMControls, MakeLabHostDialog } from '../components/LabHost'
 import { canAdopt, canMakeLabHost, canRetire, hostName, hostOf, isLabVM, kindDetail, kindLabel, KindPill, modelOf, TypePill } from '../machine'
 import { Tabs } from '../components/Tabs'
 import { DataTable, type Column } from '../components/DataTable'
-import { Breadcrumbs, ConfirmDialog, Dialog, ErrorBox, Field, KeyValue, MaintenanceNotice, Meter, Notice, Pill, Section, StatusDot, stateTone } from '../components/ui'
+import { Breadcrumbs, ConfirmDialog, Dialog, ErrorBox, Field, KeyValue, MaintenanceNotice, Meter, Notice, Pill, Section, SeenAgo, StatusDot, stateTone } from '../components/ui'
 import { elapsed } from '../clock'
 
 type TabId = 'overview' | 'hardware' | 'kubernetes' | 'services' | 'logs' | 'actions'
@@ -67,11 +67,10 @@ export function NodePage({ ip: ipParam, mac }: { ip?: string; mac?: string }) {
           {node && !node.cluster && <KindPill m={node} />}
           {node && <TypePill m={node} />}
           {host && <a class="pill bg-panel-2 text-muted hover:text-fg" href={`/labhosts/${host.mac}/overview`}>on {hostName(host)}</a>}
-          {inv ? <Pill tone="good">Talos {inv.talosVersion}</Pill> : invErr ? <Pill tone="bad" title={invErr}>Talos not answering</Pill> : null}
+          {node?.talos && <ReachPill node={node} inv={inv} invErr={invErr} />}
           {k8s ? <Pill tone={k8s.ready ? 'good' : 'warn'}>{k8s.ready ? 'Ready' : 'NotReady'}</Pill> : null}
           {k8s?.unschedulable && <Pill tone="warn">cordoned</Pill>}
           {running.map((o) => <Pill key={o.id} tone="warn">{fmt.kind(o.kind)} running</Pill>)}
-          <span class="mono text-muted text-[12px]">{[ip, node?.mac, node?.arch].filter(Boolean).join(' · ')}{spec ? ` · pool ${spec.pool}` : ''}{spec?.network ? ' · static' : ''}</span>
         </div>
         <Tabs active={shown} onSelect={(t) => setTab(t as TabId)} tabs={tabs} />
       </header>
@@ -86,6 +85,18 @@ export function NodePage({ ip: ipParam, mac }: { ip?: string; mac?: string }) {
       </div>
     </div>
   )
+}
+
+/** Whether the Talos API answered on the last observation, and when. */
+function ReachPill({ node, inv, invErr }: { node: NodeRow; inv: Inventory | null; invErr: string | null }) {
+  const st = node.cluster ? statuses.value.get(node.cluster) : undefined
+  const ns = st?.nodes.find((n) => n.hostname === node.hostname)
+  const blind = st?.observer === 'offline' || ns?.talosReach === 'no-network'
+  if (blind) return <Pill tone="muted" title={st?.observerError || ns?.talosError}>Kubit cannot reach the network</Pill>
+  if (ns) return <span class="flex items-center gap-2"><Pill tone={ns.talosReachable ? 'good' : 'bad'} title={ns.talosError}>{ns.talosReachable ? `Talos ${ns.talosVersion || ''}`.trim() : 'Talos unreachable'}</Pill><SeenAgo contact={st?.lastContactAt} observed={st?.observedAt} blind={!ns.talosReachable} /></span>
+  if (inv) return <Pill tone="good">Talos {inv.talosVersion}</Pill>
+  if (invErr) return <Pill tone="bad" title={invErr}>Talos not answering</Pill>
+  return null
 }
 
 function OverviewTab({ inv, invErr, k8s, k8sErr, node, spec }: { inv: Inventory | null; invErr: string | null; k8s: NodeDetail | null; k8sErr: string | null; node: NodeRow | null; spec?: NodeSpec }) {

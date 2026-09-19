@@ -419,15 +419,35 @@ registered node with under 768 MiB allocatable — a 1 GiB VM keeps ~450 MiB aft
 and the kubelet, not enough for the platform add-ons — and clears with `node.memory-ok`
 once it is resized. `GET /clusters/{name}/status` serves the
 watcher's latest result; `?fresh=true` forces a live query; it carries `observedAt`,
-`lastSnapshotAt` and `snapshotInterval` so the Overview's *Observer* card shows how
-far behind the watcher is.
+`lastSnapshotAt` and `snapshotInterval` for the Overview's Backups card.
+
+**Confirmation, gaps and the blind observer.** A reachability fact (`talos.unreachable`,
+`api.unreachable`, `etcd.unhealthy`, `node.notready`) becomes an alert only after it has
+held for three consecutive ticks with no gap between them (`internal/watch/confirm.go`,
+45 s at the default interval); a recovery is recorded at once, and only if the alert was
+raised. A tick that arrives more than twice the interval after the previous one is a
+*gap*: the daemon's host slept or the process was suspended, so the counters restart
+and that tick is a new baseline, never an alert (gaps are counted, `GET /observer`).
+Every dial failure is classified (`internal/cluster/reach.go`): a refusal or timeout is
+the target's problem, `EHOSTUNREACH`/`ENETUNREACH`/`EHOSTDOWN` is the observer's. When
+every probe in a status fails for the observer's reason *and* the default gateway
+cannot be dialed either, the status is `observer: offline`: no cluster alert is raised,
+`status.health` is `unknown`, and one `observer.offline` warn is filed under the `kubit`
+pseudo-cluster (cleared by `observer.online`). Scheduled snapshots skip such ticks and a
+failed attempt waits ten minutes before the next. `kubit serve` takes `serve.lock` in
+`KUBIT_HOME`; a second daemon on the same home refuses to start (two watchers would
+double every sample and alert). Found on the EliteDesk lab: a MacBook running the daemon
+slept some forty times a day, each DarkWake tick raised a critical alert that cleared on
+the next wake, and one detached process lost LAN access altogether while every other
+process on the Mac could reach the cluster.
 
 **Health verdict.** Every tick on a ready cluster also sets `status.health`:
-`down` when the API, etcd or a registered node is unreachable or NotReady, `degraded`
-when unacknowledged warn/critical alerts are open (`status.openAlerts`), else
-`healthy`. The cluster's lifecycle `state` stays `ready`; the console's cluster pill
-shows `degraded` / `down` over it, so a cluster whose add-ons crash-loop is never
-presented as fine.
+`down` when a confirmed alert about the API, etcd or a node is open, `degraded`
+when unacknowledged warn/critical alerts are open (`status.openAlerts`), `unknown`
+while the observer is offline, else `healthy`. The cluster's lifecycle `state` stays
+`ready`; the console's cluster pill shows the verdict over it. `status.lastContactAt`
+is the last observation in which anything answered; the console shows it as "seen
+12 s ago" in the cluster header and a *Check now* button runs `?fresh=true`.
 
 ### Service health (what runs in the cluster)
 

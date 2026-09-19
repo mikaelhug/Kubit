@@ -38,6 +38,19 @@ func (s *Server) AttachWatcher(ctx context.Context, w *watch.Watcher) {
 	}
 	w.OnRefresh = func(name, scope string) { s.refresh(name, scope) }
 	w.OnHostSample = func(mac string, sm store.Sample) { s.hub.publish(Message{Kind: "hostSample", Key: mac, Sample: &sm}) }
+	w.OnObserver = func(o watch.ObserverState) {
+		s.hub.publish(Message{Kind: "observer", Observer: &o})
+		if o.Online {
+			if s.store.HasOpenEvent(ctx, store.KubitKey, "", "observer.offline") {
+				_ = s.store.ResolveEvents(ctx, store.KubitKey, "", "observer.offline")
+				s.raiseEvent(ctx, store.EventRow{Cluster: store.KubitKey, Severity: "info", Kind: "observer.online", Message: "Kubit can reach the network again; alerts resume"})
+			}
+			return
+		}
+		if !s.store.HasOpenEvent(ctx, store.KubitKey, "", "observer.offline") {
+			s.raiseEvent(ctx, store.EventRow{Cluster: store.KubitKey, Severity: "warn", Kind: "observer.offline", Message: "Kubit cannot reach the local network (" + o.Error + "); cluster alerts are paused"})
+		}
+	}
 	s.attachLive(ctx)
 	go s.watchPXE(ctx)
 	go s.watchVersions(ctx)
@@ -96,8 +109,17 @@ func (s *Server) watchPXE(ctx context.Context) {
 	}
 }
 
+func (s *Server) handleObserver(w http.ResponseWriter, _ *http.Request) {
+	if s.watcher == nil {
+		writeJSON(w, http.StatusOK, watch.ObserverState{Online: true})
+		return
+	}
+	writeJSON(w, http.StatusOK, s.watcher.Observer())
+}
+
 func (s *Server) healthRoutes() {
 	r := s.mux
+	r.HandleFunc("GET /api/v1/observer", s.handleObserver)
 	r.HandleFunc("GET /api/v1/clusters/{name}/samples", s.handleSamples)
 	r.HandleFunc("GET /api/v1/clusters/{name}/service-health", s.handleServiceHealth)
 	r.HandleFunc("GET /api/v1/clusters/{name}/events", s.handleEvents2)

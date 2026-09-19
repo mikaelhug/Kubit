@@ -24,16 +24,26 @@ func (s *Server) etcdRoutes() {
 	r.HandleFunc("POST /api/v1/clusters/{name}/snapshots/{id}/restore", s.disruptive(s.handleSnapshotRestore))
 }
 
-var scheduleMu sync.Mutex
+var (
+	scheduleMu      sync.Mutex
+	scheduleAttempt = map[string]time.Time{}
+)
+
+// scheduleRetry is how long a failed scheduled snapshot waits before the next try.
+const scheduleRetry = 10 * time.Minute
 
 // maybeScheduleSnapshot runs on every watcher tick: when the schedule is due and the
-// cluster is healthy and idle, a snapshot operation is started like any other.
+// cluster is healthy, observed and idle, a snapshot operation is started like any
+// other. A failed attempt is retried after scheduleRetry, not on the next tick.
 func (s *Server) maybeScheduleSnapshot(ctx context.Context, name string, st *cluster.Status) {
-	if st.State != cluster.StateReady || !st.APIReachable || !st.Etcd.Healthy || s.locks.busy(name) {
+	if st.State != cluster.StateReady || !st.APIReachable || !st.Etcd.Healthy || st.Health == cluster.HealthUnknown || st.Observer == cluster.ObserverOffline || s.locks.busy(name) {
 		return
 	}
 	scheduleMu.Lock()
 	defer scheduleMu.Unlock()
+	if time.Since(scheduleAttempt[name]) < scheduleRetry {
+		return
+	}
 	c, _, err := s.manager.LoadCluster(ctx, name)
 	if err != nil || !s.manager.SnapshotDue(ctx, c) {
 		return
@@ -42,6 +52,7 @@ func (s *Server) maybeScheduleSnapshot(ctx context.Context, name string, st *clu
 		age, _ := s.manager.SnapshotAge(ctx, name)
 		s.raiseEvent(ctx, store.EventRow{Cluster: name, Severity: "warn", Kind: "backup.stale", Message: fmt.Sprintf("Last etcd snapshot is %s old; schedule is every %s. Check the Backups tab for failed snapshot operations.", age.Round(time.Minute), c.Spec.Backup.Etcd.Interval)})
 	}
+	scheduleAttempt[name] = time.Now()
 	if _, err := s.runOperation(name, "etcd.snapshot", map[string]string{"source": "schedule"}, func(ctx contextT, sink clusterSink) (any, error) {
 		sn, err := s.manager.SnapshotEtcd(ctx, name, "schedule", sink)
 		if err == nil {

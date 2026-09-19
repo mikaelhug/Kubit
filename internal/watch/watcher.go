@@ -36,19 +36,78 @@ type Watcher struct {
 	// OnHostSample pushes a lab host's newest reading (keyed by MAC).
 	OnHostSample func(mac string, sm store.Sample)
 
+	// OnObserver reports when Kubit's own view of the network changes.
+	OnObserver func(o ObserverState)
+
 	mu           sync.Mutex
 	last         map[string]*cluster.Status
 	lastServices map[string]*cluster.ServiceHealth
 	trackers     map[string]*ServiceTracker
+	confirms     map[string]*confirm
+	lastTick     map[string]time.Time
+	lastContact  map[string]time.Time
 	running      map[string]context.CancelFunc
 	memHigh      map[string]int // lab host MAC → consecutive samples over the memory line
+	observer     ObserverState
+	gaps         []time.Time
+	labNoNet     map[string]bool
+}
+
+// ObserverState is what Kubit knows about its own ability to observe: whether its
+// host can reach the network, since when, and how often observation paused (the
+// host slept or the process was suspended) in the last day.
+type ObserverState struct {
+	Online    bool   `json:"online"`
+	Since     string `json:"since,omitempty"`
+	Error     string `json:"error,omitempty"`
+	Gaps24h   int    `json:"gaps24h"`
+	LastGapAt string `json:"lastGapAt,omitempty"`
+}
+
+// Observer returns the current observer state.
+func (w *Watcher) Observer() ObserverState {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	o := w.observer
+	o.Gaps24h, o.LastGapAt = w.gapStats()
+	return o
+}
+
+func (w *Watcher) gapStats() (int, string) {
+	cut := time.Now().Add(-24 * time.Hour)
+	kept := w.gaps[:0]
+	for _, g := range w.gaps {
+		if g.After(cut) {
+			kept = append(kept, g)
+		}
+	}
+	w.gaps = kept
+	if len(kept) == 0 {
+		return 0, ""
+	}
+	return len(kept), kept[len(kept)-1].UTC().Format(time.RFC3339)
+}
+
+// setOnline records a change of the observer's network view and reports it once.
+func (w *Watcher) setOnline(online bool, reason string) {
+	w.mu.Lock()
+	changed := w.observer.Online != online || w.observer.Since == ""
+	if changed {
+		w.observer = ObserverState{Online: online, Since: time.Now().UTC().Format(time.RFC3339), Error: reason}
+	}
+	o := w.observer
+	o.Gaps24h, o.LastGapAt = w.gapStats()
+	w.mu.Unlock()
+	if changed && w.OnObserver != nil {
+		w.OnObserver(o)
+	}
 }
 
 func New(m *cluster.Manager, interval time.Duration) *Watcher {
 	if interval <= 0 {
 		interval = 15 * time.Second
 	}
-	return &Watcher{Manager: m, Store: m.Store, Interval: interval, ServiceInterval: 4 * interval, last: map[string]*cluster.Status{}, lastServices: map[string]*cluster.ServiceHealth{}, trackers: map[string]*ServiceTracker{}, running: map[string]context.CancelFunc{}, memHigh: map[string]int{}}
+	return &Watcher{Manager: m, Store: m.Store, Interval: interval, ServiceInterval: 4 * interval, last: map[string]*cluster.Status{}, lastServices: map[string]*cluster.ServiceHealth{}, trackers: map[string]*ServiceTracker{}, confirms: map[string]*confirm{}, lastTick: map[string]time.Time{}, lastContact: map[string]time.Time{}, running: map[string]context.CancelFunc{}, memHigh: map[string]int{}, labNoNet: map[string]bool{}, observer: ObserverState{Online: true}}
 }
 
 // Run starts a loop per stored cluster and picks up clusters added or forgotten later.
@@ -281,6 +340,10 @@ func (w *Watcher) labTick(ctx context.Context, host *store.Machine) {
 	if host.LabHost.Failures >= labUnreachableAfter {
 		w.emit(tctx, key, []store.EventRow{{Cluster: key, Severity: "info", Kind: "labhost.back", Message: labName(host) + ": reachable again"}})
 	}
+	w.mu.Lock()
+	w.labNoNet[host.MAC] = false
+	w.mu.Unlock()
+	w.setOnline(true, "")
 	host.LabHost.Failures = 0
 	capa, err := lc.Capacity(tctx)
 	if err == nil {
@@ -346,8 +409,24 @@ func (w *Watcher) labTick(ctx context.Context, host *store.Machine) {
 const labUnreachableAfter = 3
 
 func (w *Watcher) labFailed(ctx context.Context, host *store.Machine, err error) {
-	log.Printf("lab host %s: %v", host.MAC, err)
 	key := store.LabHostKey(host.MAC)
+	if cluster.Classify(err) == cluster.ReachNoNetwork {
+		if r, _ := cluster.ControlProbe(2 * time.Second); r == cluster.ReachNoNetwork {
+			w.mu.Lock()
+			first := !w.labNoNet[host.MAC]
+			w.labNoNet[host.MAC] = true
+			w.mu.Unlock()
+			if first {
+				log.Printf("lab host %s: %v (Kubit's host cannot reach the network; not counted)", host.MAC, err)
+			}
+			w.setOnline(false, cluster.ShortNet(err))
+			return
+		}
+	}
+	w.mu.Lock()
+	w.labNoNet[host.MAC] = false
+	w.mu.Unlock()
+	log.Printf("lab host %s: %v", host.MAC, err)
 	// Bump only Failures against the current record; leave State/VMs/etc. alone so a
 	// failing tick during a maintenance reboot does not un-park the host.
 	var failures int
@@ -521,44 +600,90 @@ func (w *Watcher) tick(ctx context.Context, name string) {
 		log.Printf("watch %s: %v", name, err)
 		return
 	}
+	now := time.Now()
 	w.mu.Lock()
 	prev := w.last[name]
 	w.last[name] = st
+	// A tick long after the previous one means the host slept or the process was
+	// suspended: what was observed before is no baseline for what is observed now.
+	gap := !w.lastTick[name].IsZero() && now.Sub(w.lastTick[name]) > 2*w.Interval
+	if gap {
+		w.gaps = append(w.gaps, now)
+	}
+	if st.Observer == cluster.ObserverOnline && (st.APIReachable || anyReachable(st)) {
+		w.lastContact[name] = now
+	}
+	if lc := w.lastContact[name]; !lc.IsZero() {
+		st.LastContactAt = lc.UTC().Format(time.RFC3339)
+	}
+	c := w.confirms[name]
+	if c == nil {
+		c = newConfirm()
+		if open, err := w.Store.Events(ctx, name, 1000, true); err == nil {
+			c.Seed(open)
+		}
+		w.confirms[name] = c
+	}
 	w.mu.Unlock()
 
-	now := time.Now()
 	samples := []store.Sample{{CPUMilli: st.Totals.CPUMilli, CPUCap: st.Totals.CPUCapMilli, MemBytes: st.Totals.MemBytes, MemCap: st.Totals.MemCapBytes, Pods: st.Totals.Pods, Ready: st.Totals.NodesReady == st.Totals.Nodes, Reachable: st.APIReachable}}
 	for _, n := range st.Nodes {
 		samples = append(samples, store.Sample{Node: n.Hostname, CPUMilli: n.CPUMilli, CPUCap: n.CPUCapMilli, MemBytes: n.MemBytes, MemCap: n.MemCapBytes, Pods: n.Pods, Ready: n.Ready, Reachable: n.TalosReachable})
 	}
 	_ = w.Store.AddSamples(ctx, name, now, samples)
 
+	offline := st.Observer == cluster.ObserverOffline
+	if offline {
+		w.setOnline(false, st.ObserverError)
+	} else {
+		w.setOnline(true, "")
+	}
+
 	// While a cluster is still being provisioned, unreachable nodes and a missing API
 	// are the expected state, not alerts; samples and status still flow to the UI.
-	if st.State == cluster.StateReady {
-		events := Derive(name, prev, st)
+	switch {
+	case st.State != cluster.StateReady:
+	case offline:
+		// Nothing the cluster did: the observer is blind. Counters restart when it sees again.
+		c.Reset()
+		st.Health, st.OpenAlerts = cluster.HealthUnknown, w.Store.OpenEventCount(ctx, name)
+	case gap || (prev != nil && prev.Observer == cluster.ObserverOffline):
+		c.Reset()
+		health, open := w.health(ctx, name, st, c)
+		st.Health, st.OpenAlerts = health, open
+	default:
+		events := unconfirmed(Derive(name, prev, st))
 		if prev == nil {
 			events = append(events, w.reconcileOpen(ctx, name, st)...)
 		}
+		events = append(events, c.Apply(name, st)...)
 		w.emit(ctx, name, events)
-		health, open := w.health(ctx, name, st)
-		w.mu.Lock()
+		health, open := w.health(ctx, name, st, c)
 		st.Health, st.OpenAlerts = health, open
-		w.mu.Unlock()
 	}
+	w.mu.Lock()
+	w.lastTick[name] = time.Now()
+	w.mu.Unlock()
 	if w.OnStatus != nil {
 		w.OnStatus(name, st)
 	}
 }
 
-// health rolls the status and the open alerts into one word for the cluster pill.
-func (w *Watcher) health(ctx context.Context, name string, st *cluster.Status) (string, int) {
-	open := w.Store.OpenEventCount(ctx, name)
-	if !st.APIReachable || !st.Etcd.Healthy {
-		return cluster.HealthDown, open
-	}
+func anyReachable(st *cluster.Status) bool {
 	for _, n := range st.Nodes {
-		if !n.TalosReachable || (n.Registered && !n.Ready) {
+		if n.TalosReachable {
+			return true
+		}
+	}
+	return false
+}
+
+// health rolls the confirmed facts and the open alerts into one word for the cluster
+// pill: down only for facts that have held long enough to be alerts.
+func (w *Watcher) health(ctx context.Context, name string, st *cluster.Status, c *confirm) (string, int) {
+	open := w.Store.OpenEventCount(ctx, name)
+	for key := range badFacts(name, st) {
+		if c.open[key] {
 			return cluster.HealthDown, open
 		}
 	}
@@ -569,8 +694,9 @@ func (w *Watcher) health(ctx context.Context, name string, st *cluster.Status) (
 }
 
 // reconcileOpen closes alerts left open from before a daemon restart whose condition
-// no longer holds: Derive only reports transitions, so without this a transient
-// failure observed right before a restart would stay "active" for ever.
+// no longer holds, for the kinds the confirm tracker does not own: Derive only reports
+// transitions, so without this a transient failure observed right before a restart
+// would stay "active" for ever.
 func (w *Watcher) reconcileOpen(ctx context.Context, name string, st *cluster.Status) []store.EventRow {
 	var out []store.EventRow
 	rec := func(kind, node, msg string) {
@@ -579,21 +705,9 @@ func (w *Watcher) reconcileOpen(ctx context.Context, name string, st *cluster.St
 		}
 	}
 	for _, n := range st.Nodes {
-		if n.TalosReachable {
-			rec("talos.back", n.Hostname, n.Hostname+": Talos API reachable")
-		}
-		if st.APIReachable && n.Ready {
-			rec("node.ready", n.Hostname, n.Hostname+" is Ready")
-		}
 		if st.APIReachable && n.MemCapBytes >= minAllocatableBytes {
 			rec("node.memory-ok", n.Hostname, fmt.Sprintf("%s has %d MiB allocatable for pods", n.Hostname, n.MemCapBytes>>20))
 		}
-	}
-	if st.APIReachable {
-		rec("api.back", "", "Kubernetes API reachable")
-	}
-	if st.Etcd.Healthy {
-		rec("etcd.healthy", "", "etcd healthy")
 	}
 	if st.Platform != nil && st.Platform.Outputs["ingress_ip"] != "" {
 		rec("lb.assigned", "", "ingress LoadBalancer IP "+st.Platform.Outputs["ingress_ip"])

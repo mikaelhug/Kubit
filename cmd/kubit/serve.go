@@ -29,6 +29,11 @@ func serveCmd() *cobra.Command {
 				return err
 			}
 			defer m.Store.Close()
+			lock, err := store.LockHome(m.Home)
+			if err != nil {
+				return err
+			}
+			defer lock.Release()
 			if !api.Loopback(addr) && token == "" {
 				token = os.Getenv("KUBIT_TOKEN")
 				if token == "" {

@@ -1,9 +1,9 @@
 import { useEffect, useState } from 'preact/hooks'
-import { api, fmt, type HealthEvent, type Sample, type ServiceHealth, type Versions } from '../../api'
+import { api, fmt, type HealthEvent, type Sample, type ServiceHealth, type Status, type Versions } from '../../api'
 import { ack, clusters, health, latestTalos as latestTalosSignal, loadSnapshots, operations, refreshKey, snapshots } from '../../store'
 import { runbookFor } from '../../runbooks'
 import { Sparkline } from '../../components/Sparkline'
-import { Notice, Pill, Section, StatusDot } from '../../components/ui'
+import { Notice, Pill, Section, SeenAgo, StatusDot } from '../../components/ui'
 import type { ClusterCtx } from './ClusterPage'
 
 const recoveryKinds = new Set(['talos.back', 'node.ready', 'api.back', 'etcd.healthy', 'lb.assigned', 'workload.available', 'pod.recovered', 'pvc.bound', 'service.endpoints', 'ingress.address', 'lb.pool-free'])
@@ -47,12 +47,11 @@ export function Overview({ ctx }: { ctx: ClusterCtx }) {
   return (
     <>
       {updates.length > 0 && <Notice tone="info"><span class="flex items-center gap-2">Update available: {updates.join(' · ')}<a href={`/clusters/${name}/lifecycle`} class="ml-auto text-accent hover:underline text-[12px]">Lifecycle</a></span></Notice>}
-      {status?.apiError && !alerts.some((e) => e.kind === 'api.unreachable') && <Notice tone="warn">Kubernetes API unreachable at {status.endpoint}: {status.apiError}. Readiness and usage come from the last known state.</Notice>}
+      <Reachability status={status} />
       {alerts.length > 0 && (
         <div class="panel border-warn/50">
           <div class="flex items-center gap-2 px-4 py-2 border-b border-border">
             <span class="font-semibold">{alerts.length} active alert{alerts.length === 1 ? '' : 's'}</span>
-            <span class="text-[12px] text-muted">from the health watcher; acknowledge once handled</span>
             <button class="btn !py-0.5 !px-2 text-[12px] ml-auto" onClick={() => ack(name)}>Acknowledge all</button>
           </div>
           {alerts.map((e) => <EventRow key={e.id} e={e} onAck={() => ack(name, e.id)} />)}
@@ -77,10 +76,9 @@ export function Overview({ ctx }: { ctx: ClusterCtx }) {
           <Sparkline label="CPU used" points={pts((s) => s.cpuMilli)} max={last?.cpuCap} format={fmt.cores} />
           <Sparkline label="Memory used" points={pts((s) => s.memBytes)} max={last?.memCap} format={fmt.bytes} />
           <Sparkline label="Pods" points={pts((s) => s.pods)} max={t?.podCap} format={String} />
-          <span class="text-[11px] text-muted">Sampled every 15 s by the daemon (kept 24 h, then hourly for 30 d). Gaps mean the API was unreachable.</span>
         </div>
         <div class="flex flex-col gap-4">
-          <Section title="Recent events" help="Alerts and their recoveries.">
+          <Section title="Recent events">
             <div class="panel divide-y divide-border/60 max-h-[260px] overflow-auto">
               {notable.length === 0 && <div class="p-4 text-[13px] text-muted">Nothing worth reporting.</div>}
               {notable.slice(0, 30).map((e) => <EventRow key={e.id} e={e} />)}
@@ -104,6 +102,39 @@ export function Overview({ ctx }: { ctx: ClusterCtx }) {
       </div>
     </>
   )
+}
+
+/** What Kubit could reach on its last observation, and whether it could observe at all. */
+function Reachability({ status }: { status: Status | null }) {
+  if (!status) return null
+  const blind = status.observer === 'offline'
+  const nodes = status.nodes
+  const up = nodes.filter((n) => n.talosReachable).length
+  const item = (label: string, ok: boolean | null, detail: string) => (
+    <span class="flex items-center gap-1.5" title={detail}>
+      <StatusDot tone={ok === null ? 'muted' : ok ? 'good' : 'bad'} />
+      <span>{label}</span>
+      <span class="text-muted">{detail}</span>
+    </span>
+  )
+  return (
+    <div class={`panel px-3 py-2 text-[12.5px] flex flex-wrap items-center gap-x-5 gap-y-1 ${blind ? 'border-warn/50' : ''}`}>
+      {blind
+        ? <span class="text-warn">Kubit cannot reach the network{status.observerError ? ` (${status.observerError})` : ''}. What is shown is the last known state.</span>
+        : <>
+          {item('Talos API', up === nodes.length, `${up}/${nodes.length} nodes`)}
+          {item('Kubernetes API', status.apiReachable, status.apiReachable ? 'reachable' : shortErr(status.apiError))}
+          {item('etcd', status.etcd.healthy, status.etcd.healthy ? `${status.etcd.members}/${status.etcd.expected} members` : `${status.etcd.members}/${status.etcd.expected} members`)}
+        </>}
+      <span class="ml-auto"><SeenAgo contact={status.lastContactAt} observed={status.observedAt} blind={blind} /></span>
+    </div>
+  )
+}
+
+function shortErr(e?: string) {
+  if (!e) return 'unreachable'
+  const i = e.lastIndexOf(': ')
+  return i >= 0 ? e.slice(i + 2) : e
 }
 
 export function EventRow({ e, onAck }: { e: HealthEvent; onAck?: () => void }) {

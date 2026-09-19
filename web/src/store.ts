@@ -1,7 +1,7 @@
 // Global live state as signals, fed by one WebSocket (see live.ts). Pages derive from
 // these and only fetch large derived views, which the daemon tells them to refresh.
 import { signal, computed } from '@preact/signals'
-import { api, setUnauthorizedHandler, type Me, type AuditEntry, type ClusterRow, type Event, type HealthEvent, type NodeRow, type Operation, type Sample, type Settings, type Snapshot, type Status, type Step } from './api'
+import { api, setUnauthorizedHandler, type Me, type AuditEntry, type ClusterRow, type Event, type HealthEvent, type NodeRow, type ObserverState, type Operation, type Sample, type Settings, type Snapshot, type Status, type Step } from './api'
 
 export const clusters = signal<ClusterRow[]>([])
 /** Every machine Kubit knows, keyed by MAC; pushed on each store write. */
@@ -50,6 +50,11 @@ export const refreshes = signal<Map<string, number>>(new Map())
 export function refreshKey(cluster: string, scope: string) { return refreshes.value.get(`${cluster}/${scope}`) ?? 0 }
 /** Newest reading per lab host (by MAC); the Lab host tab appends it to its history. */
 export const hostSamples = signal<Map<string, Sample>>(new Map())
+/** Whether Kubit's own host can reach the network, and how often observation paused. */
+export const observer = signal<ObserverState>({ online: true, gaps24h: 0 })
+export async function loadObserver() {
+  try { observer.value = await api.observer() } catch {}
+}
 /** Health events per cluster (newest first), seeded from the API and appended live. */
 export const health = signal<Map<string, HealthEvent[]>>(new Map())
 

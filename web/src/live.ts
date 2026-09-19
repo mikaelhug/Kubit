@@ -3,7 +3,7 @@
 // or, when the daemon says so, reloads the base state once.
 import { fmt, getToken, type Message } from './api'
 import {
-  applyStepEvent, audit, clusters, connected, daemon, health, hostSamples, latestTalos, loadMachines, loadSettings, machines, me, opEvents, operations,
+  applyStepEvent, audit, clusters, connected, daemon, health, hostSamples, latestTalos, loadMachines, loadObserver, loadSettings, machines, me, observer, opEvents, operations,
   reconnectAttempt, refreshes, reloadClusters, reloadOperations, resyncing, settings, snapshots, statuses, toast, upsertCluster, upsertOp,
 } from './store'
 
@@ -46,7 +46,7 @@ export function reconnectLive() {
 export async function resync() {
   resyncing.value = true
   try {
-    await Promise.all([reloadClusters(), reloadOperations(), loadMachines(), loadSettings()])
+    await Promise.all([reloadClusters(), reloadOperations(), loadMachines(), loadSettings(), loadObserver()])
     const rm = new Map(refreshes.value)
     for (const k of rm.keys()) rm.set(k, (rm.get(k) ?? 0) + 1)
     rm.set('*/resync', (rm.get('*/resync') ?? 0) + 1)
@@ -154,6 +154,9 @@ function apply(m: Message) {
         health.value = hm
         if (h.severity !== 'info' && !h.acked && !replayed) toast(h.cluster.startsWith('labhost:') ? h.message : `${h.cluster}: ${h.message}`, 'error')
       }
+      break
+    case 'observer':
+      if (m.observer) observer.value = m.observer
       break
     case 'hostSample':
       if (m.sample && m.key) hostSamples.value = new Map(hostSamples.value).set(m.key, m.sample)
