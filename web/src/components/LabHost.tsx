@@ -1,10 +1,10 @@
 import type { ComponentChildren } from 'preact'
 import { useEffect, useState } from 'preact/hooks'
 import { api, fmt, labHostKey, labNeedsReboot, vmsOf, type LabHost, type LabVM, type NodeRow, type Sample, type VMSize } from '../api'
-import { ack, health, hostSamples, loadHealth, machineList, operations, toast, watch } from '../store'
-import { Code, ConfirmDialog, Dialog, ErrorBox, Field, MaintenanceNotice, Meter, Notice, Pill, stateTone } from './ui'
+import { ack, health, hostSamples, loadHealth, machineList, toast, watch } from '../store'
+import { Code, ConfirmDialog, Dialog, ErrorBox, Field, MaintenanceNotice, Meter, Notice, Pill } from './ui'
 import { usePxeGated } from './PxeGate'
-import { hostName, hostOf, installCandidates } from '../machine'
+import { hostName, hostOf, installCandidates, KindPill } from '../machine'
 import { Sparkline } from './Sparkline'
 import { EventRow } from '../pages/cluster/Overview'
 
@@ -97,26 +97,23 @@ export function AddVMsDialog({ host, onClose }: { host: NodeRow; onClose: () => 
   )
 }
 
-/** The Lab host tab on a machine page: alerts, host utilisation, system and updates, VMs. */
-export function LabHostPanel({ host }: { host: NodeRow }) {
+/** The VMs of a lab host: state, size, boot source, cluster membership, and the per-VM operations. */
+export function HostVMs({ host }: { host: NodeRow }) {
   const lh = host.labhost
   const [add, setAdd] = useState(false)
   const [del, setDel] = useState<LabVM | null>(null)
+  const [resize, setResize] = useState<LabVM | null>(null)
   if (!lh) return null
   const vms = vmsOf(lh)
   const rows = machineList.value
   const rowOf = (vm: LabVM) => rows.find((m) => m.mac === vm.mac)
-  const busy = [...operations.value.values()].some((o) => o.status === 'running' && (o.request as { host?: string } | undefined)?.host === host.mac)
   const run = (p: Promise<{ operationId: number }>) => p.then((r) => watch(r, false)).catch((e) => toast(e.message, 'error'))
   return (
     <div class="flex flex-col gap-4">
-      <HostStateNotice host={host} />
-      <HostAlerts mac={host.mac} />
-      <HostMetrics host={host} lh={lh} />
-      <HostSystem host={host} lh={lh} busy={busy || lh.state !== 'ready'} />
       <div class="panel">
         <div class="flex items-center gap-3 px-4 py-2.5 border-b border-border">
           <span class="font-medium">Virtual machines</span>
+          <span class="text-[12px] text-muted">{fmt.bytes(mib(vms.reduce((s, v) => s + v.memMiB, 0)))} of {fmt.bytes(mib(Math.max(0, lh.capacity.memMiB - RESERVED_MIB)))} assigned</span>
           <span class="ml-auto flex gap-2">
             <button class="btn btn-primary !py-1" disabled={lh.state !== 'ready'} onClick={() => setAdd(true)}>+ Add VMs</button>
           </span>
@@ -127,17 +124,19 @@ export function LabHostPanel({ host }: { host: NodeRow }) {
             {vms.length === 0 && <tr><td colSpan={6} class="pl-4 py-3 text-muted">No VMs yet.</td></tr>}
             {vms.map((vm) => {
               const row = rowOf(vm)
+              const member = !!row?.cluster
               return (
                 <tr key={vm.name}>
-                  <td class="pl-4"><span class="font-medium mono">{vm.name}</span><span class="block text-[11px] text-muted mono">{vm.mac}{vm.ip ? ` · ${vm.ip}` : ''}</span></td>
+                  <td class="pl-4">{row ? <a class="font-medium mono hover:underline" href={`/machines/${row.mac}`}>{vm.name}</a> : <span class="font-medium mono">{vm.name}</span>}<span class="block text-[11px] text-muted mono">{vm.mac}{row?.ip || vm.ip ? ` · ${row?.ip || vm.ip}` : ''}</span></td>
                   <td><Pill tone={vm.state === 'running' ? 'good' : 'muted'}>{vm.state}</Pill></td>
-                  <td class="num">{vm.cpus} vCPU · {fmt.bytes(mib(vm.memMiB))} · {vm.diskGiB} GiB</td>
+                  <td class="num">{vm.cpus} vCPU · {fmt.bytes(mib(vm.memMiB))} · {vm.diskGiB} GiB{vm.dataGiB ? ` + ${vm.dataGiB} GiB data` : ''}</td>
                   <td><Pill tone={vm.boot === 'disk' ? 'info' : 'muted'}>{vm.boot === 'disk' ? 'disk' : 'Talos (RAM)'}</Pill></td>
-                  <td>{row ? (row.cluster ? <a class="text-accent hover:underline" href={`/clusters/${row.cluster}/nodes`}>{row.cluster} · {row.hostname}</a> : <a class="hover:underline" href={`/machines/${row.mac}`}><Pill tone={stateTone(row.state)}>{row.state}</Pill></a>) : <span class="text-muted">—</span>}</td>
+                  <td>{row ? (row.cluster ? <a class="text-accent hover:underline" href={`/clusters/${row.cluster}/nodes`}>{row.cluster} · {row.hostname}</a> : <KindPill m={row} />) : <span class="text-muted">—</span>}</td>
                   <td class="text-right pr-3 whitespace-nowrap">
-                    {vm.state === 'running' ? <button class="btn !py-1" onClick={() => run(api.labVM(host.mac, vm.name, 'stop'))}>Stop</button> : <button class="btn !py-1" onClick={() => run(api.labVM(host.mac, vm.name, 'start'))}>Start</button>}
-                    {' '}<button class="btn !py-1" disabled={!!row?.cluster} title={row?.cluster ? 'Remove it from the cluster first' : 'Boot back into Talos maintenance mode'} onClick={() => run(api.labVM(host.mac, vm.name, 'reprovision'))}>Re-provision</button>
-                    {' '}<button class="btn btn-danger !py-1" disabled={!!row?.cluster} onClick={() => setDel(vm)}>Delete</button>
+                    {vm.state === 'running' ? <button class="btn !py-1" disabled={member} title={member ? 'Drain and remove it from the cluster first' : ''} onClick={() => run(api.labVM(host.mac, vm.name, 'stop'))}>Stop</button> : <button class="btn !py-1" onClick={() => run(api.labVM(host.mac, vm.name, 'start'))}>Start</button>}
+                    {' '}<button class="btn !py-1" onClick={() => setResize(vm)}>Resize</button>
+                    {' '}<button class="btn !py-1" disabled={member} title={member ? 'Remove it from the cluster first' : 'Boot back into Talos maintenance mode'} onClick={() => run(api.labVM(host.mac, vm.name, 'reprovision'))}>Re-provision</button>
+                    {' '}<button class="btn btn-danger !py-1" disabled={member} onClick={() => setDel(vm)}>Delete</button>
                   </td>
                 </tr>
               )
@@ -146,8 +145,34 @@ export function LabHostPanel({ host }: { host: NodeRow }) {
         </table>
       </div>
       {add && <AddVMsDialog host={host} onClose={() => setAdd(false)} />}
+      {resize && <ResizeVMDialog host={host} vm={resize} onClose={() => setResize(null)} />}
       {del && <ConfirmDialog title={`Delete ${del.name}`} action="Delete VM" tone="danger" onClose={() => setDel(null)} onConfirm={() => api.labVMDelete(host.mac, del.name).then(() => setDel(null)).catch((e) => toast(e.message, 'error'))} impact={<p>Destroys the VM and its disk.</p>} />}
     </div>
+  )
+}
+
+/** Change vCPU and memory of one VM; takes effect on its next boot. */
+function ResizeVMDialog({ host, vm, onClose }: { host: NodeRow; vm: LabVM; onClose: () => void }) {
+  const lh = host.labhost!
+  const [cpus, setCpus] = useState(vm.cpus)
+  const [memMiB, setMem] = useState(vm.memMiB)
+  const [error, setError] = useState<string | null>(null)
+  const others = vmsOf(lh).filter((v) => v.name !== vm.name).reduce((s, v) => s + v.memMiB, 0)
+  const freeMiB = Math.max(0, lh.capacity.memMiB - RESERVED_MIB - others)
+  const over = memMiB > freeMiB
+  const small = memMiB < MIN_VM_MIB
+  const submit = () => api.labVMResize(host.mac, vm.name, cpus, memMiB).then(onClose).catch((e) => setError(e.message))
+  return (
+    <Dialog title={`Resize ${vm.name}`} onClose={onClose} footer={<><button class="btn" onClick={onClose}>Cancel</button><button class="btn btn-primary" disabled={over || small || cpus < 1} onClick={submit}>Save</button></>}>
+      <ErrorBox error={error} />
+      <div class="grid grid-cols-2 gap-3">
+        <Field label="vCPU"><input class="input num" type="number" min={1} value={cpus} onInput={(e) => setCpus(Number((e.target as HTMLInputElement).value))} /></Field>
+        <Field label="RAM (MiB)" hint={`${fmt.bytes(mib(freeMiB))} free for this VM`}><input class="input num" type="number" min={MIN_VM_MIB} step={256} value={memMiB} onInput={(e) => setMem(Number((e.target as HTMLInputElement).value))} /></Field>
+      </div>
+      {over && <Notice tone="bad">Not enough memory.</Notice>}
+      {small && <Notice tone="bad">Every VM needs at least {MIN_VM_MIB} MiB.</Notice>}
+      <p class="text-[12px] text-muted">Applies on the next boot of the VM{vm.state === 'running' ? '; it keeps running until then' : ''}.</p>
+    </Dialog>
   )
 }
 
@@ -193,7 +218,7 @@ export function LabVMControls({ vm }: { vm: NodeRow }) {
   return (
     <div class="panel p-4 flex items-center gap-4">
       <div class="flex-1 min-w-0">
-        <div class="font-medium">VM on <a class="text-accent hover:underline" href={`/machines/${host.mac}#labhost`}>{hostName(host)}</a></div>
+        <div class="font-medium">VM on <a class="text-accent hover:underline" href={`/labhosts/${host.mac}/overview`}>{hostName(host)}</a></div>
         <p class="text-[12.5px] text-muted">{entry.cpus} vCPU · {fmt.bytes(mib(entry.memMiB))} · {entry.diskGiB} GiB · {entry.state}{entry.boot === 'disk' ? ' · boots from disk' : ' · boots Talos over the network'}</p>
       </div>
       <div class="flex gap-2 shrink-0">

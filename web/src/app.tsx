@@ -13,6 +13,7 @@ import { Palette, Shortcuts, ThemeToggle } from './components/Palette'
 import { ClusterPage } from './pages/cluster/ClusterPage'
 import { NewCluster } from './pages/create/NewCluster'
 import { NodePage } from './pages/Node'
+import { LabHostPage } from './pages/LabHost'
 import { Operations } from './pages/Operations'
 import { Inventory } from './pages/fleet/Inventory'
 import { NetworkBoot } from './pages/fleet/NetworkBoot'
@@ -103,8 +104,8 @@ function Shell() {
           <Route path="/clusters/:name/:section/:sub" component={ClusterPage} />
           <Route path="/nodes/:ip" component={NodePage} />
           <Route path="/machines/:mac" component={NodePage} />
-          <Route path="/labhosts/:mac" component={NodePage} />
-          <Route path="/labhosts/:mac/:tab" component={NodePage} />
+          <Route path="/labhosts/:mac" component={LabHostPage} />
+          <Route path="/labhosts/:mac/:tab" component={LabHostPage} />
           <Route path="/fleet/inventory" component={Inventory} />
           <Route path="/fleet/network-boot" component={NetworkBoot} />
           <Route path="/operations" component={Operations} />

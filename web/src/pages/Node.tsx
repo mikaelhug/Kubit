@@ -4,24 +4,25 @@ import { useLocation } from 'preact-iso'
 import { clusters, connected, machineList, machines, operations, refreshKey, resyncing, statuses, toast, watch } from '../store'
 import { ReaddressDialog } from './cluster/Nodes'
 import { RemoteManagement } from '../components/RemoteManagement'
-import { AddVMsDialog, HostStateNotice, HostSystem, LabHostPanel, LabVMControls, MakeLabHostDialog, ReleaseHostDialog } from '../components/LabHost'
+import { LabVMControls, MakeLabHostDialog } from '../components/LabHost'
 import { canAdopt, canMakeLabHost, canRetire, hostName, hostOf, isLabVM, kindDetail, kindLabel, KindPill, modelOf, TypePill } from '../machine'
 import { Tabs } from '../components/Tabs'
 import { DataTable, type Column } from '../components/DataTable'
 import { Breadcrumbs, ConfirmDialog, Dialog, ErrorBox, Field, KeyValue, MaintenanceNotice, Meter, Notice, Pill, Section, StatusDot, stateTone } from '../components/ui'
 import { elapsed } from '../clock'
 
-type TabId = 'overview' | 'hardware' | 'kubernetes' | 'services' | 'logs' | 'actions' | 'labhost'
+type TabId = 'overview' | 'hardware' | 'kubernetes' | 'services' | 'logs' | 'actions'
 
 /** One machine: what Talos says, what Kubernetes says, and what can be done to it. */
-export function NodePage({ ip: ipParam, mac }: { ip?: string; mac?: string; tab?: string }) {
+export function NodePage({ ip: ipParam, mac }: { ip?: string; mac?: string }) {
   const [node, setNode] = useState<NodeRow | null>(null)
   const ip = node?.ip ?? ipParam ?? ''
   const [inv, setInv] = useState<Inventory | null>(null)
   const [invErr, setInvErr] = useState<string | null>(null)
   const [k8s, setK8s] = useState<NodeDetail | null>(null)
   const [k8sErr, setK8sErr] = useState<string | null>(null)
-  const [tab, setTab] = useState<TabId>(() => (typeof location !== 'undefined' && (location.hash === '#actions' || location.hash === '#oob') ? 'actions' : location.hash === '#labhost' || location.pathname.startsWith('/labhosts/') ? 'labhost' : 'overview'))
+  const [tab, setTab] = useState<TabId>(() => (typeof location !== 'undefined' && (location.hash === '#actions' || location.hash === '#oob') ? 'actions' : 'overview'))
+  const { route } = useLocation()
   const [error, setError] = useState<string | null>(null)
   const finished = [...operations.value.values()].filter((o) => o.status !== 'running').length
 
@@ -30,6 +31,7 @@ export function NodePage({ ip: ipParam, mac }: { ip?: string; mac?: string; tab?
   const live = mac ? machines.value.get(mac.toLowerCase()) ?? null : machineList.value.find((n) => n.ip === ipParam) ?? null
   useEffect(() => {
     setNode(live)
+    if (live?.kind === 'labhost') { route(`/labhosts/${live.mac}/overview`, true); return }
     if (live && !mac) history.replaceState(null, '', `/machines/${live.mac}`)
     if (!live && connected.value && !resyncing.value) setError(`No machine ${mac ?? ipParam} is known.`)
   }, [live, mac, ipParam]) // eslint-disable-line
@@ -44,7 +46,7 @@ export function NodePage({ ip: ipParam, mac }: { ip?: string; mac?: string; tab?
 
   const cluster = node?.cluster ? clusters.value.find((c) => c.name === node.cluster) : undefined
   const spec: NodeSpec | undefined = cluster?.spec.spec.nodes.find((n) => (node?.mac && n.mac === node.mac) || n.hostname === node?.hostname)
-  const title = node?.hostname || node?.labhost?.capacity.hostname || ip || mac || ''
+  const title = node?.hostname || ip || mac || ''
   const running = [...operations.value.values()].filter((o) => o.status === 'running' && ((o.cluster === node?.cluster && (o.request as any)?.hostname === node?.hostname) || (o.request as any)?.mac === node?.mac))
   const kind = node?.kind
   const host = hostOf(node)
@@ -52,7 +54,6 @@ export function NodePage({ ip: ipParam, mac }: { ip?: string; mac?: string; tab?
     { id: 'overview', label: 'Overview' }, { id: 'hardware', label: 'Hardware' },
     ...(kind === 'member' ? [{ id: 'kubernetes' as TabId, label: 'Kubernetes', badge: k8s?.pods?.length }] : []),
     ...(node?.talos ? [{ id: 'services' as TabId, label: 'Services' }, { id: 'logs' as TabId, label: 'Logs' }] : []),
-    ...(kind === 'labhost' ? [{ id: 'labhost' as TabId, label: 'Lab host', badge: (node?.labhost?.vms ?? []).length }] : []),
     { id: 'actions', label: 'Actions' },
   ]
   const shown = node && !tabs.some((t) => t.id === tab) ? 'overview' : tab
@@ -64,8 +65,8 @@ export function NodePage({ ip: ipParam, mac }: { ip?: string; mac?: string; tab?
         <div class="flex flex-wrap items-center gap-3 mt-2 mb-3">
           <h1 class="text-xl font-semibold">{title}</h1>
           {node && !node.cluster && <KindPill m={node} />}
-          {node && node.kind !== 'labhost' && <TypePill m={node} />}
-          {host && <a class="pill bg-panel-2 text-muted hover:text-fg" href={`/machines/${host.mac}#labhost`}>on {hostName(host)}</a>}
+          {node && <TypePill m={node} />}
+          {host && <a class="pill bg-panel-2 text-muted hover:text-fg" href={`/labhosts/${host.mac}/overview`}>on {hostName(host)}</a>}
           {inv ? <Pill tone="good">Talos {inv.talosVersion}</Pill> : invErr ? <Pill tone="bad" title={invErr}>Talos not answering</Pill> : null}
           {k8s ? <Pill tone={k8s.ready ? 'good' : 'warn'}>{k8s.ready ? 'Ready' : 'NotReady'}</Pill> : null}
           {k8s?.unschedulable && <Pill tone="warn">cordoned</Pill>}
@@ -81,7 +82,6 @@ export function NodePage({ ip: ipParam, mac }: { ip?: string; mac?: string; tab?
         {shown === 'kubernetes' && <KubernetesTab k8s={k8s} err={k8sErr} />}
         {shown === 'services' && <ServicesTab ip={ip} cluster={node?.cluster} />}
         {shown === 'logs' && <LogsTab ip={ip} />}
-        {shown === 'labhost' && node?.labhost && <LabHostPanel host={node} />}
         {shown === 'actions' && <ActionsTab node={node} k8s={k8s} inv={inv} cluster={cluster} spec={spec} talosVersion={cluster?.spec.spec.talosVersion} />}
       </div>
     </div>
@@ -97,7 +97,7 @@ function OverviewTab({ inv, invErr, k8s, k8sErr, node, spec }: { inv: Inventory 
         <KeyValue rows={[
           ['Kind', `${kindLabel[node.kind]}${kindDetail(node) ? ` · ${kindDetail(node)}` : ''}`],
           ['Model', [modelOf(node), inv?.platform].filter(Boolean).join(' · ')],
-          ...(host ? [['Lab host', <a class="text-accent hover:underline" href={`/machines/${host.mac}#labhost`}>{hostName(host)}</a>] as [string, any]] : []),
+          ...(host ? [['Lab host', <a class="text-accent hover:underline" href={`/labhosts/${host.mac}/overview`}>{hostName(host)}</a>] as [string, any]] : []),
           ['Identity', <span class="mono text-[12px]">{node.mac}{node.uuid ? ` · ${node.uuid}` : ''}{node.serial ? ` · ${node.serial}` : ''}</span>],
           ['Addresses seen', <span class="mono text-[12px]">{[...new Set([...(node.ipsSeen ?? []), node.ip])].filter(Boolean).join(' → ') || '—'}</span>],
           ['Last seen', fmt.datetime(node.lastSeen)],
@@ -107,30 +107,6 @@ function OverviewTab({ inv, invErr, k8s, k8sErr, node, spec }: { inv: Inventory 
       </div>
     </Section>
   )
-  if (node.kind === 'labhost' && node.labhost) {
-    const lh = node.labhost
-    const vms = lh.vms ?? []
-    return (
-      <div class="flex flex-col gap-4">
-        <HostStateNotice host={node} />
-        <div class="grid grid-cols-1 lg:grid-cols-2 gap-4">
-          {identity}
-          <Section title="Capacity" help="Read over SSH; VMs are listed on the Lab host tab.">
-            <div class="panel p-4">
-              <KeyValue rows={[
-                ['CPUs', String(lh.capacity.cpus || '—')],
-                ['Memory', lh.capacity.memMiB ? fmt.bytes(lh.capacity.memMiB * 1048576) : '—'],
-                ['VM disk free', lh.metrics?.diskTotal ? `${fmt.bytes(lh.metrics.diskTotal - lh.metrics.diskUsed)} of ${fmt.bytes(lh.metrics.diskTotal)}` : lh.capacity.diskGiB ? `${lh.capacity.diskGiB} GiB` : '—'],
-                ['KVM', lh.capacity.kvm ? 'available' : lh.state === 'ready' ? 'absent' : '—'],
-                ['VMs', <a class="text-accent hover:underline" href={`/machines/${node.mac}#labhost`}>{vms.length} defined · {vms.filter((v) => v.state === 'running').length} running</a>],
-              ]} />
-            </div>
-          </Section>
-        </div>
-        {lh.state !== 'installing' && <HostSystem host={node} lh={lh} busy={lh.state !== 'ready'} />}
-      </div>
-    )
-  }
   if (!node.talos) {
     const next = node.kind === 'configured' ? 'Runs Talos with a config Kubit did not apply. Reset it to maintenance mode to adopt it.'
       : node.kind === 'booting' ? 'Waiting for Talos maintenance mode; progress is in Activity.'
@@ -202,14 +178,14 @@ function OverviewTab({ inv, invErr, k8s, k8sErr, node, spec }: { inv: Inventory 
   )
 }
 
-function HardwareTab({ inv: live, invErr, node }: { inv: Inventory | null; invErr: string | null; node: NodeRow | null }) {
+export function HardwareTab({ inv: live, invErr, node }: { inv: Inventory | null; invErr: string | null; node: NodeRow | null }) {
   if (!node) return <div class="text-muted">Loading…</div>
-  const inv = live ?? node.inventory ?? null
   const lh = node.labhost
+  const inv: Inventory | null = live ?? node.inventory ?? (lh ? { ip: node.ip, cpus: lh.capacity.cpus, memoryBytes: lh.capacity.memMiB * 1048576, kvm: lh.capacity.kvm, arch: lh.capacity.arch || node.arch, talosVersion: '', platform: '', stage: '', disks: [], links: [] } : null)
   const stored = !live && !!node.inventory
   if (node.talos && !inv && !invErr) return <div class="text-muted">Loading…</div>
   const note = invErr ? `${invErr} Showing what was recorded ${fmt.when(node.lastSeen)}.`
-    : lh ? 'Recorded before the Debian install; capacity is read from the host.'
+    : lh ? (node.inventory ? 'Recorded before the Debian install; capacity is read from the host.' : 'No Talos scan on record; capacity is read from the host.')
     : stored && inv?.disks.some((d) => !d.devPath) ? `Reported by the ${node.oobType === 'redfish' ? 'BMC' : 'management engine'}; device names arrive when the machine boots Talos.`
     : stored ? `Recorded ${fmt.when(node.lastSeen)}; the machine is not running Talos now.`
     : ''
@@ -433,31 +409,23 @@ function MachineActions({ node }: { node: NodeRow | null }) {
   const { route } = useLocation()
   const [retire, setRetire] = useState(false)
   const [lab, setLab] = useState(false)
-  const [addVMs, setAddVMs] = useState(false)
-  const [release, setRelease] = useState(false)
   if (!node) return <Notice tone="muted">Loading…</Notice>
   const ready = clusters.value.filter((c) => c.state === 'ready' || c.state === 'bootstrapped')
   const refresh = () => Promise.resolve()
-  const lh = node.labhost
   const vm = isLabVM(node)
-  const summary = node.kind === 'labhost' ? 'Lab host: Debian + KVM; Talos runs in its VMs.'
-    : node.kind === 'maintenance' ? 'In Talos maintenance mode; not a cluster member.'
+  const summary = node.kind === 'maintenance' ? 'In Talos maintenance mode; not a cluster member.'
     : node.kind === 'configured' ? 'Runs Talos with a config Kubit did not apply. Reset it to maintenance mode to adopt it.'
     : node.kind === 'booting' ? 'Armed for a network boot; waiting for Talos.'
     : vm ? 'The VM is off.' : 'Not running Talos.'
-  const adoptHint = node.kind === 'maintenance' ? '' : node.kind === 'labhost' ? '' : ' Needs Talos maintenance mode first.'
+  const adoptHint = node.kind === 'maintenance' ? '' : ' Needs Talos maintenance mode first.'
   return (
     <div class="flex flex-col gap-3 max-w-3xl">
       <Notice tone="muted">{summary}</Notice>
-      {node.kind !== 'labhost' && <Action title="Adopt into a cluster" what={(ready.length ? `Join ${ready.map((c) => c.name).join(', ')} as a new node.` : 'No ready cluster yet; create one with this machine.') + adoptHint} button={ready.length ? 'Adopt' : 'New cluster'} disabled={!canAdopt(node)}
-        onClick={() => { if (!ready.length) { route('/clusters/new'); return } const t = ready.length === 1 ? ready[0].name : prompt(`Adopt into which cluster? (${ready.map((c) => c.name).join(', ')})`, ready[0].name); if (t && ready.find((c) => c.name === t)) route(`/clusters/${t}/nodes?adopt=${node.ip}`) }} />}
-      {lh && <Action title="Add VMs" what={`${(lh.vms ?? []).length} VM${(lh.vms ?? []).length === 1 ? '' : 's'} defined. New VMs boot Talos in maintenance mode and appear in the inventory.`} button="Add VMs" disabled={lh.state !== 'ready'} onClick={() => setAddVMs(true)} />}
-      {lh && <Action title="Release lab host" what="Deletes every VM and drops the lab-host role. Debian stays on the disk." button="Release" disabled={lh.state === 'installing' || lh.state === 'setup' || lh.state === 'updating'} onClick={() => setRelease(true)} />}
+      <Action title="Adopt into a cluster" what={(ready.length ? `Join ${ready.map((c) => c.name).join(', ')} as a new node.` : 'No ready cluster yet; create one with this machine.') + adoptHint} button={ready.length ? 'Adopt' : 'New cluster'} disabled={!canAdopt(node)}
+        onClick={() => { if (!ready.length) { route('/clusters/new'); return } const t = ready.length === 1 ? ready[0].name : prompt(`Adopt into which cluster? (${ready.map((c) => c.name).join(', ')})`, ready[0].name); if (t && ready.find((c) => c.name === t)) route(`/clusters/${t}/nodes?adopt=${node.ip}`) }} />
       {vm ? <LabVMControls vm={node} /> : <RemoteManagement node={node} />}
       {canMakeLabHost(node) && <Action title="Make lab host" what={node.oobType ? 'Install Debian + KVM/libvirt on this machine (disk wiped) and carve Talos VMs from it. Reset by remote management; kubit pxe serves the installer.' : 'Install Debian + KVM/libvirt on this machine (disk wiped) and carve Talos VMs from it. No remote management here: you boot the installer yourself with the boot line Kubit prints.'} button="Make lab host" onClick={() => setLab(true)} />}
       {lab && <MakeLabHostDialog m={node} onClose={() => setLab(false)} />}
-      {addVMs && <AddVMsDialog host={node} onClose={() => setAddVMs(false)} />}
-      {release && <ReleaseHostDialog host={node} onClose={() => setRelease(false)} />}
       {!vm && <Action title="Wake-on-LAN" what={node.wol ? 'Enabled: Kubit can send a magic packet from this host to power the machine on.' : 'Off. Enable when the firmware supports WoL on the uplink NIC.'} button={node.wol ? 'Wake now' : 'Enable'}
         onClick={() => (node.wol ? api.wake(node.mac).then(() => toast('Magic packet sent', 'good')) : api.setWOL(node.mac, true).then(refresh)).catch((e) => toast(e.message, 'error'))}
         secondary={node.wol ? { label: 'Disable', onClick: () => api.setWOL(node.mac, false).then(refresh).catch((e) => toast(e.message, 'error')) } : undefined} />}

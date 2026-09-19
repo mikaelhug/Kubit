@@ -100,7 +100,7 @@ export function runbookFor(kind: string, c: Ctx): Runbook | null {
 }
 
 function labRunbook(kind: string, mac: string): Runbook | null {
-  const host = { label: 'Lab host', href: `/machines/${mac}#labhost` }
+  const host = { label: 'Lab host', href: `/labhosts/${mac}/overview` }
   switch (kind) {
     case 'labhost.disk-low':
       return { title: 'The VM disk is filling up', why: 'VM disks are thin-provisioned and grow as Talos writes. When the host filesystem is full, every VM pauses at once.', steps: [
@@ -114,7 +114,7 @@ function labRunbook(kind: string, mac: string): Runbook | null {
       ] }
     case 'labhost.unreachable':
       return { title: 'Lab host not answering on SSH', why: 'Three checks in a row found no SSH. The host is off, rebooting, or cut off; its VMs and their cluster are down with it.', steps: [
-        { text: 'Check power and link. Power it on or reset it through remote management.', link: { label: 'Remote management', href: `/machines/${mac}#oob` } },
+        { text: 'Check power and link. Power it on or reset it through remote management.', link: { label: 'Remote management', href: `/labhosts/${mac}/actions` } },
         { text: 'If it was updating, wait: the Update host operation reboots the host and reports in Activity.', link: { label: 'Activity', href: '/operations' } },
       ] }
     case 'labhost.updates':
