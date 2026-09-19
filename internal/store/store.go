@@ -204,6 +204,36 @@ var migrations = []string{
 	// v11: lab-host samples share the table (cluster "labhost:<mac>") and add disk usage.
 	`ALTER TABLE samples ADD COLUMN disk INTEGER NOT NULL DEFAULT 0;
 	 ALTER TABLE samples ADD COLUMN disk_cap INTEGER NOT NULL DEFAULT 0;`,
+	`UPDATE machines SET state = 'unknown' WHERE state = 'configured' AND source = 'labhost';`,
+	// v13: identity. Users with a role, sessions and API tokens (hashed), and who did
+	// what in the audit log.
+	`CREATE TABLE users (
+		id            INTEGER PRIMARY KEY AUTOINCREMENT,
+		name          TEXT NOT NULL UNIQUE,
+		password_hash TEXT NOT NULL DEFAULT '',
+		role          TEXT NOT NULL DEFAULT 'viewer',
+		disabled      INTEGER NOT NULL DEFAULT 0,
+		source        TEXT NOT NULL DEFAULT 'local',
+		created_at    TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+		last_login    TEXT NOT NULL DEFAULT ''
+	);
+	CREATE TABLE sessions (
+		token_hash TEXT PRIMARY KEY,
+		user_id    INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+		kind       TEXT NOT NULL DEFAULT 'session',
+		name       TEXT NOT NULL DEFAULT '',
+		created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+		expires_at TEXT NOT NULL DEFAULT '',
+		last_used  TEXT NOT NULL DEFAULT ''
+	);
+	ALTER TABLE audit_log ADD COLUMN actor TEXT NOT NULL DEFAULT '';`,
+}
+
+// alreadyApplied probes, by version, for schema a migration would create twice; a
+// version whose probe succeeds is recorded without running (a restored or
+// hand-repaired schema_version must not fail on ALTER TABLE).
+var alreadyApplied = map[int]string{
+	13: `SELECT actor FROM audit_log LIMIT 0`,
 }
 
 func (s *Store) migrate(ctx context.Context) error {
@@ -218,6 +248,18 @@ func (s *Store) migrate(ctx context.Context) error {
 		tx, err := s.db.BeginTx(ctx, nil)
 		if err != nil {
 			return err
+		}
+		if probe, ok := alreadyApplied[i+1]; ok {
+			if _, err := tx.ExecContext(ctx, probe); err == nil {
+				if _, err := tx.ExecContext(ctx, `INSERT INTO schema_version (version) VALUES (?)`, i+1); err != nil {
+					tx.Rollback()
+					return err
+				}
+				if err := tx.Commit(); err != nil {
+					return err
+				}
+				continue
+			}
 		}
 		if _, err := tx.ExecContext(ctx, migrations[i]); err != nil {
 			tx.Rollback()
@@ -235,7 +277,7 @@ func (s *Store) migrate(ctx context.Context) error {
 }
 
 func (s *Store) Audit(ctx context.Context, cluster, action, detail string) error {
-	res, err := s.db.ExecContext(ctx, `INSERT INTO audit_log (cluster, action, detail) VALUES (?, ?, ?)`, cluster, action, detail)
+	res, err := s.db.ExecContext(ctx, `INSERT INTO audit_log (cluster, action, detail, actor) VALUES (?, ?, ?, ?)`, cluster, action, detail, ActorFrom(ctx))
 	if err != nil {
 		return err
 	}
@@ -251,6 +293,7 @@ type AuditEntry struct {
 	Cluster string `json:"cluster"`
 	Action  string `json:"action"`
 	Detail  string `json:"detail"`
+	Actor   string `json:"actor,omitempty"`
 }
 
 // ListAudit returns the newest entries, optionally for one cluster.
@@ -258,9 +301,9 @@ func (s *Store) ListAudit(ctx context.Context, cluster string, limit int) ([]Aud
 	if limit <= 0 || limit > 5000 {
 		limit = 500
 	}
-	q, args := `SELECT id, at, cluster, action, detail FROM audit_log ORDER BY id DESC LIMIT ?`, []any{limit}
+	q, args := `SELECT id, at, cluster, action, detail, actor FROM audit_log ORDER BY id DESC LIMIT ?`, []any{limit}
 	if cluster != "" {
-		q, args = `SELECT id, at, cluster, action, detail FROM audit_log WHERE cluster = ? ORDER BY id DESC LIMIT ?`, []any{cluster, limit}
+		q, args = `SELECT id, at, cluster, action, detail, actor FROM audit_log WHERE cluster = ? ORDER BY id DESC LIMIT ?`, []any{cluster, limit}
 	}
 	rows, err := s.db.QueryContext(ctx, q, args...)
 	if err != nil {
@@ -270,7 +313,7 @@ func (s *Store) ListAudit(ctx context.Context, cluster string, limit int) ([]Aud
 	out := []AuditEntry{}
 	for rows.Next() {
 		var e AuditEntry
-		if err := rows.Scan(&e.ID, &e.At, &e.Cluster, &e.Action, &e.Detail); err != nil {
+		if err := rows.Scan(&e.ID, &e.At, &e.Cluster, &e.Action, &e.Detail, &e.Actor); err != nil {
 			return nil, err
 		}
 		out = append(out, e)

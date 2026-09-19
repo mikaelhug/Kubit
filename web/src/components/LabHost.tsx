@@ -2,8 +2,9 @@ import type { ComponentChildren } from 'preact'
 import { useEffect, useState } from 'preact/hooks'
 import { api, fmt, labHostKey, labNeedsReboot, vmsOf, type LabHost, type LabVM, type NodeRow, type Sample, type VMSize } from '../api'
 import { ack, health, hostSamples, loadHealth, machineList, operations, toast, watch } from '../store'
-import { Code, ConfirmDialog, Dialog, ErrorBox, Field, MaintenanceNotice, Meter, Notice, Pill } from './ui'
+import { Code, ConfirmDialog, Dialog, ErrorBox, Field, MaintenanceNotice, Meter, Notice, Pill, stateTone } from './ui'
 import { usePxeGated } from './PxeGate'
+import { hostName, hostOf, installCandidates } from '../machine'
 import { Sparkline } from './Sparkline'
 import { EventRow } from '../pages/cluster/Overview'
 
@@ -13,10 +14,23 @@ const mib = (n: number) => n * 1048576
 
 type VMRow = VMSize & { key: number }
 let vmKey = 0
-const defaultVM = (role: VMSize['role'], mem = 3072): VMRow => ({ key: ++vmKey, role, cpus: 2, memMiB: role === 'controlplane' ? Math.max(mem, 2048) : mem, diskGiB: 20, dataGiB: 0 })
+const defaultVM = (role: VMSize['role'], mem = 3072): VMRow => ({ key: ++vmKey, role, cpus: 2, memMiB: Math.max(mem, MIN_VM_MIB), diskGiB: 20, dataGiB: 0 })
 export const MIN_CP_MIB = 2048
+export const MIN_VM_MIB = 2048
+const PREFERRED_MIB = 3072
 
-/** One editable row per VM. Control planes must have 2 GiB; roles matter only when a cluster is planned. */
+/** VMs that fit the host: as many 3 GiB VMs as fit, else fewer, larger ones; first is the control plane. */
+export function planFor(hostMiB: number, cluster = true): VMRow[] {
+  if (hostMiB <= 0) return [defaultVM('controlplane'), defaultVM('worker'), defaultVM('worker'), defaultVM('worker')]
+  const avail = hostMiB - RESERVED_MIB
+  let n = Math.min(4, Math.floor(avail / PREFERRED_MIB))
+  if (n < 2) n = Math.min(4, Math.floor(avail / MIN_VM_MIB))
+  if (n < 1) return [defaultVM('controlplane', MIN_VM_MIB)]
+  const each = Math.floor(avail / n / 256) * 256
+  return Array.from({ length: n }, (_, i) => defaultVM(cluster && i === 0 ? 'controlplane' : 'worker', each))
+}
+
+/** One editable row per VM. Every VM gets at least 2 GiB; roles matter only when a cluster is planned. */
 export function VMTable({ rows, onChange, roles }: { rows: VMRow[]; onChange: (rows: VMRow[]) => void; roles: boolean }) {
   const set = (i: number, patch: Partial<VMSize>) => onChange(rows.map((r, j) => (j === i ? { ...r, ...patch } : r)))
   const num = (i: number, k: 'cpus' | 'memMiB' | 'diskGiB' | 'dataGiB', min: number, step = 1) => (
@@ -32,7 +46,7 @@ export function VMTable({ rows, onChange, roles }: { rows: VMRow[]; onChange: (r
               <td class="pl-3 text-muted num">{i + 1}</td>
               {roles && <td><select class="input !py-1 w-full" value={r.role} onChange={(e) => { const role = (e.target as HTMLSelectElement).value as VMSize['role']; set(i, { role, memMiB: role === 'controlplane' ? Math.max(r.memMiB, MIN_CP_MIB) : r.memMiB }) }}><option value="controlplane">control plane</option><option value="worker">worker</option></select></td>}
               <td>{num(i, 'cpus', 1)}</td>
-              <td>{num(i, 'memMiB', r.role === 'controlplane' ? MIN_CP_MIB : 1024, 256)}</td>
+              <td>{num(i, 'memMiB', MIN_VM_MIB, 256)}</td>
               <td>{num(i, 'diskGiB', 8)}</td>
               <td>{num(i, 'dataGiB', 0, 10)}</td>
               <td class="pr-2"><button class="btn !px-2 !py-1" title="Remove" disabled={rows.length <= 1} onClick={() => onChange(rows.filter((_, j) => j !== i))}>✕</button></td>
@@ -53,8 +67,7 @@ const rowsProblem = (rows: VMSize[]): string | null => {
   for (const v of rows) {
     if (v.cpus < 1) return 'every VM needs at least 1 vCPU'
     if (v.diskGiB < 8) return 'every VM needs at least 8 GiB disk'
-    if (v.role === 'controlplane' && v.memMiB < MIN_CP_MIB) return 'a control plane needs at least 2048 MiB'
-    if (v.memMiB < 1024) return 'every VM needs at least 1024 MiB'
+    if (v.memMiB < MIN_VM_MIB) return 'every VM needs at least 2048 MiB'
   }
   return null
 }
@@ -65,7 +78,7 @@ export function AddVMsDialog({ host, onClose }: { host: NodeRow; onClose: () => 
   const vms = vmsOf(lh)
   const used = vms.reduce((s, v) => s + v.memMiB, 0)
   const freeMiB = Math.max(0, lh.capacity.memMiB - RESERVED_MIB - used)
-  const [rows, setRows] = useState<VMRow[]>(() => Array.from({ length: Math.min(4, Math.max(1, Math.floor(freeMiB / 3072))) }, () => defaultVM('worker')))
+  const [rows, setRows] = useState<VMRow[]>(() => planFor(freeMiB + RESERVED_MIB, false))
   const [error, setError] = useState<string | null>(null)
   const need = totalMem(rows)
   const over = need > freeMiB
@@ -88,9 +101,7 @@ export function AddVMsDialog({ host, onClose }: { host: NodeRow; onClose: () => 
 export function LabHostPanel({ host }: { host: NodeRow }) {
   const lh = host.labhost
   const [add, setAdd] = useState(false)
-  const [release, setRelease] = useState(false)
   const [del, setDel] = useState<LabVM | null>(null)
-  const [retry, setRetry] = useState(false)
   if (!lh) return null
   const vms = vmsOf(lh)
   const rows = machineList.value
@@ -99,20 +110,7 @@ export function LabHostPanel({ host }: { host: NodeRow }) {
   const run = (p: Promise<{ operationId: number }>) => p.then((r) => watch(r, false)).catch((e) => toast(e.message, 'error'))
   return (
     <div class="flex flex-col gap-4">
-      {lh.state === 'error' && <Notice tone="bad"><span class="flex items-center gap-3">Lab host setup failed: {lh.error}<button class="btn !py-1 ml-auto shrink-0" onClick={() => setRetry(true)}>Make lab host</button></span></Notice>}
-      {retry && <MakeLabHostDialog m={host} onClose={() => setRetry(false)} />}
-      {lh.state === 'installing' && <Notice tone="warn">Installing Debian{lh.install ? <> · {installStage(lh.install.stage)} · {fmt.when(lh.install.at)}</> : ' · waiting for the machine to boot the installer'}. Details in Activity.</Notice>}
-      {lh.state === 'installing' && !lh.install && lh.boot && (
-        <div class="panel p-4 flex flex-col gap-2">
-          <span class="label">Boot the installer with</span>
-          <div class="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-[12px] items-center">
-            <span class="text-muted">kernel</span><Code text={lh.boot.kernel} />
-            <span class="text-muted">initrd</span><Code text={lh.boot.initrd} />
-            <span class="text-muted">cmdline</span><Code text={lh.boot.cmdline} />
-          </div>
-        </div>
-      )}
-      {lh.state === 'updating' && <Notice tone="warn">Host maintenance running; progress is in the Activity drawer.</Notice>}
+      <HostStateNotice host={host} />
       <HostAlerts mac={host.mac} />
       <HostMetrics host={host} lh={lh} />
       <HostSystem host={host} lh={lh} busy={busy || lh.state !== 'ready'} />
@@ -121,7 +119,6 @@ export function LabHostPanel({ host }: { host: NodeRow }) {
           <span class="font-medium">Virtual machines</span>
           <span class="ml-auto flex gap-2">
             <button class="btn btn-primary !py-1" disabled={lh.state !== 'ready'} onClick={() => setAdd(true)}>+ Add VMs</button>
-            <button class="btn btn-danger !py-1" onClick={() => setRelease(true)}>Release host</button>
           </span>
         </div>
         <table class="data wrap">
@@ -136,7 +133,7 @@ export function LabHostPanel({ host }: { host: NodeRow }) {
                   <td><Pill tone={vm.state === 'running' ? 'good' : 'muted'}>{vm.state}</Pill></td>
                   <td class="num">{vm.cpus} vCPU · {fmt.bytes(mib(vm.memMiB))} · {vm.diskGiB} GiB</td>
                   <td><Pill tone={vm.boot === 'disk' ? 'info' : 'muted'}>{vm.boot === 'disk' ? 'disk' : 'Talos (RAM)'}</Pill></td>
-                  <td>{row ? (row.cluster ? <a class="text-accent hover:underline" href={`/clusters/${row.cluster}/nodes`}>{row.cluster} · {row.hostname}</a> : <Pill tone={row.state === 'maintenance' ? 'good' : 'warn'}>{row.state}</Pill>) : <span class="text-muted">—</span>}</td>
+                  <td>{row ? (row.cluster ? <a class="text-accent hover:underline" href={`/clusters/${row.cluster}/nodes`}>{row.cluster} · {row.hostname}</a> : <a class="hover:underline" href={`/machines/${row.mac}`}><Pill tone={stateTone(row.state)}>{row.state}</Pill></a>) : <span class="text-muted">—</span>}</td>
                   <td class="text-right pr-3 whitespace-nowrap">
                     {vm.state === 'running' ? <button class="btn !py-1" onClick={() => run(api.labVM(host.mac, vm.name, 'stop'))}>Stop</button> : <button class="btn !py-1" onClick={() => run(api.labVM(host.mac, vm.name, 'start'))}>Start</button>}
                     {' '}<button class="btn !py-1" disabled={!!row?.cluster} title={row?.cluster ? 'Remove it from the cluster first' : 'Boot back into Talos maintenance mode'} onClick={() => run(api.labVM(host.mac, vm.name, 'reprovision'))}>Re-provision</button>
@@ -150,7 +147,61 @@ export function LabHostPanel({ host }: { host: NodeRow }) {
       </div>
       {add && <AddVMsDialog host={host} onClose={() => setAdd(false)} />}
       {del && <ConfirmDialog title={`Delete ${del.name}`} action="Delete VM" tone="danger" onClose={() => setDel(null)} onConfirm={() => api.labVMDelete(host.mac, del.name).then(() => setDel(null)).catch((e) => toast(e.message, 'error'))} impact={<p>Destroys the VM and its disk.</p>} />}
-      {release && <ConfirmDialog title={`Release ${lh.capacity.hostname || host.hostname}`} action="Release host" tone="danger" typed={host.hostname || 'release'} onClose={() => setRelease(false)} onConfirm={() => api.labRelease(host.mac).then(() => setRelease(false)).catch((e) => toast(e.message, 'error'))} impact={<p>Deletes every VM and drops the lab-host role. Debian stays on the disk.</p>} />}
+    </div>
+  )
+}
+
+/** Install progress, boot line, maintenance and failure notices for a lab host. */
+export function HostStateNotice({ host }: { host: NodeRow }) {
+  const lh = host.labhost
+  const [retry, setRetry] = useState(false)
+  if (!lh) return null
+  return (
+    <>
+      {lh.state === 'error' && <Notice tone="bad"><span class="flex items-center gap-3">Lab host setup failed: {lh.error}<button class="btn !py-1 ml-auto shrink-0" onClick={() => setRetry(true)}>Make lab host</button></span></Notice>}
+      {retry && <MakeLabHostDialog m={host} onClose={() => setRetry(false)} />}
+      {lh.state === 'installing' && <Notice tone="warn">Installing Debian{lh.install ? <> · {installStage(lh.install.stage)} · {fmt.when(lh.install.at)}</> : ' · waiting for the machine to boot the installer'}. Details in Activity.</Notice>}
+      {lh.state === 'installing' && !lh.install && lh.boot && (
+        <div class="panel p-4 flex flex-col gap-2">
+          <span class="label">Boot the installer with</span>
+          <div class="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-[12px] items-center">
+            <span class="text-muted">kernel</span><Code text={lh.boot.kernel} />
+            <span class="text-muted">initrd</span><Code text={lh.boot.initrd} />
+            <span class="text-muted">cmdline</span><Code text={lh.boot.cmdline} />
+          </div>
+        </div>
+      )}
+      {lh.state === 'setup' && <Notice tone="warn">Debian is installed; verifying KVM and fetching Talos boot assets.</Notice>}
+      {lh.state === 'updating' && <Notice tone="warn">Host maintenance running; progress is in the Activity drawer.</Notice>}
+    </>
+  )
+}
+
+/** Release confirmation, shared by the machine page's Actions tab. */
+export function ReleaseHostDialog({ host, onClose }: { host: NodeRow; onClose: () => void }) {
+  return <ConfirmDialog title={`Release ${hostName(host)}`} action="Release host" tone="danger" typed={host.hostname || 'release'} onClose={onClose} onConfirm={() => api.labRelease(host.mac).then(onClose).catch((e) => toast(e.message, 'error'))} impact={<p>Deletes every VM and drops the lab-host role. Debian stays on the disk.</p>} />
+}
+
+/** Start, stop, re-provision and delete for one lab VM, driven through its host. */
+export function LabVMControls({ vm }: { vm: NodeRow }) {
+  const host = hostOf(vm)
+  const entry = vmsOf(host?.labhost).find((v) => v.mac === vm.mac)
+  const [del, setDel] = useState(false)
+  if (!host || !entry) return <Notice tone="muted">Its lab host is no longer known.</Notice>
+  const run = (p: Promise<{ operationId: number }>) => p.then((r) => watch(r, false)).catch((e) => toast(e.message, 'error'))
+  const member = !!vm.cluster
+  return (
+    <div class="panel p-4 flex items-center gap-4">
+      <div class="flex-1 min-w-0">
+        <div class="font-medium">VM on <a class="text-accent hover:underline" href={`/machines/${host.mac}#labhost`}>{hostName(host)}</a></div>
+        <p class="text-[12.5px] text-muted">{entry.cpus} vCPU · {fmt.bytes(mib(entry.memMiB))} · {entry.diskGiB} GiB · {entry.state}{entry.boot === 'disk' ? ' · boots from disk' : ' · boots Talos over the network'}</p>
+      </div>
+      <div class="flex gap-2 shrink-0">
+        {entry.state === 'running' ? <button class="btn" disabled={member} title={member ? 'Drain and remove it from the cluster first' : ''} onClick={() => run(api.labVM(host.mac, entry.name, 'stop'))}>Stop</button> : <button class="btn btn-primary" onClick={() => run(api.labVM(host.mac, entry.name, 'start'))}>Start</button>}
+        <button class="btn" disabled={member} title={member ? 'Remove it from the cluster first' : 'Boot back into Talos maintenance mode'} onClick={() => run(api.labVM(host.mac, entry.name, 'reprovision'))}>Re-provision</button>
+        <button class="btn btn-danger" disabled={member} onClick={() => setDel(true)}>Delete</button>
+      </div>
+      {del && <ConfirmDialog title={`Delete ${entry.name}`} action="Delete VM" tone="danger" onClose={() => setDel(false)} onConfirm={() => api.labVMDelete(host.mac, entry.name).then(() => setDel(false)).catch((e) => toast(e.message, 'error'))} impact={<p>Destroys the VM and its disk.</p>} />}
     </div>
   )
 }
@@ -161,7 +212,7 @@ export function installStage(stage: string) {
 }
 
 /** Open alerts for the host, from the same watcher path clusters use. */
-function HostAlerts({ mac }: { mac: string }) {
+export function HostAlerts({ mac }: { mac: string }) {
   const key = labHostKey(mac)
   useEffect(() => { loadHealth(key) }, [key])
   const alerts = (health.value.get(key) ?? []).filter((e) => !e.acked && e.severity !== 'info')
@@ -178,7 +229,7 @@ function HostAlerts({ mac }: { mac: string }) {
 }
 
 /** CPU, memory, VM disk and VM count with history; the newest reading arrives live. */
-function HostMetrics({ host, lh }: { host: NodeRow; lh: LabHost }) {
+export function HostMetrics({ host, lh }: { host: NodeRow; lh: LabHost }) {
   const vms = vmsOf(lh)
   const [range, setRange] = useState('24h')
   const [samples, setSamples] = useState<Sample[]>([])
@@ -234,7 +285,7 @@ function MetricCard({ label, value, sub, cls, children }: { label: string; value
 }
 
 /** Debian, kernel, pending updates, and the two host operations. */
-function HostSystem({ host, lh, busy }: { host: NodeRow; lh: LabHost; busy: boolean }) {
+export function HostSystem({ host, lh, busy }: { host: NodeRow; lh: LabHost; busy: boolean }) {
   const vms = vmsOf(lh)
   const u = lh.updates
   const reboot = labNeedsReboot(u)
@@ -264,6 +315,7 @@ function HostSystem({ host, lh, busy }: { host: NodeRow; lh: LabHost; busy: bool
         <Fact label="Updates" value={u ? `${u.count} pending${u.security ? `, ${u.security} security` : ''}` : 'not checked yet'} />
         <Fact label="Security updates" value={u ? (u.unattended ? 'automatic, daily' : 'manual') : '—'} />
         <Fact label="Host" value={`${lh.capacity.hostname} · ${host.ip}`} mono />
+        <Fact label="Install disk" value={lh.disk || 'largest at install'} mono />
         <Fact label="libvirt" value={lh.capacity.libvirt || '—'} mono />
         <Fact label="Bridge" value={lh.capacity.bridge} mono />
         <Fact label="Talos boot assets" value={lh.talos || '—'} mono />
@@ -288,50 +340,20 @@ function Fact({ label, value, mono }: { label: string; value: string; mono?: boo
   return <div class="flex flex-col min-w-0"><dt class="label">{label}</dt><dd class={`truncate ${mono ? 'mono text-[12px]' : ''}`} title={value}>{value}</dd></div>
 }
 
-/** Wizard: lab hosts and the machines you can add there. */
-export function LabHostsSection() {
-  const hosts = machineList.value.filter((m) => m.labhost)
-  const [add, setAdd] = useState<NodeRow | null>(null)
-  if (hosts.length === 0) return null
-  return (
-    <div class="panel">
-      <div class="flex items-center gap-3 px-4 py-2.5 border-b border-border"><span class="font-medium">Lab hosts</span></div>
-      <table class="data wrap">
-        <thead><tr><th class="pl-4">Host</th><th>State</th><th>Capacity</th><th>VMs</th><th></th></tr></thead>
-        <tbody>
-          {hosts.map((h) => {
-            const lh = h.labhost!
-            const vms = vmsOf(lh)
-            const used = vms.reduce((s, v) => s + v.memMiB, 0)
-            return (
-              <tr key={h.mac}>
-                <td class="pl-4"><a class="font-medium hover:underline" href={`/machines/${h.mac}#labhost`}>{lh.capacity.hostname || h.hostname || h.mac}</a><span class="block text-[11px] text-muted mono">{h.ip} · {h.mac}</span></td>
-                <td><Pill tone={lh.state === 'ready' ? 'good' : lh.state === 'error' ? 'bad' : 'warn'} title={lh.error}>{lh.state}</Pill>{lh.state === 'installing' && lh.install && <span class="block text-[11px] text-muted">{installStage(lh.install.stage)} · {fmt.when(lh.install.at)}</span>}</td>
-                <td class="num">{lh.capacity.cpus} CPU · {fmt.bytes(mib(lh.capacity.memMiB))} · {lh.metrics?.diskTotal ? `disk ${fmt.pct(lh.metrics.diskUsed, lh.metrics.diskTotal)}% used, ${fmt.bytes(lh.metrics.diskTotal - lh.metrics.diskUsed)} free` : `${lh.capacity.diskGiB} GiB free`}</td>
-                <td class="num">{vms.length} ({fmt.bytes(mib(used))})</td>
-                <td class="text-right pr-3"><button class="btn btn-primary !py-1" disabled={lh.state !== 'ready'} onClick={() => setAdd(h)}>+ Add VMs</button></td>
-              </tr>
-            )
-          })}
-        </tbody>
-      </table>
-      {add && <AddVMsDialog host={add} onClose={() => setAdd(null)} />}
-    </div>
-  )
-}
-
 /** Make lab host: install the host, and optionally carve VMs and create a cluster in one run. */
 export function MakeLabHostDialog({ m, onClose }: { m: NodeRow; onClose: () => void }) {
   const memMiB = Math.floor((m.inventory?.memoryBytes ?? 0) / (1 << 20))
   const known = memMiB > 0
   const [withVMs, setWithVMs] = useState(true)
   const [withCluster, setWithCluster] = useState(true)
-  const [rows, setRows] = useState<VMRow[]>(() => [defaultVM('controlplane'), defaultVM('worker'), defaultVM('worker'), defaultVM('worker')])
+  const [rows, setRows] = useState<VMRow[]>(() => planFor(memMiB))
   const [name, setName] = useState('lab')
+  const disks = installCandidates(m)
+  const [disk, setDisk] = useState(disks[0]?.devPath ?? '')
   const [error, setError] = useState<string | null>(null)
   const manual = !m.oobType
   const cps = cpCount(rows)
-  const plan = { manual: manual || undefined, ...(withVMs ? { vms: { each: rows.map(({ key: _k, ...v }) => (withCluster ? v : { ...v, role: 'worker' as const })) }, cluster: withCluster ? { name, controlPlanes: cps as 1 | 3 } : undefined } : {}) }
+  const plan = { manual: manual || undefined, disk: disk || undefined, ...(withVMs ? { vms: { each: rows.map(({ key: _k, ...v }) => (withCluster ? v : { ...v, role: 'worker' as const })) }, cluster: withCluster ? { name, controlPlanes: cps as 1 | 3 } : undefined } : {}) }
   const gated = usePxeGated(() => api.labProvision(m.mac, plan), (r) => { onClose(); watch(r) }, (msg) => setError(msg))
   if (gated.element) return gated.element
   const need = withVMs ? totalMem(rows) : 0
@@ -340,10 +362,24 @@ export function MakeLabHostDialog({ m, onClose }: { m: NodeRow; onClose: () => v
   const topologyOk = cps === 1 || cps === 3
   const vmProblem = withVMs ? rowsProblem(withCluster ? rows : rows.map((v) => ({ ...v, role: 'worker' as const }))) : null
   const blocked = over || !!vmProblem || (withVMs && withCluster && (!nameOk || !topologyOk))
+  if (m.host || m.cluster) {
+    return (
+      <Dialog title={`Make ${m.hostname || m.ip} a lab host`} onClose={onClose} footer={<button class="btn" onClick={onClose}>Close</button>}>
+        <Notice tone="muted">{m.host ? 'A lab VM cannot host VMs.' : 'Remove it from the cluster first.'}</Notice>
+      </Dialog>
+    )
+  }
   return (
     <Dialog title={`Make ${m.hostname || m.ip} a lab host`} width="max-w-2xl" onClose={onClose} footer={<><button class="btn" onClick={onClose}>Cancel</button><button class="btn btn-primary" disabled={blocked} onClick={() => gated.attempt('Make lab host')}>{withVMs && withCluster ? 'Install and create cluster' : withVMs ? 'Install and add VMs' : 'Install'}</button></>}>
       <ErrorBox error={error} />
-      <p class="text-[13px]"><span class="text-bad">The disk is wiped.</span> Debian + KVM installs unattended (≈10 min){manual ? '; you boot the installer with the line shown on the Lab host tab' : ' after a reset via AMT'}.</p>
+      <p class="text-[13px]"><span class="text-bad">The install disk is wiped.</span> Debian + KVM installs unattended (≈10 min){manual ? '; you boot the installer with the line shown on the Lab host tab' : ' after a reset by remote management'}.</p>
+      <Field label="Install disk" hint={disks.length > 1 ? 'Wiped; Debian and the VM images live here.' : disks.length === 1 ? 'The only disk; wiped.' : 'Disks are unknown until the machine has booted Talos once; the installer takes the largest.'}>
+        {disks.length > 1
+          ? <select class="input mono" value={disk} onChange={(e) => setDisk((e.target as HTMLSelectElement).value)}>
+              {disks.map((d) => <option key={d.devPath} value={d.devPath}>{d.devPath} · {fmt.bytes(d.sizeBytes)}{d.model ? ` · ${d.model}` : ''}{d.transport ? ` · ${d.transport}` : ''}</option>)}
+            </select>
+          : <div class="input mono text-muted">{disks[0] ? `${disks[0].devPath} · ${fmt.bytes(disks[0].sizeBytes)}${disks[0].model ? ` · ${disks[0].model}` : ''}` : 'largest disk'}</div>}
+      </Field>
       <label class="flex items-center gap-2 text-[13px] font-medium"><input type="checkbox" checked={withVMs} onChange={(e) => setWithVMs((e.target as HTMLInputElement).checked)} /> Add Talos VMs</label>
       {withVMs && (
         <div class="flex flex-col gap-3">

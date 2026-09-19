@@ -28,6 +28,7 @@ func newServer(t *testing.T, token string) (*api.Server, *store.Store) {
 func do(t *testing.T, h http.Handler, method, path string, body string, headers ...string) *httptest.ResponseRecorder {
 	t.Helper()
 	req := httptest.NewRequest(method, path, strings.NewReader(body))
+	req.RemoteAddr = "127.0.0.1:40000"
 	for i := 0; i+1 < len(headers); i += 2 {
 		req.Header.Set(headers[i], headers[i+1])
 	}
@@ -38,11 +39,14 @@ func do(t *testing.T, h http.Handler, method, path string, body string, headers 
 
 func TestTokenGuardsAPIOnly(t *testing.T) {
 	srv, _ := newServer(t, "secret")
-	if rec := do(t, srv, "GET", "/api/v1/version", ""); rec.Code != http.StatusUnauthorized {
+	if rec := do(t, srv, "GET", "/api/v1/clusters", ""); rec.Code != http.StatusUnauthorized {
 		t.Errorf("no token: %d", rec.Code)
 	}
-	if rec := do(t, srv, "GET", "/api/v1/version", "", "Authorization", "Bearer secret"); rec.Code != http.StatusOK {
+	if rec := do(t, srv, "GET", "/api/v1/clusters", "", "Authorization", "Bearer secret"); rec.Code != http.StatusOK {
 		t.Errorf("with token: %d", rec.Code)
+	}
+	if rec := do(t, srv, "GET", "/api/v1/version", ""); rec.Code != http.StatusOK {
+		t.Errorf("version is open so the UI can greet before sign-in: %d", rec.Code)
 	}
 	// The browser WebSocket cannot set headers: the token may come as a query
 	// parameter. Without it the upgrade is refused before any handshake.

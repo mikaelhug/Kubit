@@ -52,11 +52,13 @@ func (s *Server) handleLabPreseed(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	disk := ""
-	if len(m.Hardware) > 2 {
+	if m.LabHost != nil {
+		disk = m.LabHost.Disk
+	}
+	if disk == "" && len(m.Hardware) > 2 {
 		var inv talos.Inventory
 		if json.Unmarshal(m.Hardware, &inv) == nil {
 			if cands := inv.InstallCandidates(); len(cands) > 0 {
-				sort.Slice(cands, func(i, j int) bool { return cands[i].SizeBytes > cands[j].SizeBytes })
 				disk = cands[0].DevPath
 			}
 		}
@@ -93,6 +95,7 @@ type labPlan struct {
 	// arms the row, prints the boot line and waits, but never touches AMT or PXE.
 	Manual  bool           `json:"manual,omitempty"`
 	Network string         `json:"network,omitempty"` // bridge (default) | routed
+	Disk    string         `json:"disk,omitempty"`    // install device; "" = largest
 	VMs     *addVMsRequest `json:"vms,omitempty"`
 	Cluster *struct {
 		Name          string `json:"name"`
@@ -118,6 +121,10 @@ func (s *Server) handleLabProvision(w http.ResponseWriter, r *http.Request) {
 	}
 	if plan.Network != "" && plan.Network != "bridge" && plan.Network != "routed" {
 		http.Error(w, "network must be bridge or routed", http.StatusBadRequest)
+		return
+	}
+	if plan.Disk != "" && !strings.HasPrefix(plan.Disk, "/dev/") {
+		http.Error(w, "disk must be a /dev path", http.StatusBadRequest)
 		return
 	}
 	if plan.Cluster != nil {
@@ -150,9 +157,17 @@ func (s *Server) handleLabProvision(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "this machine is a cluster member; remove it from the cluster first", http.StatusConflict)
 		return
 	}
+	if m.IsLabVM() {
+		http.Error(w, "A lab VM cannot host VMs.", http.StatusConflict)
+		return
+	}
+	if m.LabHost != nil && m.LabHost.State != "error" {
+		http.Error(w, "Already a lab host; release it first.", http.StatusConflict)
+		return
+	}
 	c, err := s.store.MachineOOB(r.Context(), mac)
 	if err != nil && !plan.Manual {
-		http.Error(w, "a lab host is installed through its remote management: configure Intel AMT on this machine, or choose to boot it yourself", http.StatusConflict)
+		http.Error(w, "a lab host is installed through its remote management: configure Intel AMT or a BMC on this machine, or choose to boot it yourself", http.StatusConflict)
 		return
 	}
 	if !s.pxeRunning(r.Context()) {
@@ -177,7 +192,7 @@ func (s *Server) handleLabProvision(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if err := probeAMT(r.Context(), mgr); err != nil {
-			writeJSON(w, http.StatusConflict, map[string]string{"error": fmt.Sprintf("Intel AMT at %s is not answering (%v). Check the machine has standby power and the AMT credentials are right, then try again.", c.Host, err), "code": "amt-down"})
+			writeJSON(w, http.StatusConflict, map[string]string{"error": fmt.Sprintf("%s at %s is not answering (%v). Check the machine has standby power and the credentials are right, then try again.", oob.Label(c.Type), c.Host, err), "code": "amt-down"})
 			return
 		}
 	}
@@ -201,7 +216,7 @@ func (s *Server) handleLabProvision(w http.ResponseWriter, r *http.Request) {
 				_ = s.store.SetMachineProvision(rctx, mac, false)
 			}
 		}()
-		armWhat := "Arm a Debian network boot and reset via AMT"
+		armWhat := "Arm a Debian network boot and reset via " + oob.Label(c.Type)
 		if plan.Manual {
 			armWhat = "Arm the Debian install; you boot the machine"
 		}
@@ -224,7 +239,7 @@ func (s *Server) handleLabProvision(w http.ResponseWriter, r *http.Request) {
 		if err := s.store.SetMachineProvision(ctx, mac, true, "labhost"); err != nil {
 			return nil, err
 		}
-		if err := s.store.SetLabHost(ctx, mac, &store.LabHost{State: "installing", Index: s.store.NextLabHostIndex(ctx), Network: plan.Network}); err != nil {
+		if err := s.store.SetLabHost(ctx, mac, &store.LabHost{State: "installing", Index: s.store.NextLabHostIndex(ctx), Network: plan.Network, Disk: plan.Disk}); err != nil {
 			return nil, err
 		}
 		_ = s.store.SetNodeState(ctx, m.IP, "labhost")
@@ -244,7 +259,7 @@ func (s *Server) handleLabProvision(w http.ResponseWriter, r *http.Request) {
 			}
 		} else {
 			mgr, err := oob.Open(*c, oob.WithTrace(func(line string) {
-				sink(clusterEvent{Time: time.Now(), Kind: "log", Level: "info", Step: "arm", Message: "amt: " + line})
+				sink(clusterEvent{Time: time.Now(), Kind: "log", Level: "info", Step: "arm", Message: c.Type + ": " + line})
 			}))
 			if err != nil {
 				return nil, err
@@ -252,7 +267,7 @@ func (s *Server) handleLabProvision(w http.ResponseWriter, r *http.Request) {
 			if err := mgr.Power(ctx, oob.BootPXE); err != nil {
 				return nil, err
 			}
-			sink(clusterEvent{Time: time.Now(), Kind: "log", Level: "info", Step: "arm", Message: "reset via AMT; kubit pxe will hand it the Debian installer (hostname " + labHostname(m) + ")"})
+			sink(clusterEvent{Time: time.Now(), Kind: "log", Level: "info", Step: "arm", Message: "reset via " + oob.Label(c.Type) + "; kubit pxe will hand it the Debian installer (hostname " + labHostname(m) + ")"})
 		}
 		sink(clusterEvent{Time: time.Now(), Kind: "step", Step: "arm", Status: cluster.StepDone})
 
@@ -502,6 +517,10 @@ type vmSize struct {
 
 const minControlPlaneMiB = 2048
 
+// minVMMiB is the floor for any Talos VM: a 1 GiB guest keeps ~450 MiB for pods once
+// Talos and the kubelet have theirs, and the platform add-ons alone need more.
+const minVMMiB = 2048
+
 func (r addVMsRequest) sizes() []vmSize {
 	if len(r.Each) > 0 {
 		out := make([]vmSize, 0, len(r.Each))
@@ -552,8 +571,8 @@ func (r addVMsRequest) validate() error {
 		return fmt.Errorf("vms: between 1 and 32 VMs")
 	}
 	for i, v := range sz {
-		if v.CPUs < 1 || v.MemMiB < 1024 || v.DiskGiB < 8 || v.DataGiB < 0 {
-			return fmt.Errorf("vm %d: at least 1 vCPU, 1024 MiB, 8 GiB disk", i+1)
+		if v.CPUs < 1 || v.MemMiB < minVMMiB || v.DiskGiB < 8 || v.DataGiB < 0 {
+			return fmt.Errorf("vm %d: at least 1 vCPU, %d MiB, 8 GiB disk", i+1, minVMMiB)
 		}
 		if v.Role == "controlplane" && v.MemMiB < minControlPlaneMiB {
 			return fmt.Errorf("vm %d: a control plane needs at least %d MiB", i+1, minControlPlaneMiB)
@@ -568,7 +587,7 @@ func (s *Server) handleLabAddVMs(w http.ResponseWriter, r *http.Request) {
 	mac := strings.ToLower(r.PathValue("mac"))
 	var req addVMsRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.validate() != nil {
-		http.Error(w, `body: {"count":4,"cpus":2,"memMiB":3072,"diskGiB":20}; at least 1 vCPU, 1024 MiB, 8 GiB`, http.StatusBadRequest)
+		http.Error(w, `body: {"count":4,"cpus":2,"memMiB":3072,"diskGiB":20}; at least 1 vCPU, 2048 MiB, 8 GiB`, http.StatusBadRequest)
 		return
 	}
 	host, err := s.store.GetMachine(r.Context(), mac)
@@ -854,7 +873,7 @@ func (s *Server) handleLabVMAction(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleLabVMResize(w http.ResponseWriter, r *http.Request) {
 	mac, name := strings.ToLower(r.PathValue("mac")), r.PathValue("name")
 	var req struct{ CPUs, MemMiB int }
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.CPUs < 1 || req.MemMiB < 1024 {
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.CPUs < 1 || req.MemMiB < minVMMiB {
 		http.Error(w, `body: {"cpus":2,"memMiB":3072}`, http.StatusBadRequest)
 		return
 	}
@@ -924,6 +943,11 @@ func (s *Server) handleLabRelease(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "not a lab host", http.StatusNotFound)
 		return
 	}
+	switch host.LabHost.State {
+	case "installing", "setup", "updating":
+		http.Error(w, fmt.Sprintf("The host is %s; cancel or wait for that operation first.", host.LabHost.State), http.StatusConflict)
+		return
+	}
 	for _, v := range host.LabHost.VMs {
 		if vm, err := s.store.GetMachine(r.Context(), v.MAC); err == nil && vm.Cluster != "" {
 			http.Error(w, fmt.Sprintf("%s is a member of %s; remove it first", v.Name, vm.Cluster), http.StatusConflict)
@@ -936,8 +960,8 @@ func (s *Server) handleLabRelease(w http.ResponseWriter, r *http.Request) {
 }
 
 // releaseLabHost forgets a machine's lab-host role: deletes its VMs (best effort),
-// drops the record and its history, clears the network-boot arm, and marks the
-// machine configured again. Used by the Release button and by a failed provision.
+// drops the record and its history, clears the network-boot arm, and leaves the
+// machine unknown (Debian stays on disk). Used by the Release button and by a failed provision.
 func (s *Server) releaseLabHost(ctx context.Context, host *store.Machine) {
 	if host.LabHost != nil && (host.LabHost.State == "ready" || len(host.LabHost.VMs) > 0) {
 		// A host that never finished installing has nothing to clean up; do not hang
@@ -955,7 +979,7 @@ func (s *Server) releaseLabHost(ctx context.Context, host *store.Machine) {
 	_ = s.store.SetLabHost(ctx, host.MAC, nil)
 	_ = s.store.DeleteLabHostHistory(ctx, host.MAC)
 	_ = s.store.SetMachineProvision(ctx, host.MAC, false)
-	_ = s.store.SetNodeState(ctx, host.IP, "configured")
+	_ = s.store.SetNodeState(ctx, host.IP, "unknown")
 }
 
 // pxeDecision extension: an armed lab host boots the Debian installer.

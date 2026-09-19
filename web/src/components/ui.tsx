@@ -14,14 +14,22 @@ export function Pill({ tone, children, title }: { tone: Tone; children: Componen
 }
 
 export function stateTone(state: string): Tone {
-  if (state === 'amt' || state === 'off') return 'info'
   switch (state) {
-    case 'ready': case 'done': case 'running': case 'maintenance': return 'good'
-    case 'failed': return 'bad'
-    case 'cancelled': return 'muted'
-    case 'provisioning': case 'installing': case 'bootstrapped': case 'booting': case 'pending': return 'warn'
+    case 'ready': case 'done': case 'running': case 'maintenance': case 'joined': return 'good'
+    case 'failed': case 'error': case 'down': return 'bad'
+    case 'cancelled': case 'unknown': return 'muted'
+    case 'provisioning': case 'installing': case 'bootstrapped': case 'booting': case 'pending': case 'discovered': case 'setup': case 'updating': case 'degraded': return 'warn'
+    case 'amt': case 'off': case 'labhost': case 'configured': return 'info'
     default: return 'muted'
   }
+}
+
+/** The cluster pill: the lifecycle state, overridden by the watcher's verdict once ready. */
+export function ClusterPill({ state, status }: { state: string; status?: { health?: string; openAlerts?: number } | null }) {
+  const h = state === 'ready' && status?.health && status.health !== 'healthy' ? status.health : ''
+  const label = h || state
+  const title = h === 'degraded' ? `${status?.openAlerts ?? 0} open alert${status?.openAlerts === 1 ? '' : 's'}` : h === 'down' ? 'API, etcd or a node is unreachable' : undefined
+  return <Pill tone={stateTone(label)} title={title}>{label}</Pill>
 }
 
 export function StatusDot({ tone, pulse }: { tone: Tone; pulse?: boolean }) {

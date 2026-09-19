@@ -76,6 +76,8 @@ d-i clock-setup/ntp boolean true
 # The installer reports where it is so Kubit can tell a stuck install from a slow one.
 d-i preseed/early_command string wget -q -O /dev/null "{{.ProgressURL}}?stage=installer" || true
 {{if .Disk}}d-i partman-auto/disk string {{.Disk}}
+d-i partman/early_command string \
+  wget -q -O /dev/null "{{.ProgressURL}}?stage=partitioning" || true
 {{else}}# pick the largest non-removable disk
 d-i partman/early_command string \
   DISK=$(list-devices disk | while read d; do echo "$(blockdev --getsize64 $d) $d"; done | sort -n | tail -1 | cut -d' ' -f2); \

@@ -27,7 +27,7 @@ export interface AddonStatus {
 export interface AlertSettings { minSeverity: 'info' | 'warn' | 'critical'; webhookUrl: string; smtp: { host: string; port: number; from: string; to: string[]; username: string; password: string; startTLS: boolean; tls?: 'starttls' | 'tls' | 'none' }; ignoreNamespaces: string[]; heartbeatHours: number }
 export interface OffsiteTarget { type: '' | 'dir' | 's3'; prefix: string; dir: string; endpoint: string; bucket: string; region: string; accessKey: string; secretKey: string; insecure: boolean; pathStyle: boolean; keepBackups: number }
 export interface OffsiteStatus { target: string; enabled: boolean; lastBackup?: string; backups: number; snapshots: number; bytes: number; error?: string }
-export interface Settings { factoryUrl: string; discoverySubnets: string[]; watchIntervalSec: number; pxeStatusUrl: string; defaultMetalLBRange: string; alerts: AlertSettings; offsite: OffsiteTarget; pxeEnrollment: 'open' | 'closed'; amt: OOBConfig }
+export interface Settings { factoryUrl: string; discoverySubnets: string[]; watchIntervalSec: number; pxeStatusUrl: string; defaultMetalLBRange: string; alerts: AlertSettings; offsite: OffsiteTarget; pxeEnrollment: 'open' | 'closed'; amt: OOBConfig; bmc: OOBConfig; auth: { oidc: OIDCSettings } }
 export interface PxeStatus { running: boolean; statusUrl: string; error?: string; command?: string; serviceCommand?: string; startedAt?: string; interface?: string; httpOnly?: boolean; ip?: string; httpPort?: number; talosVersion?: string; schematicId?: string; boots?: { mac: string; ip?: string; arch?: string; firstSeen: string; lastSeen: string; stage: string; count: number }[]; log?: string[] }
 export interface Versions { talos: string[]; talosSource: string; kubernetesMinors: string[]; kubernetesLatest: string; machinery: string; minTalos: string; note: string }
 
@@ -38,7 +38,7 @@ export interface Pool { name: string; role: 'controlplane' | 'worker'; labels?: 
 export interface Warning { level: 'info' | 'warn'; code: string; message: string; node?: string }
 export interface AddonSpec { enabled: boolean; values?: Record<string, unknown> }
 export interface Snapshot { id: number; cluster: string; ts: string; node: string; sizeBytes: number; sha256: string; keys: number; talosVersion?: string; k8sVersion?: string; source: 'manual' | 'schedule' | 'pre-upgrade'; status: 'ok' | 'corrupt' | 'missing'; offsite?: string }
-export interface PlatformSpec { metallb: AddonSpec & { range?: string }; ingressNginx: AddonSpec; gvisor: AddonSpec; metricsServer: AddonSpec; certManager: AddonSpec; argocd: AddonSpec }
+export interface PlatformSpec { metallb: AddonSpec & { range?: string }; ingressNginx: AddonSpec; gvisor: AddonSpec; metricsServer: AddonSpec; certManager: AddonSpec; argocd: AddonSpec; longhorn: AddonSpec }
 export interface ClusterSpec {
   apiVersion: string; kind: string; metadata: { name: string }
   spec: {
@@ -50,19 +50,21 @@ export interface ClusterSpec {
     platform: PlatformSpec
     backup?: { etcd: { interval?: string; keep?: number } }
     maintenance?: { window?: string; timezone?: string }
+    auth?: { oidc?: ClusterOIDC }
   }
 }
-export interface ClusterForm { talosVersion: string; kubernetesVersion: string; endpoint: string; vip: string; allowScheduling: boolean | null; podCIDR: string; serviceCIDR: string; extensions: string[]; nameservers: string[]; ntp: string[]; etcdSnapshotInterval: string; etcdSnapshotKeep: number; maintenanceWindow: string; maintenanceTimezone: string }
+export interface ClusterOIDC { issuer: string; clientID: string; usernameClaim?: string; usernamePrefix?: string; groupsClaim?: string; groupsPrefix?: string; adminGroup?: string }
+export interface ClusterForm { oidc?: ClusterOIDC | null; talosVersion: string; kubernetesVersion: string; endpoint: string; vip: string; allowScheduling: boolean | null; podCIDR: string; serviceCIDR: string; extensions: string[]; nameservers: string[]; ntp: string[]; etcdSnapshotInterval: string; etcdSnapshotKeep: number; maintenanceWindow: string; maintenanceTimezone: string }
 /** The structured-settings form as the daemon currently stores it. */
 export function formOf(spec: ClusterSpec['spec']): ClusterForm {
   return {
     talosVersion: spec.talosVersion, kubernetesVersion: spec.kubernetesVersion, endpoint: spec.controlPlane.endpoint, vip: spec.controlPlane.vip ?? '', allowScheduling: spec.controlPlane.allowScheduling ?? null,
     podCIDR: spec.network.podCIDR, serviceCIDR: spec.network.serviceCIDR, extensions: spec.extensions ?? [], nameservers: spec.network.nameservers ?? [], ntp: spec.network.ntp ?? [],
-    etcdSnapshotInterval: spec.backup?.etcd.interval ?? '6h', etcdSnapshotKeep: spec.backup?.etcd.keep ?? 28, maintenanceWindow: spec.maintenance?.window ?? '', maintenanceTimezone: spec.maintenance?.timezone ?? '',
+    etcdSnapshotInterval: spec.backup?.etcd.interval ?? '6h', etcdSnapshotKeep: spec.backup?.etcd.keep ?? 28, maintenanceWindow: spec.maintenance?.window ?? '', maintenanceTimezone: spec.maintenance?.timezone ?? '', oidc: spec.auth?.oidc ?? null,
   }
 }
 export interface CertInfo { name: string; subject: string; issuer?: string; notBefore: string; notAfter: string; daysLeft: number; rotatable: boolean; error?: string }
-export interface AuditEntry { id: number; at: string; cluster: string; action: string; detail: string }
+export interface AuditEntry { id: number; at: string; cluster: string; action: string; detail: string; actor?: string }
 export interface MaintenanceState { window: string; timezone: string; open: boolean; next?: string }
 export interface ClusterRow { name: string; state: string; schematicId: string; createdAt: string; updatedAt: string; spec: ClusterSpec }
 
@@ -80,8 +82,9 @@ export interface NodeDetail {
   conditions: { type: string; status: string; reason?: string; message?: string; since?: string }[]
   taints: string[] | null; labels: Record<string, string>; capacity: Resources; allocatable: Resources; requests: Resources; pods: PodSummary[] | null
 }
-export interface OOBConfig { type: '' | 'amt'; host: string; user: string; password: string; tls: boolean }
-export interface OOBInfo { version: string; mac: string; manufacturer?: string; model?: string; serial?: string; power: string }
+export interface OOBConfig { type: '' | 'amt' | 'redfish'; host: string; user: string; password: string; tls: boolean }
+export const oobLabel = (t?: string) => t === 'amt' ? 'Intel AMT' : t === 'redfish' ? 'BMC (Redfish)' : 'remote management'
+export interface OOBInfo { version: string; mac: string; uuid?: string; manufacturer?: string; model?: string; serial?: string; power: string; cpus?: number; memoryBytes?: number; disks?: { model?: string; sizeBytes: number; transport?: string; media?: string }[] }
 export interface LabVM { name: string; mac: string; state: string; cpus: number; memMiB: number; diskGiB: number; dataGiB?: number; boot: 'talos' | 'disk'; ip?: string }
 export interface LabCapacity { cpus: number; memMiB: number; diskGiB: number; kvm: boolean; kernel: string; libvirt: string; hostname: string; arch: string; bridge: string; ready: boolean; checkedAt: string }
 export interface LabMetrics { load1: number; cpuPct: number; memUsed: number; memTotal: number; diskUsed: number; diskTotal: number; vmsRunning: number; uptimeSec: number; at: string }
@@ -90,17 +93,19 @@ export interface VMSize { name?: string; role: 'controlplane' | 'worker'; cpus: 
 export interface VMPlan { each: VMSize[]; prefix?: string }
 export interface LabBootLine { kernel: string; initrd: string; cmdline: string }
 export interface LabInstall { stage: 'installer' | 'partitioning' | 'packages' | 'late-done' | 'booted' | string; at: string }
-export interface LabHost { state: 'installing' | 'setup' | 'ready' | 'updating' | 'error'; error?: string; capacity: LabCapacity; talos?: string; /** null from the daemon while installing; readers use vmsOf */ vms: LabVM[] | null; metrics?: LabMetrics; updates?: LabUpdates; install?: LabInstall; network?: 'bridge' | 'routed'; boot?: LabBootLine; failures?: number; updatedAt: string }
+export interface LabHost { state: 'installing' | 'setup' | 'ready' | 'updating' | 'error'; error?: string; capacity: LabCapacity; talos?: string; /** null from the daemon while installing; readers use vmsOf */ vms: LabVM[] | null; metrics?: LabMetrics; updates?: LabUpdates; install?: LabInstall; network?: 'bridge' | 'routed'; disk?: string; boot?: LabBootLine; failures?: number; updatedAt: string }
 export function vmsOf(lh?: LabHost | null): LabVM[] { return lh?.vms ?? [] }
 /** Samples and events of a lab host are filed under this pseudo-cluster. */
 export function labHostKey(mac: string) { return `labhost:${mac.toLowerCase()}` }
+
 /** A newer installed kernel or the reboot-required flag: the next Update host will reboot. */
 export function labNeedsReboot(u?: LabUpdates) { return !!u && (u.rebootRequired || (!!u.kernelInstalled && !!u.kernelRunning && u.kernelInstalled !== u.kernelRunning)) }
-export interface NodeRow { ip: string; mac: string; uuid?: string; serial?: string; ipsSeen?: string[]; cluster: string; hostname: string; pool: string; arch: string; role: string; source: string; state: string; talosVersion: string; wol: boolean; oob?: OOBConfig; oobType?: string; provision?: boolean; provisionKind?: string; labhost?: LabHost; host?: string; firstSeen: string; lastSeen: string; inventory?: Inventory }
+export type MachineKind = 'member' | 'maintenance' | 'configured' | 'labhost' | 'booting' | 'unbooted'
+export interface NodeRow { ip: string; mac: string; uuid?: string; serial?: string; ipsSeen?: string[]; cluster: string; hostname: string; pool: string; arch: string; role: string; source: string; state: string; kind: MachineKind; talos: boolean; talosVersion: string; wol: boolean; oob?: OOBConfig; oobType?: string; provision?: boolean; provisionKind?: string; labhost?: LabHost; host?: string; firstSeen: string; lastSeen: string; inventory?: Inventory }
 
 export interface NodeStatus { hostname: string; ip: string; role: string; pool: string; seenAt?: string; arch: string; kvm: boolean; talosVersion: string; kubeletVersion: string; ready: boolean; unschedulable: boolean; talosReachable: boolean; talosError?: string; registered: boolean; stage: string; cpuMilli: number; cpuCapMilli: number; memBytes: number; memCapBytes: number; pods: number; podCap: number; gvisor: boolean }
 export interface Status {
-  name: string; state: string; talosVersion: string; kubernetesVersion: string; endpoint: string; apiReachable: boolean; apiError?: string
+  name: string; state: string; talosVersion: string; kubernetesVersion: string; endpoint: string; apiReachable: boolean; apiError?: string; health?: 'healthy' | 'degraded' | 'down'; openAlerts?: number
   nodes: NodeStatus[]
   etcd: { members: number; expected: number; healthy: boolean; leader?: string; alarms?: string[] }
   totals: { cpuMilli: number; cpuCapMilli: number; memBytes: number; memCapBytes: number; pods: number; podCap: number; nodesReady: number; nodes: number }
@@ -117,13 +122,18 @@ export class ApiError extends Error {
   status: number
   code?: string
   command?: string
-  constructor(status: number, message: string, extra?: { code?: string; command?: string }) { super(message); this.status = status; this.code = extra?.code; this.command = extra?.command }
+  body?: any
+  constructor(status: number, message: string, extra?: { code?: string; command?: string; body?: any }) { super(message); this.status = status; this.code = extra?.code; this.command = extra?.command; this.body = extra?.body }
 }
 
 let token = ''
 export function setToken(t: string) { token = t; try { localStorage.setItem('kubit.token', t) } catch {} }
 try { token = localStorage.getItem('kubit.token') || '' } catch {}
 export function getToken() { return token }
+
+/** Called once per 401 so the shell can switch to the sign-in screen. */
+export let onUnauthorized: () => void = () => {}
+export function setUnauthorizedHandler(fn: () => void) { onUnauthorized = fn }
 
 async function req<T>(method: string, path: string, body?: unknown): Promise<T> {
   const headers: Record<string, string> = {}
@@ -134,13 +144,32 @@ async function req<T>(method: string, path: string, body?: unknown): Promise<T> 
   const text = await res.text()
   let data: any = text
   try { data = JSON.parse(text) } catch {}
-  if (!res.ok) throw new ApiError(res.status, (data && data.error) || text || res.statusText, data && typeof data === 'object' ? { code: data.code, command: data.command } : undefined)
+  if (res.status === 401 && !path.startsWith('/auth/')) onUnauthorized()
+  if (!res.ok) throw new ApiError(res.status, (data && data.error) || text || res.statusText, data && typeof data === 'object' ? { code: data.code, command: data.command, body: data } : undefined)
   return data as T
 }
+
+export type Role = 'viewer' | 'operator' | 'admin'
+export interface Me { user: string; role: Role; via: string; setup: boolean; users: number; sso?: string }
+export interface OIDCSettings { enabled: boolean; name: string; issuer: string; clientId: string; clientSecret: string; usernameClaim: string; groupsClaim: string; adminGroups: string[]; operatorGroups: string[]; viewerGroups: string[]; defaultRole: '' | Role }
+export interface User { id: number; name: string; role: Role; disabled: boolean; source: string; createdAt: string; lastLogin?: string; hasPassword: boolean }
+export interface ApiToken { name: string; kind: string; createdAt: string; expiresAt?: string; lastUsed?: string; prefix: string }
+export const roleRank: Record<Role, number> = { viewer: 1, operator: 2, admin: 3 }
 
 type OpRef = { operationId: number }
 
 export const api = {
+  me: () => req<Me>('GET', '/auth/me'),
+  login: (name: string, password: string) => req<Me>('POST', '/auth/login', { name, password }),
+  setup: (name: string, password: string) => req<Me>('POST', '/auth/setup', { name, password }),
+  logout: () => req<void>('POST', '/auth/logout'),
+  users: () => req<User[]>('GET', '/users'),
+  createUser: (name: string, password: string, role: Role) => req<User>('POST', '/users', { name, password, role }),
+  updateUser: (name: string, patch: { role?: Role; disabled?: boolean; password?: string }) => req<User>('PUT', `/users/${name}`, patch),
+  deleteUser: (name: string) => req<void>('DELETE', `/users/${name}`),
+  tokens: (user: string) => req<ApiToken[]>('GET', `/users/${user}/tokens`),
+  createToken: (user: string, name: string, days: number) => req<{ token: string }>('POST', `/users/${user}/tokens`, { name, days }),
+  deleteToken: (user: string, name: string) => req<void>('DELETE', `/users/${user}/tokens/${encodeURIComponent(name)}`),
   version: () => req<{ kubit: string; startedAt?: string; service?: boolean; pid?: number }>('GET', '/version'),
   clusters: () => req<ClusterRow[]>('GET', '/clusters'),
   cluster: (name: string) => req<ClusterRow>('GET', `/clusters/${name}`),
@@ -161,7 +190,7 @@ export const api = {
   oobTest: (mac: string, c?: OOBConfig) => req<{ ok: boolean; error?: string; info?: OOBInfo }>('POST', `/machines/${mac}/oob/test`, c ?? {}),
   power: (mac: string, action: 'on' | 'off' | 'reset' | 'cycle' | 'pxe') => req<OpRef>('POST', `/machines/${mac}/power`, { action }),
   addOOBMachine: (c: OOBConfig) => req<{ machine: NodeRow; info: OOBInfo }>('POST', '/machines/oob', c),
-  labProvision: (mac: string, plan?: { manual?: boolean; network?: 'bridge' | 'routed'; vms?: VMPlan; cluster?: { name: string; controlPlanes: 1 | 3; skipPlatform?: boolean } }) => req<OpRef>('POST', `/machines/${mac}/labhost`, plan ?? {}),
+  labProvision: (mac: string, plan?: { manual?: boolean; network?: 'bridge' | 'routed'; disk?: string; vms?: VMPlan; cluster?: { name: string; controlPlanes: 1 | 3; skipPlatform?: boolean } }) => req<OpRef>('POST', `/machines/${mac}/labhost`, plan ?? {}),
   labRelease: (mac: string) => req<void>('DELETE', `/machines/${mac}/labhost`),
   addMachine: (r: { mac: string; ip?: string; hostname?: string; arch?: string }) => req<NodeRow>('POST', '/machines', r),
   labSamples: (mac: string, range: string) => req<Sample[]>('GET', `/machines/${mac}/labhost/samples?range=${range}`),

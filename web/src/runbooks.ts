@@ -23,6 +23,11 @@ export function runbookFor(kind: string, c: Ctx): Runbook | null {
         { text: 'A reboot through Kubit (drain first) fixes most transient cases.', link: node },
         { text: 'Disk pressure: free space under /var (image garbage collection runs on its own once below the threshold) or move workloads.' },
       ] }
+    case 'node.memory-small':
+      return { title: 'Node too small for the platform add-ons', why: 'Talos and the kubelet reserve about half a gigabyte before any pod runs; what is left is what the add-ons share. Under 768 MiB they get OOM-killed and restarted in a loop.', steps: [
+        { text: 'Give the machine at least 2 GiB. A lab VM is resized on its host\'s Lab host tab (the VM restarts).', link: node },
+        { text: 'Or remove the node from the cluster and adopt a larger machine.', link: { label: 'Nodes', href: nodes } },
+      ] }
     case 'api.unreachable':
       return { title: 'Kubernetes API unreachable', why: 'Kubit cannot talk to the endpoint (VIP or first control plane). Either every control plane is down, the VIP is not being announced, or the network between this host and the cluster is broken.', steps: [
         { text: 'Check the control planes\' Talos reachability on the Nodes page; if they answer, the API server pods or etcd are the problem.', link: { label: 'Nodes', href: nodes } },

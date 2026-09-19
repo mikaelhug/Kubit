@@ -65,6 +65,74 @@ type Spec struct {
 	Backup   Backup   `yaml:"backup" json:"backup"`
 	// Maintenance gates disruptive operations to a window; empty = anytime.
 	Maintenance Maintenance `yaml:"maintenance,omitempty" json:"maintenance,omitempty"`
+	// Auth wires the cluster's API server to an OpenID Connect provider so people
+	// use kubectl with their own identity and RBAC binds to their groups.
+	Auth ClusterAuth `yaml:"auth,omitempty" json:"auth,omitempty"`
+}
+
+type ClusterAuth struct {
+	OIDC *ClusterOIDC `yaml:"oidc,omitempty" json:"oidc,omitempty"`
+}
+
+// ClusterOIDC becomes a JWT authenticator in the API server's AuthenticationConfiguration.
+// Prefixes default to "oidc:" so SSO users and groups never collide with service accounts.
+type ClusterOIDC struct {
+	Issuer         string `yaml:"issuer" json:"issuer"`
+	ClientID       string `yaml:"clientID" json:"clientID"`
+	UsernameClaim  string `yaml:"usernameClaim,omitempty" json:"usernameClaim,omitempty"`
+	UsernamePrefix string `yaml:"usernamePrefix,omitempty" json:"usernamePrefix,omitempty"`
+	GroupsClaim    string `yaml:"groupsClaim,omitempty" json:"groupsClaim,omitempty"`
+	GroupsPrefix   string `yaml:"groupsPrefix,omitempty" json:"groupsPrefix,omitempty"`
+	// AdminGroup, when set, is bound to cluster-admin by the platform layer.
+	AdminGroup string `yaml:"adminGroup,omitempty" json:"adminGroup,omitempty"`
+}
+
+// AdminGroupSubject is the RBAC group name the API server will see for AdminGroup:
+// the group with its prefix applied.
+func (a ClusterAuth) AdminGroupSubject() string {
+	o := a.OIDC
+	if o == nil || o.AdminGroup == "" || o.GroupsClaim == "" {
+		return ""
+	}
+	gp := o.GroupsPrefix
+	if gp == "" {
+		gp = "oidc:"
+	}
+	return gp + o.AdminGroup
+}
+
+// AuthenticationConfig renders the API server's structured AuthenticationConfiguration
+// (one JWT authenticator); nil when unset.
+func (a ClusterAuth) AuthenticationConfig() map[string]any {
+	o := a.OIDC
+	if o == nil || o.Issuer == "" || o.ClientID == "" {
+		return nil
+	}
+	username := map[string]any{"claim": "sub"}
+	if o.UsernameClaim != "" {
+		username["claim"] = o.UsernameClaim
+	}
+	prefix := o.UsernamePrefix
+	if prefix == "" {
+		prefix = "oidc:"
+	}
+	username["prefix"] = prefix
+	mappings := map[string]any{"username": username}
+	if o.GroupsClaim != "" {
+		gp := o.GroupsPrefix
+		if gp == "" {
+			gp = "oidc:"
+		}
+		mappings["groups"] = map[string]any{"claim": o.GroupsClaim, "prefix": gp}
+	}
+	return map[string]any{
+		"apiVersion": "apiserver.config.k8s.io/v1",
+		"kind":       "AuthenticationConfiguration",
+		"jwt": []any{map[string]any{
+			"issuer":        map[string]any{"url": o.Issuer, "audiences": []any{o.ClientID}},
+			"claimMappings": mappings,
+		}},
+	}
 }
 
 // Backup declares what Kubit keeps on the admin host for disaster recovery.
@@ -186,6 +254,42 @@ type Platform struct {
 	MetricsServer Addon   `yaml:"metricsServer" json:"metricsServer"`
 	CertManager   Addon   `yaml:"certManager" json:"certManager"`
 	ArgoCD        Addon   `yaml:"argocd" json:"argocd"`
+	// Longhorn is replicated block storage on the nodes' data disks: the default
+	// StorageClass, volume snapshots, backups to S3. Needs dataDisks on the nodes
+	// that should hold replicas; Talos gets the iscsi and util-linux extensions.
+	Longhorn Addon `yaml:"longhorn" json:"longhorn"`
+}
+
+// AddOns reports whether any in-cluster add-on is enabled: the workers then carry
+// MetalLB, ingress and metrics pods on top of the kubelet.
+func (p Platform) AddOns() bool {
+	return p.MetalLB.Enabled || p.IngressNginx.Enabled || p.MetricsServer.Enabled || p.CertManager.Enabled || p.ArgoCD.Enabled
+}
+
+// LonghornExtensions are the Talos system extensions Longhorn's engine needs.
+var LonghornExtensions = []string{"siderolabs/iscsi-tools", "siderolabs/util-linux-tools"}
+
+// LonghornNodes are the nodes that carry Longhorn replicas: those with data disks.
+func (c *Cluster) LonghornNodes() []Node {
+	var out []Node
+	for _, n := range c.Spec.Nodes {
+		if len(n.DataDisks) > 0 {
+			out = append(out, n)
+		}
+	}
+	return out
+}
+
+// LonghornReplicas is the default replica count: three, or fewer on small clusters.
+func (c *Cluster) LonghornReplicas() int {
+	n := len(c.LonghornNodes())
+	if n > 3 {
+		return 3
+	}
+	if n < 1 {
+		return 1
+	}
+	return n
 }
 
 type Addon struct {
@@ -253,6 +357,13 @@ func (c *Cluster) applyDefaults() {
 	}
 	if c.Spec.Platform.GVisor.Enabled && !containsString(c.Spec.Extensions, "siderolabs/gvisor") {
 		c.Spec.Extensions = append(c.Spec.Extensions, "siderolabs/gvisor")
+	}
+	if c.Spec.Platform.Longhorn.Enabled {
+		for _, e := range LonghornExtensions {
+			if !containsString(c.Spec.Extensions, e) {
+				c.Spec.Extensions = append(c.Spec.Extensions, e)
+			}
+		}
 	}
 	if c.Spec.ControlPlane.AllowScheduling == nil {
 		v := len(c.Spec.Nodes) < 6
@@ -387,6 +498,20 @@ func (c *Cluster) Validate() error {
 	}
 	if err := c.Spec.Maintenance.Validate(); err != nil {
 		errs = append(errs, err)
+	}
+	if c.Spec.Platform.Longhorn.Enabled && len(c.LonghornNodes()) == 0 {
+		errs = append(errs, fmt.Errorf("platform.longhorn needs dataDisks on at least one node to hold replicas"))
+	}
+	if o := c.Spec.Auth.OIDC; o != nil {
+		if !strings.HasPrefix(o.Issuer, "https://") {
+			errs = append(errs, fmt.Errorf("auth.oidc.issuer must be an https:// URL"))
+		}
+		if o.ClientID == "" {
+			errs = append(errs, fmt.Errorf("auth.oidc.clientID is required"))
+		}
+		if o.AdminGroup != "" && o.GroupsClaim == "" {
+			errs = append(errs, fmt.Errorf("auth.oidc.adminGroup needs groupsClaim"))
+		}
 	}
 	if contract, err := talosconfig.ParseContractFromVersion(c.Spec.TalosVersion); err != nil {
 		errs = append(errs, fmt.Errorf("talosVersion: %w", err))

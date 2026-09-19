@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from 'preact/hooks'
 import { useLocation } from 'preact-iso'
-import { clusters } from '../store'
-import { sectionList } from '../app'
+import { clusters, machineList } from '../store'
+import { hostName, kindLabel } from '../machine'
+import { sectionList, settingsPages } from '../app'
 import { Pill } from './ui'
 
 interface Item { label: string; hint?: string; href: string; group: string }
@@ -30,9 +31,14 @@ export function Palette() {
       for (const [id, label] of sectionList) out.push({ label: `${c.name} › ${label}`, href: `/clusters/${c.name}/${id}`, group: 'Clusters' })
       for (const n of c.spec.spec.nodes) out.push({ label: n.hostname, hint: `${c.name} · ${n.ip} · ${n.pool ?? n.role}`, href: n.mac ? `/machines/${n.mac}` : `/nodes/${n.ip}`, group: 'Nodes' })
     }
-    out.push({ label: 'New cluster', href: '/clusters/new', group: 'Kubit' }, { label: 'Inventory', href: '/fleet/inventory', group: 'Kubit' }, { label: 'Network boot (PXE)', href: '/fleet/pxe', group: 'Kubit' }, { label: 'Activity', href: '/operations', group: 'Kubit' }, { label: 'Kubit settings', href: '/settings', group: 'Kubit' }, { label: 'Getting started', href: '/start', group: 'Kubit' })
+    for (const m of machineList.value) {
+      if (m.kind === 'labhost') out.push({ label: hostName(m), hint: `lab host · ${(m.labhost?.vms ?? []).length} VMs · ${m.ip}`, href: `/labhosts/${m.mac}/overview`, group: 'Lab hosts' })
+      else if (m.kind !== 'member') out.push({ label: m.hostname || m.mac, hint: `${kindLabel[m.kind]} · ${m.ip || m.mac}`, href: `/machines/${m.mac}`, group: 'Machines' })
+    }
+    out.push({ label: 'Home', href: '/', group: 'Kubit' }, { label: 'New cluster', href: '/clusters/new', group: 'Kubit' }, { label: 'Inventory', href: '/fleet/inventory', group: 'Kubit' }, { label: 'Network boot', href: '/fleet/network-boot', group: 'Kubit' }, { label: 'Activity', href: '/operations', group: 'Kubit' })
+    for (const [id, label] of settingsPages) out.push({ label: `Settings › ${label}`, href: `/settings/${id}`, group: 'Kubit' })
     return out
-  }, [clusters.value])
+  }, [clusters.value, machineList.value])
 
   const matches = useMemo(() => {
     const words = q.toLowerCase().split(/\s+/).filter(Boolean)

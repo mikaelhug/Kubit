@@ -2,6 +2,7 @@ package api
 
 import (
 	"encoding/json"
+	"github.com/mikael/kubit/internal/config"
 	"net/http"
 	"strings"
 )
@@ -23,6 +24,8 @@ type clusterForm struct {
 	EtcdSnapshotKeep     int    `json:"etcdSnapshotKeep"`
 	MaintenanceWindow    string `json:"maintenanceWindow"`
 	MaintenanceTimezone  string `json:"maintenanceTimezone"`
+	// OIDC is the API server's SSO; a nil or empty issuer removes it.
+	OIDC *config.ClusterOIDC `json:"oidc"`
 }
 
 // handleClusterForm validates and saves the structured fields; versions are only
@@ -57,6 +60,11 @@ func (s *Server) handleClusterForm(w http.ResponseWriter, r *http.Request) {
 	}
 	c.Spec.Maintenance.Window = strings.TrimSpace(f.MaintenanceWindow)
 	c.Spec.Maintenance.Timezone = strings.TrimSpace(f.MaintenanceTimezone)
+	if f.OIDC != nil && strings.TrimSpace(f.OIDC.Issuer) != "" {
+		c.Spec.Auth.OIDC = f.OIDC
+	} else {
+		c.Spec.Auth.OIDC = nil
+	}
 	if err := c.Validate(); err != nil {
 		writeJSON(w, http.StatusUnprocessableEntity, map[string]string{"error": err.Error()})
 		return

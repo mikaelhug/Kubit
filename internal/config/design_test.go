@@ -113,3 +113,37 @@ func TestDesignPrefersBareMetalControlPlanes(t *testing.T) {
 		t.Errorf("expected control-planes-on-vms warning, got %+v", warnings)
 	}
 }
+
+func TestLintUndersizedWorker(t *testing.T) {
+	d := []config.MachineDisk{{DevPath: "/dev/vda", SizeBytes: 20 << 30, Transport: "virtio"}}
+	ms := []config.Machine{
+		{IP: "10.0.0.31", MAC: "aa:aa:aa:aa:aa:31", Arch: "amd64", CPUs: 2, MemBytes: 1900 << 20, Disks: d},
+		{IP: "10.0.0.32", MAC: "aa:aa:aa:aa:aa:32", Arch: "amd64", CPUs: 2, MemBytes: 940 << 20, Disks: d},
+	}
+	c, _ := config.Design("lab", ms, config.DesignOptions{})
+	for i := range c.Spec.Nodes {
+		if c.Spec.Nodes[i].MAC == "aa:aa:aa:aa:aa:32" {
+			c.Spec.Nodes[i].Pool, c.Spec.Nodes[i].Role, c.Spec.Nodes[i].Hostname = "worker", config.RoleWorker, "lab-worker-01"
+		} else {
+			c.Spec.Nodes[i].Pool, c.Spec.Nodes[i].Role, c.Spec.Nodes[i].Hostname = "controlplane", config.RoleControlPlane, "lab-cp-01"
+		}
+	}
+	codes := map[string]string{}
+	for _, w := range config.Lint(c, ms) {
+		codes[w.Code] = w.Node
+	}
+	if codes["worker-undersized"] != "lab-worker-01" {
+		t.Errorf("a 1 GiB worker under the platform stack must be flagged: %v", codes)
+	}
+	if _, ok := codes["control-plane-undersized"]; ok {
+		t.Errorf("a 2 GiB control plane is fine: %v", codes)
+	}
+	c.Spec.Platform = config.Platform{}
+	seen := map[string]bool{}
+	for _, w := range config.Lint(c, ms) {
+		seen[w.Code+":"+w.Node] = true
+	}
+	if seen["worker-undersized:lab-worker-01"] || !seen["low-memory:lab-worker-01"] {
+		t.Errorf("without add-ons a small worker is only low-memory: %v", seen)
+	}
+}

@@ -87,15 +87,15 @@ func (s *Server) handleOOBTest(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if info.MAC != "" && info.MAC != mac {
-		writeJSON(w, http.StatusOK, map[string]any{"ok": false, "error": fmt.Sprintf("AMT reports MAC %s, this machine is %s: wrong address?", info.MAC, mac), "info": info})
+		writeJSON(w, http.StatusOK, map[string]any{"ok": false, "error": fmt.Sprintf("%s reports MAC %s, this machine is %s: wrong address?", oob.Label(c.Type), info.MAC, mac), "info": info})
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "info": info})
 }
 
-// handleOOBAdd creates a machine from its management engine alone: AMT tells us the
-// MAC, model and serial before Talos ever booted, so the machine can be booted into
-// Talos from the Inventory.
+// handleOOBAdd creates a machine from its management engine alone: AMT or the BMC
+// tells us the MAC, model and serial before Talos ever booted, so the machine can be
+// booted into Talos from the Inventory.
 func (s *Server) handleOOBAdd(w http.ResponseWriter, r *http.Request) {
 	var c oob.Config
 	if err := json.NewDecoder(r.Body).Decode(&c); err != nil {
@@ -115,10 +115,10 @@ func (s *Server) handleOOBAdd(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if info.MAC == "" {
-		writeJSON(w, http.StatusBadGateway, map[string]string{"error": "AMT did not report a wired MAC address"})
+		writeJSON(w, http.StatusBadGateway, map[string]string{"error": oob.Label(c.Type) + " did not report a wired MAC address"})
 		return
 	}
-	row := store.NodeRow{MAC: info.MAC, Serial: info.Serial, Source: "amt", State: "off"}
+	row := store.NodeRow{MAC: info.MAC, UUID: info.UUID, Serial: info.Serial, Source: c.Type, State: "off"}
 	if info.Power == "on" {
 		row.State = "unknown"
 	}
@@ -134,9 +134,7 @@ func (s *Server) handleOOBAdd(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if info.Model != "" {
-		// Hardware normally comes from Talos; until then the chassis strings stand in.
-		hw, _ := json.Marshal(map[string]any{"manufacturer": info.Manufacturer, "product": info.Model, "serial": info.Serial, "disks": []any{}, "links": []any{}})
-		_ = s.store.UpsertNode(ctx, store.NodeRow{MAC: info.MAC, Source: "amt", Hardware: hw})
+		_ = s.store.UpsertNode(ctx, store.NodeRow{MAC: info.MAC, Source: c.Type, Hardware: oobHardware(info)})
 	}
 	_ = s.store.Audit(ctx, "", "machine.oob.add", info.MAC+" "+c.Host)
 	m, _ := s.store.GetMachine(ctx, info.MAC)
@@ -164,12 +162,20 @@ func (s *Server) handleOOBPower(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "no remote management configured for this machine", http.StatusConflict)
 		return
 	}
-	if req.Action == oob.BootPXE && !s.pxeRunning(r.Context()) {
-		writeJSON(w, http.StatusConflict, map[string]string{"error": "The PXE server is not running, so the machine would find nothing to boot. Start it in a terminal (it can stay open): " + pxeCommand(r.Host), "code": "pxe-down", "command": pxeCommand(r.Host)})
-		return
-	}
 	if req.Action == oob.BootPXE && m.Cluster != "" {
 		http.Error(w, fmt.Sprintf("%s is a member of %s; remove it from the cluster first (that resets it to maintenance mode without PXE)", m.Hostname, m.Cluster), http.StatusConflict)
+		return
+	}
+	if req.Action == oob.BootPXE && m.Kind() == store.KindLabHost {
+		http.Error(w, "A lab host boots its own disk; release it first.", http.StatusConflict)
+		return
+	}
+	if req.Action == oob.BootPXE && m.IsLabVM() {
+		http.Error(w, "Lab VMs are re-provisioned from their host.", http.StatusConflict)
+		return
+	}
+	if req.Action == oob.BootPXE && !s.pxeRunning(r.Context()) {
+		writeJSON(w, http.StatusConflict, map[string]string{"error": "The PXE server is not running, so the machine would find nothing to boot. Start it in a terminal (it can stay open): " + pxeCommand(r.Host), "code": "pxe-down", "command": pxeCommand(r.Host)})
 		return
 	}
 	id, err := s.runOperation(m.Cluster, "machine.power", map[string]string{"mac": mac, "action": string(req.Action), "hostname": m.Hostname}, func(ctx contextT, sink clusterSink) (result any, err error) {
@@ -180,11 +186,11 @@ func (s *Server) handleOOBPower(w http.ResponseWriter, r *http.Request) {
 					_ = s.store.SetMachineProvision(context.Background(), mac, false)
 				}
 			}()
-			sink(clusterEvent{Time: time.Now(), Kind: "steps", Level: "info", Steps: cluster.Steps("power", "Arm a network boot and reset via AMT", "boot", "Network boot request seen", "ipxe", "Talos kernel fetched", "wait", "Wait for Talos maintenance mode")})
+			sink(clusterEvent{Time: time.Now(), Kind: "steps", Level: "info", Steps: cluster.Steps("power", "Arm a network boot and reset via "+oob.Label(c.Type), "boot", "Network boot request seen", "ipxe", "Talos kernel fetched", "wait", "Wait for Talos maintenance mode")})
 		}
 		sink(clusterEvent{Time: time.Now(), Kind: "step", Step: "power", Status: cluster.StepRunning})
 		mgr, err := oob.Open(*c, oob.WithTrace(func(line string) {
-			sink(clusterEvent{Time: time.Now(), Kind: "log", Level: "info", Step: "power", Message: "amt: " + line})
+			sink(clusterEvent{Time: time.Now(), Kind: "log", Level: "info", Step: "power", Message: c.Type + ": " + line})
 		}))
 		if err != nil {
 			return nil, err
@@ -267,9 +273,7 @@ func (s *Server) pxeDecision(ctx context.Context, mac string) (string, string) {
 		return boot, "armed as lab host: Debian installer"
 	}
 	switch {
-	case m.LabHost != nil && (m.LabHost.State == "ready" || m.LabHost.State == "updating"):
-		// An installed lab host always boots its own disk, even if a stale arm flag
-		// lingered — never re-image or disrupt a running host on a network boot.
+	case m.Kind() == store.KindLabHost:
 		return "local", "lab host"
 	case m.Provision:
 		return "talos", "armed with Boot into Talos"
@@ -278,4 +282,15 @@ func (s *Server) pxeDecision(ctx context.Context, mac string) (string, string) {
 	default:
 		return "talos", "known, unassigned machine"
 	}
+}
+
+// oobHardware is the inventory stand-in until Talos reports the real one: the chassis
+// strings from either engine, and what a BMC knows about CPUs, memory and drives.
+func oobHardware(info oob.Info) []byte {
+	disks := make([]map[string]any, 0, len(info.Disks))
+	for _, d := range info.Disks {
+		disks = append(disks, map[string]any{"devPath": "", "model": d.Model, "serial": d.Serial, "sizeBytes": d.SizeBytes, "transport": d.Transport, "rotational": d.Media == "hdd"})
+	}
+	hw, _ := json.Marshal(map[string]any{"manufacturer": info.Manufacturer, "product": info.Model, "serial": info.Serial, "uuid": info.UUID, "cpus": info.CPUs, "memoryBytes": info.MemoryBytes, "disks": disks, "links": []any{}})
+	return hw
 }

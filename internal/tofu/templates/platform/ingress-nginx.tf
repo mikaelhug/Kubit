@@ -9,6 +9,7 @@ resource "helm_release" "ingress_nginx" {
   version          = var.chart_versions.ingress_nginx
   values           = length(var.ingress_nginx.values) > 0 ? [yamlencode(var.ingress_nginx.values)] : []
   wait             = true
+  atomic           = true
   timeout          = 600
 
   set = [

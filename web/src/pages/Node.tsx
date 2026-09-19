@@ -4,7 +4,8 @@ import { useLocation } from 'preact-iso'
 import { clusters, connected, machineList, machines, operations, refreshKey, resyncing, statuses, toast, watch } from '../store'
 import { ReaddressDialog } from './cluster/Nodes'
 import { RemoteManagement } from '../components/RemoteManagement'
-import { LabHostPanel, MakeLabHostDialog } from '../components/LabHost'
+import { AddVMsDialog, HostStateNotice, HostSystem, LabHostPanel, LabVMControls, MakeLabHostDialog, ReleaseHostDialog } from '../components/LabHost'
+import { canAdopt, canMakeLabHost, canRetire, hostName, hostOf, isLabVM, kindDetail, kindLabel, KindPill, modelOf, TypePill } from '../machine'
 import { Tabs } from '../components/Tabs'
 import { DataTable, type Column } from '../components/DataTable'
 import { Breadcrumbs, ConfirmDialog, Dialog, ErrorBox, Field, KeyValue, MaintenanceNotice, Meter, Notice, Pill, Section, StatusDot, stateTone } from '../components/ui'
@@ -13,14 +14,14 @@ import { elapsed } from '../clock'
 type TabId = 'overview' | 'hardware' | 'kubernetes' | 'services' | 'logs' | 'actions' | 'labhost'
 
 /** One machine: what Talos says, what Kubernetes says, and what can be done to it. */
-export function NodePage({ ip: ipParam, mac }: { ip?: string; mac?: string }) {
+export function NodePage({ ip: ipParam, mac }: { ip?: string; mac?: string; tab?: string }) {
   const [node, setNode] = useState<NodeRow | null>(null)
   const ip = node?.ip ?? ipParam ?? ''
   const [inv, setInv] = useState<Inventory | null>(null)
   const [invErr, setInvErr] = useState<string | null>(null)
   const [k8s, setK8s] = useState<NodeDetail | null>(null)
   const [k8sErr, setK8sErr] = useState<string | null>(null)
-  const [tab, setTab] = useState<TabId>(() => (typeof location !== 'undefined' && (location.hash === '#actions' || location.hash === '#oob') ? 'actions' : location.hash === '#labhost' ? 'labhost' : 'overview'))
+  const [tab, setTab] = useState<TabId>(() => (typeof location !== 'undefined' && (location.hash === '#actions' || location.hash === '#oob') ? 'actions' : location.hash === '#labhost' || location.pathname.startsWith('/labhosts/') ? 'labhost' : 'overview'))
   const [error, setError] = useState<string | null>(null)
   const finished = [...operations.value.values()].filter((o) => o.status !== 'running').length
 
@@ -34,68 +35,129 @@ export function NodePage({ ip: ipParam, mac }: { ip?: string; mac?: string }) {
   }, [live, mac, ipParam]) // eslint-disable-line
   const observed = live?.cluster ? statuses.value.get(live.cluster)?.observedAt : undefined
   useEffect(() => {
-    const addr = live?.ip ?? ipParam
-    if (!addr) return
-    api.inventory(addr).then((i) => { setInv(i); setInvErr(null) }).catch((e) => setInvErr(e.message))
-    api.nodeKubernetes(addr).then((d) => { setK8s(d); setK8sErr(null) }).catch((e) => setK8sErr(e.message))
-  }, [live?.ip, ipParam, finished, observed, refreshKey(live?.cluster ?? '', 'nodes')]) // eslint-disable-line
+    if (!live) return
+    if (live.talos) api.inventory(live.ip).then((i) => { setInv(i); setInvErr(null) }).catch((e) => setInvErr(e.message))
+    else { setInv(null); setInvErr(null) }
+    if (live.kind === 'member') api.nodeKubernetes(live.ip).then((d) => { setK8s(d); setK8sErr(null) }).catch((e) => setK8sErr(e.message))
+    else { setK8s(null); setK8sErr(null) }
+  }, [live?.ip, live?.kind, live?.talos, finished, observed, refreshKey(live?.cluster ?? '', 'nodes')]) // eslint-disable-line
 
   const cluster = node?.cluster ? clusters.value.find((c) => c.name === node.cluster) : undefined
   const spec: NodeSpec | undefined = cluster?.spec.spec.nodes.find((n) => (node?.mac && n.mac === node.mac) || n.hostname === node?.hostname)
-  const title = node?.hostname || ip || mac || ''
-  const running = [...operations.value.values()].filter((o) => o.status === 'running' && o.cluster === node?.cluster && (o.request as any)?.hostname === node?.hostname)
+  const title = node?.hostname || node?.labhost?.capacity.hostname || ip || mac || ''
+  const running = [...operations.value.values()].filter((o) => o.status === 'running' && ((o.cluster === node?.cluster && (o.request as any)?.hostname === node?.hostname) || (o.request as any)?.mac === node?.mac))
+  const kind = node?.kind
+  const host = hostOf(node)
+  const tabs: { id: TabId; label: string; badge?: number }[] = [
+    { id: 'overview', label: 'Overview' }, { id: 'hardware', label: 'Hardware' },
+    ...(kind === 'member' ? [{ id: 'kubernetes' as TabId, label: 'Kubernetes', badge: k8s?.pods?.length }] : []),
+    ...(node?.talos ? [{ id: 'services' as TabId, label: 'Services' }, { id: 'logs' as TabId, label: 'Logs' }] : []),
+    ...(kind === 'labhost' ? [{ id: 'labhost' as TabId, label: 'Lab host', badge: (node?.labhost?.vms ?? []).length }] : []),
+    { id: 'actions', label: 'Actions' },
+  ]
+  const shown = node && !tabs.some((t) => t.id === tab) ? 'overview' : tab
 
   return (
     <div class="flex flex-col">
       <header class="px-6 pt-5 border-b border-border bg-panel/60">
-        <Breadcrumbs items={node?.cluster ? [{ label: node.cluster, href: `/clusters/${node.cluster}/overview` }, { label: 'Nodes', href: `/clusters/${node.cluster}/nodes` }, { label: title }] : [{ label: 'Inventory', href: '/fleet/inventory' }, { label: ip }]} />
+        <Breadcrumbs items={node?.cluster ? [{ label: node.cluster, href: `/clusters/${node.cluster}/overview` }, { label: 'Nodes', href: `/clusters/${node.cluster}/nodes` }, { label: title }] : [{ label: 'Inventory', href: '/fleet/inventory' }, { label: title }]} />
         <div class="flex flex-wrap items-center gap-3 mt-2 mb-3">
           <h1 class="text-xl font-semibold">{title}</h1>
-          {node && !node.cluster && <Pill tone={stateTone(node.state)}>{node.state}</Pill>}
-          {inv ? <Pill tone="good">Talos {inv.talosVersion}</Pill> : invErr ? <Pill tone="bad" title={invErr}>Talos unreachable</Pill> : null}
+          {node && !node.cluster && <KindPill m={node} />}
+          {node && node.kind !== 'labhost' && <TypePill m={node} />}
+          {host && <a class="pill bg-panel-2 text-muted hover:text-fg" href={`/machines/${host.mac}#labhost`}>on {hostName(host)}</a>}
+          {inv ? <Pill tone="good">Talos {inv.talosVersion}</Pill> : invErr ? <Pill tone="bad" title={invErr}>Talos not answering</Pill> : null}
           {k8s ? <Pill tone={k8s.ready ? 'good' : 'warn'}>{k8s.ready ? 'Ready' : 'NotReady'}</Pill> : null}
           {k8s?.unschedulable && <Pill tone="warn">cordoned</Pill>}
           {running.map((o) => <Pill key={o.id} tone="warn">{fmt.kind(o.kind)} running</Pill>)}
-          <span class="mono text-muted text-[12px]">{ip} · {node?.mac} · {node?.arch}{spec ? ` · pool ${spec.pool}` : ''}{spec?.network ? ' · static' : ''}</span>
+          <span class="mono text-muted text-[12px]">{[ip, node?.mac, node?.arch].filter(Boolean).join(' · ')}{spec ? ` · pool ${spec.pool}` : ''}{spec?.network ? ' · static' : ''}</span>
         </div>
-        <Tabs active={tab} onSelect={(t) => setTab(t as TabId)} tabs={[
-          { id: 'overview', label: 'Overview' }, { id: 'hardware', label: 'Hardware' }, { id: 'kubernetes', label: 'Kubernetes', badge: k8s?.pods?.length },
-          { id: 'services', label: 'Services' }, { id: 'logs', label: 'Logs' }, { id: 'actions', label: 'Actions' },
-          ...(node?.labhost ? [{ id: 'labhost', label: 'Lab host', badge: (node.labhost.vms ?? []).length }] : []),
-        ]} />
+        <Tabs active={shown} onSelect={(t) => setTab(t as TabId)} tabs={tabs} />
       </header>
       <div class="p-6 flex flex-col gap-5 max-w-[1300px]">
         <ErrorBox error={error} />
-        {tab === 'overview' && <OverviewTab inv={inv} invErr={invErr} k8s={k8s} k8sErr={k8sErr} node={node} spec={spec} />}
-        {tab === 'hardware' && <HardwareTab inv={inv} invErr={invErr} />}
-        {tab === 'kubernetes' && <KubernetesTab k8s={k8s} err={k8sErr} />}
-        {tab === 'services' && <ServicesTab ip={ip} cluster={node?.cluster} />}
-        {tab === 'logs' && <LogsTab ip={ip} />}
-        {tab === 'labhost' && node?.labhost && <LabHostPanel host={node} />}
-        {tab === 'actions' && <ActionsTab node={node} k8s={k8s} inv={inv} cluster={cluster} spec={spec} talosVersion={cluster?.spec.spec.talosVersion} />}
+        {shown === 'overview' && <OverviewTab inv={inv} invErr={invErr} k8s={k8s} k8sErr={k8sErr} node={node} spec={spec} />}
+        {shown === 'hardware' && <HardwareTab inv={inv} invErr={invErr} node={node} />}
+        {shown === 'kubernetes' && <KubernetesTab k8s={k8s} err={k8sErr} />}
+        {shown === 'services' && <ServicesTab ip={ip} cluster={node?.cluster} />}
+        {shown === 'logs' && <LogsTab ip={ip} />}
+        {shown === 'labhost' && node?.labhost && <LabHostPanel host={node} />}
+        {shown === 'actions' && <ActionsTab node={node} k8s={k8s} inv={inv} cluster={cluster} spec={spec} talosVersion={cluster?.spec.spec.talosVersion} />}
       </div>
     </div>
   )
 }
 
 function OverviewTab({ inv, invErr, k8s, k8sErr, node, spec }: { inv: Inventory | null; invErr: string | null; k8s: NodeDetail | null; k8sErr: string | null; node: NodeRow | null; spec?: NodeSpec }) {
+  if (!node) return <div class="text-muted">Loading…</div>
+  const host = hostOf(node)
+  const identity = (
+    <Section title="Machine" help="What Kubit has recorded about this machine.">
+      <div class="panel p-4">
+        <KeyValue rows={[
+          ['Kind', `${kindLabel[node.kind]}${kindDetail(node) ? ` · ${kindDetail(node)}` : ''}`],
+          ['Model', [modelOf(node), inv?.platform].filter(Boolean).join(' · ')],
+          ...(host ? [['Lab host', <a class="text-accent hover:underline" href={`/machines/${host.mac}#labhost`}>{hostName(host)}</a>] as [string, any]] : []),
+          ['Identity', <span class="mono text-[12px]">{node.mac}{node.uuid ? ` · ${node.uuid}` : ''}{node.serial ? ` · ${node.serial}` : ''}</span>],
+          ['Addresses seen', <span class="mono text-[12px]">{[...new Set([...(node.ipsSeen ?? []), node.ip])].filter(Boolean).join(' → ') || '—'}</span>],
+          ['Last seen', fmt.datetime(node.lastSeen)],
+          ...(spec ? [['Install disk', <span class="mono">{spec.installDisk?.path ?? (spec.installDisk?.selector ? JSON.stringify(spec.installDisk.selector) : 'pool policy')}</span>] as [string, any]] : []),
+          ...(spec?.dataDisks?.length ? [['Data disks', <span class="mono">{spec.dataDisks.map((d, i) => `${d} → /var/mnt/data-${i + 1}`).join(' · ')}</span>] as [string, any]] : []),
+        ]} />
+      </div>
+    </Section>
+  )
+  if (node.kind === 'labhost' && node.labhost) {
+    const lh = node.labhost
+    const vms = lh.vms ?? []
+    return (
+      <div class="flex flex-col gap-4">
+        <HostStateNotice host={node} />
+        <div class="grid grid-cols-1 lg:grid-cols-2 gap-4">
+          {identity}
+          <Section title="Capacity" help="Read over SSH; VMs are listed on the Lab host tab.">
+            <div class="panel p-4">
+              <KeyValue rows={[
+                ['CPUs', String(lh.capacity.cpus || '—')],
+                ['Memory', lh.capacity.memMiB ? fmt.bytes(lh.capacity.memMiB * 1048576) : '—'],
+                ['VM disk free', lh.metrics?.diskTotal ? `${fmt.bytes(lh.metrics.diskTotal - lh.metrics.diskUsed)} of ${fmt.bytes(lh.metrics.diskTotal)}` : lh.capacity.diskGiB ? `${lh.capacity.diskGiB} GiB` : '—'],
+                ['KVM', lh.capacity.kvm ? 'available' : lh.state === 'ready' ? 'absent' : '—'],
+                ['VMs', <a class="text-accent hover:underline" href={`/machines/${node.mac}#labhost`}>{vms.length} defined · {vms.filter((v) => v.state === 'running').length} running</a>],
+              ]} />
+            </div>
+          </Section>
+        </div>
+        {lh.state !== 'installing' && <HostSystem host={node} lh={lh} busy={lh.state !== 'ready'} />}
+      </div>
+    )
+  }
+  if (!node.talos) {
+    const next = node.kind === 'configured' ? 'Runs Talos with a config Kubit did not apply. Reset it to maintenance mode to adopt it.'
+      : node.kind === 'booting' ? 'Waiting for Talos maintenance mode; progress is in Activity.'
+      : host ? 'The VM is off. Start it from the Actions tab.'
+      : node.oobType ? 'Not running Talos. Boot into Talos from the Actions tab, or make it a lab host.'
+      : 'Not running Talos. Boot it into Talos, or configure AMT or a BMC under Actions to do that from here.'
+    return (
+      <div class="grid grid-cols-1 lg:grid-cols-2 gap-4">
+        {identity}
+        <Section title="Next" help="What this machine is waiting for.">
+          <Notice tone={node.kind === 'booting' ? 'warn' : 'muted'}>{next}</Notice>
+        </Section>
+      </div>
+    )
+  }
   return (
     <div class="grid grid-cols-1 lg:grid-cols-2 gap-4">
+      {identity}
       <Section title="Talos" help="Read live from the machine over the Talos API.">
         <div class="panel p-4">
           {invErr && <Notice tone="bad">{invErr}</Notice>}
+          {!inv && !invErr && <div class="text-muted">Loading…</div>}
           {inv && <KeyValue rows={[
             ['Version', <span class="mono">{inv.talosVersion}</span>],
             ['Stage', <Pill tone={inv.stage === 'running' ? 'good' : 'warn'}>{inv.stage}</Pill>],
-            ['Platform', inv.platform],
             ['Booted', inv.bootTime ? `${fmt.datetime(inv.bootTime)} (up ${elapsed(inv.bootTime)})` : '—'],
-            ['Machine', [inv.manufacturer, inv.product].filter(Boolean).join(' ') || '—'],
             ['Extensions', inv.extensions?.filter((e) => e.name !== 'schematic').map((e) => `${e.name} ${e.version}`).join(', ') || 'none'],
-            ['Install disk', spec ? <span class="mono">{spec.installDisk?.path ?? (spec.installDisk?.selector ? JSON.stringify(spec.installDisk.selector) : 'pool policy')}</span> : '—'],
-            ...(spec?.dataDisks?.length ? [['Data disks', <span class="mono">{spec.dataDisks.map((d, i) => `${d} → /var/mnt/data-${i + 1}`).join(' · ')}</span>] as [string, any]] : []),
-            ['Identity', node ? <span class="mono text-[12px]">{node.mac}{node.uuid ? ` · ${node.uuid}` : ''}{node.serial ? ` · ${node.serial}` : ''}</span> : '—'],
-            ['Addresses seen', node ? <span class="mono text-[12px]">{[...new Set([...(node.ipsSeen ?? []), node.ip])].join(' → ')}</span> : '—'],
-            ['Last seen', node ? fmt.datetime(node.lastSeen) : '—'],
           ]} />}
           {inv?.etcd && (
             <div class="mt-4 pt-4 border-t border-border">
@@ -111,43 +173,69 @@ function OverviewTab({ inv, invErr, k8s, k8sErr, node, spec }: { inv: Inventory 
           )}
         </div>
       </Section>
-      <Section title="Kubernetes" help="What the API server knows about this node.">
-        <div class="panel p-4 flex flex-col gap-4">
-          {k8sErr && <Notice tone={k8sErr.includes('not a cluster member') ? 'muted' : 'bad'}>{k8sErr}</Notice>}
-          {k8s && (
-            <>
-              <KeyValue rows={[
-                ['Kubelet', <span class="mono">{k8s.kubeletVersion}</span>],
-                ['Runtime', <span class="mono">{k8s.containerRuntime}</span>],
-                ['Kernel', <span class="mono">{k8s.kernel}</span>],
-                ['Internal IP', <span class="mono">{k8s.internalIP}</span>],
-                ['Taints', k8s.taints?.length ? k8s.taints.map((t) => <span class="mono block">{t}</span>) : 'none'],
-              ]} />
-              <Meter label="CPU requested" used={k8s.requests.cpuMilli} cap={k8s.allocatable.cpuMilli} format={fmt.cores} />
-              <Meter label="Memory requested" used={k8s.requests.memBytes} cap={k8s.allocatable.memBytes} format={fmt.bytes} />
-              <Meter label="Pods" used={k8s.requests.pods} cap={k8s.allocatable.pods} format={String} />
-            </>
-          )}
-        </div>
-      </Section>
+      {node.kind === 'member' ? (
+        <Section title="Kubernetes" help="What the API server knows about this node.">
+          <div class="panel p-4 flex flex-col gap-4">
+            {k8sErr && <Notice tone="bad">{k8sErr}</Notice>}
+            {k8s && (
+              <>
+                <KeyValue rows={[
+                  ['Kubelet', <span class="mono">{k8s.kubeletVersion}</span>],
+                  ['Runtime', <span class="mono">{k8s.containerRuntime}</span>],
+                  ['Kernel', <span class="mono">{k8s.kernel}</span>],
+                  ['Internal IP', <span class="mono">{k8s.internalIP}</span>],
+                  ['Taints', k8s.taints?.length ? k8s.taints.map((t) => <span class="mono block">{t}</span>) : 'none'],
+                ]} />
+                <Meter label="CPU requested" used={k8s.requests.cpuMilli} cap={k8s.allocatable.cpuMilli} format={fmt.cores} />
+                <Meter label="Memory requested" used={k8s.requests.memBytes} cap={k8s.allocatable.memBytes} format={fmt.bytes} />
+                <Meter label="Pods" used={k8s.requests.pods} cap={k8s.allocatable.pods} format={String} />
+              </>
+            )}
+          </div>
+        </Section>
+      ) : (
+        <Section title="Kubernetes" help="Joins a cluster from the Actions tab.">
+          <Notice tone="muted">In maintenance mode; not a cluster member.</Notice>
+        </Section>
+      )}
     </div>
   )
 }
 
-function HardwareTab({ inv, invErr }: { inv: Inventory | null; invErr: string | null }) {
-  if (invErr) return <Notice tone="bad">{invErr}</Notice>
-  if (!inv) return <div class="text-muted">Loading…</div>
+function HardwareTab({ inv: live, invErr, node }: { inv: Inventory | null; invErr: string | null; node: NodeRow | null }) {
+  if (!node) return <div class="text-muted">Loading…</div>
+  const inv = live ?? node.inventory ?? null
+  const lh = node.labhost
+  const stored = !live && !!node.inventory
+  if (node.talos && !inv && !invErr) return <div class="text-muted">Loading…</div>
+  const note = invErr ? `${invErr} Showing what was recorded ${fmt.when(node.lastSeen)}.`
+    : lh ? 'Recorded before the Debian install; capacity is read from the host.'
+    : stored && inv?.disks.some((d) => !d.devPath) ? `Reported by the ${node.oobType === 'redfish' ? 'BMC' : 'management engine'}; device names arrive when the machine boots Talos.`
+    : stored ? `Recorded ${fmt.when(node.lastSeen)}; the machine is not running Talos now.`
+    : ''
+  if (!inv || (!inv.cpus && inv.disks.length === 0 && !lh)) {
+    return <Notice tone="muted">{inv ? `${modelOf(node)}. ` : ''}Hardware details arrive when the machine boots Talos.</Notice>
+  }
   return (
     <div class="flex flex-col gap-5">
-      <div class="grid grid-cols-2 lg:grid-cols-4 gap-4">
+      {note && <Notice tone={invErr ? 'bad' : 'muted'}>{note}</Notice>}
+      {lh && (
+        <div class="grid grid-cols-2 lg:grid-cols-4 gap-4">
+          <Stat label="CPUs" value={String(lh.capacity.cpus || inv.cpus)} sub={lh.capacity.arch || inv.arch} />
+          <Stat label="Memory" value={lh.capacity.memMiB ? fmt.bytes(lh.capacity.memMiB * 1048576) : fmt.bytes(inv.memoryBytes)} />
+          <Stat label="KVM" value={lh.capacity.kvm ? 'available' : lh.state === 'ready' ? 'absent' : '—'} sub="for the VMs" />
+          <Stat label="VM disk free" value={lh.metrics?.diskTotal ? fmt.bytes(lh.metrics.diskTotal - lh.metrics.diskUsed) : lh.capacity.diskGiB ? `${lh.capacity.diskGiB} GiB` : '—'} sub={lh.disk ? `on ${lh.disk}` : undefined} />
+        </div>
+      )}
+      {!lh && <div class="grid grid-cols-2 lg:grid-cols-4 gap-4">
         <Stat label="CPUs" value={String(inv.cpus)} sub={inv.arch} />
         <Stat label="Memory" value={fmt.bytes(inv.memoryBytes)} />
         <Stat label="KVM" value={inv.kvm ? 'available' : 'absent'} sub={inv.kvm ? 'runsc-kvm eligible' : 'gVisor uses systrap'} />
         <Stat label="Disks" value={String(inv.disks.length)} sub={fmt.bytes(inv.disks.reduce((a, d) => a + d.sizeBytes, 0)) + ' total'} />
-      </div>
+      </div>}
       <Section title="Disks">
         <DataTable search={false} columns={[
-          { id: 'dev', header: 'Device', mono: true, sort: (d) => d.devPath, cell: (d) => d.devPath },
+          { id: 'dev', header: 'Device', mono: true, sort: (d) => d.devPath, cell: (d) => d.devPath || <span class="text-muted">—</span> },
           { id: 'size', header: 'Size', align: 'right', sort: (d) => d.sizeBytes, cell: (d) => fmt.bytes(d.sizeBytes) },
           { id: 'model', header: 'Model', sort: (d) => d.model ?? '', cell: (d) => d.model || <span class="text-muted">—</span> },
           { id: 'transport', header: 'Transport', sort: (d) => d.transport ?? '', cell: (d) => d.transport || '—' },
@@ -301,7 +389,7 @@ function ActionsTab({ node, k8s, inv, cluster, spec, talosVersion }: { node: Nod
       <Action title="Move to another pool" what={pools.length ? `Same-role pools: ${pools.map((p) => p.name).join(', ')}. Labels and taints follow the pool; a different extension set means a re-image.` : `No other ${cp ? 'control-plane' : 'worker'} pool exists. Add one under Settings → Pools.`} button="Move" disabled={!inv || pools.length === 0} onClick={() => { setPool(pools[0]?.name ?? ''); setConfirm('pool') }} />
       <Action title="Update address" what={spec?.network ? `Static ${spec.network.addresses.join(', ')}${spec.network.vlan ? ` on VLAN ${spec.network.vlan}` : ''}. Change it or go back to DHCP.` : `DHCP; declared ${node.ip}${status?.seenAt && status.seenAt !== node.ip ? `, last seen at ${status.seenAt}` : ''}. Record a new lease or pin a static address.`} button="Update" disabled={!inv} onClick={() => setConfirm('readdress')} />
       <Action title="Remove from cluster" what={`Drain, delete the Node object, and reset Talos to maintenance mode. ${cp ? 'etcd membership is reduced by one.' : ''}`} button="Remove" href={`/clusters/${name}/nodes`} />
-      <RemoteManagement node={node} />
+      {isLabVM(node) ? <LabVMControls vm={node} /> : <RemoteManagement node={node} />}
       {confirm === 'drain' && <ConfirmDialog title={`Drain ${host}`} action="Drain" cluster={name} onClose={() => setConfirm(null)} onConfirm={() => run(api.drain(name, host))}
         impact={<ul class="list-disc pl-5"><li>Cordons the node.</li><li>Evicts {pods} pod{pods === 1 ? '' : 's'}; controllers reschedule them on other nodes.</li><li>Waits up to 5 minutes; PodDisruptionBudgets are respected.</li></ul>} />}
       {(confirm === 'reboot' || confirm === 'reboot-drain') && <ConfirmDialog title={`Reboot ${host}`} action={confirm === 'reboot-drain' ? 'Drain and reboot' : 'Reboot'} tone="danger" cluster={name} onClose={() => setConfirm(null)} onConfirm={() => run(api.rebootNode(name, host, confirm === 'reboot-drain'))}
@@ -345,21 +433,35 @@ function MachineActions({ node }: { node: NodeRow | null }) {
   const { route } = useLocation()
   const [retire, setRetire] = useState(false)
   const [lab, setLab] = useState(false)
+  const [addVMs, setAddVMs] = useState(false)
+  const [release, setRelease] = useState(false)
   if (!node) return <Notice tone="muted">Loading…</Notice>
   const ready = clusters.value.filter((c) => c.state === 'ready' || c.state === 'bootstrapped')
-  const refresh = () => Promise.resolve() // the machine row arrives over the live connection
+  const refresh = () => Promise.resolve()
+  const lh = node.labhost
+  const vm = isLabVM(node)
+  const summary = node.kind === 'labhost' ? 'Lab host: Debian + KVM; Talos runs in its VMs.'
+    : node.kind === 'maintenance' ? 'In Talos maintenance mode; not a cluster member.'
+    : node.kind === 'configured' ? 'Runs Talos with a config Kubit did not apply. Reset it to maintenance mode to adopt it.'
+    : node.kind === 'booting' ? 'Armed for a network boot; waiting for Talos.'
+    : vm ? 'The VM is off.' : 'Not running Talos.'
+  const adoptHint = node.kind === 'maintenance' ? '' : node.kind === 'labhost' ? '' : ' Needs Talos maintenance mode first.'
   return (
     <div class="flex flex-col gap-3 max-w-3xl">
-      <Notice tone="muted">This machine is not a cluster member.</Notice>
-      <Action title="Adopt into a cluster" what={ready.length ? `Join ${ready.map((c) => c.name).join(', ')} as a new node.` : 'No ready cluster yet; create one with this machine.'} button={ready.length ? 'Adopt…' : 'New cluster'} disabled={node.state !== 'maintenance'}
-        onClick={() => { if (!ready.length) { route('/clusters/new'); return } const t = ready.length === 1 ? ready[0].name : prompt(`Adopt into which cluster? (${ready.map((c) => c.name).join(', ')})`, ready[0].name); if (t && ready.find((c) => c.name === t)) route(`/clusters/${t}/nodes?adopt=${node.ip}`) }} />
-      <RemoteManagement node={node} />
-      {(!node.labhost || node.labhost.state === 'error') && <Action title="Make lab host" what={node.oobType ? 'Install Debian + KVM/libvirt on this machine (disk wiped) and carve Talos VMs from it. Reset via AMT; kubit pxe serves the installer.' : 'Install Debian + KVM/libvirt on this machine (disk wiped) and carve Talos VMs from it. No remote management here: you boot the installer yourself with the boot line Kubit prints.'} button="Make lab host" onClick={() => setLab(true)} />}
+      <Notice tone="muted">{summary}</Notice>
+      {node.kind !== 'labhost' && <Action title="Adopt into a cluster" what={(ready.length ? `Join ${ready.map((c) => c.name).join(', ')} as a new node.` : 'No ready cluster yet; create one with this machine.') + adoptHint} button={ready.length ? 'Adopt' : 'New cluster'} disabled={!canAdopt(node)}
+        onClick={() => { if (!ready.length) { route('/clusters/new'); return } const t = ready.length === 1 ? ready[0].name : prompt(`Adopt into which cluster? (${ready.map((c) => c.name).join(', ')})`, ready[0].name); if (t && ready.find((c) => c.name === t)) route(`/clusters/${t}/nodes?adopt=${node.ip}`) }} />}
+      {lh && <Action title="Add VMs" what={`${(lh.vms ?? []).length} VM${(lh.vms ?? []).length === 1 ? '' : 's'} defined. New VMs boot Talos in maintenance mode and appear in the inventory.`} button="Add VMs" disabled={lh.state !== 'ready'} onClick={() => setAddVMs(true)} />}
+      {lh && <Action title="Release lab host" what="Deletes every VM and drops the lab-host role. Debian stays on the disk." button="Release" disabled={lh.state === 'installing' || lh.state === 'setup' || lh.state === 'updating'} onClick={() => setRelease(true)} />}
+      {vm ? <LabVMControls vm={node} /> : <RemoteManagement node={node} />}
+      {canMakeLabHost(node) && <Action title="Make lab host" what={node.oobType ? 'Install Debian + KVM/libvirt on this machine (disk wiped) and carve Talos VMs from it. Reset by remote management; kubit pxe serves the installer.' : 'Install Debian + KVM/libvirt on this machine (disk wiped) and carve Talos VMs from it. No remote management here: you boot the installer yourself with the boot line Kubit prints.'} button="Make lab host" onClick={() => setLab(true)} />}
       {lab && <MakeLabHostDialog m={node} onClose={() => setLab(false)} />}
-      <Action title="Wake-on-LAN" what={node.wol ? 'Enabled: Kubit can send a magic packet from this host to power the machine on.' : 'Off. Enable when the firmware supports WoL on the uplink NIC.'} button={node.wol ? 'Wake now' : 'Enable'}
+      {addVMs && <AddVMsDialog host={node} onClose={() => setAddVMs(false)} />}
+      {release && <ReleaseHostDialog host={node} onClose={() => setRelease(false)} />}
+      {!vm && <Action title="Wake-on-LAN" what={node.wol ? 'Enabled: Kubit can send a magic packet from this host to power the machine on.' : 'Off. Enable when the firmware supports WoL on the uplink NIC.'} button={node.wol ? 'Wake now' : 'Enable'}
         onClick={() => (node.wol ? api.wake(node.mac).then(() => toast('Magic packet sent', 'good')) : api.setWOL(node.mac, true).then(refresh)).catch((e) => toast(e.message, 'error'))}
-        secondary={node.wol ? { label: 'Disable', onClick: () => api.setWOL(node.mac, false).then(refresh).catch((e) => toast(e.message, 'error')) } : undefined} />
-      <Action title="Retire" what="Delete this machine's record. It reappears on the next scan if still on the network." button="Retire" onClick={() => setRetire(true)} />
+        secondary={node.wol ? { label: 'Disable', onClick: () => api.setWOL(node.mac, false).then(refresh).catch((e) => toast(e.message, 'error')) } : undefined} />}
+      {canRetire(node) && <Action title="Retire" what="Delete this machine's record. It reappears on the next scan if still on the network." button="Retire" onClick={() => setRetire(true)} />}
       {retire && <ConfirmDialog title={`Retire ${node.hostname || node.mac}`} action="Retire" tone="danger" onClose={() => setRetire(false)} onConfirm={() => api.retireMachine(node.mac).then(() => route('/fleet/inventory')).catch((e) => toast(e.message, 'error'))}
         impact={<p>Deletes the inventory row for <span class="mono">{node.mac}</span>. Nothing is sent to the machine.</p>} />}
     </div>

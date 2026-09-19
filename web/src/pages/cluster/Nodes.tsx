@@ -5,7 +5,7 @@ import { DataTable, type Column } from '../../components/DataTable'
 import { ConfirmDialog, Dialog, ErrorBox, Field, MaintenanceNotice, Pill, Section } from '../../components/ui'
 import { KVEditor } from '../../components/PoolsEditor'
 import { guessGateway } from '../create/net'
-import { dataCandidates, installCandidates, isVirtual, modelOf } from '../create/steps'
+import { dataCandidates, formOf, installCandidates, modelOf } from '../../machine'
 import type { ClusterCtx } from './ClusterPage'
 
 export function Nodes({ ctx }: { ctx: ClusterCtx }) {
@@ -21,9 +21,10 @@ export function Nodes({ ctx }: { ctx: ClusterCtx }) {
   const pools = cluster.spec.spec.pools ?? []
   const apiUp = !!status?.apiReachable
   const specOf = (n: NodeStatus) => specs.find((s) => s.hostname === n.hostname)
+  const machineHref = (n: NodeStatus) => { const mac = specOf(n)?.mac; return mac ? `/machines/${mac}` : `/nodes/${n.ip}` }
 
   const columns: Column<NodeStatus>[] = [
-    { id: 'hostname', header: 'Hostname', sort: (n) => n.hostname, cell: (n) => n.talosReachable ? <a href={`/nodes/${n.ip}`} class="font-medium hover:underline">{n.hostname}</a> : <span class="font-medium">{n.hostname}</span> },
+    { id: 'hostname', header: 'Hostname', sort: (n) => n.hostname, cell: (n) => <a href={machineHref(n)} class="font-medium hover:underline">{n.hostname}</a> },
     { id: 'ip', header: 'Address', sort: (n) => n.ip, mono: true, text: (n) => `${n.ip} ${n.seenAt ?? ''}`, cell: (n) => {
       const sp = specOf(n)
       const moved = n.seenAt && n.seenAt !== n.ip
@@ -39,12 +40,12 @@ export function Nodes({ ctx }: { ctx: ClusterCtx }) {
     { id: 'talos', header: 'Talos', sort: (n) => n.talosVersion, mono: true, cell: (n) => n.talosVersion || '—' },
     { id: 'kubelet', header: 'Kubelet', sort: (n) => n.kubeletVersion, mono: true, cell: (n) => n.kubeletVersion || '—' },
     { id: 'cpu', header: 'CPU', align: 'right', sort: (n) => n.cpuMilli, cell: (n) => <>{fmt.cores(n.cpuMilli)}<span class="text-muted">/{fmt.cores(n.cpuCapMilli)}</span></> },
-    { id: 'ram', header: 'RAM', align: 'right', sort: (n) => n.memBytes, cell: (n) => <>{fmt.bytes(n.memBytes)}<span class="text-muted">/{fmt.bytes(n.memCapBytes)}</span></> },
-    { id: 'pods', header: 'Pods', align: 'right', sort: (n) => n.pods, cell: (n) => n.pods },
+    { id: 'ram', header: 'RAM used / allocatable', align: 'right', sort: (n) => n.memBytes, cell: (n) => <span title={n.memCapBytes && n.memCapBytes < 768 * 1048576 ? 'Under 768 MiB allocatable: too small for the platform add-ons' : undefined}><span class={n.memCapBytes && n.memBytes >= n.memCapBytes ? 'text-bad' : ''}>{fmt.bytes(n.memBytes)}</span><span class={n.memCapBytes && n.memCapBytes < 768 * 1048576 ? 'text-warn' : 'text-muted'}>/{fmt.bytes(n.memCapBytes)}</span></span> },
+    { id: 'pods', header: 'Pods', align: 'right', sort: (n) => n.pods, cell: (n) => <a href={`/clusters/${name}/workloads?view=pods&node=${encodeURIComponent(n.hostname)}`} class="hover:underline">{n.pods}</a> },
     { id: 'gvisor', header: 'gVisor', sort: (n) => n.gvisor ? 1 : 0, cell: (n) => n.gvisor ? <Pill tone="good">{n.kvm ? 'kvm' : 'runsc'}</Pill> : <span class="text-muted">—</span> },
     { id: 'actions', header: '', align: 'right', cell: (n) => (
       <span class="whitespace-nowrap flex gap-1 justify-end">
-        <a href={`/nodes/${n.ip}`} class={`btn !py-1 ${n.talosReachable ? '' : 'pointer-events-none opacity-50'}`} title={n.talosReachable ? 'Services, logs, hardware' : `Talos API not answering: ${n.talosError}`}>Open</a>
+        <a href={machineHref(n)} class="btn !py-1">Open</a>
         <button class="btn btn-danger !py-1" disabled={!apiUp} title={!apiUp ? 'Needs the Kubernetes API to drain' : 'Drain, delete and reset'} onClick={() => setRemove(n)}>Remove</button>
       </span>
     ) },
@@ -151,7 +152,7 @@ function AddNodeDialog({ cluster, onClose, preselect }: { cluster: ClusterRow; o
       <Field label="Discovered machine (maintenance mode)" hint={candidates.length === 0 ? 'No unassigned machines. Run a discovery under Fleet → Inventory first.' : undefined}>
         <select class="input" value={ip} onChange={(e) => setIp((e.target as HTMLSelectElement).value)}>
           <option value="">Select…</option>
-          {candidates.map((c) => <option key={c.mac} value={c.ip}>{modelOf(c)} ({isVirtual(c) ? 'VM' : 'metal'}) · {c.ip} · {c.arch} · {c.inventory?.cpus ?? '?'} CPU · {fmt.bytes(c.inventory?.memoryBytes ?? 0)}{c.inventory?.kvm ? ' · kvm' : ''} · {c.mac}</option>)}
+          {candidates.map((c) => <option key={c.mac} value={c.ip}>{modelOf(c)} ({formOf(c)}) · {c.ip} · {c.arch} · {c.inventory?.cpus ?? '?'} CPU · {fmt.bytes(c.inventory?.memoryBytes ?? 0)}{c.inventory?.kvm ? ' · kvm' : ''} · {c.mac}</option>)}
         </select>
       </Field>
       <div class="grid grid-cols-2 gap-3">
@@ -165,7 +166,7 @@ function AddNodeDialog({ cluster, onClose, preselect }: { cluster: ClusterRow; o
       <Field label="Install disk" hint={p?.installDisk ? 'Empty follows the pool\'s disk policy.' : 'Wiped and installed with Talos.'}>
         <select class="input mono" value={disk} onChange={(e) => { const v = (e.target as HTMLSelectElement).value; setDisk(v); setDataDisks(dataDisks.filter((d) => d !== v)) }}>
           {p?.installDisk && <option value="">pool policy ({Object.values(p.installDisk.selector ?? {}).join(' ')})</option>}
-          {selected?.inventory?.disks.filter((d) => !d.readonly && !d.cdrom).map((d) => <option key={d.devPath} value={d.devPath}>{d.devPath} · {fmt.bytes(d.sizeBytes)} {d.model ? `· ${d.model}` : ''} {d.transport ? `· ${d.transport}` : ''}</option>)}
+          {installCandidates(selected).map((d) => <option key={d.devPath} value={d.devPath}>{d.devPath} · {fmt.bytes(d.sizeBytes)} {d.model ? `· ${d.model}` : ''} {d.transport ? `· ${d.transport}` : ''}</option>)}
           {!selected && <option value="">—</option>}
         </select>
       </Field>

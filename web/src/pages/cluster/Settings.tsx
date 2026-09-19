@@ -47,6 +47,10 @@ export function Settings({ ctx }: { ctx: ClusterCtx }) {
               <Field label="NTP servers" hint="Empty uses Talos' default."><input class="input mono" value={form.ntp} placeholder="time.cloudflare.com" onInput={(e) => setForm({ ...form, ntp: (e.target as HTMLInputElement).value })} /></Field>
               <Field label="Maintenance window" hint='Disruptive operations (upgrades, reboots, drains, removals, restores) are refused outside it unless overridden. "<days> HH:MM-HH:MM", e.g. "Sat,Sun 22:00-04:00" or "daily 01:00-05:00"; empty = anytime.'><input class="input mono" value={form.maintenanceWindow} placeholder="anytime" onInput={(e) => setForm({ ...form, maintenanceWindow: (e.target as HTMLInputElement).value })} /></Field>
               <Field label="Window time zone" hint="IANA name; empty uses the daemon host's zone."><input class="input mono" value={form.maintenanceTimezone} placeholder={Intl.DateTimeFormat().resolvedOptions().timeZone} onInput={(e) => setForm({ ...form, maintenanceTimezone: (e.target as HTMLInputElement).value })} /></Field>
+              <Field label="SSO issuer" hint="OpenID Connect issuer for kubectl users; empty = admin kubeconfig only. Applies on Apply node configs."><input class="input mono" value={form.oidc.issuer} placeholder="https://login.example.com/realms/ops" onInput={(e) => setForm({ ...form, oidc: { ...form.oidc, issuer: (e.target as HTMLInputElement).value.trim() } })} /></Field>
+              <Field label="SSO client ID" hint="Audience the API server accepts."><input class="input mono" value={form.oidc.clientID} onInput={(e) => setForm({ ...form, oidc: { ...form.oidc, clientID: (e.target as HTMLInputElement).value.trim() } })} /></Field>
+              <Field label="SSO claims" hint="Username claim, groups claim. Users and groups are prefixed oidc: in RBAC."><span class="flex gap-2"><input class="input mono" value={form.oidc.usernameClaim ?? ''} onInput={(e) => setForm({ ...form, oidc: { ...form.oidc, usernameClaim: (e.target as HTMLInputElement).value.trim() } })} /><input class="input mono" value={form.oidc.groupsClaim ?? ''} onInput={(e) => setForm({ ...form, oidc: { ...form.oidc, groupsClaim: (e.target as HTMLInputElement).value.trim() } })} /></span></Field>
+              <Field label="SSO admin group" hint="Bound to cluster-admin by the platform layer."><input class="input mono" value={form.oidc.adminGroup ?? ''} onInput={(e) => setForm({ ...form, oidc: { ...form.oidc, adminGroup: (e.target as HTMLInputElement).value.trim() } })} /></Field>
               <Field label="Workloads on control planes" hint={`${cps} control plane${cps === 1 ? '' : 's'}; Kubit defaults to schedulable below 6 nodes.`}>
                 <select class="input" value={form.allowScheduling === null ? 'auto' : String(form.allowScheduling)} onChange={(e) => { const v = (e.target as HTMLSelectElement).value; setForm({ ...form, allowScheduling: v === 'auto' ? null : v === 'true' }) }}>
                   <option value="true">Allowed (control planes also run pods)</option>
@@ -130,6 +134,7 @@ function fromSpec(spec: ClusterCtx['cluster']['spec']['spec']) {
     nameservers: (spec.network.nameservers ?? []).join(', '), ntp: (spec.network.ntp ?? []).join(', '),
     etcdSnapshotInterval: spec.backup?.etcd.interval ?? '6h', etcdSnapshotKeep: String(spec.backup?.etcd.keep ?? 28),
     maintenanceWindow: spec.maintenance?.window ?? '', maintenanceTimezone: spec.maintenance?.timezone ?? '',
+    oidc: spec.auth?.oidc ?? { issuer: '', clientID: '', usernameClaim: 'preferred_username', groupsClaim: 'groups', adminGroup: '' },
   }
 }
 

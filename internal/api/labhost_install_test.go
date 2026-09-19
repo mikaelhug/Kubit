@@ -116,7 +116,7 @@ func TestLabProgressRoute(t *testing.T) {
 	ctx := context.Background()
 	mac := "52:54:00:4c:41:01"
 	rec := httptest.NewRecorder()
-	s.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/api/v1/machines", strings.NewReader(`{"mac":"52:54:00:4C:41:01","ip":"192.168.105.20","arch":"arm64"}`)))
+	s.ServeHTTP(rec, local(httptest.NewRequest(http.MethodPost, "/api/v1/machines", strings.NewReader(`{"mac":"52:54:00:4C:41:01","ip":"192.168.105.20","arch":"arm64"}`))))
 	if rec.Code != http.StatusCreated {
 		t.Fatalf("add machine: %d %s", rec.Code, rec.Body.String())
 	}
@@ -125,13 +125,13 @@ func TestLabProgressRoute(t *testing.T) {
 		t.Fatalf("manual row: %+v %v", m, err)
 	}
 	rec = httptest.NewRecorder()
-	s.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/v1/labhost/progress?mac="+mac+"&stage=installer", nil))
+	s.ServeHTTP(rec, local(httptest.NewRequest(http.MethodGet, "/api/v1/labhost/progress?mac="+mac+"&stage=installer", nil)))
 	if rec.Code != http.StatusNotFound {
 		t.Errorf("progress for a machine that is not a lab host: %d", rec.Code)
 	}
 	_ = st.SetLabHost(ctx, mac, &store.LabHost{State: "installing"})
 	rec = httptest.NewRecorder()
-	s.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/v1/labhost/progress?mac="+mac+"&stage=packages", nil))
+	s.ServeHTTP(rec, local(httptest.NewRequest(http.MethodGet, "/api/v1/labhost/progress?mac="+mac+"&stage=packages", nil)))
 	if rec.Code != http.StatusNoContent {
 		t.Fatalf("progress: %d %s", rec.Code, rec.Body.String())
 	}
@@ -141,9 +141,25 @@ func TestLabProgressRoute(t *testing.T) {
 	}
 	// The preseed for an arm64 machine installs the arm emulator and reports progress.
 	rec = httptest.NewRecorder()
-	s.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/v1/labhost/preseed?mac="+mac+"&post=http://192.168.105.1:8069/labhost/"+mac+"/postinstall", nil))
+	s.ServeHTTP(rec, local(httptest.NewRequest(http.MethodGet, "/api/v1/labhost/preseed?mac="+mac+"&post=http://192.168.105.1:8069/labhost/"+mac+"/postinstall", nil)))
 	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "qemu-system-arm") || !strings.Contains(rec.Body.String(), "http://192.168.105.1:8069/labhost/"+mac+"/progress?stage=installer") {
 		t.Errorf("preseed: %d %s", rec.Code, rec.Body.String()[:200])
+	}
+	if body := rec.Body.String(); !strings.Contains(body, "list-devices disk") || strings.Contains(body, "partman-auto/disk string /dev") {
+		t.Errorf("without a chosen disk the installer picks the largest: %s", body)
+	}
+	// A disk chosen in the dialog is pinned in the preseed; the partitioning stage still reports.
+	_ = st.SetLabHost(ctx, mac, &store.LabHost{State: "installing", Disk: "/dev/nvme1n1"})
+	rec = httptest.NewRecorder()
+	s.ServeHTTP(rec, local(httptest.NewRequest(http.MethodGet, "/api/v1/labhost/preseed?mac="+mac+"&post=http://192.168.105.1:8069/labhost/"+mac+"/postinstall", nil)))
+	if body := rec.Body.String(); rec.Code != http.StatusOK || !strings.Contains(body, "partman-auto/disk string /dev/nvme1n1") || strings.Contains(body, "list-devices disk") || !strings.Contains(body, "progress?stage=partitioning") {
+		t.Errorf("preseed with a chosen disk: %d %s", rec.Code, body)
+	}
+	// The provision request refuses a disk that is not a device path before anything is armed.
+	rec = httptest.NewRecorder()
+	s.ServeHTTP(rec, local(httptest.NewRequest(http.MethodPost, "/api/v1/machines/"+mac+"/labhost", strings.NewReader(`{"manual":true,"disk":"nvme1n1"}`))))
+	if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "/dev path") {
+		t.Errorf("bad disk: %d %s", rec.Code, rec.Body.String())
 	}
 }
 
@@ -157,8 +173,8 @@ func TestAddVMsControlPlaneSizing(t *testing.T) {
 	if big.sizes()[0].MemMiB != 4096 {
 		t.Error("the control-plane floor never shrinks a VM")
 	}
-	each := addVMsRequest{Each: []vmSize{{Name: "w1", Role: "worker", CPUs: 2, MemMiB: 1024, DiskGiB: 20}, {Name: "cp", Role: "controlplane", CPUs: 2, MemMiB: 3072, DiskGiB: 20}}}
-	if got := each.sizes(); got[0].Name != "cp" || got[1].Name != "w1" || each.controlPlanes() != 1 || each.totalMem() != 4096 {
+	each := addVMsRequest{Each: []vmSize{{Name: "w1", Role: "worker", CPUs: 2, MemMiB: 2048, DiskGiB: 20}, {Name: "cp", Role: "controlplane", CPUs: 2, MemMiB: 3072, DiskGiB: 20}}}
+	if got := each.sizes(); got[0].Name != "cp" || got[1].Name != "w1" || each.controlPlanes() != 1 || each.totalMem() != 5120 {
 		t.Errorf("per-VM sizing must list control planes first: %+v", got)
 	}
 	if each.validate() != nil {
@@ -168,4 +184,13 @@ func TestAddVMsControlPlaneSizing(t *testing.T) {
 	if small.validate() == nil {
 		t.Error("a 1 GiB control plane must be refused")
 	}
+	worker := addVMsRequest{Each: []vmSize{{Role: "worker", CPUs: 2, MemMiB: 1536, DiskGiB: 20}}}
+	if err := worker.validate(); err == nil || !strings.Contains(err.Error(), "2048 MiB") {
+		t.Errorf("a 1.5 GiB worker must be refused: %v", err)
+	}
+}
+
+func local(r *http.Request) *http.Request {
+	r.RemoteAddr = "127.0.0.1:40000"
+	return r
 }

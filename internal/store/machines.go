@@ -49,6 +49,41 @@ type Machine struct {
 // NodeRow is the pre-M8 name; discovery and the API still speak in these terms.
 type NodeRow = Machine
 
+type Kind string
+
+const (
+	KindMember      Kind = "member"
+	KindMaintenance Kind = "maintenance"
+	KindConfigured  Kind = "configured"
+	KindLabHost     Kind = "labhost"
+	KindBooting     Kind = "booting"
+	KindUnbooted    Kind = "unbooted"
+)
+
+func (m *Machine) Kind() Kind {
+	switch {
+	case m.Cluster != "":
+		return KindMember
+	case m.LabHost != nil:
+		return KindLabHost
+	case m.State == "maintenance":
+		return KindMaintenance
+	case m.State == "configured":
+		return KindConfigured
+	case m.Provision && m.ProvisionKind == "talos", m.State == "booting", m.State == "installing":
+		return KindBooting
+	default:
+		return KindUnbooted
+	}
+}
+
+func (m *Machine) Talos() bool {
+	k := m.Kind()
+	return k == KindMember || k == KindMaintenance
+}
+
+func (m *Machine) IsLabVM() bool { return m.Host != "" }
+
 // MachineKey returns the identity used as primary key: the MAC, or a placeholder
 // derived from the IP for declarations that never recorded one.
 func MachineKey(mac, ip string) string {
@@ -300,6 +335,8 @@ type LabHost struct {
 	Install *InstallProgress `json:"install,omitempty"`
 	// Network is how VMs reach the LAN: bridge (default) or routed.
 	Network string `json:"network,omitempty"`
+	// Disk is the device Debian was installed on; empty = the installer picked the largest.
+	Disk string `json:"disk,omitempty"`
 	// Boot is what a manually booted install needs to be started with.
 	Boot *BootLine `json:"boot,omitempty"`
 	// Failures counts consecutive SSH failures; the watcher alerts on the third.

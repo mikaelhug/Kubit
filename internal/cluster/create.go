@@ -227,10 +227,11 @@ func sameNodes(a, b *config.Cluster) bool {
 	return true
 }
 
-// minControlPlaneBytes is the RAM below which a Talos control plane cannot carry etcd
-// and the API server; enforced in preflight so an undersized CP fails before install
-// rather than after the 0/N-Ready timeout.
-const minControlPlaneBytes = 2 << 30
+// minControlPlaneBytes is the *usable* RAM floor for a Talos control plane, enforced in
+// preflight so an undersized CP fails before install rather than after the 0/N-Ready
+// timeout. It sits below what a 2 GiB VM reports (firmware/kernel reserve some, so a
+// 2048 MiB VM shows ~1.9 GiB) while still rejecting a 1 GiB VM (~940 MiB).
+const minControlPlaneBytes = 1600 << 20
 
 // preflight checks every target answers the maintenance API before anything is written.
 func (m *Manager) preflight(ctx context.Context, c *config.Cluster, nodes []config.Node, sink Sink) error {
@@ -245,6 +246,8 @@ func (m *Manager) preflight(ctx context.Context, c *config.Cluster, nodes []conf
 			return fmt.Errorf("%s (%s) is %s, declared %s", n.Hostname, n.IP, r.Inventory.Arch, n.Arch)
 		case n.Role == config.RoleControlPlane && r.Inventory.MemoryBytes > 0 && r.Inventory.MemoryBytes < minControlPlaneBytes:
 			return fmt.Errorf("%s (%s) is a control plane with only %s RAM; a control plane needs at least 2 GiB (etcd + API server) — give it more or make it a worker", n.Hostname, n.IP, humanBytes(r.Inventory.MemoryBytes))
+		case n.Role == config.RoleWorker && c.Spec.Platform.AddOns() && r.Inventory.MemoryBytes > 0 && r.Inventory.MemoryBytes < config.MinWorkerBytes:
+			return fmt.Errorf("%s (%s) is a worker with only %s RAM; Talos and the kubelet leave it too little for the platform add-ons — give it at least 2 GiB", n.Hostname, n.IP, humanBytes(r.Inventory.MemoryBytes))
 		}
 		sink.emit(Info, "preflight", n.Hostname, "%s in maintenance mode, Talos %s %s, %d CPU, %s RAM", n.IP, r.Inventory.TalosVersion, r.Inventory.Arch, r.Inventory.CPUs, humanBytes(r.Inventory.MemoryBytes))
 	}

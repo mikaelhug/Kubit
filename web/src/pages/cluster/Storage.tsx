@@ -44,7 +44,7 @@ export function Storage({ ctx }: { ctx: ClusterCtx }) {
   return (
     <div class="flex flex-col gap-6">
       <ErrorBox error={error} />
-      {view && view.classes.length === 0 && <Notice tone="warn">No StorageClass: claims cannot be provisioned.</Notice>}
+      {view && view.classes.length === 0 && <Notice tone="warn"><span class="flex items-center gap-2">No StorageClass: claims cannot be provisioned.<a href={`/clusters/${name}/addons`} class="ml-auto text-accent hover:underline text-[12px]">Enable Longhorn →</a></span></Notice>}
       <Section title={`Storage classes (${view?.classes.length ?? 0})`}>
         <DataTable loading={!view && !error} search={false} columns={scols} rows={view?.classes ?? []} rowKey={(c) => c.name} empty="None." />
       </Section>

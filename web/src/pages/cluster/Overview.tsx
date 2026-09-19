@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'preact/hooks'
-import { api, fmt, type HealthEvent, type Sample, type Versions } from '../../api'
-import { ack, health, latestTalos as latestTalosSignal, operations, statuses } from '../../store'
+import { api, fmt, type HealthEvent, type Sample, type ServiceHealth, type Versions } from '../../api'
+import { ack, clusters, health, latestTalos as latestTalosSignal, operations, refreshKey } from '../../store'
 import { runbookFor } from '../../runbooks'
 import { Sparkline } from '../../components/Sparkline'
 import { Notice, Pill, Section, StatusDot } from '../../components/ui'
@@ -29,6 +29,8 @@ export function Overview({ ctx }: { ctx: ClusterCtx }) {
     versions && verLess(spec.kubernetesVersion, versions.kubernetesLatest) ? `Kubernetes ${versions.kubernetesLatest} (running ${spec.kubernetesVersion})` : '',
   ].filter(Boolean)
   useEffect(() => { api.samples(name, range).then(setSamples).catch(() => {}) }, [name, range])
+  const [service, setService] = useState<ServiceHealth | null>(null)
+  useEffect(() => { api.serviceHealth(name).then((r) => setService(r.latest)).catch(() => {}) }, [name, status?.observedAt, refreshKey(name, 'workloads')]) // eslint-disable-line
   // Every pushed status is also the newest sample: append it so the graphs move
   // without refetching.
   useEffect(() => {
@@ -57,11 +59,12 @@ export function Overview({ ctx }: { ctx: ClusterCtx }) {
           {alerts.map((e) => <EventRow key={e.id} e={e} onAck={() => ack(name, e.id)} />)}
         </div>
       )}
-      <div class="grid grid-cols-2 xl:grid-cols-5 gap-4">
+      <div class="grid grid-cols-2 xl:grid-cols-6 gap-4">
         <Card label="Control plane" tone={!status ? 'muted' : cpDown === 0 ? 'good' : 'bad'} value={status ? `${status.nodes.filter((n) => n.role === 'controlplane').length - cpDown}/${status.nodes.filter((n) => n.role === 'controlplane').length}` : '—'} sub={spec.controlPlane.vip ? `VIP ${spec.controlPlane.vip}` : 'no VIP: endpoint is the first control plane'} />
         <Card label="etcd quorum" tone={!status ? 'muted' : status.etcd.healthy ? 'good' : 'bad'} value={status ? `${status.etcd.members}/${status.etcd.expected}` : '—'} sub={status?.etcd.leader ? `leader ${status.etcd.leader}` : status?.etcd.alarms?.join(', ') || 'no leader reported'} />
         <Card label="Nodes Ready" tone={!t ? 'muted' : t.nodesReady === t.nodes ? 'good' : 'warn'} value={t ? `${t.nodesReady}/${t.nodes}` : '—'} sub={`${spec.nodes.filter((n) => n.role === 'worker').length} worker${spec.nodes.filter((n) => n.role === 'worker').length === 1 ? '' : 's'}`} />
         <ObserverCard status={status} />
+        <WorkloadsCard cluster={name} pods={t?.pods} service={service} />
         <Card label="Load balancer" tone={status?.platform?.outputs?.ingress_ip ? 'good' : spec.platform.metallb.enabled ? 'warn' : 'muted'} value={status?.platform?.outputs?.ingress_ip ?? (spec.platform.metallb.enabled ? 'pending' : 'off')} sub={spec.platform.metallb.enabled ? `pool ${spec.platform.metallb.range}` : 'MetalLB disabled'} />
       </div>
       <div class="grid grid-cols-1 lg:grid-cols-2 gap-4">
@@ -107,9 +110,8 @@ export function Overview({ ctx }: { ctx: ClusterCtx }) {
 export function EventRow({ e, onAck }: { e: HealthEvent; onAck?: () => void }) {
   const tone = e.severity === 'critical' ? 'bad' : e.severity === 'warn' ? 'warn' : 'good'
   const [open, setOpen] = useState(false)
-  const st = statuses.value.get(e.cluster)
-  const ip = e.node ? st?.nodes.find((n) => n.hostname === e.node)?.ip : undefined
-  const rb = onAck ? runbookFor(e.kind, { cluster: e.cluster, node: e.node, nodeHref: ip ? `/nodes/${ip}` : undefined }) : null
+  const mac = e.node ? clusters.value.find((c) => c.name === e.cluster)?.spec.spec.nodes.find((n) => n.hostname === e.node)?.mac : undefined
+  const rb = onAck ? runbookFor(e.kind, { cluster: e.cluster, node: e.node, nodeHref: mac ? `/machines/${mac}` : undefined }) : null
   return (
     <div class="flex flex-col">
       <div class="flex items-center gap-3 px-4 py-2 text-[13px]">
@@ -134,6 +136,15 @@ export function EventRow({ e, onAck }: { e: HealthEvent; onAck?: () => void }) {
 }
 
 /** How current the watcher's view is, and whether scheduled snapshots are keeping up. */
+function WorkloadsCard({ cluster, pods, service }: { cluster: string; pods?: number; service: ServiceHealth | null }) {
+  const controllers = service?.workloads ?? []
+  const down = controllers.filter((w) => !w.available).length
+  const failing = (service?.pods ?? []).filter((p) => p.phase !== 'Running' && p.phase !== 'Succeeded' && p.phase !== 'Pending').length
+  const bad = down + failing
+  const sub = !service ? 'no service health yet' : bad === 0 ? `${controllers.length} controller${controllers.length === 1 ? '' : 's'}, all available` : [down ? `${down} controller${down === 1 ? '' : 's'} unavailable` : '', failing ? `${failing} pod${failing === 1 ? '' : 's'} failing` : ''].filter(Boolean).join(', ')
+  return <Card label="Workloads" tone={!service ? 'muted' : down > 0 ? 'bad' : failing > 0 ? 'warn' : 'good'} value={pods === undefined ? '—' : `${pods} pods`} sub={sub} href={`/clusters/${cluster}/workloads?view=pods`} />
+}
+
 function ObserverCard({ status }: { status?: { observedAt?: string; lastSnapshotAt?: string; snapshotInterval?: string } | null }) {
   if (!status?.observedAt) return <Card label="Observer" tone="muted" value="—" sub="no status from the watcher yet" />
   const seenAgo = ageSec(status.observedAt)
@@ -146,7 +157,7 @@ function ObserverCard({ status }: { status?: { observedAt?: string; lastSnapshot
 }
 
 /** Semver-ish compare on the numeric part; prereleases never count as newer. */
-function verLess(a: string, b: string): boolean {
+export function verLess(a: string, b: string): boolean {
   if (b.includes('-')) return false
   const pa = a.replace(/^v/, '').split('-')[0].split('.').map(Number), pb = b.replace(/^v/, '').split('.').map(Number)
   for (let i = 0; i < 3; i++) { if ((pa[i] ?? 0) !== (pb[i] ?? 0)) return (pa[i] ?? 0) < (pb[i] ?? 0) }
@@ -168,13 +179,15 @@ function objectLink(e: HealthEvent): string | null {
   return `/clusters/${e.cluster}/${page}?ns=${encodeURIComponent(ns)}`
 }
 
-export function Card({ label, value, tone, sub }: { label: string; value: string; tone: 'good' | 'warn' | 'bad' | 'muted'; sub?: string }) {
+export function Card({ label, value, tone, sub, href }: { label: string; value: string; tone: 'good' | 'warn' | 'bad' | 'muted'; sub?: string; href?: string }) {
   const color = { good: 'text-good', warn: 'text-warn', bad: 'text-bad', muted: 'text-muted' }[tone]
-  return (
-    <div class="panel p-4 flex flex-col gap-1 min-w-0">
+  const body = (
+    <>
       <span class="label">{label}</span>
       <span class={`text-2xl font-semibold num truncate ${color}`}>{value}</span>
       {sub && <span class="text-[12px] text-muted truncate" title={sub}>{sub}</span>}
-    </div>
+    </>
   )
+  if (href) return <a href={href} class="panel p-4 flex flex-col gap-1 min-w-0 hover:border-accent">{body}</a>
+  return <div class="panel p-4 flex flex-col gap-1 min-w-0">{body}</div>
 }

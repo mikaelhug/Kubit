@@ -40,13 +40,13 @@ func (u Updates) NeedsReboot() bool {
 }
 
 const metricsScript = `read l1 rest < /proc/loadavg; echo "load1=$l1"
-echo "cpu1=$(head -1 /proc/stat)"; sleep 0.5; echo "cpu2=$(head -1 /proc/stat)"
+echo "cpu1=$(head -1 /proc/stat)"; sleep 2; echo "cpu2=$(head -1 /proc/stat)"
 awk '/MemTotal/{t=$2}/MemAvailable/{a=$2}END{print "memtotal=" t*1024; print "memavail=" a*1024}' /proc/meminfo
 df -B1 --output=used,size ` + VMDir + ` 2>/dev/null | tail -1 | awk '{print "diskused=" $1; print "disktotal=" $2}'
 echo "vms=$(virsh list --name 2>/dev/null | grep -c .)"
 echo "uptime=$(cut -d. -f1 /proc/uptime)"`
 
-// Metrics samples the host once (about half a second, for the CPU delta).
+// Metrics samples the host once (about two seconds, for a CPU delta that is not noise).
 func (c *Client) Metrics(ctx context.Context) (Metrics, error) {
 	out, err := c.Run(ctx, metricsScript)
 	if err != nil {

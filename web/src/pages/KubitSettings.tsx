@@ -1,7 +1,8 @@
 import { useEffect, useState } from 'preact/hooks'
-import { api, fmt, type OffsiteStatus, type Settings } from '../api'
-import { loadSettings, settings, toast, watch } from '../store'
+import { api, fmt, type OIDCSettings, type OffsiteStatus, type Settings } from '../api'
+import { can, loadSettings, settings, toast, watch } from '../store'
 import { ErrorBox, Field, Notice, Section } from '../components/ui'
+import { UsersSection } from '../components/Users'
 
 export function KubitSettings() {
   const [s, setS] = useState<Settings | null>(null)
@@ -23,6 +24,8 @@ export function KubitSettings() {
   const dirty = JSON.stringify(s) !== JSON.stringify(orig)
   const movedUnderneath = dirty && pushed && JSON.stringify(pushed) !== JSON.stringify(orig)
   const save = () => api.saveSettings(s).then((v) => { setS(v); setOrig(v); setError(null); toast('Settings saved', 'good') }).catch((e) => setError(e.message))
+  const oidc: OIDCSettings = s.auth?.oidc ?? { enabled: false, name: 'SSO', issuer: '', clientId: '', clientSecret: '', usernameClaim: 'preferred_username', groupsClaim: 'groups', adminGroups: [], operatorGroups: [], viewerGroups: [], defaultRole: '' }
+  const setOidc = (patch: Partial<OIDCSettings>) => setS({ ...s, auth: { ...(s.auth ?? {}), oidc: { ...oidc, ...patch } } })
   return (
     <div class="p-6 flex flex-col gap-6 max-w-3xl">
       <Section title="Kubit settings" help="Preferences of this Kubit installation. Cluster-specific settings live under each cluster.">
@@ -35,6 +38,8 @@ export function KubitSettings() {
           <Field label="Default MetalLB range" hint="Suggested pool for new clusters; empty derives one from the first node's subnet."><input class="input mono" value={s.defaultMetalLBRange} onInput={(e) => setS({ ...s, defaultMetalLBRange: (e.target as HTMLInputElement).value })} placeholder="192.168.1.200-192.168.1.220" /></Field>
           <Field label="Default AMT user" hint="Used by discovery on every address that answers on 16992."><input class="input mono" value={s.amt?.user ?? 'admin'} onInput={(e) => setS({ ...s, amt: { ...(s.amt ?? { type: 'amt', host: '', tls: false, password: '' }), user: (e.target as HTMLInputElement).value.trim() } })} /></Field>
           <Field label="Default AMT password" hint="The MEBx password; sealed with the master key, shown masked."><input class="input mono" type="password" value={s.amt?.password ?? ''} onInput={(e) => setS({ ...s, amt: { ...(s.amt ?? { type: 'amt', host: '', tls: false, user: 'admin' }), password: (e.target as HTMLInputElement).value } })} /></Field>
+          <Field label="Default BMC user" hint="Used by discovery on every address that serves a Redfish root."><input class="input mono" value={s.bmc?.user ?? 'root'} onInput={(e) => setS({ ...s, bmc: { ...(s.bmc ?? { type: 'redfish', host: '', tls: false, password: '' }), user: (e.target as HTMLInputElement).value.trim() } })} /></Field>
+          <Field label="Default BMC password" hint="Sealed with the master key, shown masked."><input class="input mono" type="password" value={s.bmc?.password ?? ''} onInput={(e) => setS({ ...s, bmc: { ...(s.bmc ?? { type: 'redfish', host: '', tls: false, user: 'root' }), password: (e.target as HTMLInputElement).value } })} /></Field>
           <Field label="PXE status URL" hint="Where the separate kubit pxe process publishes its status."><input class="input mono" value={s.pxeStatusUrl} onInput={(e) => setS({ ...s, pxeStatusUrl: (e.target as HTMLInputElement).value })} /></Field>
         </div>
         <div class="flex gap-2 items-center">
@@ -100,6 +105,29 @@ export function KubitSettings() {
           {off?.enabled && <span class="text-[12px] text-muted">{off.error ? <span class="text-bad">{off.error}</span> : `${off.target}: ${off.backups} backup(s), ${off.snapshots} snapshot(s), ${fmt.bytes(off.bytes)} · last backup ${off.lastBackup ? fmt.when(off.lastBackup) : 'never'}`}</span>}
         </div>
       </Section>
+      {can('admin') && <UsersSection />}
+      {can('admin') && (
+        <Section title="Single sign-on" help="OpenID Connect. Groups from the provider decide the role; people outside every listed group get the default role, or no access.">
+          <div class="panel p-4 grid grid-cols-1 md:grid-cols-2 gap-4">
+            <label class="flex items-center gap-2 text-[13px] font-medium md:col-span-2"><input type="checkbox" checked={oidc.enabled} onChange={(e) => setOidc({ enabled: (e.target as HTMLInputElement).checked })} /> Enable sign-in with an OpenID Connect provider</label>
+            <Field label="Button label" hint="Shown on the sign-in screen."><input class="input" value={oidc.name} onInput={(e) => setOidc({ name: (e.target as HTMLInputElement).value })} /></Field>
+            <Field label="Issuer URL" hint="Where /.well-known/openid-configuration lives."><input class="input mono" value={oidc.issuer} placeholder="https://login.example.com/realms/ops" onInput={(e) => setOidc({ issuer: (e.target as HTMLInputElement).value.trim() })} /></Field>
+            <Field label="Client ID"><input class="input mono" value={oidc.clientId} onInput={(e) => setOidc({ clientId: (e.target as HTMLInputElement).value.trim() })} /></Field>
+            <Field label="Client secret" hint="Sealed with the master key, shown masked."><input class="input mono" type="password" value={oidc.clientSecret} onInput={(e) => setOidc({ clientSecret: (e.target as HTMLInputElement).value })} /></Field>
+            <Field label="Redirect URL" hint="Register this at the provider."><code class="mono text-[12px] break-all">{typeof location !== 'undefined' ? `${location.origin}/api/v1/auth/oidc/callback` : '/api/v1/auth/oidc/callback'}</code></Field>
+            <Field label="Username claim"><input class="input mono" value={oidc.usernameClaim} onInput={(e) => setOidc({ usernameClaim: (e.target as HTMLInputElement).value.trim() })} /></Field>
+            <Field label="Groups claim"><input class="input mono" value={oidc.groupsClaim} onInput={(e) => setOidc({ groupsClaim: (e.target as HTMLInputElement).value.trim() })} /></Field>
+            <Field label="Default role" hint="For people in none of the groups below."><select class="input" value={oidc.defaultRole} onChange={(e) => setOidc({ defaultRole: (e.target as HTMLSelectElement).value as any })}><option value="">no access</option><option value="viewer">viewer</option><option value="operator">operator</option><option value="admin">admin</option></select></Field>
+            <Field label="Administrator groups" hint="Comma-separated."><input class="input mono" value={oidc.adminGroups.join(', ')} onInput={(e) => setOidc({ adminGroups: splitList((e.target as HTMLInputElement).value) })} /></Field>
+            <Field label="Operator groups"><input class="input mono" value={oidc.operatorGroups.join(', ')} onInput={(e) => setOidc({ operatorGroups: splitList((e.target as HTMLInputElement).value) })} /></Field>
+            <Field label="Viewer groups"><input class="input mono" value={oidc.viewerGroups.join(', ')} onInput={(e) => setOidc({ viewerGroups: splitList((e.target as HTMLInputElement).value) })} /></Field>
+          </div>
+          <div class="flex gap-2 items-center">
+            <button class="btn btn-primary" disabled={!dirty} onClick={save}>Save</button>
+            {dirty && <span class="text-[12px] text-warn">unsaved changes</span>}
+          </div>
+        </Section>
+      )}
       <Section title="Kubit backup" help="Sealed archive of Kubit's own state (database, kubeconfigs, talosconfigs, OpenTofu state). Cluster data is under each cluster's Backups tab.">
         <Notice tone="muted">
           <div class="flex flex-col gap-2">
@@ -113,3 +141,5 @@ export function KubitSettings() {
     </div>
   )
 }
+
+function splitList(v: string) { return v.split(/[,\s]+/).map((x) => x.trim()).filter(Boolean) }

@@ -1,0 +1,47 @@
+name: release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+  id-token: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Web
+        working-directory: web
+        run: npm ci && npm run build
+      - name: Test
+        run: go test -count=1 ./...
+      - name: Build
+        run: |
+          mkdir -p dist
+          for target in linux/amd64 linux/arm64 darwin/arm64 darwin/amd64; do
+            os=${target%/*} arch=${target#*/}
+            CGO_ENABLED=0 GOOS=$os GOARCH=$arch go build -trimpath -ldflags "-s -w -X main.version=${GITHUB_REF_NAME}" -o dist/kubit-$os-$arch ./cmd/kubit
+          done
+          (cd dist && sha256sum kubit-* > SHA256SUMS)
+      - uses: sigstore/cosign-installer@v3
+      - name: Sign
+        working-directory: dist
+        run: |
+          for f in kubit-* SHA256SUMS; do
+            cosign sign-blob --yes --output-signature "$f.sig" --output-certificate "$f.pem" "$f"
+          done
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*
+          generate_release_notes: true

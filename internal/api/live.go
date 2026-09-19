@@ -69,6 +69,8 @@ func (s *Server) onChange(ctx context.Context, c store.Change) {
 		if rows, err := s.store.ListAudit(ctx, "", 1); err == nil && len(rows) == 1 {
 			s.hub.publish(Message{Kind: "audit", Cluster: rows[0].Cluster, Audit: &rows[0]})
 		}
+	case "users":
+		s.hub.publish(Message{Kind: "refresh", Scope: "users"})
 	case "settings":
 		if v, err := s.store.GetSettings(ctx); err == nil {
 			v = redactSettings(v)

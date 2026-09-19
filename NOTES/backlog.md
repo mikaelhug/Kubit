@@ -163,3 +163,38 @@
   setting if a site already uses it.
 - Boot into Talos and the lab install share `labWaitBoot`; the same phase machine
   could serve `discover` when it waits for a PXE-booted machine.
+- `handleClusterDesign` (server.go) falls back to `installDisk: /dev/sda` when a
+  machine has no inventory; wrong on NVMe-only boxes. Leave the path empty (pool
+  policy / selector) or refuse instead of guessing.
+- Lab host hardware record: refresh from Debian in `labTick` (lsblk/dmidecode) so the
+  Hardware tab stops showing the pre-install Talos scan or the AMT stub.
+- Retiring a lab host's row after release leaves its VM rows orphaned (`host` points
+  at a missing MAC); retire allows them one by one, a sweep would be kinder.
+- `writeErr` now maps gRPC Unavailable/DeadlineExceeded to 502/504 (was 500); scripts
+  matching on 500 would notice.
+- Redfish: verify against a real BMC (iDRAC/iLO): `PermanentMACAddress` ordering,
+  whether `Boot.BootSourceOverrideMode=UEFI` must be PATCHed alongside `Pxe` on that
+  vendor, and Storage→Drives visibility for NVMe behind a plain PCIe slot.
+- Identity: viewer/operator roles are enforced by the API only; the UI still renders
+  every action button and shows a 403 toast. Hide or disable by `can(role)` per page.
+- Identity: OIDC verified only against the in-process fake provider; run once against
+  Keycloak/Entra (groups claim name differs: Entra sends object ids unless configured).
+- Identity: the PXE service needs an API token once accounts exist; `kubit service
+  install --pxe` should mint one instead of relying on `KUBIT_TOKEN` by hand.
+- CI: first run of ci.yml/release.yml/e2e.yml pending; the QEMU lab (`hack/qemu`) was
+  written on macOS and has not booted a VM yet (OVMF path, tap ownership, dnsmasq
+  lease file permissions are the likely first fixes).
+- Longhorn: unverified on a cluster. Check that Talos propagates `/var/mnt/data-N`
+  user volumes into the kubelet with shared propagation (needed for Longhorn's
+  bind mounts); if not, a UserVolumeConfig-based `longhorn` volume or a v1alpha1
+  kubelet mount fallback is needed. Add a Storage-tab panel reading
+  `longhorn.io/v1beta2` volumes (health, replicas, backup target).
+- Platform apply: retry the whole tofu apply with backoff on transient API errors and
+  scale the Helm timeout with node count (reliability plan P0, still open).
+- Smoke test at the end of create: a tiny Deployment + LoadBalancer Service must get an
+  IP before the cluster is reported ready (reliability plan P2).
+- ArgoCD/cert-manager still ship without resource requests; give them the same
+  treatment before enabling by default.
+- Two daemons on one KUBIT_HOME (e.g. `kubit serve` on :8080 and a dev one on :8090)
+  both run the watcher: samples land twice a minute and alerts can be raised twice.
+  Detect the sibling (pid file / lock) and refuse or run watcher-less.

@@ -3,6 +3,8 @@ package api_test
 import (
 	"encoding/json"
 	"net/http"
+	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/mikael/kubit/internal/store"
@@ -52,9 +54,15 @@ func TestPXEDecision(t *testing.T) {
 		t.Error("an installed lab host boots its own disk")
 	}
 	_ = s.SetLabHost(ctx, "aa:aa:aa:aa:aa:07", &store.LabHost{State: "error", Error: "x"})
-	if decide("aa:aa:aa:aa:aa:07") != "talos" {
-		t.Error("a failed lab host is an ordinary known machine again")
+	if decide("aa:aa:aa:aa:aa:07") != "local" {
+		t.Error("a failed lab host keeps whatever is on its disk")
 	}
+	_ = s.SetLabHost(ctx, "aa:aa:aa:aa:aa:07", &store.LabHost{State: "setup"})
+	_ = s.SetMachineProvision(ctx, "aa:aa:aa:aa:aa:07", true, "labhost")
+	if decide("aa:aa:aa:aa:aa:07") != "local" {
+		t.Error("a lab host in setup has Debian installed; a stray network boot must not re-image it")
+	}
+	_ = s.SetMachineProvision(ctx, "aa:aa:aa:aa:aa:07", false)
 	// Armed and mid-install → the Debian installer.
 	_ = s.SetLabHost(ctx, "aa:aa:aa:aa:aa:07", &store.LabHost{State: "installing"})
 	_ = s.SetMachineProvision(ctx, "aa:aa:aa:aa:aa:07", true, "labhost")
@@ -71,5 +79,71 @@ func TestPXEDecision(t *testing.T) {
 	m, _ := s.GetMachine(ctx, "aa:aa:aa:aa:aa:06")
 	if m.Provision || m.Cluster != "" {
 		t.Errorf("maintenance sighting should clear provision and membership: %+v", m)
+	}
+}
+
+func fakeRedfish() http.Handler {
+	mux := http.NewServeMux()
+	write := func(w http.ResponseWriter, v any) { _ = json.NewEncoder(w).Encode(v) }
+	mux.HandleFunc("/redfish/v1", func(w http.ResponseWriter, r *http.Request) {
+		write(w, map[string]any{"RedfishVersion": "1.11.0", "Systems": map[string]string{"@odata.id": "/redfish/v1/Systems"}})
+	})
+	mux.HandleFunc("/redfish/v1/Systems", func(w http.ResponseWriter, r *http.Request) {
+		if _, p, _ := r.BasicAuth(); p != "calvin" {
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		write(w, map[string]any{"Members": []map[string]string{{"@odata.id": "/redfish/v1/Systems/1"}}})
+	})
+	mux.HandleFunc("/redfish/v1/Systems/1", func(w http.ResponseWriter, r *http.Request) {
+		write(w, map[string]any{"Manufacturer": "HPE", "Model": "ProLiant DL380 Gen11", "SerialNumber": "CZ123", "UUID": "AABBCCDD-0000-0000-0000-000000000001", "PowerState": "Off",
+			"MemorySummary": map[string]any{"TotalSystemMemoryGiB": 64}, "ProcessorSummary": map[string]any{"Count": 1},
+			"EthernetInterfaces": map[string]string{"@odata.id": "/redfish/v1/Systems/1/EthernetInterfaces"}})
+	})
+	mux.HandleFunc("/redfish/v1/Systems/1/EthernetInterfaces", func(w http.ResponseWriter, r *http.Request) {
+		write(w, map[string]any{"Members": []map[string]string{{"@odata.id": "/redfish/v1/Systems/1/EthernetInterfaces/1"}}})
+	})
+	mux.HandleFunc("/redfish/v1/Systems/1/EthernetInterfaces/1", func(w http.ResponseWriter, r *http.Request) {
+		write(w, map[string]any{"MACAddress": "94:40:C9:11:22:33"})
+	})
+	return mux
+}
+
+func TestOOBAddRedfish(t *testing.T) {
+	bmc := httptest.NewTLSServer(fakeRedfish())
+	defer bmc.Close()
+	srv, s := newServer(t, "")
+	rec := do(t, srv, "POST", "/api/v1/machines/oob", `{"type":"redfish","host":"`+bmc.URL+`","user":"root","password":"nope"}`)
+	if rec.Code != http.StatusBadGateway || !strings.Contains(rec.Body.String(), "authentication failed") {
+		t.Fatalf("wrong password: %d %s", rec.Code, rec.Body.String())
+	}
+	rec = do(t, srv, "POST", "/api/v1/machines/oob", `{"type":"redfish","host":"`+bmc.URL+`","user":"root","password":"calvin"}`)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("add: %d %s", rec.Code, rec.Body.String())
+	}
+	m, err := s.GetMachine(t.Context(), "94:40:c9:11:22:33")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if m.Source != "redfish" || m.State != "off" || m.Serial != "CZ123" || m.UUID != "aabbccdd-0000-0000-0000-000000000001" || m.OOBType != "redfish" || m.IP != "" {
+		t.Errorf("row: %+v", m)
+	}
+	var hw struct {
+		Product     string `json:"product"`
+		CPUs        int    `json:"cpus"`
+		MemoryBytes int64  `json:"memoryBytes"`
+	}
+	_ = json.Unmarshal(m.Hardware, &hw)
+	if hw.Product != "ProLiant DL380 Gen11" || hw.CPUs != 1 || hw.MemoryBytes != 64<<30 {
+		t.Errorf("hardware stand-in: %s", m.Hardware)
+	}
+	rec = do(t, srv, "POST", "/api/v1/machines/94:40:c9:11:22:33/oob/test", `{}`)
+	var res struct {
+		OK   bool
+		Info struct{ Version, Power string }
+	}
+	_ = json.Unmarshal(rec.Body.Bytes(), &res)
+	if rec.Code != http.StatusOK || !res.OK || res.Info.Version != "Redfish 1.11.0" || res.Info.Power != "off" {
+		t.Errorf("test: %d %s", rec.Code, rec.Body.String())
 	}
 }

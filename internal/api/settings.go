@@ -41,6 +41,12 @@ func redactSettings(v store.Settings) store.Settings {
 	if v.AMT.Password != "" {
 		v.AMT.Password = "•••"
 	}
+	if v.BMC.Password != "" {
+		v.BMC.Password = "•••"
+	}
+	if v.Auth.OIDC.ClientSecret != "" {
+		v.Auth.OIDC.ClientSecret = "•••"
+	}
 	return v
 }
 
@@ -58,7 +64,7 @@ func (s *Server) handlePutSettings(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusUnprocessableEntity, map[string]string{"error": "watchIntervalSec must be at least 5"})
 		return
 	}
-	if v.Alerts.SMTP.Password == "•••" || v.Offsite.SecretKey == "•••" || v.AMT.Password == "•••" {
+	if v.Alerts.SMTP.Password == "•••" || v.Offsite.SecretKey == "•••" || v.AMT.Password == "•••" || v.BMC.Password == "•••" || v.Auth.OIDC.ClientSecret == "•••" {
 		if cur, err := s.store.GetSettings(r.Context()); err == nil {
 			if v.Alerts.SMTP.Password == "•••" {
 				v.Alerts.SMTP.Password = cur.Alerts.SMTP.Password
@@ -68,6 +74,12 @@ func (s *Server) handlePutSettings(w http.ResponseWriter, r *http.Request) {
 			}
 			if v.AMT.Password == "•••" {
 				v.AMT.Password = cur.AMT.Password
+			}
+			if v.BMC.Password == "•••" {
+				v.BMC.Password = cur.BMC.Password
+			}
+			if v.Auth.OIDC.ClientSecret == "•••" {
+				v.Auth.OIDC.ClientSecret = cur.Auth.OIDC.ClientSecret
 			}
 		}
 	}

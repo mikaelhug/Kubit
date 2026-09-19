@@ -6,12 +6,17 @@ package talos
 import (
 	"context"
 	"crypto/tls"
+	"errors"
 	"fmt"
 	"net"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/siderolabs/talos/pkg/machinery/client"
 	clientconfig "github.com/siderolabs/talos/pkg/machinery/client/config"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
 
 const Port = "50000"
@@ -60,4 +65,34 @@ func PortOpen(ip string, timeout time.Duration) bool {
 	}
 	conn.Close()
 	return true
+}
+
+func ShortGRPC(err error) error {
+	var gs interface{ GRPCStatus() *status.Status }
+	if !errors.As(err, &gs) {
+		return err
+	}
+	st := gs.GRPCStatus()
+	prefix := err.Error()
+	if inner, ok := gs.(error); ok {
+		prefix = strings.TrimSuffix(prefix, inner.Error())
+	}
+	msg := st.Message()
+	if rest, ok := strings.CutPrefix(msg, "connection error: desc = "); ok {
+		if unq, err := strconv.Unquote(rest); err == nil {
+			msg = unq
+		}
+	}
+	return fmt.Errorf("%s%s (%s)", prefix, msg, st.Code())
+}
+
+func HTTPStatus(err error) int {
+	switch status.Code(err) {
+	case codes.Unavailable:
+		return 502
+	case codes.DeadlineExceeded:
+		return 504
+	default:
+		return 500
+	}
 }

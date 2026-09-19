@@ -33,6 +33,16 @@ variable "argocd" {
   type = object({ enabled = bool, values = optional(any, {}) })
 }
 
+variable "longhorn" {
+  type = object({ enabled = bool, values = optional(any, {}), replicas = optional(number, 3) })
+}
+
+# The SSO group (with its oidc: prefix) bound to cluster-admin; empty binds nothing.
+variable "oidc_admin_group" {
+  type    = string
+  default = ""
+}
+
 # Chart versions are pinned by Kubit and bumped deliberately.
 variable "chart_versions" {
   type = map(string)
@@ -42,5 +52,6 @@ variable "chart_versions" {
     metrics_server = "3.14.0"
     cert_manager   = "v1.21.2"
     argocd         = "10.9.0"
+    longhorn       = "1.10.1"
   }
 }

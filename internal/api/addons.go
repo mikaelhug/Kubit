@@ -66,6 +66,8 @@ func (s *Server) handleAddonUpdate(w http.ResponseWriter, r *http.Request) {
 		set(&p.CertManager)
 	case "argocd":
 		set(&p.ArgoCD)
+	case "longhorn":
+		set(&p.Longhorn)
 	default:
 		http.Error(w, fmt.Sprintf("unknown add-on %q", key), http.StatusNotFound)
 		return

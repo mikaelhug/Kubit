@@ -1,7 +1,8 @@
 // Package oob is out-of-band management: reaching a machine's management engine
-// when the OS is absent, dead or powered off. Intel AMT (vPro) is the first backend;
-// it gives Kubit power control and "boot from network once", which turns first
-// contact and re-provisioning into a click instead of a walk to the machine.
+// when the OS is absent, dead or powered off. Two backends: Intel AMT (vPro desktops
+// and NUCs) and DMTF Redfish (server BMCs). Both give Kubit power control and "boot
+// from network once", which turns first contact and re-provisioning into a click
+// instead of a walk to the machine.
 package oob
 
 import (
@@ -18,26 +19,40 @@ import (
 	"github.com/device-management-toolkit/go-wsman-messages/v2/pkg/wsman/client"
 )
 
-// Config is how to reach one machine's AMT; the password is sealed by the store.
+// Config is how to reach one machine's management engine; the password is sealed by
+// the store.
 type Config struct {
-	Type     string `json:"type"` // "" (none) | amt
-	Host     string `json:"host"` // AMT shares the wired NIC's address
-	User     string `json:"user"` // usually "admin"
+	Type     string `json:"type"` // "" (none) | amt | redfish
+	Host     string `json:"host"` // AMT shares the wired NIC's address; a BMC has its own
+	User     string `json:"user"` // AMT: usually "admin"; BMC: its local account
 	Password string `json:"password"`
-	TLS      bool   `json:"tls"` // 16993 with TLS, 16992 without
+	TLS      bool   `json:"tls"` // AMT only: 16993 with TLS, 16992 without (Redfish is always HTTPS)
 }
 
-func (c Config) Enabled() bool { return c.Type == "amt" && c.Host != "" }
+func (c Config) Enabled() bool { return (c.Type == "amt" || c.Type == "redfish") && c.Host != "" }
 
 // Info is what a probe learns: enough to create the machine row before Talos ever
-// booted, and the power state the Inventory shows.
+// booted, and the power state the Inventory shows. A BMC also reports the host's
+// CPUs, memory and drives; AMT does not.
 type Info struct {
-	Version      string `json:"version"`
-	MAC          string `json:"mac"`
-	Manufacturer string `json:"manufacturer,omitempty"`
-	Model        string `json:"model,omitempty"`
-	Serial       string `json:"serial,omitempty"`
-	Power        string `json:"power"` // on | off | sleep | unknown
+	Version      string     `json:"version"`
+	MAC          string     `json:"mac"`
+	UUID         string     `json:"uuid,omitempty"`
+	Manufacturer string     `json:"manufacturer,omitempty"`
+	Model        string     `json:"model,omitempty"`
+	Serial       string     `json:"serial,omitempty"`
+	Power        string     `json:"power"` // on | off | sleep | unknown
+	CPUs         int        `json:"cpus,omitempty"`
+	MemoryBytes  int64      `json:"memoryBytes,omitempty"`
+	Disks        []DiskInfo `json:"disks,omitempty"`
+}
+
+type DiskInfo struct {
+	Model     string `json:"model,omitempty"`
+	Serial    string `json:"serial,omitempty"`
+	SizeBytes int64  `json:"sizeBytes"`
+	Transport string `json:"transport,omitempty"` // sata | sas | nvme | usb
+	Media     string `json:"media,omitempty"`     // hdd | ssd
 }
 
 // Action is a power request.
@@ -59,25 +74,42 @@ type Manager interface {
 }
 
 // Option tunes a backend; WithTrace receives one line per boot-related request and
-// reply so an operation log shows what AMT was asked and answered.
-type Option func(*amt)
+// reply so an operation log shows what the management engine was asked and answered.
+type Option func(*options)
 
-func WithTrace(fn func(string)) Option { return func(a *amt) { a.trace = fn } }
+type options struct{ trace func(string) }
+
+func WithTrace(fn func(string)) Option { return func(o *options) { o.trace = fn } }
 
 // Open returns the backend for a config.
 func Open(c Config, opts ...Option) (Manager, error) {
+	var o options
+	for _, opt := range opts {
+		opt(&o)
+	}
 	switch c.Type {
 	case "amt":
 		if c.Host == "" || c.User == "" || c.Password == "" {
 			return nil, errors.New("AMT needs host, user and password")
 		}
-		a := &amt{c: c}
-		for _, o := range opts {
-			o(a)
+		return &amt{c: c, trace: o.trace}, nil
+	case "redfish":
+		if c.Host == "" || c.User == "" || c.Password == "" {
+			return nil, errors.New("Redfish needs the BMC address, user and password")
 		}
-		return a, nil
+		return newRedfish(c, o.trace), nil
 	}
 	return nil, errors.New("no out-of-band management configured")
+}
+
+func Label(typ string) string {
+	switch typ {
+	case "amt":
+		return "Intel AMT"
+	case "redfish":
+		return "BMC (Redfish)"
+	}
+	return "remote management"
 }
 
 type amt struct {

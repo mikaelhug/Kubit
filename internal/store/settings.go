@@ -29,6 +29,32 @@ type Settings struct {
 	// machines that answer on 16992, so vPro boxes show up with model and power
 	// state before Talos ever ran. Password sealed at rest.
 	AMT oob.Config `json:"amt"`
+	// BMC holds default Redfish credentials for the same purpose on server hardware:
+	// discovery asks every Redfish service root it finds who it manages.
+	BMC oob.Config `json:"bmc"`
+	// Auth is how people sign in besides local accounts.
+	Auth Auth `json:"auth"`
+}
+
+// Auth holds the single-sign-on configuration. Groups from the provider map to
+// Kubit roles; a signed-in person outside every listed group gets DefaultRole, and
+// an empty DefaultRole means no access.
+type Auth struct {
+	OIDC OIDC `json:"oidc"`
+}
+
+type OIDC struct {
+	Enabled        bool     `json:"enabled"`
+	Name           string   `json:"name"`
+	Issuer         string   `json:"issuer"`
+	ClientID       string   `json:"clientId"`
+	ClientSecret   string   `json:"clientSecret"`
+	UsernameClaim  string   `json:"usernameClaim"`
+	GroupsClaim    string   `json:"groupsClaim"`
+	AdminGroups    []string `json:"adminGroups"`
+	OperatorGroups []string `json:"operatorGroups"`
+	ViewerGroups   []string `json:"viewerGroups"`
+	DefaultRole    string   `json:"defaultRole"`
 }
 
 // Alerts forwards health events at or above MinSeverity to external sinks.
@@ -69,7 +95,7 @@ func (c SMTP) Mode() string {
 }
 
 func DefaultSettings() Settings {
-	return Settings{FactoryURL: "https://factory.talos.dev", DiscoverySubnets: []string{}, WatchIntervalSec: 15, PXEStatusURL: "http://127.0.0.1:8069/status.json", Alerts: Alerts{MinSeverity: "warn", SMTP: SMTP{Port: 587, StartTLS: true, TLS: "starttls", To: []string{}}, IgnoreNamespaces: []string{}, HeartbeatHours: 24}, Offsite: offsite.Target{KeepBackups: 14}, PXEEnrollment: "open", AMT: oob.Config{Type: "amt", User: "admin"}}
+	return Settings{FactoryURL: "https://factory.talos.dev", DiscoverySubnets: []string{}, WatchIntervalSec: 15, PXEStatusURL: "http://127.0.0.1:8069/status.json", Alerts: Alerts{MinSeverity: "warn", SMTP: SMTP{Port: 587, StartTLS: true, TLS: "starttls", To: []string{}}, IgnoreNamespaces: []string{}, HeartbeatHours: 24}, Offsite: offsite.Target{KeepBackups: 14}, PXEEnrollment: "open", AMT: oob.Config{Type: "amt", User: "admin"}, BMC: oob.Config{Type: "redfish", User: "root"}, Auth: Auth{OIDC: OIDC{Name: "SSO", UsernameClaim: "preferred_username", GroupsClaim: "groups", AdminGroups: []string{}, OperatorGroups: []string{}, ViewerGroups: []string{}}}}
 }
 
 func (s *Store) GetSettings(ctx context.Context) (Settings, error) {
@@ -88,6 +114,25 @@ func (s *Store) GetSettings(ctx context.Context) (Settings, error) {
 	out.Alerts.SMTP.Password = s.unseal(out.Alerts.SMTP.Password)
 	out.Offsite.SecretKey = s.unseal(out.Offsite.SecretKey)
 	out.AMT.Password = s.unseal(out.AMT.Password)
+	out.BMC.Password = s.unseal(out.BMC.Password)
+	if out.BMC.Type == "" {
+		out.BMC.Type, out.BMC.User = "redfish", "root"
+	}
+	out.Auth.OIDC.ClientSecret = s.unseal(out.Auth.OIDC.ClientSecret)
+	if out.Auth.OIDC.UsernameClaim == "" {
+		out.Auth.OIDC.UsernameClaim = "preferred_username"
+	}
+	if out.Auth.OIDC.GroupsClaim == "" {
+		out.Auth.OIDC.GroupsClaim = "groups"
+	}
+	if out.Auth.OIDC.Name == "" {
+		out.Auth.OIDC.Name = "SSO"
+	}
+	for _, g := range []*[]string{&out.Auth.OIDC.AdminGroups, &out.Auth.OIDC.OperatorGroups, &out.Auth.OIDC.ViewerGroups} {
+		if *g == nil {
+			*g = []string{}
+		}
+	}
 	return out, nil
 }
 
@@ -136,6 +181,12 @@ func (s *Store) PutSettings(ctx context.Context, v Settings) error {
 		return err
 	}
 	if v.AMT.Password, err = s.seal(v.AMT.Password); err != nil {
+		return err
+	}
+	if v.BMC.Password, err = s.seal(v.BMC.Password); err != nil {
+		return err
+	}
+	if v.Auth.OIDC.ClientSecret, err = s.seal(v.Auth.OIDC.ClientSecret); err != nil {
 		return err
 	}
 	b, err := json.Marshal(v)

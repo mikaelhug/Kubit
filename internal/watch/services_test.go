@@ -48,9 +48,36 @@ func TestWorkloadUnavailableNeedsTwoCollectionsAndAge(t *testing.T) {
 		t.Fatalf("alert repeated: %v", kinds(evs))
 	}
 	fixed := &cluster.ServiceHealth{Workloads: []cluster.WorkloadHealth{{Kind: "Deployment", Namespace: "app", Name: "web", Ready: 3, Desired: 3, AgeSec: 900}}}
+	for i := 1; i < clearAfter; i++ {
+		if evs := tr.Derive("c", fixed, now, nil); len(evs) != 0 {
+			t.Fatalf("recovery after %d healthy collection(s): %v", i, kinds(evs))
+		}
+	}
 	evs = tr.Derive("c", fixed, now, nil)
 	if !hasKind(evs, "workload.available") {
 		t.Fatalf("recovery not reported: %v", kinds(evs))
+	}
+}
+
+func TestFlappingServiceKeepsOneAlert(t *testing.T) {
+	tr := NewServiceTracker()
+	now := time.Now()
+	at := func(endpoints int) *cluster.ServiceHealth {
+		return &cluster.ServiceHealth{Services: []cluster.ServiceRow{{Namespace: "metallb-system", Name: "webhook", Type: "ClusterIP", HasSelector: true, Endpoints: endpoints, AgeSec: 900}}}
+	}
+	var all []string
+	for _, e := range []int{0, 0, 1, 0, 1, 0, 1, 0} {
+		all = append(all, kinds(tr.Derive("c", at(e), now, nil))...)
+	}
+	if len(all) != 1 || all[0] != "service.no-endpoints" {
+		t.Fatalf("a flapping service must raise once and never recover mid-flap: %v", all)
+	}
+	all = nil
+	for i := 0; i < clearAfter; i++ {
+		all = append(all, kinds(tr.Derive("c", at(1), now, nil))...)
+	}
+	if len(all) != 1 || all[0] != "service.endpoints" {
+		t.Fatalf("stable endpoints resolve once after %d collections: %v", clearAfter, all)
 	}
 }
 
@@ -126,20 +153,30 @@ func TestServicesIngressAndPool(t *testing.T) {
 		Pool:      &cluster.PoolHealth{Range: "10.0.0.200-10.0.0.201", Total: 2, Allocated: 2},
 	}
 	evs := tr.Derive("c", sh, now, nil)
+	if got := kinds(evs); len(evs) != 1 || evs[0].Kind != "lb.pool-exhausted" {
+		t.Fatalf("first collection: only the pool alerts at once: %v", got)
+	}
+	evs = tr.Derive("c", sh, now, nil)
 	got := kinds(evs)
-	for _, want := range []string{"service.no-endpoints", "ingress.no-address", "lb.pool-exhausted"} {
+	for _, want := range []string{"service.no-endpoints", "ingress.no-address"} {
 		if !hasKind(evs, want) {
 			t.Fatalf("missing %s in %v", want, got)
 		}
 	}
-	if len(evs) != 3 {
+	if len(evs) != 2 {
 		t.Fatalf("unexpected extra events: %v", got)
 	}
 	sh.Services[0].Endpoints = 2
 	sh.Ingresses[0].HasAddress = true
 	sh.Pool.Allocated = 1
 	evs = tr.Derive("c", sh, now, nil)
-	for _, want := range []string{"service.endpoints", "ingress.address", "lb.pool-free"} {
+	if got := kinds(evs); len(evs) != 1 || evs[0].Kind != "lb.pool-free" {
+		t.Fatalf("the pool resolves at once, the rest wait for stability: %v", got)
+	}
+	for i := 1; i < clearAfter; i++ {
+		evs = tr.Derive("c", sh, now, nil)
+	}
+	for _, want := range []string{"service.endpoints", "ingress.address"} {
 		if !hasKind(evs, want) {
 			t.Fatalf("missing recovery %s in %v", want, kinds(evs))
 		}

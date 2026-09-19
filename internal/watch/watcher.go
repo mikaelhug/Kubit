@@ -17,6 +17,7 @@ import (
 	"github.com/mikael/kubit/internal/cluster"
 	"github.com/mikael/kubit/internal/k8s"
 	"github.com/mikael/kubit/internal/labhost"
+	"github.com/mikael/kubit/internal/oob"
 	"github.com/mikael/kubit/internal/store"
 )
 
@@ -197,21 +198,27 @@ func (w *Watcher) candidateLoop(ctx context.Context) {
 			continue
 		}
 		for _, m := range rows {
-			if m.Cluster != "" || m.LabHost != nil || m.Host != "" || m.IP == "" {
+			if m.IsLabVM() || m.IP == "" {
 				continue
 			}
-			switch m.State {
-			case "maintenance", "configured":
+			switch m.Kind() {
+			case store.KindMaintenance, store.KindConfigured:
 				pctx, cancel := context.WithTimeout(ctx, 6*time.Second)
 				res := talos.Probe(pctx, m.IP, 2*time.Second)
 				cancel()
 				if res.Err == nil {
 					_ = w.Store.UpsertNode(ctx, rowFromScan(res))
 				}
-			case "amt", "off", "unknown":
-				if m.OOB != nil && portOpen(m.OOB.Host, "16992") {
-					_ = w.Store.UpsertNode(ctx, store.NodeRow{MAC: m.MAC, IP: m.IP, Source: "amt", State: m.State})
-				} else if portOpen(m.IP, "16992") {
+			case store.KindUnbooted:
+				switch {
+				case m.OOB != nil && m.OOB.Type == "redfish":
+					pctx, cancel := context.WithTimeout(ctx, 6*time.Second)
+					_, ok := oob.ProbeRedfish(pctx, m.OOB.Host, 2*time.Second)
+					cancel()
+					if ok {
+						_ = w.Store.UpsertNode(ctx, store.NodeRow{MAC: m.MAC, IP: m.IP, Source: "redfish", State: m.State})
+					}
+				case m.OOB != nil && portOpen(m.OOB.Host, "16992"), portOpen(m.IP, "16992"):
 					_ = w.Store.UpsertNode(ctx, store.NodeRow{MAC: m.MAC, IP: m.IP, Source: "amt", State: m.State})
 				}
 			}
@@ -534,10 +541,31 @@ func (w *Watcher) tick(ctx context.Context, name string) {
 			events = append(events, w.reconcileOpen(ctx, name, st)...)
 		}
 		w.emit(ctx, name, events)
+		health, open := w.health(ctx, name, st)
+		w.mu.Lock()
+		st.Health, st.OpenAlerts = health, open
+		w.mu.Unlock()
 	}
 	if w.OnStatus != nil {
 		w.OnStatus(name, st)
 	}
+}
+
+// health rolls the status and the open alerts into one word for the cluster pill.
+func (w *Watcher) health(ctx context.Context, name string, st *cluster.Status) (string, int) {
+	open := w.Store.OpenEventCount(ctx, name)
+	if !st.APIReachable || !st.Etcd.Healthy {
+		return cluster.HealthDown, open
+	}
+	for _, n := range st.Nodes {
+		if !n.TalosReachable || (n.Registered && !n.Ready) {
+			return cluster.HealthDown, open
+		}
+	}
+	if open > 0 {
+		return cluster.HealthDegraded, open
+	}
+	return cluster.HealthHealthy, open
 }
 
 // reconcileOpen closes alerts left open from before a daemon restart whose condition
@@ -557,6 +585,9 @@ func (w *Watcher) reconcileOpen(ctx context.Context, name string, st *cluster.St
 		if st.APIReachable && n.Ready {
 			rec("node.ready", n.Hostname, n.Hostname+" is Ready")
 		}
+		if st.APIReachable && n.MemCapBytes >= minAllocatableBytes {
+			rec("node.memory-ok", n.Hostname, fmt.Sprintf("%s has %d MiB allocatable for pods", n.Hostname, n.MemCapBytes>>20))
+		}
 	}
 	if st.APIReachable {
 		rec("api.back", "", "Kubernetes API reachable")
@@ -572,9 +603,13 @@ func (w *Watcher) reconcileOpen(ctx context.Context, name string, st *cluster.St
 
 // resolves maps a recovery event to the alert kind it clears.
 var resolves = map[string]string{
-	"talos.back": "talos.unreachable", "node.ready": "node.notready", "api.back": "api.unreachable", "etcd.healthy": "etcd.unhealthy", "lb.assigned": "lb.lost",
+	"talos.back": "talos.unreachable", "node.ready": "node.notready", "node.memory-ok": "node.memory-small", "api.back": "api.unreachable", "etcd.healthy": "etcd.unhealthy", "lb.assigned": "lb.lost",
 	"labhost.back": "labhost.unreachable", "labhost.disk-ok": "labhost.disk-low", "labhost.memory-ok": "labhost.memory-pressure",
 }
+
+// minAllocatableBytes is the allocatable memory under which a node cannot carry the
+// platform add-ons; a 1 GiB VM leaves about 450 MiB after Talos and the kubelet.
+const minAllocatableBytes = 768 << 20
 
 // Derive compares two consecutive statuses and returns the events describing what
 // changed. A nil prev yields only "currently bad" facts so a restart of the daemon
@@ -617,6 +652,14 @@ func Derive(name string, prev, cur *cluster.Status) []store.EventRow {
 			}
 			if had && p.TalosVersion != "" && n.TalosVersion != "" && p.TalosVersion != n.TalosVersion {
 				ev("info", "talos.version", n.Hostname, fmt.Sprintf("%s: Talos %s → %s", n.Hostname, p.TalosVersion, n.TalosVersion))
+			}
+			small := n.Registered && n.MemCapBytes > 0 && n.MemCapBytes < minAllocatableBytes
+			wasSmall := had && p.Registered && p.MemCapBytes > 0 && p.MemCapBytes < minAllocatableBytes
+			switch {
+			case small && (prev == nil || !wasSmall):
+				ev("warn", "node.memory-small", n.Hostname, fmt.Sprintf("%s has %d MiB allocatable for pods; the platform add-ons alone need more. Give it at least 2 GiB.", n.Hostname, n.MemCapBytes>>20))
+			case !small && wasSmall:
+				ev("info", "node.memory-ok", n.Hostname, fmt.Sprintf("%s has %d MiB allocatable for pods", n.Hostname, n.MemCapBytes>>20))
 			}
 			if had && p.KubeletVersion != "" && n.KubeletVersion != "" && p.KubeletVersion != n.KubeletVersion {
 				ev("info", "kubelet.version", n.Hostname, fmt.Sprintf("%s: kubelet %s → %s", n.Hostname, p.KubeletVersion, n.KubeletVersion))

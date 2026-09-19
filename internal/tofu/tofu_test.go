@@ -51,10 +51,10 @@ func TestRenderWritesModuleAndVars(t *testing.T) {
 	}
 	want := map[string]string{
 		"kubeconfig":     `"/x/kubeconfig"`,
-		"metallb":        `{"enabled":true,"range":"10.0.0.200-10.0.0.210","values":{}}`,
-		"ingress_nginx":  `{"enabled":true,"values":{}}`,
+		"metallb":        `{"enabled":true,"range":"10.0.0.200-10.0.0.210","values":{"controller":{"resources":{"requests":{"cpu":"20m","memory":"64Mi"}}},"frrk8s":{"enabled":false},"speaker":{"frr":{"enabled":false},"resources":{"requests":{"cpu":"20m","memory":"64Mi"}}}}}`,
+		"ingress_nginx":  `{"enabled":true,"values":{"controller":{"replicaCount":1,"resources":{"requests":{"cpu":"50m","memory":"128Mi"}}}}}`,
 		"gvisor":         `{"enabled":true,"values":{}}`,
-		"metrics_server": `{"enabled":false,"values":{}}`,
+		"metrics_server": `{"enabled":false,"values":{"resources":{"requests":{"cpu":"20m","memory":"48Mi"}}}}`,
 		"cert_manager":   `{"enabled":true,"values":{"prometheus":{"enabled":false},"replicaCount":2}}`,
 		"argocd":         `{"enabled":false,"values":{}}`,
 	}
@@ -81,5 +81,22 @@ func TestSummary(t *testing.T) {
 	}
 	if s := (tofu.Summary{Add: 2, Change: 1, Remove: 0}).String(); s != "2 to add, 1 to change, 0 to destroy" {
 		t.Error(s)
+	}
+}
+
+func TestUserValuesOverrideAddonDefaults(t *testing.T) {
+	c := &config.Cluster{}
+	c.Spec.Platform.MetalLB = config.MetalLB{Enabled: true, Range: "10.0.0.200-10.0.0.201", Values: map[string]any{"frrk8s": map[string]any{"enabled": true}, "speaker": map[string]any{"logLevel": "debug"}}}
+	v := tofu.Vars(c, "/x/kubeconfig")["metallb"].(tofu.MetallbVars).Values
+	if v["frrk8s"].(map[string]any)["enabled"] != true {
+		t.Errorf("user value must win: %v", v["frrk8s"])
+	}
+	sp := v["speaker"].(map[string]any)
+	if sp["logLevel"] != "debug" || sp["frr"].(map[string]any)["enabled"] != false || sp["resources"] == nil {
+		t.Errorf("sibling defaults must survive an override: %v", sp)
+	}
+	plain := tofu.Vars(&config.Cluster{}, "/x/kubeconfig")["metallb"].(tofu.MetallbVars).Values
+	if plain["frrk8s"].(map[string]any)["enabled"] != false {
+		t.Error("defaults were mutated by the merge")
 	}
 }

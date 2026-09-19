@@ -182,6 +182,22 @@ Verified in maintenance mode on Talos 1.14 (arm64 VM): `Version`, `Memory`, `CPU
 `hardware.SystemInformation`, `network.LinkStatus`, `network.AddressStatus`,
 `runtime.MachineStatus` all answer.
 
+**Machine kinds.** A row's *kind* is derived, never stored (`store.Machine.Kind()`),
+and travels with every machine over REST and the socket (`kind`, `talos`). The rules
+are ordered: `cluster != ""` → **member**; `labhost != nil` (any lab-host state) →
+**labhost**; state `maintenance` → **maintenance**; state `configured` → **configured**
+(Talos with a config Kubit did not apply; no credentials to query it); armed with Boot
+into Talos, or state `booting`/`installing` → **booting**; everything else (`amt`,
+`off`, `unknown`) → **unbooted**. `talos` is true only for member and maintenance — the
+kinds whose Talos API Kubit can talk to. A lab VM (`host` set) is a modifier, not a
+kind: it is unbooted while off, booting, then maintenance or member like any machine.
+The node endpoints (`/nodes/{ip}/inventory|services|logs|reboot`) answer 409 with one
+line for the other kinds instead of dialing :50000, and 502 when the port is closed;
+gRPC failures are shortened to their message and code. The watcher probes only
+maintenance/configured rows (Talos) and unbooted rows (AMT port); the PXE decision boots
+a lab host from its own disk in every lab-host state, so a stale arm flag can never
+re-image a host mid-setup.
+
 ## Cluster lifecycle
 
 `kubit cluster create -f cluster.yaml` runs: preflight (every node in maintenance mode,
@@ -238,6 +254,32 @@ Findings baked into the templates:
   `controlPlane.allowScheduling` is true.
 - metrics-server runs with `--kubelet-insecure-tls` (Talos kubelets serve self-signed
   certs unless a serving-cert approver is installed).
+- **MetalLB is layer-2 only.** Chart 0.16 enables FRR-K8s (a BGP daemonset, five
+  containers per node) by default; Kubit only configures an `L2Advertisement`, so
+  `internal/tofu/render.go` merges `frrk8s.enabled=false` and `speaker.frr.enabled=false`
+  under the user's `platform.metallb.values`. A 3-node cluster runs 16 pods, not 20.
+- **Every add-on carries resource requests** (MetalLB 20m/64Mi, ingress-nginx
+  50m/128Mi single replica, metrics-server 20m/48Mi) so the pods are Burstable: on a
+  starved node Talos's OOM controller evicts BestEffort work first instead of killing
+  the platform in a loop, and a node that cannot fit them leaves them Pending, which
+  the service health reports. User `values` override any default key by key.
+- `helm_release` is `atomic`: a failed install uninstalls itself, so a transient API
+  blip never leaves a release that blocks the next apply with "cannot re-use a name".
+- **Longhorn** (`platform.longhorn`, chart 1.10.1) is the storage add-on: replicated
+  block volumes, the default StorageClass, snapshots, backups to S3. It runs on the
+  nodes' **data disks** only — Kubit labels every node at machine-config time
+  (`node.longhorn.io/create-default-disk: config` plus a
+  `node.longhorn.io/default-disks-config` annotation listing `/var/mnt/data-N`, or
+  `false` on nodes without data disks) and the chart runs with
+  `createDefaultDiskLabeledNodes`, so replicas never land on the system disk. Enabling
+  it adds the `siderolabs/iscsi-tools` and `siderolabs/util-linux-tools` extensions
+  to the cluster schematic (picked up by new nodes and the next Talos upgrade), and
+  refuses a cluster where no node has a data disk. Default replica count is 3 or the
+  number of data-disk nodes. `longhorn-system` is created `privileged` like
+  `metallb-system`. In multi-document Talos configs the kubelet document forbids
+  `.machine.kubelet.extraMounts`, which is why the classic `/var/lib/longhorn` bind
+  mount is not used and user volumes carry the data instead. **Unverified on a
+  cluster** (`terraform validate` passes; node labelling is unit-tested).
 
 Per-add-on Helm values: `platform.<addon>.values` in cluster.yaml is passed as `values = [yamlencode(...)]` only when non-empty, so declaring nothing never triggers a Helm upgrade.
 
@@ -257,14 +299,58 @@ a no-op and the following `tofu plan` reports no changes.
 
 ## Web UI and API
 
-`kubit serve` (default `127.0.0.1:8080`; binding elsewhere requires a bearer token,
-generated at start or `KUBIT_TOKEN`) hosts the SPA and `/api/v1`:
+`kubit serve` (default `127.0.0.1:8080`) hosts the SPA and `/api/v1`. Who may call it:
+
+### Identity and roles
+
+- **Accounts** live in Kubit (`users`, `sessions` tables; bcrypt passwords, sessions
+  and API tokens stored as SHA-256). Three roles: **viewer** (reads everything except
+  credentials: kubeconfig, talosconfig, export), **operator** (viewer + every
+  operation: create, add, upgrade, power, lab hosts), **admin** (operator + accounts,
+  Kubit settings, backup/restore/key). Enforced per request by method and path in
+  `internal/api/auth.go` (`requiredRole`); a refusal is `403 {code: forbidden}`.
+- **Fresh install:** while no account exists, a loopback caller is the implicit
+  administrator (`via: loopback`), so the UI works before anyone signs up; Settings →
+  Accounts says so and *Add account* creates the first administrator (`POST
+  auth/setup`, once). From then on every request needs a session or token, including
+  from localhost. A non-loopback bind without accounts still needs the start-up bearer
+  token (`--token` / `KUBIT_TOKEN`), which stays an administrator credential for
+  automation.
+- **Sign-in:** `POST auth/login {name, password}` sets an HttpOnly session cookie
+  (30 days); `POST auth/logout` revokes it; `GET auth/me` says who you are, whether
+  setup is pending and which SSO is offered. Disabling an account ends its sessions
+  and tokens at once; the last enabled administrator cannot be demoted, disabled or
+  deleted.
+- **API tokens:** Settings → Accounts → *Tokens* issues `kbt_…` bearer tokens with the
+  account's role and an optional expiry, shown once. Give one to the PXE service
+  (`KUBIT_TOKEN`) once accounts exist; `/api/v1/labhost/*` and `/api/v1/pxe/decide`
+  stay open because the Debian installer and the PXE process call them without
+  credentials (they carry the SSH public key and boot decisions, nothing secret).
+- **Single sign-on:** Settings → *Single sign-on* takes an OpenID Connect issuer,
+  client ID/secret (sealed), the username and groups claims, and which provider groups
+  map to admin / operator / viewer (plus a default role for everyone else, or no
+  access). `GET auth/oidc/start` runs the authorization-code flow with PKCE; the
+  callback verifies the ID token, creates or updates the account (`source: oidc`, no
+  password) and re-applies the role from the groups on every sign-in. Tested against
+  an in-process provider (`internal/api/oidc_test.go`).
+- **Audit:** every entry records the actor (`audit_log.actor`), shown as *Who* on the
+  audit log; sign-ins, failures and refusals are entries too.
+- **Cluster SSO for kubectl:** `spec.auth.oidc` (cluster Settings → form: SSO issuer,
+  client ID, claims, admin group) renders an `AuthenticationConfiguration` document
+  for the API server (`KubeAuthenticationConfig`, one JWT authenticator; users and
+  groups prefixed `oidc:`) on control planes, and the platform layer binds
+  `oidc:<adminGroup>` to `cluster-admin` (`oidc.tf`). Applies on *Apply node configs*
+  and *Apply platform*. People then use kubectl with an OIDC kubeconfig (kubelogin)
+  instead of the shared admin credential.
+
+### Endpoints
 
 - `GET clusters`, `GET clusters/{n}`, `GET clusters/{n}/status|yaml|kubeconfig`
 - `POST clusters` `{yaml, skipPlatform}` → operation; `POST clusters/{n}/apply|platform/plan|platform/apply|upgrade/talos|upgrade/kubernetes|export|nodes`, `DELETE clusters/{n}[/nodes/{host}]`
 - `GET nodes`, `POST discover {targets}`, `GET nodes/{ip}/services|logs?service=&follow=`, `POST nodes/{ip}/reboot`
 - `POST config/validate` (raw YAML → defaulted YAML), `POST config/draft {name, ips}` (topology recommendation → cluster.yaml)
 - `GET operations[/{id}]`, `GET events` (SSE: every operation event and status change)
+- `GET auth/me`, `POST auth/setup|login|logout`, `GET auth/oidc/start|callback`; `GET/POST users`, `PUT/DELETE users/{name}`, `GET/POST users/{name}/tokens`, `DELETE users/{name}/tokens/{token}` (admin)
 
 Long-running calls return `{operationId}` immediately; the operation's events are
 persisted in the `operations` table and streamed. Operations are serialised per cluster.
@@ -316,10 +402,20 @@ previous status into events with a severity: `talos.unreachable`/`talos.back`,
 `lb.assigned`/`lb.lost`, `node.removed`. A recovery event acknowledges the alert it
 clears. The first observation after a daemon start reports only what is currently
 wrong, so restarts do not replay history, and an alert that is already open for the
-same object and kind is never raised twice. `GET /clusters/{name}/status` serves the
+same object and kind is never raised twice. `node.memory-small` (warn) fires for a
+registered node with under 768 MiB allocatable — a 1 GiB VM keeps ~450 MiB after Talos
+and the kubelet, not enough for the platform add-ons — and clears with `node.memory-ok`
+once it is resized. `GET /clusters/{name}/status` serves the
 watcher's latest result; `?fresh=true` forces a live query; it carries `observedAt`,
 `lastSnapshotAt` and `snapshotInterval` so the Overview's *Observer* card shows how
 far behind the watcher is.
+
+**Health verdict.** Every tick on a ready cluster also sets `status.health`:
+`down` when the API, etcd or a registered node is unreachable or NotReady, `degraded`
+when unacknowledged warn/critical alerts are open (`status.openAlerts`), else
+`healthy`. The cluster's lifecycle `state` stays `ready`; the console's cluster pill
+shows `degraded` / `down` over it, so a cluster whose add-ons crash-loop is never
+presented as fine.
 
 ### Service health (what runs in the cluster)
 
@@ -331,17 +427,25 @@ API server already knows all of this. Alerts carry the object as
 
 | alert | when | clears with |
 |---|---|---|
-| `workload.unavailable` | Deployment/DaemonSet/StatefulSet ready < desired, ≥ 5 min old, on two consecutive collections | `workload.available` |
-| `pod.crashloop` | container waiting in `CrashLoopBackOff`, or ≥ 3 restarts within 10 min | `pod.recovered` |
+| `workload.unavailable` | Deployment/DaemonSet/StatefulSet ready < desired, ≥ 5 min old, on two consecutive collections | `workload.available`, after three consecutive healthy collections |
+| `pod.crashloop` | container waiting in `CrashLoopBackOff`, or ≥ 3 restarts within 10 min | `pod.recovered`, after 10 quiet minutes |
 | `pvc.pending` | claim Pending for ≥ 5 min | `pvc.bound` |
-| `service.no-endpoints` | selector service with no ready endpoint for ≥ 5 min | `service.endpoints` |
-| `ingress.no-address` | MetalLB on, Ingress without an address for ≥ 5 min | `ingress.address` |
+| `service.no-endpoints` | selector service ≥ 5 min old with no ready endpoint on two consecutive collections | `service.endpoints`, after three consecutive healthy collections |
+| `ingress.no-address` | MetalLB on, Ingress ≥ 5 min old without an address on two consecutive collections | `ingress.address`, after three consecutive healthy collections |
 | `lb.pool-exhausted` (critical) | every MetalLB pool address allocated | `lb.pool-free` |
+
+Raising takes two bad collections and clearing three good ones (`raiseAfter`,
+`clearAfter`), so a pod restarting every minute is one open alert, not a warn/recovery
+pair, toast and webhook per minute.
 
 Kubit settings → *Ignore namespaces* silences these for e.g. `dev`/`ci`. The
 Overview alert rows link to the object; Workloads, Network and Storage rows carry a
 pill while an alert is open. `GET /clusters/{name}/service-health` returns the latest
-collection and the open alerts.
+collection and the open alerts. The Overview's **Workloads** card (pod count, unavailable
+controllers, failing pods) opens Workloads on the Pods view (`?view=pods`), which has a
+node filter (`&node=<hostname>`, also reached from the Nodes tab's pod count) and links
+each pod's node to its node page. Workloads stays read-only: exec, edit and delete belong
+to kubectl/k9s/Headlamp with the kubeconfig from Settings → Export.
 
 ## etcd snapshots and disaster recovery
 
@@ -414,8 +518,20 @@ heartbeat that stops arriving means the daemon is down — the dead-man's switch
 - **Alerts carry runbooks**: every warn/critical kind has a *What to do* panel
   (`web/src/runbooks.ts`) — cause in one line, numbered steps, each linked to the
   place in Kubit where the action lives (node Actions tab, Backups, Add-ons, settings).
-- **Navigation**: one line per cluster in the sidebar; the cluster's tabs live in its
-  header. `⌘K`/`Ctrl+K` jumps to any cluster page, node or Kubit page; `a` toggles
+- **No replayed popups**: a fresh page load asks the daemon for the head of the message
+  ring only, and anything replayed on a reconnect updates state without a toast; a
+  health toast needs a live, unacknowledged event.
+- **Machine pages render by kind**: a lab host opens on its Debian facts, capacity and
+  host operations (no Talos probes); a lab VM links to its host and carries the host's
+  start/stop/re-provision controls; an unbooted or configured machine shows what it is
+  waiting for; Services, Logs and Kubernetes tabs appear only where they can answer.
+  Inventory pills read the kind (`lab host · ready`, `not running Talos · off`,
+  `boot→Debian` while a Debian install is armed) and the Cluster column links a VM to
+  its host. Adopt, Retire, Make lab host and Boot into Talos are offered only where the
+  daemon would accept them (`web/src/machine.tsx`).
+- **Navigation**: one line per cluster in the sidebar, and one per lab host (state
+  pill, VM count on hover) as soon as one exists; the cluster's tabs live in its
+  header. `⌘K`/`Ctrl+K` jumps to any cluster page, machine or Kubit page; `a` toggles
   the Activity drawer; `/` focuses a table filter; `?` lists shortcuts. Theme follows
   the OS with a toggle in the status bar (remembered, applied before first paint).
 - **Overview shows only what matters**: unacknowledged alerts with runbooks, alert
@@ -447,16 +563,65 @@ step as an API operation visible in Activity, asserting with `kubectl` after eac
 `--teardown` forgets the cluster and, with `--vm-ids`, recreates the hack/vm VMs so
 the run repeats cleanly. It is the acceptance script for the hardware run.
 
-## Remote management (Intel AMT) and member-aware PXE
+## CI and releases
 
-Machines with Intel AMT (vPro EliteDesks and the like) can be managed out-of-band from
-the machine page → *Remote management* (or Inventory → *Add via AMT* before Talos ever
-booted: AMT reports MAC, model and serial): **Power on / off / hard reset** and **Boot
-into Talos** — AMT forces one network boot and Kubit's PXE server hands that MAC Talos
-in maintenance mode. Credentials are sealed per machine (`machines.oob`); the backend is
-`internal/oob` over WS-Management (`github.com/device-management-toolkit/go-wsman-messages`,
-digest auth, 16992/16993). Setup on the box: enable AMT in the BIOS, set the MEBx
-password (Ctrl+P), allow network access. The `machine.power` operation shows in Activity.
+`.github/workflows/ci.yml` runs on every push and pull request: `npm ci`, `tsc`,
+`vite build`, `gofmt -l`, `go vet`, `go test -race ./...`, `go build`, then a smoke
+start of the daemon (fresh `KUBIT_HOME`, `KUBIT_MASTER_KEY` from `/dev/urandom`, `GET
+auth/me` reports first-run setup) and uploads the Linux binary.
+`release.yml` builds `linux/{amd64,arm64}` and `darwin/{arm64,amd64}` on a `v*` tag
+(`CGO_ENABLED=0`, trimmed, version from the tag), writes `SHA256SUMS`, signs every
+file keyless with cosign (Sigstore, GitHub OIDC identity; verify with `cosign
+verify-blob --certificate kubit-linux-amd64.pem --signature kubit-linux-amd64.sig
+--certificate-identity-regexp github.com/<owner>/kubit --certificate-oidc-issuer
+https://token.actions.githubusercontent.com kubit-linux-amd64`) and publishes a
+GitHub release with generated notes.
+
+`e2e.yml` (nightly and on demand) is the VM lab on a GitHub-hosted Linux runner:
+`hack/qemu/lab.sh` puts four Talos amd64 VMs (2 vCPU, 2.5 GiB, QEMU/KVM, OVMF) on a
+bridge `kubit0` at 192.168.105.1/24 with dnsmasq DHCP and NAT, waits for the Talos API
+on each, starts the daemon, and runs `hack/e2e.sh 192.168.105.0/24 --with-restore`.
+Console, daemon and DHCP logs are uploaded on every outcome. The same script works on
+any Linux box with KVM (`lab.sh net up`, `create`, `start`, `wait`, `ip`, `stop`,
+`destroy`; `net down` removes the bridge and the masquerade rule). **The Linux lab and
+the e2e workflow are unverified** — written on macOS, where hack/vm (vfkit) is the
+harness; the first run on a runner is the proof.
+
+## Remote management (Intel AMT, Redfish BMCs) and member-aware PXE
+
+Machines with a management engine can be managed out-of-band from the machine page →
+*Remote management* (or Inventory → *Add by remote management* before Talos ever
+booted: the engine reports MAC, model and serial): **Power on / off / hard reset** and
+**Boot into Talos** — the engine forces one network boot and Kubit's PXE server hands
+that MAC Talos in maintenance mode (refused for cluster members, lab hosts and lab VMs;
+the button says why). Credentials are sealed per machine (`machines.oob`, `type: amt |
+redfish`). Two backends in `internal/oob`:
+
+- **Intel AMT** (vPro desktops, NUCs) over WS-Management
+  (`github.com/device-management-toolkit/go-wsman-messages`, digest auth, 16992/16993).
+  AMT shares the host's wired NIC and address. Setup on the box: enable AMT in the
+  BIOS, set the MEBx password (Ctrl+P), allow network access.
+- **Redfish** (Dell iDRAC, HPE iLO, Lenovo XCC, Supermicro, OpenBMC — any DMTF
+  conformant BMC) over plain HTTPS + basic auth on the BMC's own address, stdlib
+  client, self-signed certificates accepted. `Probe` reads the service root, the first
+  `ComputerSystem` (manufacturer, model, serial, UUID, power state, CPU count, memory),
+  the first host NIC with a MAC, and every drive under `Storage` (model, size,
+  protocol, media — no device path until Talos boots; the Hardware tab says so).
+  `Power` posts `ComputerSystem.Reset` with `On / ForceOff / ForceRestart / PowerCycle`,
+  falling back to what the BMC's `ResetType@Redfish.AllowableValues` lists
+  (`GracefulRestart` when `ForceRestart` is absent); *Boot into Talos* PATCHes
+  `Boot.BootSourceOverrideEnabled=Once, BootSourceOverrideTarget=Pxe` and refuses up
+  front when the BMC does not list `Pxe`. Errors carry the BMC's
+  `@Message.ExtendedInfo` text. Tested against an in-process fake BMC
+  (`internal/oob/redfish_test.go`); **unverified on a real BMC**.
+
+Discovery sweeps the addresses that did not answer as Talos: port 16992 → AMT, else an
+unauthenticated `GET /redfish/v1` → BMC. With the default credentials from Kubit
+settings (*Default AMT user/password*, *Default BMC user/password*, sealed) the engine
+is asked who it manages and the machine row is created with its MAC; a BMC without
+credentials is only logged, since unlike AMT it has no ARP shortcut to the host's MAC.
+Include the BMC management subnet in the scan. The `machine.power` operation shows in
+Activity; every request and reply is mirrored into its log as `amt:` / `redfish:` lines.
 *Boot into Talos* arms one network boot the way Intel's own console does (verified on
 an EliteDesk 800 G3, AMT 11): clear the boot source, write `AMT_BootSettingData` back
 as the firmware reported it with IDE-R/SOL and the other one-shot options off (a
@@ -492,8 +657,10 @@ A machine with AMT can become a **lab host**: wizard → Machines → *Make lab 
 the machine page). Kubit arms a network boot (`provision_kind = labhost`, the PXE
 process serves the Debian 13 netboot installer with a preseed from
 `GET /api/v1/labhost/preseed`), resets the box via AMT, and the unattended install
-puts Debian + `qemu-kvm` + `libvirt` on the largest disk with `br0` bridged onto the
-LAN and Kubit's SSH key (minted once, sealed in settings) for user `kubit`. The
+puts Debian + `qemu-kvm` + `libvirt` on the install disk chosen in the dialog (a
+select over the inventory's writable disks, largest preselected, when a Talos scan has
+seen the machine; with one or no known disk the dialog states what will happen and the
+installer takes the largest non-removable disk) with `br0` bridged onto the LAN and Kubit's SSH key (minted once, sealed in settings) for user `kubit`. The
 `labhost.provision` operation waits for SSH, verifies `/dev/kvm` and the bridge,
 records capacity and fetches the Talos kernel/initramfs onto the host
 (`/var/lib/kubit/boot`). Then **Add VMs…** (count, vCPU, RAM, disk, optional data
@@ -508,8 +675,12 @@ VM, Kubit flips it to boot from its disk before Talos's post-install reboot. *Ma
 control planes — so one click runs install → VMs → `cluster.create` (`labhost.cluster`
 operation; hostnames `<name>-cp-NN` / `<name>-worker-NN`, no VIP for a single control
 plane) and the operator comes back to a running cluster. The machine page's *Lab
-host* tab has the VM table (start/stop/re-provision/delete/resize), *Add VMs* and
-*Release*. Lint reports an all-VMs-on-one-host control plane as `lab-cluster` (info).
+host* tab has the VM table (start/stop/re-provision/delete/resize); *Add VMs* and
+*Release* live on its Actions tab. Release deletes the VMs, drops the role and leaves
+the machine `unknown` (Debian stays on disk); it is refused while installing, in setup
+or updating, and Retire is refused until the host is released (a VM row is deleted
+from its host, not retired). Lint reports an all-VMs-on-one-host control plane as
+`lab-cluster` (info).
 
 ### Watching an install, and installing without AMT
 
@@ -542,9 +713,14 @@ the matching UEFI loader (`OVMF_CODE_4M` / `AAVMF_CODE`) so disk boot works on b
 arches, and grub also lands on the removable EFI path. `KUBIT_LAB_ALLOW_TCG=1` lets
 `setup` continue without `/dev/kvm` (VMs under software emulation) — dev only.
 
-**Sizing.** A plan that creates VMs and a cluster gives its control planes at least
-2 GiB (`minControlPlaneMiB`) whatever the per-VM size says, and both the plan path
-and *Add VMs* refuse a set that exceeds host memory minus the 2 GiB reserve — an
+**Sizing.** Every VM gets at least 2 GiB (`minVMMiB`; the dialog and the API both
+refuse less): a 1 GiB Talos guest keeps ~450 MiB for pods once Talos and the kubelet
+have theirs, and the platform add-ons alone need more — that shape OOM-churned MetalLB
+on the EliteDesk and cost the host a core per worker in reclaim. The *Make lab host*
+and *Add VMs* dialogs propose what fits (`planFor`): as many 3 GiB VMs as the host
+memory minus the 2 GiB reserve allows, else fewer, larger ones (a 7.7 GiB host gets one
+control plane and one worker at 2816 MiB), the first being the control plane. Both the
+plan path and *Add VMs* refuse a set that exceeds host memory minus the 2 GiB reserve — an
 overcommitted host does not fail loudly, its guests swap until kube-scheduler dies
 and the cluster sits at NotReady (found in the harness; the memory alert fired, the
 refusal is what prevents it). While a manual install waits for its machine, the Lab
@@ -654,9 +830,13 @@ cert-manager add-ons.
 - [x] M11 — Off-site & dead-man's switch: `internal/offsite` (directory and S3 targets, atomic dir writes, probe, retention), snapshot copy step + `offsite.failed`/`offsite.ok`, daily sealed Kubit backup upload (`kubit.backup` operation), settings section with test/copy-now/status, Backups tab off-site column, heartbeat summary incl. updates available, Overview update notice; also: sidebar tree and cluster Operations tab removed (Activity has a cluster filter), Overview events limited to alerts + recoveries. Verified: dir target round trip, snapshot copied, three backups pruned to two, heartbeat delivered to the webhook. Not exercised: a real S3 endpoint (minio-go; probe/list/put paths are straightforward but untested against a live bucket)
 - [x] M12 — Product polish: VM-aware design (bare metal first, `control-planes-on-vms`), machine-centric wizard table (model, VM/metal, disk transport, NICs), runbooks on every alert kind, getting-started page with ISO downloads, ⌘K palette, shortcut sheet, theme toggle, loading placeholders, stale alerts reconciled after a daemon restart, `hack/e2e.sh`. Sidebar tree and cluster Operations tab removed; Overview limited to alerts + recoveries
 - [x] M13 — Live everywhere: store change notifier, WebSocket transport with replay/resync, typed live state in the console (clusters, machines, snapshots, audit, settings, acks/resolves), external-writer detection, connection banner. Verified: sidebar pill provisioning → ready without reload, ack in one client clears in another, CLI `discover` and API retire reflected live, daemon stop → banner → reconnect + resync. Also found by the e2e script and fixed: an etcd restore left workers' pods (kube-proxy, MetalLB) with dead watches — restore now recreates every pod on workers
-- [~] M14 — Out-of-band: Intel AMT backend (probe, power on/off/reset/cycle, one-shot PXE boot), per-machine remote-management config sealed at rest, *Add via AMT* in Inventory, `machine.power` operations; member-aware PXE (no offer + iPXE exit for members, `/pxe/decide`, enrollment open/closed, one-shot arming cleared on maintenance sighting; unit-tested). **AMT itself is unverified** — no vPro hardware here; the WS-Man calls follow Intel's reference client and need one run against an EliteDesk
+- [~] M14 — Out-of-band: Intel AMT and Redfish backends (probe, power on/off/reset/cycle, one-shot PXE boot; Redfish also reports CPUs, memory and drives before Talos), per-machine remote-management config sealed at rest with a type selector, *Add by remote management* in Inventory, default BMC credentials in settings, discovery finds Redfish roots, `machine.power` operations; member-aware PXE (no offer + iPXE exit for members, `/pxe/decide`, enrollment open/closed, one-shot arming cleared on maintenance sighting; unit-tested). **Redfish is unverified on a real BMC** (fake-BMC tests only); AMT verified on an EliteDesk 800 G3
 - [~] M15 — Lab hosts: `internal/labhost` (preseed, SSH client, virsh domain lifecycle, direct kernel boot), PXE Debian profile + preseed proxy, lab-host API/operations, watcher refresh, install-time disk-boot switch, wizard/machine-page/Inventory UI. **Unverified on hardware** (needs the EliteDesk): the Debian install and every virsh call; unit-tested rendering only
 - [~] M16 — Lab host operations: host metrics (SSH tick → `samples` under `labhost:<mac>`, live `hostSample`), disk/memory/unreachable/updates alerts with runbooks and hysteresis (unit-tested), hourly apt check, unattended security upgrades in the preseed, `labhost.update` / `labhost.reboot` operations (VMs parked, autostart, cluster Ready wait, maintenance-window gate), *Lab host* tab with utilisation cards, System panel and confirm dialogs, Inventory alert pill, heartbeat line. **Verified with a seeded host only** (`hack/seedlab`): parsing, thresholds, UI, the failure path of the operation; the real upgrade/reboot path needs the EliteDesk
 - [~] M17 — Disk roles: `dataDisks` per node → Talos `UserVolumeConfig` whole-disk xfs volumes at `/var/mnt/data-N` (generation and validation unit-tested), wizard Design step and add-node dialog with per-disk checkboxes, node page mounts, lab VMs with an optional second qcow2 (`vdb`) that the lab plan claims automatically, `vda` pinned as the install disk for VMs. **Unverified on a live node**: the volume actually formatting and mounting needs a machine with a spare disk
 - [~] M17 — Lab install observable: installer progress reports, phased waits with diagnoses, PXE log mirrored into operations, manual (no-AMT) mode, `kubit pxe --http-only`/`--ip`, `POST /machines`, per-arch preseed packages, UEFI loaders in domain XML, `hack/lab/lab.sh` vfkit harness (EFI via systemd-boot volume, nested virt). routed VM network (`kubit` libvirt network + masquerade unit). **Verified in the VM harness**: EFI install via systemd-boot volume (3 min), every progress stage, SSH, setup with nested KVM, four Talos VMs to maintenance mode on the routed network, cluster `lab` Ready with MetalLB/ingress in 9 minutes, and M16's *Update host* (VMs parked, reboot, autostart, 4/4 Ready again in 2 min). **Verified on the EliteDesk (2026-09-16)**: AMT one-shot PXE, every phase with the PXE log mirrored, Debian installed and SSH-ready in 7 min, three bridged Talos VMs to maintenance mode; the VM plan has to fit the real host (7.7 GiB RAM). Bridged VMs get no address from libvirt (no leases, no ARP until the host talks to them), so the VM wait sweeps the discovery subnets and matches Talos nodes by MAC. See NOTES/backlog for what was found
-- [ ] M7 — tests, CI, packaging, docs
+- [x] M18 — Machine kinds: `Machine.Kind()` derived from stored fields and sent with every row; node endpoints, PXE decision, watcher and the provision/release/retire/power handlers refuse by kind with one-line reasons; machine page, Inventory, wizard, Add node, palette and Remote management render by kind (`web/src/machine.tsx`). Lab-host install disk selectable in the dialog and pinned in the preseed. Unit-tested (kind table, endpoint refusals, closed port, PXE decision, migration) and checked in the console against a seeded set of every kind; the real lab host page opens on its Debian facts
+- [x] M18 — Identity: local accounts with viewer/operator/admin roles enforced per route, sessions and API tokens, first-admin setup, OpenID Connect sign-in with group→role mapping, audit actor, cluster `spec.auth.oidc` → API server `AuthenticationConfiguration` + admin group binding. Unit-tested end to end (fake IdP); **unverified against a real provider**
+- [~] M19 — Storage: Longhorn platform add-on on data disks (node labelling in the generator, privileged namespace, replica default from the data-disk node count, wizard/Add-ons/Storage-tab hooks). **Unverified on a cluster**
+- [x] M19 — Honest health and right-sized labs: `hub.since(0)` replays nothing and replayed messages never toast; service alerts raise after two and clear after three collections; `status.health` (`healthy` / `degraded` / `down`) drives the cluster pill; `node.memory-small` alert with runbook; 2 GiB floor for every lab VM with host-fitting defaults; `worker-undersized` lint and preflight floor when add-ons are on; MetalLB layer-2 only with resource requests on every add-on and `atomic` releases; 2 s host CPU sample. Unit-tested (hub, tracker flap, Derive, lint, tofu golden, validate); the EliteDesk lab reshaped to 1 CP + 1 worker at 2816 MiB and re-applied without FRR
+- [~] M7 — tests, CI, packaging: GitHub Actions CI (web build, gofmt/vet/race tests, daemon smoke), signed multi-platform releases on tags, nightly QEMU/KVM e2e lab on a Linux runner (`hack/qemu/lab.sh` + `hack/e2e.sh`). **First runs pending**

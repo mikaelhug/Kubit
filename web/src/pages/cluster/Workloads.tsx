@@ -2,7 +2,7 @@ import { useEffect, useState } from 'preact/hooks'
 import { api, fmt, podLogsUrl, type PodEvent, type PodSummary, type Workload } from '../../api'
 import { DataTable, type Column } from '../../components/DataTable'
 import { AlertPill, Dialog, ErrorBox, Notice, Pill, Section, StatusDot } from '../../components/ui'
-import { nsFromQuery, openAlert, refreshKey } from '../../store'
+import { clusters, nsFromQuery, openAlert, refreshKey } from '../../store'
 import { Tabs } from '../../components/Tabs'
 import { LogStream } from '../../components/LogStream'
 import type { ClusterCtx } from './ClusterPage'
@@ -17,7 +17,10 @@ export function Workloads({ ctx }: { ctx: ClusterCtx }) {
   const [ns, setNs] = useState(nsFromQuery())
   const [error, setError] = useState<string | null>(null)
   const [pod, setPod] = useState<PodSummary | null>(null)
-  const [view, setView] = useState<'controllers' | 'pods'>('controllers')
+  const query = typeof location !== 'undefined' ? new URLSearchParams(location.search) : new URLSearchParams()
+  const [view, setView] = useState<'controllers' | 'pods'>(query.get('view') === 'pods' ? 'pods' : 'controllers')
+  const [nodeFilter, setNodeFilter] = useState(query.get('node') ?? '')
+  const nodeHref = (hostname: string) => { const mac = clusters.value.find((c) => c.name === name)?.spec.spec.nodes.find((n) => n.hostname === hostname)?.mac; return mac ? `/machines/${mac}` : `/clusters/${name}/nodes` }
   const load = () => {
     api.workloads(name).then(setWorkloads).catch((e) => setError(e.message)).finally(() => setLoaded(true))
     api.pods(name).then(setPods).catch((e) => setError(e.message))
@@ -25,7 +28,8 @@ export function Workloads({ ctx }: { ctx: ClusterCtx }) {
   useEffect(() => { load() }, [name, refreshKey(name, 'workloads')]) // eslint-disable-line
   const namespaces = [...new Set([...workloads.map((w) => w.namespace), ...pods.map((p) => p.namespace)])].sort()
   const wl = ns ? workloads.filter((w) => w.namespace === ns) : workloads
-  const pl = ns ? pods.filter((p) => p.namespace === ns) : pods
+  const nodeNames = [...new Set(pods.map((p) => p.node).filter((n): n is string => !!n))].sort()
+  const pl = pods.filter((p) => (!ns || p.namespace === ns) && (!nodeFilter || p.node === nodeFilter))
   const unhealthy = workloads.filter((w) => !w.available).length
 
   const wcols: Column<Workload>[] = [
@@ -42,7 +46,7 @@ export function Workloads({ ctx }: { ctx: ClusterCtx }) {
     { id: 'phase', header: 'Phase', sort: (p) => p.phase, cell: (p) => <Pill tone={phaseTone(p.phase)}>{p.phase}</Pill> },
     { id: 'ready', header: 'Ready', cell: (p) => <span class="num">{p.ready}</span> },
     { id: 'restarts', header: 'Restarts', align: 'right', sort: (p) => p.restarts, cell: (p) => <span class={p.restarts > 3 ? 'text-warn' : ''}>{p.restarts}</span> },
-    { id: 'node', header: 'Node', sort: (p) => p.node ?? '', cell: (p) => p.node ? <a href={`/clusters/${name}/nodes`} class="hover:underline">{p.node}</a> : '—' },
+    { id: 'node', header: 'Node', sort: (p) => p.node ?? '', cell: (p) => p.node ? <a href={nodeHref(p.node)} class="hover:underline">{p.node}</a> : '—' },
     { id: 'cpu', header: 'CPU', align: 'right', sort: (p) => p.usageCpuMilli ?? 0, cell: (p) => fmt.cores(p.usageCpuMilli ?? 0) },
     { id: 'mem', header: 'Memory', align: 'right', sort: (p) => p.usageMemBytes ?? 0, cell: (p) => fmt.bytes(p.usageMemBytes ?? 0) },
     { id: 'age', header: 'Age', cell: (p) => <span class="num text-muted">{p.age}</span> },
@@ -50,12 +54,21 @@ export function Workloads({ ctx }: { ctx: ClusterCtx }) {
 
   return (
     <>
-      <Section title="Workloads" help="Controllers and pods, all namespaces. Read-only."
+      <Section title="Workloads" help="Controllers and pods, all namespaces. Read-only; exec, edit and delete with kubectl or k9s."
         actions={
-          <select class="input !w-56" value={ns} onChange={(e) => setNs((e.target as HTMLSelectElement).value)}>
-            <option value="">All namespaces</option>
-            {namespaces.map((n) => <option key={n} value={n}>{n}</option>)}
-          </select>
+          <>
+            {view === 'pods' && (
+              <select class="input !w-48" value={nodeFilter} onChange={(e) => setNodeFilter((e.target as HTMLSelectElement).value)}>
+                <option value="">All nodes</option>
+                {nodeNames.map((n) => <option key={n} value={n}>{n}</option>)}
+              </select>
+            )}
+            <select class="input !w-56" value={ns} onChange={(e) => setNs((e.target as HTMLSelectElement).value)}>
+              <option value="">All namespaces</option>
+              {namespaces.map((n) => <option key={n} value={n}>{n}</option>)}
+            </select>
+            <a class="btn" href={`/api/v1/clusters/${name}/kubeconfig`} download="kubeconfig">Kubeconfig</a>
+          </>
         }>
         <ErrorBox error={error} />
         {unhealthy > 0 && <Notice tone="warn">{unhealthy} controller{unhealthy === 1 ? '' : 's'} below desired replicas.</Notice>}

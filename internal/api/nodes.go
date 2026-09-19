@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 
+	"github.com/mikael/kubit/internal/store"
 	"github.com/mikael/kubit/internal/talos"
 )
 
@@ -44,7 +45,7 @@ func (s *Server) handleNodeKubernetes(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, err)
 		return
 	}
-	if row.Cluster == "" || row.Hostname == "" {
+	if row.Kind() != store.KindMember || row.Hostname == "" {
 		http.Error(w, "node is not a cluster member", http.StatusNotFound)
 		return
 	}

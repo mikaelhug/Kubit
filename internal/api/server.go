@@ -3,7 +3,6 @@
 package api
 
 import (
-	"crypto/subtle"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -26,6 +25,8 @@ import (
 	"github.com/mikael/kubit/internal/tofu"
 	"github.com/mikael/kubit/internal/watch"
 	"github.com/mikael/kubit/web"
+	"google.golang.org/grpc/codes"
+	grpcstatus "google.golang.org/grpc/status"
 )
 
 type Server struct {
@@ -43,7 +44,7 @@ type Server struct {
 	versionsAt  time.Time
 	latestTalos string
 	crypto      *store.Crypto
-	// token, when set, is required as "Authorization: Bearer" on /api (non-loopback binds).
+	// token, when set, is an administrator's bearer token (non-loopback binds, automation).
 	token string
 }
 
@@ -99,24 +100,11 @@ func New(version string, m *cluster.Manager, token string, crypto *store.Crypto)
 	s.labhostRoutes()
 	s.labMaintRoutes()
 	s.certRoutes()
+	s.authRoutes()
 	s.mux.HandleFunc("GET /api/v1/clusters/{name}/maintenance", s.handleMaintenance)
 	dist, _ := fs.Sub(web.Dist, "dist")
 	r.Handle("/", spaHandler(http.FS(dist)))
 	return s
-}
-
-func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	if s.token != "" && strings.HasPrefix(r.URL.Path, "/api/") {
-		got := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
-		if got == "" {
-			got = r.URL.Query().Get("token") // the browser WebSocket cannot set headers
-		}
-		if subtle.ConstantTimeCompare([]byte(got), []byte(s.token)) != 1 {
-			http.Error(w, "unauthorized", http.StatusUnauthorized)
-			return
-		}
-	}
-	s.mux.ServeHTTP(w, r)
 }
 
 // Loopback reports whether addr binds only to a loopback interface, in which case no
@@ -578,13 +566,15 @@ func (s *Server) handleNodeRemove(w http.ResponseWriter, r *http.Request) {
 
 type nodeView struct {
 	store.NodeRow
+	Kind      store.Kind       `json:"kind"`
+	Talos     bool             `json:"talos"`
 	Inventory *talos.Inventory `json:"inventory,omitempty"`
 }
 
 // machineView is the machine row as the console may see it: hardware decoded, the
 // out-of-band password masked.
 func machineView(row store.NodeRow) nodeView {
-	v := nodeView{NodeRow: row}
+	v := nodeView{NodeRow: row, Kind: row.Kind(), Talos: row.Talos()}
 	if len(row.Hardware) > 2 {
 		var inv talos.Inventory
 		if json.Unmarshal(row.Hardware, &inv) == nil {
@@ -629,7 +619,7 @@ func (s *Server) handleDiscover(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	id, err := s.runOperation("", "discover", req, func(ctx contextT, sink clusterSink) (any, error) {
-		sink(clusterEvent{Time: time.Now(), Kind: "steps", Level: cluster.Info, Steps: cluster.Steps("scan", fmt.Sprintf("Probe %d addresses on port 50000", len(addrs)), "record", "Record inventory", "amt", "Probe the rest for Intel AMT")})
+		sink(clusterEvent{Time: time.Now(), Kind: "steps", Level: cluster.Info, Steps: cluster.Steps("scan", fmt.Sprintf("Probe %d addresses on port 50000", len(addrs)), "record", "Record inventory", "amt", "Probe the rest for Intel AMT or a Redfish BMC")})
 		sink(clusterEvent{Time: time.Now(), Kind: "step", Step: "scan", Status: cluster.StepRunning})
 		results := talos.Scan(ctx, addrs, 64, 2*time.Second)
 		if ctx.Err() != nil {
@@ -671,12 +661,21 @@ func (s *Server) nodeClient(r *http.Request) (*talos.Client, error) {
 	row, err := s.store.GetNode(r.Context(), ip)
 	if err != nil {
 		// Accept a MAC in place of the IP so machine pages can address by identity.
-		if m, merr := s.store.GetMachine(r.Context(), ip); merr == nil && m.IP != "" {
+		if m, merr := s.store.GetMachine(r.Context(), ip); merr == nil {
 			row, ip, err = m, m.IP, nil
 		}
 	}
 	if err != nil {
 		return nil, err
+	}
+	if row.IP == "" {
+		return nil, &statusError{http.StatusConflict, "No address is known for this machine."}
+	}
+	if !row.Talos() {
+		return nil, &statusError{http.StatusConflict, noTalosReason(row)}
+	}
+	if !talos.PortOpen(ip, 2*time.Second) {
+		return nil, &statusError{http.StatusBadGateway, fmt.Sprintf("Talos API at %s:%s is not answering.", ip, talos.Port)}
 	}
 	if row.Cluster == "" {
 		return talos.DialMaintenance(r.Context(), ip)
@@ -877,15 +876,44 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 	_ = json.NewEncoder(w).Encode(v)
 }
 
+type statusError struct {
+	Status int
+	Msg    string
+}
+
+func (e *statusError) Error() string { return e.Msg }
+
+func noTalosReason(m *store.Machine) string {
+	switch m.Kind() {
+	case store.KindLabHost:
+		return "This machine is a lab host running Debian; it has no Talos API."
+	case store.KindConfigured:
+		return "Runs Talos configured outside Kubit; no credentials to query it."
+	case store.KindBooting:
+		return "Waiting for Talos to come up."
+	default:
+		if m.IsLabVM() {
+			return "The VM is off; start it from its lab host."
+		}
+		return "Not running Talos right now."
+	}
+}
+
 func writeErr(w http.ResponseWriter, err error) {
+	var se *statusError
 	status := http.StatusInternalServerError
+	msg := err.Error()
 	switch {
+	case errors.As(err, &se):
+		status, msg = se.Status, se.Msg
 	case errors.Is(err, store.ErrNotFound):
 		status = http.StatusNotFound
-	case strings.Contains(err.Error(), "already exists"), strings.Contains(err.Error(), "must"), strings.Contains(err.Error(), "required"):
+	case grpcstatus.Code(err) != codes.Unknown && grpcstatus.Code(err) != codes.OK:
+		status, msg = talos.HTTPStatus(err), talos.ShortGRPC(err).Error()
+	case strings.Contains(msg, "already exists"), strings.Contains(msg, "must"), strings.Contains(msg, "required"):
 		status = http.StatusBadRequest
 	}
-	writeJSON(w, status, map[string]string{"error": err.Error()})
+	writeJSON(w, status, map[string]string{"error": msg})
 }
 
 // spaHandler serves static assets and falls back to index.html for client-side routes.
@@ -920,10 +948,11 @@ func rowFromScan(res talos.ScanResult) store.NodeRow {
 	return row
 }
 
-// discoverAMT sweeps the addresses that did not answer as Talos for the AMT port and
-// records what it finds as machines: with the default credentials from settings the
-// engine tells MAC, model and power state; without them the ARP table supplies the
-// MAC and the operator adds credentials on the machine page.
+// discoverAMT sweeps the addresses that did not answer as Talos for a management
+// engine (Intel AMT on 16992, else a Redfish BMC) and records what it finds as
+// machines: with the default credentials from settings the engine tells MAC, model
+// and power state; without them AMT's MAC comes from the ARP table and a BMC is only
+// logged, since a BMC names its host only when asked with credentials.
 func (s *Server) discoverAMT(ctx contextT, addrs []netip.Addr, talosResults []talos.ScanResult, sink clusterSink) int {
 	sink(clusterEvent{Time: time.Now(), Kind: "step", Step: "amt", Status: cluster.StepRunning})
 	isTalos := map[string]bool{}
@@ -940,13 +969,27 @@ func (s *Server) discoverAMT(ctx contextT, addrs []netip.Addr, talosResults []ta
 	}
 	v, _ := s.store.GetSettings(ctx)
 	found := 0
-	for _, r := range oob.Scan(ctx, rest, v.AMT, 2*time.Second) {
+	for _, r := range oob.Scan(ctx, rest, v.AMT, v.BMC, 2*time.Second) {
+		label := oob.Label(r.Type)
 		if r.MAC == "" {
-			sink(clusterEvent{Time: time.Now(), Kind: "log", Level: cluster.Warn, Step: "amt", Node: r.IP, Message: "answers on 16992 but its MAC is unknown (not on this segment?); add it via its address on the Inventory page"})
+			switch {
+			case r.Err != nil:
+				sink(clusterEvent{Time: time.Now(), Kind: "log", Level: cluster.Warn, Step: "amt", Node: r.IP, Message: label + " answers but the default credentials were refused: " + r.Err.Error()})
+			case r.Type == "redfish":
+				sink(clusterEvent{Time: time.Now(), Kind: "log", Level: cluster.Info, Step: "amt", Node: r.IP, Message: "Redfish BMC answers; set default BMC credentials under Kubit settings, or add it by address on the Inventory page"})
+			default:
+				sink(clusterEvent{Time: time.Now(), Kind: "log", Level: cluster.Warn, Step: "amt", Node: r.IP, Message: "answers on 16992 but its MAC is unknown (not on this segment?); add it via its address on the Inventory page"})
+			}
 			continue
 		}
-		row := store.NodeRow{IP: r.IP, MAC: r.MAC, Source: "amt", State: "amt"}
-		if existing, err := s.store.GetMachine(ctx, r.MAC); err == nil && existing.State != "" && existing.State != "amt" {
+		row := store.NodeRow{IP: r.IP, MAC: r.MAC, Source: r.Type, State: "amt"}
+		if r.Type == "redfish" {
+			// A BMC has its own address; the host's is unknown until it boots.
+			row.IP = ""
+		}
+		existing, err := s.store.GetMachine(ctx, r.MAC)
+		known := err == nil && existing.State != "" && existing.State != "amt"
+		if known {
 			// A known machine that is off or in another OS right now: the engine's
 			// address goes to its remote-management config below, the row keeps the
 			// address its OS answers on (AMT usually holds a lease of its own).
@@ -956,9 +999,11 @@ func (s *Server) discoverAMT(ctx contextT, addrs []netip.Addr, talosResults []ta
 			}
 		}
 		if r.Info != nil {
-			row.Serial = r.Info.Serial
-			if r.Info.Model != "" {
-				row.Hardware, _ = json.Marshal(map[string]any{"manufacturer": r.Info.Manufacturer, "product": r.Info.Model, "serial": r.Info.Serial, "disks": []any{}, "links": []any{}})
+			row.Serial, row.UUID = r.Info.Serial, r.Info.UUID
+			// Talos' inventory, once recorded, is better than the engine's; the
+			// stand-in only fills an empty row.
+			if r.Info.Model != "" && (err != nil || len(existing.Hardware) <= 2) {
+				row.Hardware = oobHardware(*r.Info)
 			}
 		}
 		if err := s.store.UpsertNode(ctx, row); err != nil {
@@ -966,19 +1011,22 @@ func (s *Server) discoverAMT(ctx contextT, addrs []netip.Addr, talosResults []ta
 		}
 		if r.Info != nil {
 			c := v.AMT
-			c.Type, c.Host = "amt", r.IP
+			if r.Type == "redfish" {
+				c = v.BMC
+			}
+			c.Type, c.Host = r.Type, r.IP
 			_ = s.store.SetMachineOOB(ctx, r.MAC, &c)
-			sink(clusterEvent{Time: time.Now(), Kind: "log", Level: cluster.Info, Step: "amt", Node: r.IP, Message: fmt.Sprintf("Intel AMT %s, %s, power %s", r.Info.Version, strings.TrimSpace(r.Info.Manufacturer+" "+r.Info.Model), r.Info.Power)})
+			sink(clusterEvent{Time: time.Now(), Kind: "log", Level: cluster.Info, Step: "amt", Node: r.IP, Message: fmt.Sprintf("%s %s, %s, power %s", label, r.Info.Version, strings.TrimSpace(r.Info.Manufacturer+" "+r.Info.Model), r.Info.Power)})
 		} else if r.Err != nil {
-			sink(clusterEvent{Time: time.Now(), Kind: "log", Level: cluster.Warn, Step: "amt", Node: r.IP, Message: "Intel AMT answers but the default credentials were refused: " + r.Err.Error()})
+			sink(clusterEvent{Time: time.Now(), Kind: "log", Level: cluster.Warn, Step: "amt", Node: r.IP, Message: label + " answers but the default credentials were refused: " + r.Err.Error()})
 		} else {
-			sink(clusterEvent{Time: time.Now(), Kind: "log", Level: cluster.Info, Step: "amt", Node: r.IP, Message: "Intel AMT answers; set default AMT credentials under Kubit settings to identify it"})
+			sink(clusterEvent{Time: time.Now(), Kind: "log", Level: cluster.Info, Step: "amt", Node: r.IP, Message: label + " answers; set default credentials under Kubit settings to identify it"})
 		}
 		found++
 	}
 	sink(clusterEvent{Time: time.Now(), Kind: "step", Step: "amt", Status: cluster.StepDone})
 	if found > 0 {
-		sink(clusterEvent{Time: time.Now(), Kind: "log", Level: cluster.Done, Step: "amt", Message: fmt.Sprintf("%d machine(s) reachable via Intel AMT", found)})
+		sink(clusterEvent{Time: time.Now(), Kind: "log", Level: cluster.Done, Step: "amt", Message: fmt.Sprintf("%d machine(s) reachable out of band", found)})
 	}
 	return found
 }

@@ -1,44 +1,20 @@
 import { useEffect, useMemo, useState } from 'preact/hooks'
 import { api, fmt, type ClusterSpec, type NodeRow, type NodeSpec, type Pool, type Warning } from '../../api'
 import { machineList, operations, settings, toast, watch } from '../../store'
-import { Field, Notice, Pill } from '../../components/ui'
+import { Field, Notice } from '../../components/ui'
 import { Tabs } from '../../components/Tabs'
 import { PoolsEditor } from '../../components/PoolsEditor'
-import { LabHostsSection, MakeLabHostDialog } from '../../components/LabHost'
-import { PxeGate } from '../../components/PxeGate'
 import type { Draft } from './NewCluster'
 import { addrOf, guessGateway, inRange, ip4, parseRange, prefixOf, sameSubnet } from './net'
 import { ageSec } from '../../clock'
+import { dataCandidates, installCandidates, isVirtual, modelOf, TypePill } from '../../machine'
 
 type SetCluster = (fn: (c: ClusterSpec) => ClusterSpec) => void
 const GiB = 1024 ** 3
 
 export function machineOf(draft: Draft, n: NodeSpec) { return draft.machines.find((m) => m.mac === n.mac) }
 
-/** Model name as a human would say it, with the hypervisor made explicit. */
-export function modelOf(m?: NodeRow) {
-  const inv = m?.inventory
-  const name = [inv?.manufacturer, inv?.product].filter(Boolean).join(' ').replace(/\s+/g, ' ').trim()
-  return name || 'Unknown hardware'
-}
-export function isVirtual(m?: NodeRow) {
-  const inv = m?.inventory
-  if (inv?.virtual) return true
-  return /qemu|kvm|vmware|virtualbox|innotek|xen|virtual machine|apple virtualization|parallels|bochs|proxmox/i.test(`${inv?.manufacturer ?? ''} ${inv?.product ?? ''}`)
-}
-export function TypePill({ m }: { m?: NodeRow }) {
-  if (m?.labhost) return <Pill tone="info" title="KVM host Kubit installed">lab host</Pill>
-  if (m?.host) return <Pill tone="info" title={`Talos VM on lab host ${m.host}`}>lab VM</Pill>
-  return isVirtual(m) ? <Pill tone="info" title="Virtual machine: shares its host's failure domain">VM</Pill> : <Pill tone="muted" title="Bare metal">metal</Pill>
-}
-/** Disks Talos may install on, largest first; a lab VM boots from vda whatever the sizes. */
-export function installCandidates(m?: NodeRow) {
-  const disks = (m?.inventory?.disks ?? []).filter((d) => !d.readonly && !d.cdrom && d.transport !== 'usb').sort((a, b) => b.sizeBytes - a.sizeBytes)
-  return m?.host ? disks.sort((a, b) => (a.devPath === '/dev/vda' ? -1 : b.devPath === '/dev/vda' ? 1 : 0)) : disks
-}
-
-/** Everything but the install disk can carry a data volume. */
-export function dataCandidates(m: NodeRow | undefined, install?: string) { return installCandidates(m).filter((d) => d.devPath !== install) }
+export { modelOf, isVirtual, TypePill, installCandidates, dataCandidates }
 
 export function machineWarnings(m: NodeRow, all: NodeRow[]): string[] {
   const out: string[] = []
@@ -72,7 +48,7 @@ export function MachinesStep({ draft, patch, setError }: { draft: Draft; patch: 
   return (
     <>
       <div class="panel p-4 flex flex-col gap-3">
-        <p class="text-[13px] text-muted">Scan for machines in Talos maintenance mode or with Intel AMT. <a class="text-accent hover:underline" href="/start">ISO downloads</a> · <a class="text-accent hover:underline" href="/fleet/pxe">Network boot</a></p>
+        <p class="text-[13px] text-muted">Machines in Talos maintenance mode. Boot media and remote management live in <a class="text-accent hover:underline" href="/fleet/inventory">Inventory</a>.</p>
         <div class="flex gap-2">
           <input class="input mono" value={targets} onInput={(e) => setTargets((e.target as HTMLInputElement).value)} placeholder="192.168.1.0/24, 10.0.0.5" aria-label="Subnets or addresses to scan" />
           <button class="btn shrink-0" disabled={scanning || !targets.trim()} onClick={() => api.discover(targets.split(/[,\s]+/).filter(Boolean)).then((r) => watch(r, false)).catch((e) => setError(e.message))}>{scanning ? 'Scanning…' : 'Scan'}</button>
@@ -109,8 +85,6 @@ export function MachinesStep({ draft, patch, setError }: { draft: Draft; patch: 
         </table>
       </div>
       <HiddenMachinesNote />
-      <LabHostsSection />
-      <AMTMachines />
       <div class="flex items-end gap-3">
         <Field label="Cluster name" hint="DNS label; prefixes hostnames and names the kubeconfig context.">
           <input class="input w-56 mono" value={draft.name} onInput={(e) => patch({ name: (e.target as HTMLInputElement).value.toLowerCase() })} />
@@ -121,56 +95,15 @@ export function MachinesStep({ draft, patch, setError }: { draft: Draft; patch: 
   )
 }
 
-/** Why Inventory may list more machines than this picker does. */
+/** Machines that are known but not pickable, and where to act on them. */
 function HiddenMachinesNote() {
-  const all = machineList.value
-  const members = all.filter((m) => m.cluster).length
-  const other = all.filter((m) => !m.cluster && !m.labhost && m.state !== 'maintenance' && m.state !== 'amt' && !m.oobType).length
-  if (members === 0 && other === 0) return null
-  const parts = [members ? `${members} ${members === 1 ? 'is a member' : 'are members'} of a cluster` : '', other ? `${other} ${other === 1 ? 'is' : 'are'} known but not in maintenance mode` : ''].filter(Boolean)
-  return <p class="text-[12px] text-muted -mt-2">Not listed: {parts.join('; ')}. <a class="text-accent hover:underline" href="/fleet/inventory">Inventory →</a></p>
-}
-
-/** Machines that answer on the AMT port but do not run Talos yet: boot them from here. */
-export function AMTMachines() {
-  const rows = machineList.value.filter((m) => !m.labhost && (m.state === 'amt' || (m.oobType === 'amt' && m.state !== 'maintenance' && !m.cluster)))
-  const [busy, setBusy] = useState<Record<string, boolean>>({})
-  const [lab, setLab] = useState<NodeRow | null>(null)
-  if (rows.length === 0) return null
-  const [gate, setGate] = useState<{ macs: string[] } | null>(null)
-  const bootMacs = (macs: string[]) => {
-    setBusy((b) => { const n = { ...b }; macs.forEach((m) => { n[m] = true }); return n })
-    Promise.all(macs.map((mac) => api.power(mac, 'pxe').then((r) => watch(r, false))))
-      .catch((e) => { if (e?.code === 'pxe-down') setGate({ macs }); else toast(e.message, 'error') })
-      .finally(() => setBusy((b) => { const n = { ...b }; macs.forEach((m) => { n[m] = false }); return n }))
-  }
-  const boot = (m: NodeRow) => bootMacs([m.mac])
-  const bootAll = () => bootMacs(rows.filter((m) => m.oobType).map((m) => m.mac))
-  return (
-    <div class="panel">
-      <div class="flex items-center gap-4 px-4 py-2.5 border-b border-border">
-        <span class="font-medium">Via Intel AMT</span>
-        <span class="text-[12px] text-muted">not running Talos yet</span>
-        <button class="btn btn-primary !py-1 ml-auto shrink-0 whitespace-nowrap" title="One network boot via AMT; the machine appears above in maintenance mode. Needs kubit pxe on this LAN." disabled={!rows.some((m) => m.oobType)} onClick={bootAll}>Boot all into Talos</button>
-      </div>
-      <div><table class="data wrap">
-        <thead><tr><th class="pl-4">Machine</th><th>Address</th><th>Power</th><th>Credentials</th><th></th></tr></thead>
-        <tbody>
-          {rows.map((m) => (
-            <tr key={m.mac}>
-              <td class="pl-4 whitespace-nowrap"><span class="font-medium">{modelOf(m)}</span><br /><span class="text-[11px] text-muted mono">{m.serial ? `${m.serial} · ` : ''}{m.mac}</span></td>
-              <td class="mono">{m.ip}</td>
-              <td><Pill tone={m.state === 'off' ? 'muted' : 'info'}>{m.state === 'amt' ? 'other OS / off' : m.state}</Pill></td>
-              <td>{m.oobType ? <Pill tone="good">AMT ok</Pill> : <a class="text-accent hover:underline text-[12px]" href={`/machines/${m.mac}#oob`}>set credentials →</a>}</td>
-              <td class="text-right pr-3 whitespace-nowrap"><button class="btn !py-1" title="Install Debian + KVM on it and carve Talos VMs from it" onClick={() => setLab(m)}>Make lab host</button>{' '}<button class="btn btn-primary !py-1" disabled={!m.oobType || busy[m.mac]} title={m.provision ? 'Armed for a network boot; click to boot again' : ''} onClick={() => boot(m)}>{busy[m.mac] ? 'Starting' : 'Boot into Talos'}</button></td>
-            </tr>
-          ))}
-        </tbody>
-      </table></div>
-      {lab && <MakeLabHostDialog m={lab} onClose={() => setLab(null)} />}
-      {gate && <PxeGate what="Boot into Talos" onClose={() => setGate(null)} onReady={() => { const macs = gate.macs; setGate(null); bootMacs(macs) }} />}
-    </div>
-  )
+  const all = machineList.value.filter((m) => !m.host)
+  const members = all.filter((m) => m.kind === 'member').length
+  const hosts = all.filter((m) => m.kind === 'labhost').length
+  const boot = all.filter((m) => m.kind === 'unbooted' || m.kind === 'booting' || m.kind === 'configured').length
+  if (members === 0 && hosts === 0 && boot === 0) return null
+  const parts = [boot ? `${boot} need${boot === 1 ? 's' : ''} booting` : '', hosts ? `${hosts} ${hosts === 1 ? 'is a lab host' : 'are lab hosts'}` : '', members ? `${members} ${members === 1 ? 'is' : 'are'} in a cluster` : ''].filter(Boolean)
+  return <p class="text-[12px] text-muted -mt-2">Not listed: {parts.join('; ')}. <a class="text-accent hover:underline" href={boot ? '/fleet/inventory?filter=boot' : '/fleet/inventory'}>Inventory</a></p>
 }
 
 export function topologyText(n: number) {
@@ -372,6 +305,7 @@ const addons: { key: keyof ClusterSpec['spec']['platform']; title: string; what:
   { key: 'metricsServer', title: 'metrics-server', what: 'Resource metrics for kubectl top, HPA and Kubit\'s capacity views.', size: '~100 MiB, 1 pod' },
   { key: 'certManager', title: 'cert-manager', what: 'X.509 certificates from ACME (Let\'s Encrypt) or internal CAs; issuers are configured afterwards.', size: '~300 MiB, 3 pods' },
   { key: 'argocd', title: 'Argo CD', what: 'GitOps: applications from Git repositories. Recommended home for everything above the platform layer.', size: '~1 GiB, 7 pods' },
+  { key: 'longhorn', title: 'Longhorn', what: 'Replicated block storage on the data disks chosen in the previous step; becomes the default StorageClass.', size: '~1 GiB, 1 manager + engine per node' },
 ]
 
 export function PlatformStep({ draft, setCluster, patch }: { draft: Draft; setCluster: SetCluster; patch: (p: Partial<Draft>) => void }) {
@@ -383,13 +317,14 @@ export function PlatformStep({ draft, setCluster, patch }: { draft: Draft; setCl
       <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
         {addons.map((a) => {
           const on = c.spec.platform[a.key].enabled
+          const blocked = a.key === 'longhorn' && !c.spec.nodes.some((n) => n.dataDisks?.length) ? 'No node has a data disk.' : ''
           return (
-            <label key={a.key} class={`panel p-4 flex gap-3 cursor-pointer ${on ? 'border-accent/60' : ''} ${draft.skipPlatform ? 'opacity-50' : ''}`}>
-              <input type="checkbox" class="mt-1" checked={on} disabled={draft.skipPlatform} onChange={(e) => toggle(a.key, (e.target as HTMLInputElement).checked)} />
+            <label key={a.key} class={`panel p-4 flex gap-3 cursor-pointer ${on ? 'border-accent/60' : ''} ${draft.skipPlatform || blocked ? 'opacity-50' : ''}`}>
+              <input type="checkbox" class="mt-1" checked={on && !blocked} disabled={draft.skipPlatform || !!blocked} onChange={(e) => toggle(a.key, (e.target as HTMLInputElement).checked)} />
               <div class="flex-1 min-w-0">
                 <div class="font-medium">{a.title}</div>
                 <p class="text-[12.5px] text-muted">{a.what}</p>
-                <p class="text-[11px] text-muted mt-1">{a.size}</p>
+                <p class="text-[11px] text-muted mt-1">{blocked || a.size}</p>
               </div>
             </label>
           )
@@ -418,7 +353,7 @@ export function ReviewStep({ draft, setCluster, patch, onCreate, busy }: { draft
   const applyYaml = () => api.validate(yaml).then((v) => { setCluster(() => v.cluster); toast('Declaration updated from YAML', 'good') }).catch((e) => setLintErr(e.message))
   const errors = draft.warnings.filter((w) => w.level !== 'info')
   // Findings that guarantee an unusable or failing cluster block Create; the rest stay advisory.
-  const blocking = ['no-disk', 'no-schedulable-nodes', 'control-plane-undersized']
+  const blocking = ['no-disk', 'no-schedulable-nodes', 'control-plane-undersized', 'worker-undersized']
   const blockers = draft.warnings.filter((w) => blocking.includes(w.code))
   return (
     <>

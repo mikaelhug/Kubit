@@ -3,7 +3,7 @@
 // or, when the daemon says so, reloads the base state once.
 import { fmt, getToken, type Message } from './api'
 import {
-  applyStepEvent, audit, clusters, connected, daemon, health, hostSamples, latestTalos, loadMachines, loadSettings, machines, opEvents, operations,
+  applyStepEvent, audit, clusters, connected, daemon, health, hostSamples, latestTalos, loadMachines, loadSettings, machines, me, opEvents, operations,
   reconnectAttempt, refreshes, reloadClusters, reloadOperations, resyncing, settings, snapshots, statuses, toast, upsertCluster, upsertOp,
 } from './store'
 
@@ -13,7 +13,7 @@ let attempt = 0
 let everConnected = false
 
 export function connectLive() {
-  if (ws) return
+  if (ws || me.value === null) return
   const t = getToken()
   const proto = location.protocol === 'https:' ? 'wss' : 'ws'
   const q = new URLSearchParams()
@@ -31,6 +31,17 @@ export function connectLive() {
   ws.onerror = () => ws?.close()
 }
 
+/** After sign-in or sign-out: drop the socket and start over with the new identity. */
+export function reconnectLive() {
+  everConnected = false
+  lastSeq = 0
+  attempt = 0
+  const old = ws
+  ws = null
+  if (old) { old.onclose = null; old.close() }
+  connectLive()
+}
+
 /** Reload everything the console derives from; views refetch through bumped scopes. */
 export async function resync() {
   resyncing.value = true
@@ -45,8 +56,11 @@ export async function resync() {
   }
 }
 
+let helloSeq = 0
+
 function apply(m: Message) {
   if (m.seq) lastSeq = m.seq
+  const replayed = !!m.seq && m.seq <= helloSeq
   switch (m.kind) {
     case 'hello': {
       connected.value = true
@@ -55,7 +69,8 @@ function apply(m: Message) {
       if (m.hello) daemon.value = { version: m.hello.version, startedAt: m.hello.startedAt, service: m.hello.service }
       // First connection, or a daemon restart (sequence went backwards): full load.
       const restarted = m.hello && m.hello.seq < lastSeq
-      if (!everConnected || restarted) { everConnected = true; lastSeq = m.hello?.seq ?? 0; resync() }
+      helloSeq = m.hello?.seq ?? 0
+      if (!everConnected || restarted) { everConnected = true; lastSeq = helloSeq; resync() }
       break
     }
     case 'resync':
@@ -108,7 +123,7 @@ function apply(m: Message) {
         const prev = operations.value.get(m.operation.id)
         upsertOp(m.operation)
         if (m.operation.status !== 'running' && prev?.status === 'running') {
-          toast(`${fmt.kind(m.operation.kind)}${m.operation.cluster ? ' · ' + m.operation.cluster : ''}: ${m.operation.status}`, m.operation.status === 'done' ? 'good' : 'error')
+          if (!replayed) toast(`${fmt.kind(m.operation.kind)}${m.operation.cluster ? ' · ' + m.operation.cluster : ''}: ${m.operation.status}`, m.operation.status === 'done' ? 'good' : 'error')
         }
       }
       break
@@ -137,7 +152,7 @@ function apply(m: Message) {
         const h = m.health
         hm.set(h.cluster, [h, ...(hm.get(h.cluster) ?? []).filter((e) => e.id !== h.id)].slice(0, 200))
         health.value = hm
-        if (h.severity !== 'info') toast(h.cluster.startsWith('labhost:') ? h.message : `${h.cluster}: ${h.message}`, 'error')
+        if (h.severity !== 'info' && !h.acked && !replayed) toast(h.cluster.startsWith('labhost:') ? h.message : `${h.cluster}: ${h.message}`, 'error')
       }
       break
     case 'hostSample':

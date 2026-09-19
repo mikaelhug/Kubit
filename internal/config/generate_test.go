@@ -371,3 +371,81 @@ func TestLegacyRoleDeclarationsStillRender(t *testing.T) {
 		t.Errorf("default pools: %+v / %s %s", c.Spec.Pools, c.Spec.Nodes[0].Pool, c.Spec.Nodes[3].Pool)
 	}
 }
+
+func TestGenerateClusterOIDC(t *testing.T) {
+	c, err := config.Parse([]byte(sampleCluster))
+	if err != nil {
+		t.Fatal(err)
+	}
+	c.Spec.Auth.OIDC = &config.ClusterOIDC{Issuer: "https://sso.example/realms/ops", ClientID: "kubernetes", GroupsClaim: "groups", AdminGroup: "k8s-admins"}
+	g, err := config.Generate(c, nil, func(config.Pool) string { return installer })
+	if err != nil {
+		t.Fatal(err)
+	}
+	cp := load(t, g.Nodes["cp-01"])
+	authn := doc[*k8s.KubeAuthenticationConfigV1Alpha1](t, cp).AuthConfig.Object
+	jwt := authn["jwt"].([]any)[0].(map[string]any)
+	if iss := jwt["issuer"].(map[string]any); iss["url"] != "https://sso.example/realms/ops" || iss["audiences"].([]any)[0] != "kubernetes" {
+		t.Errorf("issuer: %v", iss)
+	}
+	m := jwt["claimMappings"].(map[string]any)
+	if u := m["username"].(map[string]any); u["claim"] != "sub" || u["prefix"] != "oidc:" {
+		t.Errorf("username mapping: %v", u)
+	}
+	if gr := m["groups"].(map[string]any); gr["claim"] != "groups" || gr["prefix"] != "oidc:" {
+		t.Errorf("groups mapping: %v", gr)
+	}
+	for _, d := range load(t, g.Nodes["worker-01"]).Documents() {
+		if _, ok := d.(*k8s.KubeAuthenticationConfigV1Alpha1); ok {
+			t.Error("workers carry no authentication document")
+		}
+	}
+	if got := c.Spec.Auth.AdminGroupSubject(); got != "oidc:k8s-admins" {
+		t.Errorf("admin group subject = %q", got)
+	}
+}
+
+func TestGenerateLonghorn(t *testing.T) {
+	c, err := config.Parse([]byte(sampleCluster))
+	if err != nil {
+		t.Fatal(err)
+	}
+	c.Spec.Platform.Longhorn.Enabled = true
+	y, _ := c.Marshal()
+	if c, err = config.Parse(y); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	for _, e := range config.LonghornExtensions {
+		found := false
+		for _, x := range c.Spec.Extensions {
+			found = found || x == e
+		}
+		if !found {
+			t.Errorf("extension %s not added", e)
+		}
+	}
+	if c.LonghornReplicas() != 1 {
+		t.Errorf("one node with data disks → 1 replica, got %d", c.LonghornReplicas())
+	}
+	g, err := config.Generate(c, nil, func(config.Pool) string { return installer })
+	if err != nil {
+		t.Fatal(err)
+	}
+	w := doc[*k8s.KubeNodeConfigV1Alpha1](t, load(t, g.Nodes["worker-01"]))
+	if w.LabelsConfig["node.longhorn.io/create-default-disk"] != "config" || !strings.Contains(w.AnnotationsConfig["node.longhorn.io/default-disks-config"], `"path":"/var/mnt/data-2"`) {
+		t.Errorf("worker with data disks: labels %v annotations %v", w.LabelsConfig, w.AnnotationsConfig)
+	}
+	cp := doc[*k8s.KubeNodeConfigV1Alpha1](t, load(t, g.Nodes["cp-01"]))
+	if cp.LabelsConfig["node.longhorn.io/create-default-disk"] != "false" {
+		t.Errorf("node without data disks must opt out: %v", cp.LabelsConfig)
+	}
+	for i := range c.Spec.Nodes {
+		c.Spec.Nodes[i].DataDisks = nil
+	}
+	if err := c.Validate(); err == nil || !strings.Contains(err.Error(), "dataDisks") {
+		t.Errorf("longhorn without any data disk must be refused: %v", err)
+	}
+}

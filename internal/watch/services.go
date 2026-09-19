@@ -36,10 +36,19 @@ func init() {
 // workload has been short, and recent restart counts per pod.
 type ServiceTracker struct {
 	open     map[string]string // object key → open alert kind
-	short    map[string]int    // workload key → consecutive short collections
+	bad      map[string]int    // object key → consecutive unhealthy collections
+	good     map[string]int    // object key → consecutive healthy collections while an alert is open
 	restarts map[string][]restartSample
 	seeded   bool
 }
+
+// An alert opens after raiseAfter unhealthy collections and closes only after
+// clearAfter healthy ones, so a pod restarting every minute is one open alert, not a
+// warn/recovery pair per minute.
+const (
+	raiseAfter = 2
+	clearAfter = 3
+)
 
 type restartSample struct {
 	at    time.Time
@@ -47,7 +56,7 @@ type restartSample struct {
 }
 
 func NewServiceTracker() *ServiceTracker {
-	return &ServiceTracker{open: map[string]string{}, short: map[string]int{}, restarts: map[string][]restartSample{}}
+	return &ServiceTracker{open: map[string]string{}, bad: map[string]int{}, good: map[string]int{}, restarts: map[string][]restartSample{}}
 }
 
 // Seed marks alerts already open in the store so a daemon restart neither re-raises
@@ -91,6 +100,29 @@ func (t *ServiceTracker) Derive(name string, cur *cluster.ServiceHealth, now tim
 			out = append(out, store.EventRow{Cluster: name, Node: key, Severity: "info", Kind: recovery, Message: msg})
 		}
 	}
+	// unhealthy counts a bad collection and raises once raiseAfter are consecutive.
+	unhealthy := func(key, kind, sev, msg string) {
+		delete(t.good, key)
+		t.bad[key]++
+		if t.bad[key] >= raiseAfter {
+			raise(key, kind, sev, msg)
+			return
+		}
+		present[key] = true
+	}
+	// healthy counts a good collection and resolves once clearAfter are consecutive.
+	healthy := func(key, recovery, msg string) {
+		delete(t.bad, key)
+		present[key] = true
+		if _, isOpen := t.open[key]; !isOpen {
+			return
+		}
+		t.good[key]++
+		if t.good[key] >= clearAfter {
+			delete(t.good, key)
+			ok(key, recovery, msg)
+		}
+	}
 	gate := func(ageSec int64) bool { return time.Duration(ageSec)*time.Second >= serviceAgeGate }
 
 	for _, w := range cur.Workloads {
@@ -100,16 +132,10 @@ func (t *ServiceTracker) Derive(name string, cur *cluster.ServiceHealth, now tim
 		key := Key(w.Kind, w.Namespace, w.Name)
 		obj := fmt.Sprintf("%s %s/%s", w.Kind, w.Namespace, w.Name)
 		if w.Ready < w.Desired && w.Desired > 0 && gate(w.AgeSec) {
-			t.short[key]++
-			if t.short[key] >= 2 {
-				raise(key, "workload.unavailable", "warn", fmt.Sprintf("%s has %d/%d replicas ready", obj, w.Ready, w.Desired))
-				continue
-			}
-			present[key] = true
+			unhealthy(key, "workload.unavailable", "warn", fmt.Sprintf("%s has %d/%d replicas ready", obj, w.Ready, w.Desired))
 			continue
 		}
-		delete(t.short, key)
-		ok(key, "workload.available", fmt.Sprintf("%s is available again (%d/%d)", obj, w.Ready, w.Desired))
+		healthy(key, "workload.available", fmt.Sprintf("%s is available again (%d/%d)", obj, w.Ready, w.Desired))
 	}
 
 	for _, p := range cur.Pods {
@@ -166,9 +192,9 @@ func (t *ServiceTracker) Derive(name string, cur *cluster.ServiceHealth, now tim
 		}
 		key := Key("Service", s.Namespace, s.Name)
 		if s.Endpoints == 0 && gate(s.AgeSec) {
-			raise(key, "service.no-endpoints", "warn", fmt.Sprintf("Service %s/%s has no ready endpoints: its selector matches no running pod", s.Namespace, s.Name))
+			unhealthy(key, "service.no-endpoints", "warn", fmt.Sprintf("Service %s/%s has no ready endpoints: its selector matches no running pod", s.Namespace, s.Name))
 		} else if s.Endpoints > 0 {
-			ok(key, "service.endpoints", fmt.Sprintf("Service %s/%s has %d ready endpoint(s)", s.Namespace, s.Name, s.Endpoints))
+			healthy(key, "service.endpoints", fmt.Sprintf("Service %s/%s has %d ready endpoint(s)", s.Namespace, s.Name, s.Endpoints))
 		} else {
 			present[key] = true
 		}
@@ -181,9 +207,9 @@ func (t *ServiceTracker) Derive(name string, cur *cluster.ServiceHealth, now tim
 			}
 			key := Key("Ingress", i.Namespace, i.Name)
 			if !i.HasAddress && gate(i.AgeSec) {
-				raise(key, "ingress.no-address", "warn", fmt.Sprintf("Ingress %s/%s has no address: no ingress controller claimed it", i.Namespace, i.Name))
+				unhealthy(key, "ingress.no-address", "warn", fmt.Sprintf("Ingress %s/%s has no address: no ingress controller claimed it", i.Namespace, i.Name))
 			} else if i.HasAddress {
-				ok(key, "ingress.address", fmt.Sprintf("Ingress %s/%s has an address", i.Namespace, i.Name))
+				healthy(key, "ingress.address", fmt.Sprintf("Ingress %s/%s has an address", i.Namespace, i.Name))
 			} else {
 				present[key] = true
 			}
@@ -205,7 +231,8 @@ func (t *ServiceTracker) Derive(name string, cur *cluster.ServiceHealth, now tim
 			continue
 		}
 		delete(t.open, key)
-		delete(t.short, key)
+		delete(t.bad, key)
+		delete(t.good, key)
 		delete(t.restarts, key)
 		if rec := recoveryFor(kind); rec != "" {
 			out = append(out, store.EventRow{Cluster: name, Node: key, Severity: "info", Kind: rec, Message: key + " was deleted"})

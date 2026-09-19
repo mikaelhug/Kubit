@@ -8,6 +8,7 @@ resource "helm_release" "metrics_server" {
   version          = var.chart_versions.metrics_server
   values           = length(var.metrics_server.values) > 0 ? [yamlencode(var.metrics_server.values)] : []
   wait             = true
+  atomic           = true
   timeout          = 600
 
   # Talos kubelets serve self-signed certificates unless a serving-cert approver is

@@ -46,6 +46,16 @@ func (s *Server) handleMachineRetire(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, fmt.Sprintf("%s is a member of cluster %s; remove it from the cluster first", m.Hostname, m.Cluster), http.StatusConflict)
 		return
 	}
+	if m.LabHost != nil {
+		http.Error(w, "Release the lab host first.", http.StatusConflict)
+		return
+	}
+	if m.IsLabVM() {
+		if _, err := s.store.GetMachine(r.Context(), m.Host); err == nil {
+			http.Error(w, "Delete the VM from its lab host instead.", http.StatusConflict)
+			return
+		}
+	}
 	if err := s.store.DeleteMachine(r.Context(), m.MAC); err != nil {
 		writeErr(w, err)
 		return

@@ -157,6 +157,13 @@ func (s *Store) HasOpenEvent(ctx context.Context, cluster, node, kind string) bo
 	return n > 0
 }
 
+// OpenEventCount is the number of unacknowledged warn/critical events of a cluster.
+func (s *Store) OpenEventCount(ctx context.Context, cluster string) int {
+	var n int
+	_ = s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM events WHERE cluster = ? AND acked = 0 AND severity IN ('warn', 'critical')`, cluster).Scan(&n)
+	return n
+}
+
 // ResolveEvents acknowledges open events of one kind for a node: the condition cleared.
 func (s *Store) ResolveEvents(ctx context.Context, cluster, node, kind string) error {
 	res, err := s.db.ExecContext(ctx, `UPDATE events SET acked = 1 WHERE cluster = ? AND node = ? AND kind = ? AND acked = 0`, cluster, node, kind)

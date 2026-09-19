@@ -14,9 +14,8 @@ func TestHubReplayAndResync(t *testing.T) {
 	if missed, _, ok := h.since(10); !ok || len(missed) != 0 {
 		t.Fatalf("up to date should replay nothing")
 	}
-	if _, _, ok := h.since(0); ok {
-		// 0 is older than the ring only once the ring wrapped; here it is not.
-		_ = ok
+	if missed, head, ok := h.since(0); !ok || head != 10 || len(missed) != 0 {
+		t.Fatalf("a fresh page load replays nothing: ok=%v head=%d n=%d", ok, head, len(missed))
 	}
 	for i := 0; i < ringSize+5; i++ {
 		h.publish(Message{Kind: "status"})

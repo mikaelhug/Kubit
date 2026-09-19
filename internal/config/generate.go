@@ -1,6 +1,7 @@
 package config
 
 import (
+	"encoding/json"
 	"fmt"
 	"net/netip"
 	"strings"
@@ -36,6 +37,9 @@ const (
 	LabelPool = "kubit.dev/pool"
 	// LabelDataDisks carries the count of data volumes so storage can target nodes.
 	LabelDataDisks = "kubit.dev/data-disks"
+	// Longhorn reads these at node registration: which disks to create, or none.
+	LabelLonghornDisk       = "node.longhorn.io/create-default-disk"
+	AnnotationLonghornDisks = "node.longhorn.io/default-disks-config"
 
 	// vipLinkAlias names the physical interface the control plane VIP floats on.
 	vipLinkAlias = "uplink"
@@ -116,6 +120,10 @@ func generateNode(c *Cluster, in *generate.Input, n Node, installerImage string)
 		return nil, err
 	}
 	docs := base.Documents()
+	if authn := c.Spec.Auth.AuthenticationConfig(); authn != nil && n.Role == RoleControlPlane {
+		auth := findOrAppend(&docs, k8s.NewKubeAuthenticationConfigV1Alpha1)
+		auth.AuthConfig = meta.Unstructured{Object: authn}
+	}
 
 	install := runtime.NewUnattendedInstallConfigV1Alpha1()
 	install.Installer.Image = installerImage
@@ -150,6 +158,17 @@ func generateNode(c *Cluster, in *generate.Input, n Node, installerImage string)
 	if len(n.DataDisks) > 0 {
 		node.LabelsConfig[LabelDataDisks] = fmt.Sprint(len(n.DataDisks))
 	}
+	if c.Spec.Platform.Longhorn.Enabled {
+		if len(n.DataDisks) > 0 {
+			node.LabelsConfig[LabelLonghornDisk] = "config"
+			if node.AnnotationsConfig == nil {
+				node.AnnotationsConfig = map[string]string{}
+			}
+			node.AnnotationsConfig[AnnotationLonghornDisks] = longhornDisksConfig(len(n.DataDisks))
+		} else {
+			node.LabelsConfig[LabelLonghornDisk] = "false"
+		}
+	}
 	for k, v := range c.NodeLabels(n) {
 		node.LabelsConfig[k] = v
 	}
@@ -162,7 +181,12 @@ func generateNode(c *Cluster, in *generate.Input, n Node, installerImage string)
 		}
 	}
 	if ann := c.NodeAnnotations(n); len(ann) > 0 {
-		node.AnnotationsConfig = ann
+		if node.AnnotationsConfig == nil {
+			node.AnnotationsConfig = map[string]string{}
+		}
+		for k, v := range ann {
+			node.AnnotationsConfig[k] = v
+		}
 	}
 	// Talos excludes control planes from external load balancers; MetalLB honours that
 	// label and would never announce from a cluster whose control planes also carry
@@ -354,4 +378,14 @@ func ParseSecrets(b []byte) (*secrets.Bundle, error) {
 	}
 	bundle.Clock = secrets.NewClock()
 	return &bundle, nil
+}
+
+// longhornDisksConfig lists every data-disk mount as a schedulable Longhorn disk.
+func longhornDisksConfig(n int) string {
+	disks := make([]map[string]any, 0, n)
+	for i := 1; i <= n; i++ {
+		disks = append(disks, map[string]any{"path": fmt.Sprintf("/var/mnt/data-%d", i), "allowScheduling": true, "name": fmt.Sprintf("data-%d", i)})
+	}
+	b, _ := json.Marshal(disks)
+	return string(b)
 }

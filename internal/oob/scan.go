@@ -12,18 +12,21 @@ import (
 	"time"
 )
 
-// ScanResult is one address that answers on the AMT port. Info is filled when
-// credentials were available; MAC falls back to the ARP table (same segment only).
+// ScanResult is one address that answers as a management engine: the AMT port, or a
+// Redfish service root. Info is filled when credentials were available; for AMT the
+// MAC falls back to the ARP table (same segment only), a BMC only tells it when asked.
 type ScanResult struct {
 	IP   string
+	Type string // amt | redfish
 	MAC  string
 	Info *Info
 	Err  error // credentials wrong/absent: the machine is still recorded
 }
 
-// Scan probes the AMT port on every address and, with credentials, asks each engine
-// who it is. Addresses that run Talos are excluded by the caller.
-func Scan(ctx context.Context, addrs []netip.Addr, creds Config, timeout time.Duration) []ScanResult {
+// Scan probes every address for AMT (port 16992) and otherwise for a Redfish root
+// and, with credentials, asks each engine who it is. Addresses that run Talos are
+// excluded by the caller.
+func Scan(ctx context.Context, addrs []netip.Addr, amtCreds, bmcCreds Config, timeout time.Duration) []ScanResult {
 	sem := make(chan struct{}, 64)
 	var (
 		mu  sync.Mutex
@@ -38,14 +41,21 @@ func Scan(ctx context.Context, addrs []netip.Addr, creds Config, timeout time.Du
 			defer func() { <-sem }()
 			d := net.Dialer{Timeout: timeout}
 			conn, err := d.DialContext(ctx, "tcp", net.JoinHostPort(ip, "16992"))
-			if err != nil {
+			var r ScanResult
+			var creds Config
+			if err == nil {
+				conn.Close()
+				r = ScanResult{IP: ip, Type: "amt", MAC: macFromARP(ip)}
+				creds = amtCreds
+			} else if _, ok := ProbeRedfish(ctx, ip, timeout); ok {
+				r = ScanResult{IP: ip, Type: "redfish"}
+				creds = bmcCreds
+			} else {
 				return
 			}
-			conn.Close()
-			r := ScanResult{IP: ip, MAC: macFromARP(ip)}
 			if creds.User != "" && creds.Password != "" {
 				c := creds
-				c.Type, c.Host = "amt", ip
+				c.Type, c.Host = r.Type, ip
 				if m, err := Open(c); err == nil {
 					pctx, cancel := context.WithTimeout(ctx, 15*time.Second)
 					info, err := m.Probe(pctx)

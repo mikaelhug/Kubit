@@ -11,10 +11,15 @@ import (
 	"github.com/mikael/kubit/internal/store"
 	"github.com/mikael/kubit/internal/talos"
 	machineapi "github.com/siderolabs/talos/pkg/machinery/api/machine"
-	"google.golang.org/grpc/status"
 )
 
 // Status is the dashboard view of one cluster.
+const (
+	HealthHealthy  = "healthy"
+	HealthDegraded = "degraded"
+	HealthDown     = "down"
+)
+
 type Status struct {
 	Name              string `json:"name"`
 	State             string `json:"state"`
@@ -28,6 +33,11 @@ type Status struct {
 	Etcd     EtcdStatus            `json:"etcd"`
 	Totals   Totals                `json:"totals"`
 	Platform *store.PlatformStatus `json:"platform,omitempty"`
+	// Health is the watcher's verdict on a ready cluster: healthy, degraded (open
+	// warn/critical alerts) or down (API, etcd or a node unreachable); OpenAlerts is
+	// the unacknowledged alert count behind it.
+	Health     string `json:"health,omitempty"`
+	OpenAlerts int    `json:"openAlerts,omitempty"`
 	// ObservedAt is when this status was computed; LastSnapshotAt and
 	// SnapshotInterval let the UI show how far behind the observer is.
 	ObservedAt       string `json:"observedAt"`
@@ -227,24 +237,16 @@ func probeNode(ctx context.Context, ip string, talosconfig []byte) (version, sta
 	defer tc.Close()
 	v, err := tc.Version(tc.Context(ctx))
 	if err != nil {
-		return "", "", fmt.Errorf("version: %w", shortGRPC(err))
+		return "", "", fmt.Errorf("version: %w", talos.ShortGRPC(err))
 	}
 	if len(v.Messages) > 0 {
 		version = v.Messages[0].Version.Tag
 	}
 	stage, err = talos.Stage(ctx, ip, talosconfig)
 	if err != nil {
-		return version, "", fmt.Errorf("machine status: %w", shortGRPC(err))
+		return version, "", fmt.Errorf("machine status: %w", talos.ShortGRPC(err))
 	}
 	return version, stage, nil
-}
-
-// shortGRPC strips the "rpc error: code = X desc =" prefix that hides the message.
-func shortGRPC(err error) error {
-	if st, ok := status.FromError(err); ok {
-		return fmt.Errorf("%s (%s)", st.Message(), st.Code())
-	}
-	return err
 }
 
 func (m *Manager) etcdStatus(ctx context.Context, cps []config.Node, talosconfig []byte) EtcdStatus {

@@ -107,6 +107,10 @@ type DesignOptions struct {
 	DataDisks bool
 }
 
+// MinWorkerBytes is the usable RAM under which a worker cannot carry the platform
+// add-ons (a 2 GiB VM reports ~1.9 GiB; a 1 GiB VM ~940 MiB). Preflight enforces it.
+const MinWorkerBytes = 1500 << 20
+
 // Warning is a lint finding: something legal that an operator should know before
 // creating the cluster.
 type Warning struct {
@@ -175,8 +179,8 @@ func Lint(c *Cluster, machines []Machine) []Warning {
 	// A control plane below the etcd/API-server floor is a hard failure at create time
 	// (preflight enforces it); flag it here too so the wizard shows it before Create.
 	for _, n := range cps {
-		if m, ok := byMAC[strings.ToLower(n.MAC)]; ok && m.MemBytes > 0 && m.MemBytes < 2<<30 {
-			warn("warn", "control-plane-undersized", n.Hostname, "Control plane %s has under 2 GiB RAM; a control plane cannot run etcd and the API server on that — provisioning will refuse it.", n.Hostname)
+		if m, ok := byMAC[strings.ToLower(n.MAC)]; ok && m.MemBytes > 0 && m.MemBytes < 1600<<20 {
+			warn("warn", "control-plane-undersized", n.Hostname, "Control plane %s has under ~1.6 GiB usable RAM; a control plane cannot run etcd and the API server on that — give it a 2 GiB machine (provisioning will refuse it).", n.Hostname)
 		}
 	}
 	var subnet netip.Prefix
@@ -193,8 +197,10 @@ func Lint(c *Cluster, machines []Machine) []Warning {
 					warn("warn", "unknown-data-disk", n.Hostname, "%s: data disk %s is not in the machine's inventory; the volume stays unprovisioned until a disk matches.", n.Hostname, d)
 				}
 			}
-			if m.MemBytes > 0 && m.MemBytes < 2<<30 {
-				warn("warn", "low-memory", n.Hostname, "%s has %d MiB RAM; Talos control planes need at least 2 GiB.", n.Hostname, m.MemBytes>>20)
+			if n.Role == RoleWorker && c.Spec.Platform.AddOns() && m.MemBytes > 0 && m.MemBytes < MinWorkerBytes {
+				warn("warn", "worker-undersized", n.Hostname, "Worker %s has under ~1.5 GiB usable RAM; Talos and the kubelet leave it too little for the platform add-ons — give it a 2 GiB machine (provisioning will refuse it).", n.Hostname)
+			} else if m.MemBytes > 0 && m.MemBytes < 2<<30 {
+				warn("warn", "low-memory", n.Hostname, "%s has %d MiB RAM; 2 GiB is the floor for a %s.", n.Hostname, m.MemBytes>>20, map[Role]string{RoleControlPlane: "control plane", RoleWorker: "worker"}[n.Role])
 			}
 			if n.Role == RoleControlPlane && m.KVM && len(c.Workers()) > 0 {
 				warn("info", "kvm-on-control-plane", n.Hostname, "%s supports KVM; as a worker it could run runsc-kvm sandboxes.", n.Hostname)

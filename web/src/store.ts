@@ -1,7 +1,7 @@
 // Global live state as signals, fed by one WebSocket (see live.ts). Pages derive from
 // these and only fetch large derived views, which the daemon tells them to refresh.
 import { signal, computed } from '@preact/signals'
-import { api, type AuditEntry, type ClusterRow, type Event, type HealthEvent, type NodeRow, type Operation, type Sample, type Settings, type Snapshot, type Status, type Step } from './api'
+import { api, setUnauthorizedHandler, type Me, type AuditEntry, type ClusterRow, type Event, type HealthEvent, type NodeRow, type Operation, type Sample, type Settings, type Snapshot, type Status, type Step } from './api'
 
 export const clusters = signal<ClusterRow[]>([])
 /** Every machine Kubit knows, keyed by MAC; pushed on each store write. */
@@ -13,6 +13,22 @@ export const snapshots = signal<Map<string, Snapshot[]>>(new Map())
 export const audit = signal<AuditEntry[]>([])
 /** Kubit settings as the daemon last pushed them (secrets redacted). */
 export const settings = signal<Settings | null>(null)
+/** Who is signed in: undefined until asked, null when sign-in is required. */
+export const me = signal<Me | null | undefined>(undefined)
+export const authState = signal<{ setup: boolean; users: number; sso?: string }>({ setup: false, users: 0 })
+export async function loadMe() {
+  try {
+    const m = await api.me()
+    me.value = m
+    authState.value = { setup: m.setup, users: m.users, sso: m.sso }
+  } catch (e: any) {
+    me.value = null
+    if (e && typeof e === 'object' && 'body' in e && e.body) authState.value = { setup: !!e.body.setup, users: e.body.users ?? 0, sso: e.body.sso }
+    if (e && typeof e === 'object' && 'status' in e && e.status !== 401) throw e
+  }
+}
+setUnauthorizedHandler(() => { if (me.value !== null) me.value = null })
+export const can = (role: 'viewer' | 'operator' | 'admin') => { const r = me.value?.role; return !!r && ({ viewer: 1, operator: 2, admin: 3 })[r] >= ({ viewer: 1, operator: 2, admin: 3 })[role] }
 /** Newest stable Talos the factory publishes; bumps when the daemon's hourly check changes. */
 export const latestTalos = signal<string>('')
 /** Daemon facts from the hello message. */
@@ -46,6 +62,13 @@ export function openAlert(cluster: string, kind: string, ns: string, name: strin
 /** `?ns=` from the URL, used by the object links on alert rows. */
 export function nsFromQuery(): string {
   return typeof location !== 'undefined' ? new URLSearchParams(location.search).get('ns') ?? '' : ''
+}
+
+export async function loadAllHealth(keys: string[]) {
+  const lists = await Promise.all(keys.map((k) => api.events(k).catch(() => null)))
+  const m = new Map(health.value)
+  lists.forEach((list, i) => { if (list) m.set(keys[i], list) })
+  health.value = m
 }
 
 export async function loadHealth(name: string) {
@@ -113,7 +136,13 @@ export function toast(text: string, tone: 'info' | 'error' | 'good' = 'info') {
 }
 
 export async function reloadClusters() {
-  try { clusters.value = await api.clusters() } catch {}
+  try {
+    clusters.value = await api.clusters()
+    const rows = await Promise.all(clusters.value.map((c) => api.status(c.name).catch(() => null)))
+    const sm = new Map(statuses.value)
+    rows.forEach((s, i) => { if (s) sm.set(clusters.value[i].name, s) })
+    statuses.value = sm
+  } catch {}
 }
 
 export async function reloadOperations() {

@@ -3,7 +3,7 @@ import { useLocation } from 'preact-iso'
 import { api, type ClusterRow, type Status } from '../../api'
 import { clusters, loadHealth, operations, statuses } from '../../store'
 import { Tabs } from '../../components/Tabs'
-import { ErrorBox, Pill, stateTone } from '../../components/ui'
+import { ClusterPill, ErrorBox, Pill } from '../../components/ui'
 import { sectionList, type Section } from '../../app'
 import { Overview } from './Overview'
 import { Nodes } from './Nodes'
@@ -39,7 +39,7 @@ export function ClusterPage({ name, section = 'overview', sub }: { name: string;
       <header class="px-6 pt-5 pb-0 border-b border-border bg-panel/60">
         <div class="flex flex-wrap items-center gap-3 mb-3">
           <h1 class="text-xl font-semibold">{name}</h1>
-          <Pill tone={stateTone(cluster.state)}>{cluster.state}</Pill>
+          <ClusterPill state={cluster.state} status={status} />
           {status && <Pill tone={status.apiReachable ? 'good' : 'bad'} title={status.apiError}>{status.apiReachable ? 'API reachable' : 'API unreachable'}</Pill>}
           {runningHere.length > 0 && <Pill tone="warn">{runningHere.length} operation{runningHere.length === 1 ? '' : 's'} running</Pill>}
           <span class="mono text-muted text-[12px]">Talos {spec.talosVersion} · Kubernetes {spec.kubernetesVersion} · {spec.controlPlane.endpoint}</span>

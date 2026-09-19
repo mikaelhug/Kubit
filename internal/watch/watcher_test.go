@@ -69,3 +69,24 @@ func TestDeriveAPIAndRemoval(t *testing.T) {
 		t.Errorf("api back / lb lost: %v", got)
 	}
 }
+
+func TestDeriveSmallNodeMemory(t *testing.T) {
+	small := node("w1", true, true)
+	small.MemCapBytes = 454 << 20
+	big := node("w1", true, true)
+	big.MemCapBytes = 1300 << 20
+	got := kinds(watch.Derive("c", nil, st(true, 3, true, small)))
+	if len(got) != 1 || got[0] != "warn:node.memory-small" {
+		t.Errorf("first observation of a starved node: %v", got)
+	}
+	if got := kinds(watch.Derive("c", st(true, 3, true, small), st(true, 3, true, small))); len(got) != 0 {
+		t.Errorf("steady state repeats: %v", got)
+	}
+	got = kinds(watch.Derive("c", st(true, 3, true, small), st(true, 3, true, big)))
+	if len(got) != 1 || got[0] != "info:node.memory-ok" {
+		t.Errorf("resize resolves: %v", got)
+	}
+	if got := kinds(watch.Derive("c", nil, st(true, 3, true, big))); len(got) != 0 {
+		t.Errorf("a well-sized node is silent: %v", got)
+	}
+}

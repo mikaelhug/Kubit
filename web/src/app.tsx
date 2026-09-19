@@ -1,9 +1,12 @@
 import { LocationProvider, Router, Route, useLocation } from 'preact-iso'
 import { useEffect } from 'preact/hooks'
-import { clusters, connected, daemon, drawerHeight, drawerOpen, reconnectAttempt, resyncing, running } from './store'
-import { connectLive } from './live'
+import { clusters, connected, daemon, drawerHeight, drawerOpen, loadMe, machineList, me, reconnectAttempt, resyncing, running, statuses, toast } from './store'
+import { connectLive, reconnectLive } from './live'
+import { api } from './api'
+import { SignIn } from './pages/SignIn'
 import { now } from './clock'
-import { Pill, stateTone } from './components/ui'
+import { ClusterPill, Pill, stateTone } from './components/ui'
+import { hostName } from './machine'
 import { ActivityDrawer } from './components/ActivityDrawer'
 import { Toasts } from './components/Toasts'
 import { Palette, Shortcuts, ThemeToggle } from './components/Palette'
@@ -12,12 +15,14 @@ import { NewCluster } from './pages/create/NewCluster'
 import { NodePage } from './pages/Node'
 import { Operations } from './pages/Operations'
 import { Inventory } from './pages/fleet/Inventory'
-import { Pxe } from './pages/fleet/Pxe'
-import { GettingStarted } from './pages/GettingStarted'
+import { NetworkBoot } from './pages/fleet/NetworkBoot'
+import { Home } from './pages/Home'
 import { KubitSettings } from './pages/KubitSettings'
 
 export function App() {
-  useEffect(() => { connectLive() }, [])
+  useEffect(() => { loadMe().then(() => connectLive()).catch((e) => toast(e.message, 'error')) }, [])
+  if (me.value === undefined) return <div class="min-h-screen bg-bg" />
+  if (me.value === null) return <><SignIn /><Toasts /></>
   return (
     <LocationProvider>
       <Shell />
@@ -34,11 +39,18 @@ const sections = [
 ] as const
 export type Section = typeof sections[number][0]
 export const sectionList = sections
+export const settingsPages = [
+  ['general', 'General'], ['discovery', 'Discovery'], ['alerts', 'Alerts'], ['offsite', 'Off-site'],
+  ['accounts', 'Accounts'], ['sso', 'Single sign-on'], ['backup', 'Backup'],
+] as const
+export type SettingsPage = typeof settingsPages[number][0]
 
 function Shell() {
   const { path, route } = useLocation()
   const list = clusters.value
-  useEffect(() => { if (path === '/' && list.length > 0) route(`/clusters/${list[0].name}/overview`, true) }, [path, list, route])
+  const labHosts = machineList.value.filter((m) => m.labhost)
+  const redirects: Record<string, string> = { '/start': '/', '/fleet/pxe': '/fleet/network-boot', '/settings': '/settings/general' }
+  useEffect(() => { if (redirects[path]) route(redirects[path], true) }, [path, route])
   const activeCluster = /^\/clusters\/([^/]+)/.exec(path)?.[1]
   const pad = drawerOpen.value ? drawerHeight.value : 0
 
@@ -49,20 +61,34 @@ function Shell() {
           <span class="inline-block h-2.5 w-2.5 rounded-sm bg-accent" />
           <span class="font-semibold tracking-tight">Kubit</span>
         </a>
+        <div class="mt-2"><NavLink href="/" path={path} exact>Home</NavLink></div>
         <div class="px-4 pt-4 pb-1 label">Clusters</div>
         {list.map((c) => (
           <a key={c.name} href={`/clusters/${c.name}/overview`} class={`mx-2 rounded-md px-2 py-1.5 flex items-center justify-between hover:bg-panel-2 ${activeCluster === c.name ? 'bg-panel-2' : ''}`}>
             <span class="truncate font-medium">{c.name}</span>
-            <Pill tone={stateTone(c.state)}>{c.state}</Pill>
+            <ClusterPill state={c.state} status={statuses.value.get(c.name)} />
           </a>
         ))}
         <a href="/clusters/new" class={`mx-2 mt-1 rounded-md px-2 py-1.5 text-accent hover:bg-panel-2 ${path === '/clusters/new' ? 'bg-panel-2' : ''}`}>+ New cluster</a>
+        {labHosts.length > 0 && <div class="px-4 pt-5 pb-1 label">Lab hosts</div>}
+        {labHosts.map((h) => (
+          <a key={h.mac} href={`/labhosts/${h.mac}/overview`} class={`mx-2 rounded-md px-2 py-1.5 flex items-center justify-between hover:bg-panel-2 ${path.startsWith(`/labhosts/${h.mac}`) ? 'bg-panel-2' : ''}`}>
+            <span class="truncate font-medium">{hostName(h)}</span>
+            <Pill tone={stateTone(h.labhost!.state)} title={`${(h.labhost!.vms ?? []).length} VMs`}>{h.labhost!.state}</Pill>
+          </a>
+        ))}
         <div class="px-4 pt-5 pb-1 label">Fleet</div>
         <NavLink href="/fleet/inventory" path={path}>Inventory</NavLink>
+        <NavLink href="/fleet/network-boot" path={path}>Network boot</NavLink>
         <div class="px-4 pt-5 pb-1 label">Kubit</div>
         <NavLink href="/operations" path={path}>Activity {running.value.length > 0 && <Pill tone="warn">{running.value.length}</Pill>}</NavLink>
         <NavLink href="/settings" path={path}>Settings</NavLink>
-        <div class="mt-auto px-4 py-2.5 text-[11px] text-muted border-t border-border flex items-center gap-2">
+        <div class="mt-auto px-4 py-2 text-[11px] text-muted border-t border-border flex items-center gap-2">
+          <span class="truncate" title={`${me.value?.role} via ${me.value?.via}`}>{me.value?.via === 'loopback' ? 'no accounts yet' : me.value?.user}</span>
+          <span class="text-[10px] uppercase tracking-wide">{me.value?.role}</span>
+          {me.value?.via === 'session' && <button class="ml-auto hover:text-text" onClick={() => api.logout().then(() => loadMe()).then(() => reconnectLive())}>Sign out</button>}
+        </div>
+        <div class="px-4 py-2.5 text-[11px] text-muted border-t border-border flex items-center gap-2">
           <span class={`inline-block h-1.5 w-1.5 rounded-full shrink-0 ${connected.value ? (resyncing.value ? 'bg-warn animate-pulse' : 'bg-good') : 'bg-bad animate-pulse'}`} title={connected.value ? (resyncing.value ? 'resyncing' : 'live') : `reconnecting${reconnectAttempt.value > 1 ? ` (${reconnectAttempt.value})` : ''}`} />
           <DaemonUptime />
           <span class="ml-auto flex items-center gap-2"><ThemeToggle /><button class="hover:text-text" title="Jump to… (⌘K)" onClick={() => window.dispatchEvent(new KeyboardEvent('keydown', { key: 'k', metaKey: true }))}>⌘K</button><button class="hover:text-text" title="Keyboard shortcuts" onClick={() => window.dispatchEvent(new KeyboardEvent('keydown', { key: '?' }))}>?</button></span>
@@ -77,12 +103,14 @@ function Shell() {
           <Route path="/clusters/:name/:section/:sub" component={ClusterPage} />
           <Route path="/nodes/:ip" component={NodePage} />
           <Route path="/machines/:mac" component={NodePage} />
+          <Route path="/labhosts/:mac" component={NodePage} />
+          <Route path="/labhosts/:mac/:tab" component={NodePage} />
           <Route path="/fleet/inventory" component={Inventory} />
-          <Route path="/fleet/pxe" component={Pxe} />
-          <Route path="/start" component={GettingStarted} />
+          <Route path="/fleet/network-boot" component={NetworkBoot} />
           <Route path="/operations" component={Operations} />
           <Route path="/operations/:id" component={Operations} />
-          <Route path="/settings" component={KubitSettings} />
+          <Route path="/settings/:page" component={KubitSettings} />
+          <Route path="/" component={Home} />
           <Route default component={Home} />
         </Router>
       </main>
@@ -91,14 +119,9 @@ function Shell() {
   )
 }
 
-function NavLink({ href, path, children }: { href: string; path: string; children: preact.ComponentChildren }) {
-  const active = path === href || path.startsWith(href + '/')
+function NavLink({ href, path, children, exact }: { href: string; path: string; children: preact.ComponentChildren; exact?: boolean }) {
+  const active = path === href || (!exact && path.startsWith(href + '/'))
   return <a href={href} class={`mx-2 rounded-md px-2 py-1.5 flex items-center justify-between hover:bg-panel-2 ${active ? 'bg-panel-2' : ''}`}>{children}</a>
-}
-
-function Home() {
-  if (clusters.value.length > 0) return null
-  return <GettingStarted />
 }
 
 function DaemonUptime() {

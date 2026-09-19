@@ -92,7 +92,7 @@ func (h *hub) since(seq int64) (out []Message, head int64, ok bool) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	head = h.seq
-	if seq >= head {
+	if seq == 0 || seq >= head {
 		return nil, head, true
 	}
 	if seq < head-int64(h.n) {

@@ -5,18 +5,18 @@ import { DataTable, type Column } from '../../components/DataTable'
 import { Code, KeyValue, Notice, Pill, Section, type Tone } from '../../components/ui'
 
 type Boot = NonNullable<PxeStatus['boots']>[number]
-const stageTone: Record<string, Tone> = { dhcp: 'warn', ipxe: 'info', kernel: 'good' }
+const stageTone: Record<string, Tone> = { dhcp: 'warn', ipxe: 'info', debian: 'info', kernel: 'good' }
 const stageText: Record<string, string> = { dhcp: 'firmware asked (DHCP)', ipxe: 'iPXE fetched boot script', debian: 'Debian installer script fetched', kernel: 'kernel downloaded' }
 
 /** State of the separate `kubit pxe` process and what has booted through it. */
-export function Pxe() {
+export function NetworkBoot() {
   const [st, setSt] = useState<PxeStatus | null>(null)
   useEffect(() => {
     api.pxe().then(setSt).catch(() => {})
   }, [refreshKey('', 'pxe')])
   const cols: Column<Boot>[] = [
-    { id: 'mac', header: 'MAC', mono: true, sort: (b) => b.mac, cell: (b) => b.mac },
-    { id: 'ip', header: 'IP', mono: true, sort: (b) => b.ip ?? '', cell: (b) => b.ip ? <a href={`/nodes/${b.ip}`} class="hover:underline">{b.ip}</a> : <span class="text-muted">—</span> },
+    { id: 'mac', header: 'MAC', mono: true, sort: (b) => b.mac, cell: (b) => <a href={`/machines/${b.mac}`} class="hover:underline">{b.mac}</a> },
+    { id: 'ip', header: 'IP', mono: true, sort: (b) => b.ip ?? '', cell: (b) => b.ip || <span class="text-muted">—</span> },
     { id: 'arch', header: 'Arch', cell: (b) => b.arch || '—' },
     { id: 'stage', header: 'Stage', sort: (b) => b.stage, cell: (b) => <Pill tone={stageTone[b.stage] ?? 'muted'}>{stageText[b.stage] ?? b.stage}</Pill> },
     { id: 'count', header: 'Requests', align: 'right', sort: (b) => b.count, cell: (b) => b.count },
@@ -25,7 +25,7 @@ export function Pxe() {
   ]
   return (
     <div class="p-6 flex flex-col gap-5">
-      <Section title="Network boot" help="Boots machines into Talos maintenance mode next to the LAN's own DHCP. Cluster members are left alone. Runs as a separate root process."
+      <Section title="Network boot" help="The PXE server: boots machines into Talos maintenance mode next to the LAN's own DHCP; cluster members are left alone."
         actions={<EnrollmentSwitch />}>
         {!st && <div class="text-muted">Checking…</div>}
         {st && !st.running && (

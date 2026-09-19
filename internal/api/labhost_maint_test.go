@@ -26,7 +26,7 @@ func TestLabMaintainGates(t *testing.T) {
 	ctx := t.Context()
 	call := func(method, path string) *httptest.ResponseRecorder {
 		rec := httptest.NewRecorder()
-		s.ServeHTTP(rec, httptest.NewRequest(method, path, nil))
+		s.ServeHTTP(rec, local(httptest.NewRequest(method, path, nil)))
 		return rec
 	}
 	if rec := call(http.MethodPost, "/api/v1/machines/aa:aa:aa:aa:aa:01/labhost/update"); rec.Code != http.StatusNotFound {
