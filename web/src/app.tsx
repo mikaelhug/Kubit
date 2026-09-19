@@ -36,7 +36,7 @@ export function App() {
 
 const sections = [
   ['overview', 'Overview'], ['nodes', 'Nodes'], ['workloads', 'Workloads'], ['network', 'Network'],
-  ['storage', 'Storage'], ['addons', 'Add-ons'], ['backups', 'Backups'], ['settings', 'Settings'],
+  ['storage', 'Storage'], ['addons', 'Add-ons'], ['backups', 'Backups'], ['lifecycle', 'Lifecycle'], ['settings', 'Settings'],
 ] as const
 export type Section = typeof sections[number][0]
 export const sectionList = sections

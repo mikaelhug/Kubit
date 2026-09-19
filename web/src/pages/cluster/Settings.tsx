@@ -1,66 +1,69 @@
 import { useEffect, useState } from 'preact/hooks'
-import { useLocation } from 'preact-iso'
-import { api, fmt, type CertInfo, type Pool, type Versions, type Warning } from '../../api'
+import type { ComponentChildren } from 'preact'
+import { api, fmt, type Pool, type Warning } from '../../api'
 import { PoolsEditor } from '../../components/PoolsEditor'
 import { WarningLine } from '../create/steps'
-import { latestTalos, operations, toast, watch, refreshKey } from '../../store'
+import { toast, watch } from '../../store'
 import { Tabs } from '../../components/Tabs'
-import { ConfirmDialog, ErrorBox, Field, MaintenanceNotice, Notice, Pill, Section } from '../../components/ui'
+import { ErrorBox, Field, Section } from '../../components/ui'
 import type { ClusterCtx } from './ClusterPage'
 
+/** The declaration: cluster.yaml as a form or as text, and the pools. Nothing here runs an operation except Apply node configs. */
 export function Settings({ ctx }: { ctx: ClusterCtx }) {
-  const { route } = useLocation()
   const { name, cluster } = ctx
   const spec = cluster.spec.spec
   const [tab, setTab] = useState<'form' | 'yaml'>('form')
   const [yaml, setYaml] = useState('')
   const [dirty, setDirty] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  const [forget, setForget] = useState(false)
-  const [versions, setVersions] = useState<Versions | null>(null)
   const [form, setForm] = useState(fromSpec(spec))
-  const [upgrade, setUpgrade] = useState<{ talos: string; k8s: string }>({ talos: spec.talosVersion, k8s: spec.kubernetesVersion })
-  useEffect(() => { api.versions().then(setVersions).catch(() => {}) }, [latestTalos.value])
   useEffect(() => { api.clusterYaml(name).then((y) => { setYaml(y); setDirty(false) }).catch((e) => setError(e.message)); setForm(fromSpec(spec)) }, [name, cluster.updatedAt])
-  const k8sMinor = spec.kubernetesVersion.split('.').slice(0, 2).join('.')
-  const k8sTargets = (versions?.kubernetesMinors ?? []).filter((m) => m >= k8sMinor)
   const formDirty = JSON.stringify(form) !== JSON.stringify(fromSpec(spec))
   const cps = spec.nodes.filter((n) => n.role === 'controlplane').length
   const list = (s: string) => s.split(/[,\s]+/).filter(Boolean)
+  const set = (patch: Partial<typeof form>) => setForm({ ...form, ...patch })
+  const text = (key: keyof typeof form) => (e: Event) => set({ [key]: (e.target as HTMLInputElement).value } as Partial<typeof form>)
   const saveForm = () => api.saveClusterForm(name, { ...form, extensions: list(form.extensions), nameservers: list(form.nameservers), ntp: list(form.ntp), etcdSnapshotKeep: Number(form.etcdSnapshotKeep) || 0 })
-    .then(() => { setError(null); toast('Saved. Apply node configs to push machine changes; add-ons are planned under Add-ons.', 'good') }).catch((e) => setError(e.message))
+    .then(() => { setError(null); toast('Saved. Apply node configs to push machine changes.', 'good') }).catch((e) => setError(e.message))
+  const apply = () => api.applyCluster(name).then((r) => watch(r)).catch((e) => setError(e.message))
 
   return (
     <div class="flex flex-col gap-6">
-      <Section title="Declaration" actions={<span class="text-[12px] text-muted num">created {new Date(cluster.createdAt).toLocaleDateString()} · changed {fmt.when(cluster.updatedAt)}</span>} help="Save changes the declaration; Apply node configs pushes it to the nodes. Add-ons are reviewed under Add-ons → Plan.">
+      <Section title="Declaration" actions={<span class="text-[12px] text-muted num">created {new Date(cluster.createdAt).toLocaleDateString()} · changed {fmt.when(cluster.updatedAt)}</span>} help="Save changes cluster.yaml; Apply node configs pushes it to the nodes. Add-ons are planned under Add-ons.">
         <ErrorBox error={error} />
         <Tabs active={tab} onSelect={(t) => setTab(t as any)} tabs={[{ id: 'form', label: 'Form' }, { id: 'yaml', label: 'YAML' }]} />
         {tab === 'form' && (
-          <div class="panel p-4 flex flex-col gap-4">
-            <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
-              <Field label="API endpoint" hint="What kubeconfig and joining nodes use; normally https://<VIP or first control plane>:6443."><input class="input mono" value={form.endpoint} onInput={(e) => setForm({ ...form, endpoint: (e.target as HTMLInputElement).value })} /></Field>
-              <Field label="Control plane VIP" hint="Layer-2 address shared by control planes; empty = none. Changing it re-applies every control plane."><input class="input mono" value={form.vip} onInput={(e) => setForm({ ...form, vip: (e.target as HTMLInputElement).value })} placeholder="none" /></Field>
-              <Field label="Pod CIDR" hint="Cannot be changed on a running cluster without recreating it."><input class="input mono" value={form.podCIDR} onInput={(e) => setForm({ ...form, podCIDR: (e.target as HTMLInputElement).value })} /></Field>
-              <Field label="Service CIDR" hint="Same: fixed for the cluster's lifetime in practice."><input class="input mono" value={form.serviceCIDR} onInput={(e) => setForm({ ...form, serviceCIDR: (e.target as HTMLInputElement).value })} /></Field>
-              <Field label="System extensions" hint="Image Factory extensions baked into the installer (comma-separated). A new schematic is used by new nodes and upgrades."><input class="input mono" value={form.extensions} onInput={(e) => setForm({ ...form, extensions: (e.target as HTMLInputElement).value })} /></Field>
-              <Field label="Nameservers" hint="Cluster-wide DNS for every node (comma-separated); empty keeps DHCP's."><input class="input mono" value={form.nameservers} placeholder="from DHCP" onInput={(e) => setForm({ ...form, nameservers: (e.target as HTMLInputElement).value })} /></Field>
-              <Field label="NTP servers" hint="Empty uses Talos' default."><input class="input mono" value={form.ntp} placeholder="time.cloudflare.com" onInput={(e) => setForm({ ...form, ntp: (e.target as HTMLInputElement).value })} /></Field>
-              <Field label="Maintenance window" hint='Disruptive operations (upgrades, reboots, drains, removals, restores) are refused outside it unless overridden. "<days> HH:MM-HH:MM", e.g. "Sat,Sun 22:00-04:00" or "daily 01:00-05:00"; empty = anytime.'><input class="input mono" value={form.maintenanceWindow} placeholder="anytime" onInput={(e) => setForm({ ...form, maintenanceWindow: (e.target as HTMLInputElement).value })} /></Field>
-              <Field label="Window time zone" hint="IANA name; empty uses the daemon host's zone."><input class="input mono" value={form.maintenanceTimezone} placeholder={Intl.DateTimeFormat().resolvedOptions().timeZone} onInput={(e) => setForm({ ...form, maintenanceTimezone: (e.target as HTMLInputElement).value })} /></Field>
-              <Field label="SSO issuer" hint="OpenID Connect issuer for kubectl users; empty = admin kubeconfig only. Applies on Apply node configs."><input class="input mono" value={form.oidc.issuer} placeholder="https://login.example.com/realms/ops" onInput={(e) => setForm({ ...form, oidc: { ...form.oidc, issuer: (e.target as HTMLInputElement).value.trim() } })} /></Field>
-              <Field label="SSO client ID" hint="Audience the API server accepts."><input class="input mono" value={form.oidc.clientID} onInput={(e) => setForm({ ...form, oidc: { ...form.oidc, clientID: (e.target as HTMLInputElement).value.trim() } })} /></Field>
-              <Field label="SSO claims" hint="Username claim, groups claim. Users and groups are prefixed oidc: in RBAC."><span class="flex gap-2"><input class="input mono" value={form.oidc.usernameClaim ?? ''} onInput={(e) => setForm({ ...form, oidc: { ...form.oidc, usernameClaim: (e.target as HTMLInputElement).value.trim() } })} /><input class="input mono" value={form.oidc.groupsClaim ?? ''} onInput={(e) => setForm({ ...form, oidc: { ...form.oidc, groupsClaim: (e.target as HTMLInputElement).value.trim() } })} /></span></Field>
-              <Field label="SSO admin group" hint="Bound to cluster-admin by the platform layer."><input class="input mono" value={form.oidc.adminGroup ?? ''} onInput={(e) => setForm({ ...form, oidc: { ...form.oidc, adminGroup: (e.target as HTMLInputElement).value.trim() } })} /></Field>
+          <div class="flex flex-col gap-4">
+            <Group title="Endpoint">
+              <Field label="API endpoint" hint="What kubeconfig and joining nodes use; normally https://<VIP or first control plane>:6443."><input class="input mono" value={form.endpoint} onInput={text('endpoint')} /></Field>
+              <Field label="Control plane VIP" hint="Layer-2 address shared by control planes; empty = none. Changing it re-applies every control plane."><input class="input mono" value={form.vip} placeholder="none" onInput={text('vip')} /></Field>
               <Field label="Workloads on control planes" hint={`${cps} control plane${cps === 1 ? '' : 's'}; Kubit defaults to schedulable below 6 nodes.`}>
-                <select class="input" value={form.allowScheduling === null ? 'auto' : String(form.allowScheduling)} onChange={(e) => { const v = (e.target as HTMLSelectElement).value; setForm({ ...form, allowScheduling: v === 'auto' ? null : v === 'true' }) }}>
+                <select class="input" value={form.allowScheduling === null ? 'auto' : String(form.allowScheduling)} onChange={(e) => { const v = (e.target as HTMLSelectElement).value; set({ allowScheduling: v === 'auto' ? null : v === 'true' }) }}>
                   <option value="true">Allowed (control planes also run pods)</option>
                   <option value="false">Dedicated (NoSchedule taint)</option>
                 </select>
               </Field>
-            </div>
+            </Group>
+            <Group title="Network">
+              <Field label="Pod CIDR" hint="Fixed for the cluster's lifetime."><input class="input mono" value={form.podCIDR} onInput={text('podCIDR')} /></Field>
+              <Field label="Service CIDR" hint="Fixed for the cluster's lifetime."><input class="input mono" value={form.serviceCIDR} onInput={text('serviceCIDR')} /></Field>
+              <Field label="Nameservers" hint="Every node; comma-separated. Empty keeps DHCP's."><input class="input mono" value={form.nameservers} placeholder="from DHCP" onInput={text('nameservers')} /></Field>
+              <Field label="NTP servers" hint="Empty uses Talos' default."><input class="input mono" value={form.ntp} placeholder="time.cloudflare.com" onInput={text('ntp')} /></Field>
+            </Group>
+            <Group title="Nodes">
+              <Field label="System extensions" hint="Image Factory extensions in the installer, comma-separated. New nodes and upgrades use the new schematic."><input class="input mono" value={form.extensions} onInput={text('extensions')} /></Field>
+              <Field label="Maintenance window" hint='Disruptive operations are refused outside it unless overridden. "<days> HH:MM-HH:MM", e.g. "Sat,Sun 22:00-04:00" or "daily 01:00-05:00"; empty = anytime.'><input class="input mono" value={form.maintenanceWindow} placeholder="anytime" onInput={text('maintenanceWindow')} /></Field>
+              <Field label="Window time zone" hint="IANA name; empty uses the daemon host's zone."><input class="input mono" value={form.maintenanceTimezone} placeholder={Intl.DateTimeFormat().resolvedOptions().timeZone} onInput={text('maintenanceTimezone')} /></Field>
+            </Group>
+            <Group title="kubectl SSO" help="OpenID Connect for kubectl users; empty issuer = admin kubeconfig only. Applies on Apply node configs and the next add-on apply.">
+              <Field label="Issuer URL"><input class="input mono" value={form.oidc.issuer} placeholder="https://login.example.com/realms/ops" onInput={(e) => set({ oidc: { ...form.oidc, issuer: (e.target as HTMLInputElement).value.trim() } })} /></Field>
+              <Field label="Client ID" hint="Audience the API server accepts."><input class="input mono" value={form.oidc.clientID} onInput={(e) => set({ oidc: { ...form.oidc, clientID: (e.target as HTMLInputElement).value.trim() } })} /></Field>
+              <Field label="Claims" hint="Username claim, groups claim. Prefixed oidc: in RBAC."><span class="flex gap-2"><input class="input mono" value={form.oidc.usernameClaim ?? ''} onInput={(e) => set({ oidc: { ...form.oidc, usernameClaim: (e.target as HTMLInputElement).value.trim() } })} /><input class="input mono" value={form.oidc.groupsClaim ?? ''} onInput={(e) => set({ oidc: { ...form.oidc, groupsClaim: (e.target as HTMLInputElement).value.trim() } })} /></span></Field>
+              <Field label="Admin group" hint="Bound to cluster-admin."><input class="input mono" value={form.oidc.adminGroup ?? ''} onInput={(e) => set({ oidc: { ...form.oidc, adminGroup: (e.target as HTMLInputElement).value.trim() } })} /></Field>
+            </Group>
             <div class="flex items-center gap-2">
               <button class="btn btn-primary" disabled={!formDirty} onClick={saveForm}>Save</button>
-              <button class="btn" disabled={formDirty} title={formDirty ? 'Save first' : 'Regenerate and apply every machine config from the saved declaration'} onClick={() => api.applyCluster(name).then((r) => watch(r)).catch((e) => setError(e.message))}>Apply node configs</button>
+              <button class="btn" disabled={formDirty} title={formDirty ? 'Save first' : 'Regenerate and apply every machine config from the saved declaration'} onClick={apply}>Apply node configs</button>
               {formDirty && <span class="text-[12px] text-warn">unsaved changes</span>}
             </div>
           </div>
@@ -71,58 +74,23 @@ export function Settings({ ctx }: { ctx: ClusterCtx }) {
             <div class="flex gap-2 items-center">
               <button class="btn" onClick={() => api.validate(yaml).then((v) => { setYaml(v.yaml); setError(null); toast('Valid') }).catch((e) => setError(e.message))}>Validate</button>
               <button class="btn btn-primary" disabled={!dirty} onClick={() => api.saveClusterYaml(name, yaml).then((v) => { setYaml(v.yaml); setDirty(false); setError(null); toast('Saved.', 'good') }).catch((e) => setError(e.message))}>Save</button>
-              <button class="btn" disabled={dirty} onClick={() => api.applyCluster(name).then((r) => watch(r)).catch((e) => setError(e.message))}>Apply node configs</button>
-              <a href={`/clusters/${name}/addons`} class="btn">Plan add-ons →</a>
+              <button class="btn" disabled={dirty} onClick={apply}>Apply node configs</button>
+              <a href={`/clusters/${name}/addons`} class="btn">Plan add-ons</a>
               {dirty && <span class="text-[12px] text-warn">unsaved changes</span>}
             </div>
           </>
         )}
       </Section>
-
       <PoolsSection ctx={ctx} />
+    </div>
+  )
+}
 
-      <Section title="Versions" help={`Rolling, one node at a time, control planes first; each node must come back Ready before the next starts. Every upgrade begins with pre-flight checks (etcd, node health, /var headroom, removed APIs for Kubernetes) and a pre-upgrade etcd snapshot. ${versions?.note ?? ''}`}>
-        <MaintenanceNotice cluster={name} />
-        <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
-          <Field label={`Talos (now ${spec.talosVersion})`} hint={versions ? `Releases from ${versions.talosSource}; A/B partition swap with automatic rollback on boot failure. Pre-releases are listed but not recommended.` : 'A/B partition swap; Talos rolls back on its own if the new system does not boot.'}>
-            <div class="flex gap-2">
-              <input class="input mono" list="talos-versions" value={upgrade.talos} onInput={(e) => setUpgrade({ ...upgrade, talos: (e.target as HTMLInputElement).value })} />
-              <datalist id="talos-versions">{versions?.talos.map((v) => <option key={v} value={v} />)}</datalist>
-              <button class="btn btn-primary shrink-0" disabled={upgrade.talos === spec.talosVersion} onClick={() => api.upgradeTalos(name, upgrade.talos).then(watch).catch((e) => toast(e.message, 'error'))}>Upgrade</button>
-            </div>
-          </Field>
-          <Field label={`Kubernetes (now ${spec.kubernetesVersion})`} hint={`Re-applies machine configs with the new component images, then syncs bootstrap manifests. Supported minors with Talos ${versions?.machinery ?? ''}: ${(versions?.kubernetesMinors ?? []).join(', ')}; downgrades are not offered.`}>
-            <div class="flex gap-2">
-              <input class="input mono" list="k8s-versions" value={upgrade.k8s} onInput={(e) => setUpgrade({ ...upgrade, k8s: (e.target as HTMLInputElement).value })} />
-              <datalist id="k8s-versions">{k8sTargets.map((m) => <option key={m} value={m === versions?.kubernetesLatest.split('.').slice(0, 2).join('.') ? versions.kubernetesLatest : m + '.0'} />)}</datalist>
-              <button class="btn btn-primary shrink-0" disabled={upgrade.k8s === spec.kubernetesVersion} onClick={() => api.upgradeKubernetes(name, upgrade.k8s).then(watch).catch((e) => toast(e.message, 'error'))}>Upgrade</button>
-            </div>
-          </Field>
-        </div>
-      </Section>
-
-      <CredentialsSection name={name} />
-
-      <Section title="Export" help="Everything needed to run this cluster without Kubit: Talos secrets and configs, kubeconfig, an OpenTofu root.">
-        <div class="flex gap-2">
-          <button class="btn" onClick={() => api.exportCluster(name).then((r) => toast(`Exported to ${r.dir}`, 'good')).catch((e) => toast(e.message, 'error'))}>Export to ~/.kubit/clusters/{name}/export</button>
-          <a class="btn" href={`/api/v1/clusters/${name}/kubeconfig`} download="kubeconfig">Download kubeconfig</a>
-        </div>
-      </Section>
-
-      <Section title="Danger zone">
-        <Notice tone="bad">
-          <div class="flex items-center gap-3">
-            <span>Removes Kubit's records and secrets; the nodes keep running but can never be managed again. Export first.</span>
-            <button class="btn btn-danger ml-auto shrink-0" onClick={() => setForget(true)}>Forget cluster</button>
-          </div>
-        </Notice>
-      </Section>
-      {forget && (
-        <ConfirmDialog title={`Forget ${name}`} action="Forget cluster" tone="danger" typed={name} onClose={() => setForget(false)}
-          onConfirm={() => api.forgetCluster(name).then(() => { route('/') }).catch((e) => toast(e.message, 'error'))}
-          impact={<><p>Deletes the stored cluster.yaml, secrets bundle, talosconfig, kubeconfig and per-node machine configs.</p><p>The {spec.nodes.length} node{spec.nodes.length === 1 ? '' : 's'} are not touched and stay in the cluster.</p></>} />
-      )}
+function Group({ title, help, children }: { title: string; help?: string; children: ComponentChildren }) {
+  return (
+    <div class="panel p-4 flex flex-col gap-3">
+      <div><span class="label">{title}</span>{help && <p class="text-[12px] text-muted mt-0.5">{help}</p>}</div>
+      <div class="grid grid-cols-1 md:grid-cols-2 gap-4">{children}</div>
     </div>
   )
 }
@@ -138,37 +106,6 @@ function fromSpec(spec: ClusterCtx['cluster']['spec']['spec']) {
   }
 }
 
-/** What Kubit holds to talk to the cluster, and when each stops working. */
-function CredentialsSection({ name }: { name: string }) {
-  const [certs, setCerts] = useState<CertInfo[]>([])
-  const [error, setError] = useState<string | null>(null)
-  const finished = [...operations.value.values()].filter((o) => o.cluster === name && o.status !== 'running').length
-  useEffect(() => { api.certificates(name).then(setCerts).catch((e) => setError(e.message)) }, [name, finished, refreshKey(name, 'certificates')])
-  const label: Record<string, string> = { talosconfig: 'Admin talosconfig', kubeconfig: 'Admin kubeconfig', 'talos-ca': 'Talos API CA', 'kubernetes-ca': 'Kubernetes CA', 'etcd-ca': 'etcd CA', 'aggregator-ca': 'Aggregator CA' }
-  const tone = (d: number) => d <= 7 ? 'bad' : d <= 30 ? 'warn' : 'good'
-  return (
-    <Section title="Credentials" help="Client certificates last one year and can be rotated here; CAs last ten. Kubit alerts 30 days before expiry.">
-      <ErrorBox error={error} />
-      <div class="panel scroll-x">
-        <table class="data">
-          <thead><tr><th class="pl-4">Credential</th><th>Expires</th><th>Issued</th><th>Subject</th><th></th></tr></thead>
-          <tbody>
-            {certs.map((c) => (
-              <tr key={c.name}>
-                <td class="pl-4 font-medium">{label[c.name] ?? c.name}</td>
-                <td>{c.error ? <span class="text-bad">{c.error}</span> : <span class="flex items-center gap-2"><Pill tone={tone(c.daysLeft)}>{c.daysLeft} days</Pill><span class="num text-muted">{fmt.datetime(c.notAfter)}</span></span>}</td>
-                <td class="num text-muted">{c.notBefore ? fmt.datetime(c.notBefore) : '—'}</td>
-                <td class="mono text-[11px] text-muted truncate max-w-[260px]" title={c.subject}>{c.subject}</td>
-                <td class="text-right pr-3">{c.rotatable && <button class="btn !py-1" onClick={() => api.rotateCredential(name, c.name as 'talosconfig' | 'kubeconfig').then((r) => watch(r)).catch((e) => toast(e.message, 'error'))}>Rotate</button>}</td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
-    </Section>
-  )
-}
-
 /** Pools live in cluster.yaml; saving resolves a schematic per distinct extension set. */
 function PoolsSection({ ctx }: { ctx: ClusterCtx }) {
   const { name, cluster } = ctx
@@ -179,7 +116,7 @@ function PoolsSection({ ctx }: { ctx: ClusterCtx }) {
   useEffect(() => { setPools(spec.pools ?? []) }, [cluster.updatedAt])
   useEffect(() => { api.lint(JSON.stringify(cluster.spec)).then((r) => setWarnings(r.warnings)).catch(() => {}) }, [cluster.updatedAt])
   const dirty = JSON.stringify(pools) !== JSON.stringify(spec.pools ?? [])
-  const save = () => api.savePools(name, pools).then(() => { setError(null); toast('Pools saved. Existing nodes pick up label/taint changes on Apply node configs; a changed extension set applies on the next upgrade or move.', 'good') }).catch((e) => setError(e.message))
+  const save = () => api.savePools(name, pools).then(() => { setError(null); toast('Pools saved. Labels and taints apply on Apply node configs; a changed extension set on the next upgrade or move.', 'good') }).catch((e) => setError(e.message))
   return (
     <Section title="Pools" help="A pool is a class of nodes: role, labels, taints, extensions, disk policy." actions={<button class="btn btn-primary" disabled={!dirty} onClick={save}>Save pools</button>}>
       <ErrorBox error={error} />

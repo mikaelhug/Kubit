@@ -15,6 +15,8 @@ import { Workloads } from './Workloads'
 import { Network } from './Network'
 import { Storage } from './Storage'
 import { Backups } from './Backups'
+import { Lifecycle } from './Lifecycle'
+import { ageSec } from '../../clock'
 
 export interface ClusterCtx { name: string; cluster: ClusterRow; status: Status | null; refresh: () => void; error: string | null }
 
@@ -41,6 +43,7 @@ export function ClusterPage({ name, section = 'overview', sub }: { name: string;
           <h1 class="text-xl font-semibold">{name}</h1>
           <ClusterPill state={cluster.state} status={status} />
           {status && <Pill tone={status.apiReachable ? 'good' : 'bad'} title={status.apiError}>{status.apiReachable ? 'API reachable' : 'API unreachable'}</Pill>}
+          {status?.observedAt && <Observed at={status.observedAt} />}
           {runningHere.length > 0 && <Pill tone="warn">{runningHere.length} operation{runningHere.length === 1 ? '' : 's'} running</Pill>}
           <span class="mono text-muted text-[12px]">Talos {spec.talosVersion} · Kubernetes {spec.kubernetesVersion} · {spec.controlPlane.endpoint}</span>
         </div>
@@ -65,8 +68,16 @@ function renderSection(section: Section | 'operations', sub: string | undefined,
     case 'network': return <Network ctx={ctx} />
     case 'storage': return <Storage ctx={ctx} />
     case 'backups': return <Backups ctx={ctx} />
+    case 'lifecycle': return <Lifecycle ctx={ctx} />
     default: return <Placeholder title="Not found" milestone="">Unknown section.</Placeholder>
   }
+}
+
+/** How far behind the watcher is; ticks from the shared clock. */
+function Observed({ at }: { at: string }) {
+  const s = Math.floor(ageSec(at))
+  const stale = s > 120
+  return <span class={`text-[12px] num ${stale ? 'text-warn' : 'text-muted'}`} title="When the health watcher last observed this cluster">observed {s < 60 ? `${s} s` : `${Math.round(s / 60)} min`} ago</span>
 }
 
 /** Old per-cluster Operations URLs land on Activity filtered to the cluster. */

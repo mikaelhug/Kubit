@@ -1,11 +1,10 @@
 import { useEffect, useState } from 'preact/hooks'
 import { api, fmt, type HealthEvent, type Sample, type ServiceHealth, type Versions } from '../../api'
-import { ack, clusters, health, latestTalos as latestTalosSignal, operations, refreshKey } from '../../store'
+import { ack, clusters, health, latestTalos as latestTalosSignal, loadSnapshots, operations, refreshKey, snapshots } from '../../store'
 import { runbookFor } from '../../runbooks'
 import { Sparkline } from '../../components/Sparkline'
 import { Notice, Pill, Section, StatusDot } from '../../components/ui'
 import type { ClusterCtx } from './ClusterPage'
-import { ageSec } from '../../clock'
 
 const recoveryKinds = new Set(['talos.back', 'node.ready', 'api.back', 'etcd.healthy', 'lb.assigned', 'workload.available', 'pod.recovered', 'pvc.bound', 'service.endpoints', 'ingress.address', 'lb.pool-free'])
 
@@ -47,8 +46,8 @@ export function Overview({ ctx }: { ctx: ClusterCtx }) {
 
   return (
     <>
-      {updates.length > 0 && <Notice tone="info"><span class="flex items-center gap-2">Update available: {updates.join(' · ')}<a href={`/clusters/${name}/settings`} class="ml-auto text-accent hover:underline text-[12px]">Versions →</a></span></Notice>}
-      {status?.apiError && <Notice tone="warn">Kubernetes API unreachable at {status.endpoint}: {status.apiError}. Readiness and usage come from the last known state.</Notice>}
+      {updates.length > 0 && <Notice tone="info"><span class="flex items-center gap-2">Update available: {updates.join(' · ')}<a href={`/clusters/${name}/lifecycle`} class="ml-auto text-accent hover:underline text-[12px]">Lifecycle</a></span></Notice>}
+      {status?.apiError && !alerts.some((e) => e.kind === 'api.unreachable') && <Notice tone="warn">Kubernetes API unreachable at {status.endpoint}: {status.apiError}. Readiness and usage come from the last known state.</Notice>}
       {alerts.length > 0 && (
         <div class="panel border-warn/50">
           <div class="flex items-center gap-2 px-4 py-2 border-b border-border">
@@ -63,9 +62,9 @@ export function Overview({ ctx }: { ctx: ClusterCtx }) {
         <Card label="Control plane" tone={!status ? 'muted' : cpDown === 0 ? 'good' : 'bad'} value={status ? `${status.nodes.filter((n) => n.role === 'controlplane').length - cpDown}/${status.nodes.filter((n) => n.role === 'controlplane').length}` : '—'} sub={spec.controlPlane.vip ? `VIP ${spec.controlPlane.vip}` : 'no VIP: endpoint is the first control plane'} />
         <Card label="etcd quorum" tone={!status ? 'muted' : status.etcd.healthy ? 'good' : 'bad'} value={status ? `${status.etcd.members}/${status.etcd.expected}` : '—'} sub={status?.etcd.leader ? `leader ${status.etcd.leader}` : status?.etcd.alarms?.join(', ') || 'no leader reported'} />
         <Card label="Nodes Ready" tone={!t ? 'muted' : t.nodesReady === t.nodes ? 'good' : 'warn'} value={t ? `${t.nodesReady}/${t.nodes}` : '—'} sub={`${spec.nodes.filter((n) => n.role === 'worker').length} worker${spec.nodes.filter((n) => n.role === 'worker').length === 1 ? '' : 's'}`} />
-        <ObserverCard status={status} />
         <WorkloadsCard cluster={name} pods={t?.pods} service={service} />
-        <Card label="Load balancer" tone={status?.platform?.outputs?.ingress_ip ? 'good' : spec.platform.metallb.enabled ? 'warn' : 'muted'} value={status?.platform?.outputs?.ingress_ip ?? (spec.platform.metallb.enabled ? 'pending' : 'off')} sub={spec.platform.metallb.enabled ? `pool ${spec.platform.metallb.range}` : 'MetalLB disabled'} />
+        <Card label="Load balancer" tone={status?.platform?.outputs?.ingress_ip ? 'good' : spec.platform.metallb.enabled ? 'warn' : 'muted'} value={status?.platform?.outputs?.ingress_ip ?? (spec.platform.metallb.enabled ? 'pending' : 'off')} sub={spec.platform.metallb.enabled ? `pool ${spec.platform.metallb.range}` : 'MetalLB disabled'} href={`/clusters/${name}/network`} />
+        <BackupsCard cluster={name} status={status} interval={spec.backup?.etcd.interval ?? '6h'} />
       </div>
       <div class="grid grid-cols-1 lg:grid-cols-2 gap-4">
         <div class="panel p-4 flex flex-col gap-4">
@@ -145,15 +144,16 @@ function WorkloadsCard({ cluster, pods, service }: { cluster: string; pods?: num
   return <Card label="Workloads" tone={!service ? 'muted' : down > 0 ? 'bad' : failing > 0 ? 'warn' : 'good'} value={pods === undefined ? '—' : `${pods} pods`} sub={sub} href={`/clusters/${cluster}/workloads?view=pods`} />
 }
 
-function ObserverCard({ status }: { status?: { observedAt?: string; lastSnapshotAt?: string; snapshotInterval?: string } | null }) {
-  if (!status?.observedAt) return <Card label="Observer" tone="muted" value="—" sub="no status from the watcher yet" />
-  const seenAgo = ageSec(status.observedAt)
-  const stale = seenAgo > 120
-  const interval = parseDuration(status.snapshotInterval ?? '6h')
-  const snapAgo = status.lastSnapshotAt ? (Date.now() - new Date(status.lastSnapshotAt).getTime()) / 1000 : null
-  const snapLate = interval > 0 && (snapAgo === null || snapAgo > 2 * interval)
-  const sub = interval === 0 ? 'etcd snapshots: schedule off' : snapAgo === null ? 'no etcd snapshot yet' : `last etcd snapshot ${fmt.when(status.lastSnapshotAt!)}`
-  return <Card label="Observer" tone={stale ? 'warn' : snapLate ? 'warn' : 'good'} value={stale ? `${Math.round(seenAgo / 60)} min ago` : 'live'} sub={stale ? `watcher last saw this cluster ${fmt.when(status.observedAt)}; ${sub}` : sub} />
+/** Last etcd snapshot, whether it has an off-site copy, and whether the schedule is keeping up. */
+function BackupsCard({ cluster, status, interval: spec }: { cluster: string; status?: { lastSnapshotAt?: string; snapshotInterval?: string } | null; interval: string }) {
+  useEffect(() => { if (!snapshots.value.has(cluster)) loadSnapshots(cluster) }, [cluster])
+  const latest = (snapshots.value.get(cluster) ?? []).find((s) => s.status === 'ok')
+  const interval = parseDuration(status?.snapshotInterval ?? spec)
+  const at = latest?.ts ?? status?.lastSnapshotAt
+  const ago = at ? (Date.now() - new Date(at).getTime()) / 1000 : null
+  const late = interval > 0 && (ago === null || ago > 2 * interval)
+  const sub = interval === 0 ? 'schedule off' : `every ${status?.snapshotInterval ?? spec}${latest ? latest.offsite ? ' · off-site copy' : ' · no off-site copy' : ''}`
+  return <Card label="Backups" tone={!at ? 'warn' : late ? 'warn' : 'good'} value={at ? fmt.when(at) : 'none'} sub={late && at ? `behind schedule · ${sub}` : sub} href={`/clusters/${cluster}/backups`} />
 }
 
 /** Semver-ish compare on the numeric part; prereleases never count as newer. */

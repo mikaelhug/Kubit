@@ -69,7 +69,7 @@ export function runbookFor(kind: string, c: Ctx): Runbook | null {
       ] }
     case 'cert.expiring':
       return { title: 'Credential expiring', why: 'The talosconfig or kubeconfig Kubit uses (and hands out via Download) is close to its end date. Past it, Kubit and every exported kubeconfig lose access.', steps: [
-        { text: 'Rotate the credential; exported copies must be re-downloaded afterwards.', link: { label: 'Settings → Credentials', href: `/clusters/${c.cluster}/settings` } },
+        { text: 'Rotate the credential; exported copies must be re-downloaded afterwards.', link: { label: 'Lifecycle', href: `/clusters/${c.cluster}/lifecycle` } },
       ] }
     case 'workload.unavailable':
       return { title: 'Workload below desired replicas', why: 'Pods are not becoming Ready: failing probes, image pull errors, missing resources, or a node that cannot schedule them.', steps: [

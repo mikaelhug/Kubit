@@ -356,6 +356,7 @@ function ActionsTab({ node, k8s, inv, cluster, spec, talosVersion }: { node: Nod
   const status = statuses.value.get(name)?.nodes.find((n) => n.hostname === host)
   return (
     <div class="flex flex-col gap-3 max-w-3xl">
+      <GroupHeading title="Node" help="Kubernetes and Talos operations on this cluster member." />
       <Action title={k8s?.unschedulable ? 'Uncordon' : 'Cordon'} what={k8s?.unschedulable ? 'Allow new pods to be scheduled here again.' : 'Stop new pods from being scheduled here. Running pods are untouched.'}
         button={k8s?.unschedulable ? 'Uncordon' : 'Cordon'} disabled={!k8s} onClick={() => run(k8s?.unschedulable ? api.uncordon(name, host) : api.cordon(name, host))} />
       <Action title="Drain" what={`Cordon, then evict ${pods} running pod${pods === 1 ? '' : 's'} (DaemonSet pods stay). Use before maintenance; uncordon afterwards.`} button="Drain" disabled={!k8s} onClick={() => setConfirm('drain')} />
@@ -365,7 +366,9 @@ function ActionsTab({ node, k8s, inv, cluster, spec, talosVersion }: { node: Nod
       <Action title="Move to another pool" what={pools.length ? `Same-role pools: ${pools.map((p) => p.name).join(', ')}. Labels and taints follow the pool; a different extension set means a re-image.` : `No other ${cp ? 'control-plane' : 'worker'} pool exists. Add one under Settings → Pools.`} button="Move" disabled={!inv || pools.length === 0} onClick={() => { setPool(pools[0]?.name ?? ''); setConfirm('pool') }} />
       <Action title="Update address" what={spec?.network ? `Static ${spec.network.addresses.join(', ')}${spec.network.vlan ? ` on VLAN ${spec.network.vlan}` : ''}. Change it or go back to DHCP.` : `DHCP; declared ${node.ip}${status?.seenAt && status.seenAt !== node.ip ? `, last seen at ${status.seenAt}` : ''}. Record a new lease or pin a static address.`} button="Update" disabled={!inv} onClick={() => setConfirm('readdress')} />
       <Action title="Remove from cluster" what={`Drain, delete the Node object, and reset Talos to maintenance mode. ${cp ? 'etcd membership is reduced by one.' : ''}`} button="Remove" href={`/clusters/${name}/nodes`} />
+      <GroupHeading title="Machine" help="The hardware under the node." />
       {isLabVM(node) ? <LabVMControls vm={node} /> : <RemoteManagement node={node} />}
+      {!isLabVM(node) && <WakeAction node={node} />}
       {confirm === 'drain' && <ConfirmDialog title={`Drain ${host}`} action="Drain" cluster={name} onClose={() => setConfirm(null)} onConfirm={() => run(api.drain(name, host))}
         impact={<ul class="list-disc pl-5"><li>Cordons the node.</li><li>Evicts {pods} pod{pods === 1 ? '' : 's'}; controllers reschedule them on other nodes.</li><li>Waits up to 5 minutes; PodDisruptionBudgets are respected.</li></ul>} />}
       {(confirm === 'reboot' || confirm === 'reboot-drain') && <ConfirmDialog title={`Reboot ${host}`} action={confirm === 'reboot-drain' ? 'Drain and reboot' : 'Reboot'} tone="danger" cluster={name} onClose={() => setConfirm(null)} onConfirm={() => run(api.rebootNode(name, host, confirm === 'reboot-drain'))}
@@ -411,7 +414,6 @@ function MachineActions({ node }: { node: NodeRow | null }) {
   const [lab, setLab] = useState(false)
   if (!node) return <Notice tone="muted">Loading…</Notice>
   const ready = clusters.value.filter((c) => c.state === 'ready' || c.state === 'bootstrapped')
-  const refresh = () => Promise.resolve()
   const vm = isLabVM(node)
   const summary = node.kind === 'maintenance' ? 'In Talos maintenance mode; not a cluster member.'
     : node.kind === 'configured' ? 'Runs Talos with a config Kubit did not apply. Reset it to maintenance mode to adopt it.'
@@ -421,19 +423,29 @@ function MachineActions({ node }: { node: NodeRow | null }) {
   return (
     <div class="flex flex-col gap-3 max-w-3xl">
       <Notice tone="muted">{summary}</Notice>
+      <GroupHeading title="Machine" help="What can be done with this hardware." />
       <Action title="Adopt into a cluster" what={(ready.length ? `Join ${ready.map((c) => c.name).join(', ')} as a new node.` : 'No ready cluster yet; create one with this machine.') + adoptHint} button={ready.length ? 'Adopt' : 'New cluster'} disabled={!canAdopt(node)}
         onClick={() => { if (!ready.length) { route('/clusters/new'); return } const t = ready.length === 1 ? ready[0].name : prompt(`Adopt into which cluster? (${ready.map((c) => c.name).join(', ')})`, ready[0].name); if (t && ready.find((c) => c.name === t)) route(`/clusters/${t}/nodes?adopt=${node.ip}`) }} />
       {vm ? <LabVMControls vm={node} /> : <RemoteManagement node={node} />}
       {canMakeLabHost(node) && <Action title="Make lab host" what={node.oobType ? 'Install Debian + KVM/libvirt on this machine (disk wiped) and carve Talos VMs from it. Reset by remote management; kubit pxe serves the installer.' : 'Install Debian + KVM/libvirt on this machine (disk wiped) and carve Talos VMs from it. No remote management here: you boot the installer yourself with the boot line Kubit prints.'} button="Make lab host" onClick={() => setLab(true)} />}
       {lab && <MakeLabHostDialog m={node} onClose={() => setLab(false)} />}
-      {!vm && <Action title="Wake-on-LAN" what={node.wol ? 'Enabled: Kubit can send a magic packet from this host to power the machine on.' : 'Off. Enable when the firmware supports WoL on the uplink NIC.'} button={node.wol ? 'Wake now' : 'Enable'}
-        onClick={() => (node.wol ? api.wake(node.mac).then(() => toast('Magic packet sent', 'good')) : api.setWOL(node.mac, true).then(refresh)).catch((e) => toast(e.message, 'error'))}
-        secondary={node.wol ? { label: 'Disable', onClick: () => api.setWOL(node.mac, false).then(refresh).catch((e) => toast(e.message, 'error')) } : undefined} />}
+      {!vm && <WakeAction node={node} />}
       {canRetire(node) && <Action title="Retire" what="Delete this machine's record. It reappears on the next scan if still on the network." button="Retire" onClick={() => setRetire(true)} />}
       {retire && <ConfirmDialog title={`Retire ${node.hostname || node.mac}`} action="Retire" tone="danger" onClose={() => setRetire(false)} onConfirm={() => api.retireMachine(node.mac).then(() => route('/fleet/inventory')).catch((e) => toast(e.message, 'error'))}
         impact={<p>Deletes the inventory row for <span class="mono">{node.mac}</span>. Nothing is sent to the machine.</p>} />}
     </div>
   )
+}
+
+function GroupHeading({ title, help }: { title: string; help: string }) {
+  return <div class="mt-2"><span class="label">{title}</span><p class="text-[12px] text-muted">{help}</p></div>
+}
+
+function WakeAction({ node }: { node: NodeRow }) {
+  const refresh = () => Promise.resolve()
+  return <Action title="Wake-on-LAN" what={node.wol ? 'Enabled: Kubit can send a magic packet to power the machine on.' : 'Off. Enable when the firmware supports WoL on the uplink NIC.'} button={node.wol ? 'Wake now' : 'Enable'}
+    onClick={() => (node.wol ? api.wake(node.mac).then(() => toast('Magic packet sent', 'good')) : api.setWOL(node.mac, true).then(refresh)).catch((e) => toast(e.message, 'error'))}
+    secondary={node.wol ? { label: 'Disable', onClick: () => api.setWOL(node.mac, false).then(refresh).catch((e) => toast(e.message, 'error')) } : undefined} />
 }
 
 function Action({ title, what, button, disabled, onClick, href, secondary }: { title: string; what: string; button: string; disabled?: boolean; onClick?: () => void; href?: string; secondary?: { label: string; onClick: () => void } }) {
