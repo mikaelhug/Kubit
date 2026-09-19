@@ -51,6 +51,45 @@ type Watcher struct {
 	observer     ObserverState
 	gaps         []time.Time
 	labNoNet     map[string]bool
+	offlineTicks int
+}
+
+// offlineAfter is how many consecutive blind observations declare the observer
+// offline: a DarkWake runs one or two ticks without a network and must stay silent.
+const offlineAfter = 3
+
+// isGap tells whether observation paused between two ticks: the new tick started long
+// after the previous one ended, or the tick itself spanned a suspension.
+func isGap(lastEnd, start, end time.Time, interval time.Duration) bool {
+	if lastEnd.IsZero() {
+		return false
+	}
+	return start.Sub(lastEnd) > 2*interval || end.Sub(start) > 2*interval
+}
+
+// noteOffline counts a blind observation and flips the observer state once enough
+// have been seen in a row; noteOnline resets both.
+func (w *Watcher) noteOffline(reason string) {
+	w.mu.Lock()
+	w.offlineTicks++
+	flip := w.offlineTicks >= offlineAfter
+	w.mu.Unlock()
+	if flip {
+		w.setOnline(false, reason)
+	}
+}
+
+func (w *Watcher) noteOnline() {
+	w.mu.Lock()
+	w.offlineTicks = 0
+	w.mu.Unlock()
+	w.setOnline(true, "")
+}
+
+func (w *Watcher) resetOffline() {
+	w.mu.Lock()
+	w.offlineTicks = 0
+	w.mu.Unlock()
 }
 
 // ObserverState is what Kubit knows about its own ability to observe: whether its
@@ -343,7 +382,7 @@ func (w *Watcher) labTick(ctx context.Context, host *store.Machine) {
 	w.mu.Lock()
 	w.labNoNet[host.MAC] = false
 	w.mu.Unlock()
-	w.setOnline(true, "")
+	w.noteOnline()
 	host.LabHost.Failures = 0
 	capa, err := lc.Capacity(tctx)
 	if err == nil {
@@ -419,7 +458,7 @@ func (w *Watcher) labFailed(ctx context.Context, host *store.Machine, err error)
 			if first {
 				log.Printf("lab host %s: %v (Kubit's host cannot reach the network; not counted)", host.MAC, err)
 			}
-			w.setOnline(false, cluster.ShortNet(err))
+			w.noteOffline(cluster.ShortNet(err))
 			return
 		}
 	}
@@ -595,6 +634,7 @@ func (w *Watcher) emit(ctx context.Context, name string, events []store.EventRow
 }
 
 func (w *Watcher) tick(ctx context.Context, name string) {
+	start := time.Now()
 	st, err := w.Manager.Status(ctx, name)
 	if err != nil {
 		log.Printf("watch %s: %v", name, err)
@@ -604,9 +644,9 @@ func (w *Watcher) tick(ctx context.Context, name string) {
 	w.mu.Lock()
 	prev := w.last[name]
 	w.last[name] = st
-	// A tick long after the previous one means the host slept or the process was
-	// suspended: what was observed before is no baseline for what is observed now.
-	gap := !w.lastTick[name].IsZero() && now.Sub(w.lastTick[name]) > 2*w.Interval
+	// A tick long after the previous one, or one that took far longer than it should,
+	// means the laptop slept: what was observed before is no baseline for now.
+	gap := isGap(w.lastTick[name], start, now, w.Interval)
 	if gap {
 		w.gaps = append(w.gaps, now)
 	}
@@ -633,10 +673,13 @@ func (w *Watcher) tick(ctx context.Context, name string) {
 	_ = w.Store.AddSamples(ctx, name, now, samples)
 
 	offline := st.Observer == cluster.ObserverOffline
-	if offline {
-		w.setOnline(false, st.ObserverError)
-	} else {
-		w.setOnline(true, "")
+	switch {
+	case gap:
+		w.resetOffline()
+	case offline:
+		w.noteOffline(st.ObserverError)
+	default:
+		w.noteOnline()
 	}
 
 	// While a cluster is still being provisioned, unreachable nodes and a missing API

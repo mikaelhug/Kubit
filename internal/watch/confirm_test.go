@@ -2,6 +2,7 @@ package watch
 
 import (
 	"testing"
+	"time"
 
 	"github.com/mikael/kubit/internal/cluster"
 	"github.com/mikael/kubit/internal/store"
@@ -90,5 +91,47 @@ func TestUnconfirmedDropsReachabilityKinds(t *testing.T) {
 	got := ckinds(unconfirmed(in))
 	if len(got) != 2 || got[0] != "talos.version" || got[1] != "etcd.members" {
 		t.Fatalf("got %v", got)
+	}
+}
+
+func TestIsGap(t *testing.T) {
+	iv := 15 * time.Second
+	t0 := time.Date(2026, 9, 19, 12, 0, 0, 0, time.UTC)
+	if isGap(time.Time{}, t0, t0.Add(time.Second), iv) {
+		t.Error("first tick is never a gap")
+	}
+	if isGap(t0, t0.Add(15*time.Second), t0.Add(16*time.Second), iv) {
+		t.Error("a regular tick is not a gap")
+	}
+	if !isGap(t0, t0.Add(20*time.Minute), t0.Add(20*time.Minute+time.Second), iv) {
+		t.Error("a tick 20 min after the previous one is a gap")
+	}
+	if !isGap(t0, t0.Add(15*time.Second), t0.Add(10*time.Minute), iv) {
+		t.Error("a tick that spanned a suspension is a gap")
+	}
+}
+
+func TestOfflineNeedsConfirmation(t *testing.T) {
+	w := &Watcher{observer: ObserverState{Online: true}}
+	var flips []bool
+	w.OnObserver = func(o ObserverState) { flips = append(flips, o.Online) }
+	w.noteOffline("no route to host")
+	w.noteOffline("no route to host")
+	if len(flips) != 0 {
+		t.Fatalf("two blind ticks must not flip: %v", flips)
+	}
+	w.resetOffline()
+	w.noteOffline("no route to host")
+	w.noteOffline("no route to host")
+	if len(flips) != 0 {
+		t.Fatalf("a gap restarts the count: %v", flips)
+	}
+	w.noteOffline("no route to host")
+	if len(flips) != 1 || flips[0] {
+		t.Fatalf("third blind tick flips offline: %v", flips)
+	}
+	w.noteOnline()
+	if len(flips) != 2 || !flips[1] {
+		t.Fatalf("one good tick flips back online: %v", flips)
 	}
 }
