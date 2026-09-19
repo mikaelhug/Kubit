@@ -38,7 +38,7 @@ export function ClusterPage({ name, section = 'overview', sub }: { name: string;
 
   return (
     <div class="flex flex-col">
-      <header class="px-6 pt-5 pb-0 border-b border-border bg-panel/60">
+      <header class="px-6 pt-5 pb-0 border-b border-border bg-panel">
         <div class="flex flex-wrap items-center gap-3 mb-3">
           <h1 class="text-xl font-semibold">{name}</h1>
           <ClusterPill state={cluster.state} status={status} />
@@ -49,7 +49,7 @@ export function ClusterPage({ name, section = 'overview', sub }: { name: string;
         </div>
         <Tabs active={section} tabs={sectionList.map(([id, label]) => ({ id, label, href: `/clusters/${name}/${id}`, badge: id === 'overview' && runningHere.length ? runningHere.length : undefined }))} />
       </header>
-      <div class="p-6 flex flex-col gap-5 max-w-[1300px]">
+      <div class="p-5 flex flex-col gap-4 max-w-[1300px]">
         <ErrorBox error={error} />
         {renderSection(section as Section | 'operations', sub, ctx)}
       </div>

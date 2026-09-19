@@ -22,7 +22,7 @@ export function RemoteManagement({ node }: { node: NodeRow }) {
   const member = !!node.cluster
   const blocked = bootTalosBlocked(node)
   return (
-    <div class="panel p-4 flex flex-col gap-3">
+    <div class="panel p-3 flex flex-col gap-3">
       <div class="flex items-center gap-3">
         <div class="flex-1 min-w-0">
           <div class="font-medium">Remote management</div>

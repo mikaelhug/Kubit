@@ -28,7 +28,7 @@ export function LabHostPage({ mac, tab = 'overview' }: { mac: string; tab?: stri
 
   return (
     <div class="flex flex-col">
-      <header class="px-6 pt-5 border-b border-border bg-panel/60">
+      <header class="px-6 pt-5 border-b border-border bg-panel">
         <Breadcrumbs items={[{ label: 'Inventory', href: '/fleet/inventory' }, { label: hostName(host) }]} />
         <div class="flex flex-wrap items-center gap-3 mt-2 mb-3">
           <h1 class="text-xl font-semibold">{hostName(host)}</h1>
@@ -40,7 +40,7 @@ export function LabHostPage({ mac, tab = 'overview' }: { mac: string; tab?: stri
         </div>
         <Tabs active={shown} tabs={tabs.map((t) => ({ ...t, href: `/labhosts/${host.mac}/${t.id}`, badge: t.id === 'vms' ? vms.length : undefined }))} />
       </header>
-      <div class="p-6 flex flex-col gap-5 max-w-[1300px]">
+      <div class="p-5 flex flex-col gap-4 max-w-[1300px]">
         {shown === 'overview' && <OverviewTab host={host} busy={busy} />}
         {shown === 'vms' && <><HostStateNotice host={host} /><HostVMs host={host} /></>}
         {shown === 'hardware' && <HardwareTab inv={null} invErr={null} node={host} />}
@@ -61,7 +61,7 @@ function OverviewTab({ host, busy }: { host: NodeRow; busy: boolean }) {
       {lh.state !== 'installing' && <HostSystem host={host} lh={lh} busy={busy} />}
       <div class="grid grid-cols-1 lg:grid-cols-2 gap-4">
         <Section title="Machine">
-          <div class="panel p-4">
+          <div class="panel p-3">
             <KeyValue rows={[
               ['Model', modelOf(host)],
               ['Identity', <span class="mono text-[12px]">{host.mac}{host.uuid ? ` · ${host.uuid}` : ''}{host.serial ? ` · ${host.serial}` : ''}</span>],
@@ -72,7 +72,7 @@ function OverviewTab({ host, busy }: { host: NodeRow; busy: boolean }) {
           </div>
         </Section>
         <Section title="Capacity">
-          <div class="panel p-4">
+          <div class="panel p-3">
             <KeyValue rows={[
               ['CPUs', String(lh.capacity.cpus || '—')],
               ['Memory', lh.capacity.memMiB ? fmt.bytes(lh.capacity.memMiB * 1048576) : '—'],
@@ -107,7 +107,7 @@ function ActionsTab({ host }: { host: NodeRow }) {
 
 function Action({ title, what, button, disabled, onClick, href }: { title: string; what: string; button: string; disabled?: boolean; onClick?: () => void; href?: string }) {
   return (
-    <div class="panel p-4 flex items-center gap-4">
+    <div class="panel p-3 flex items-center gap-4">
       <div class="flex-1 min-w-0">
         <div class="font-medium">{title}</div>
         <p class="text-[12.5px] text-muted">{what}</p>

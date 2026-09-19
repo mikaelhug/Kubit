@@ -60,7 +60,7 @@ export function NodePage({ ip: ipParam, mac }: { ip?: string; mac?: string }) {
 
   return (
     <div class="flex flex-col">
-      <header class="px-6 pt-5 border-b border-border bg-panel/60">
+      <header class="px-6 pt-5 border-b border-border bg-panel">
         <Breadcrumbs items={node?.cluster ? [{ label: node.cluster, href: `/clusters/${node.cluster}/overview` }, { label: 'Nodes', href: `/clusters/${node.cluster}/nodes` }, { label: title }] : [{ label: 'Inventory', href: '/fleet/inventory' }, { label: title }]} />
         <div class="flex flex-wrap items-center gap-3 mt-2 mb-3">
           <h1 class="text-xl font-semibold">{title}</h1>
@@ -75,7 +75,7 @@ export function NodePage({ ip: ipParam, mac }: { ip?: string; mac?: string }) {
         </div>
         <Tabs active={shown} onSelect={(t) => setTab(t as TabId)} tabs={tabs} />
       </header>
-      <div class="p-6 flex flex-col gap-5 max-w-[1300px]">
+      <div class="p-5 flex flex-col gap-4 max-w-[1300px]">
         <ErrorBox error={error} />
         {shown === 'overview' && <OverviewTab inv={inv} invErr={invErr} k8s={k8s} k8sErr={k8sErr} node={node} spec={spec} />}
         {shown === 'hardware' && <HardwareTab inv={inv} invErr={invErr} node={node} />}
@@ -93,7 +93,7 @@ function OverviewTab({ inv, invErr, k8s, k8sErr, node, spec }: { inv: Inventory 
   const host = hostOf(node)
   const identity = (
     <Section title="Machine" help="What Kubit has recorded about this machine.">
-      <div class="panel p-4">
+      <div class="panel p-3">
         <KeyValue rows={[
           ['Kind', `${kindLabel[node.kind]}${kindDetail(node) ? ` · ${kindDetail(node)}` : ''}`],
           ['Model', [modelOf(node), inv?.platform].filter(Boolean).join(' · ')],
@@ -126,7 +126,7 @@ function OverviewTab({ inv, invErr, k8s, k8sErr, node, spec }: { inv: Inventory 
     <div class="grid grid-cols-1 lg:grid-cols-2 gap-4">
       {identity}
       <Section title="Talos" help="Read live from the machine over the Talos API.">
-        <div class="panel p-4">
+        <div class="panel p-3">
           {invErr && <Notice tone="bad">{invErr}</Notice>}
           {!inv && !invErr && <div class="text-muted">Loading…</div>}
           {inv && <KeyValue rows={[
@@ -151,7 +151,7 @@ function OverviewTab({ inv, invErr, k8s, k8sErr, node, spec }: { inv: Inventory 
       </Section>
       {node.kind === 'member' ? (
         <Section title="Kubernetes" help="What the API server knows about this node.">
-          <div class="panel p-4 flex flex-col gap-4">
+          <div class="panel p-3 flex flex-col gap-4">
             {k8sErr && <Notice tone="bad">{k8sErr}</Notice>}
             {k8s && (
               <>
@@ -450,7 +450,7 @@ function WakeAction({ node }: { node: NodeRow }) {
 
 function Action({ title, what, button, disabled, onClick, href, secondary }: { title: string; what: string; button: string; disabled?: boolean; onClick?: () => void; href?: string; secondary?: { label: string; onClick: () => void } }) {
   return (
-    <div class="panel p-4 flex items-center gap-4">
+    <div class="panel p-3 flex items-center gap-4">
       <div class="flex-1 min-w-0">
         <div class="font-medium">{title}</div>
         <p class="text-[12.5px] text-muted">{what}</p>
@@ -465,7 +465,7 @@ function Action({ title, what, button, disabled, onClick, href, secondary }: { t
 
 function Stat({ label, value, sub }: { label: string; value: string; sub?: string }) {
   return (
-    <div class="panel p-4 flex flex-col gap-1">
+    <div class="panel p-3 flex flex-col gap-1">
       <span class="label">{label}</span>
       <span class="text-2xl font-semibold num">{value}</span>
       {sub && <span class="text-[12px] text-muted">{sub}</span>}

@@ -34,12 +34,11 @@ function read<T>(key: string, fallback: T): T {
   try { const v = localStorage.getItem(key); return v ? JSON.parse(v) : fallback } catch { return fallback }
 }
 
-/** Sortable, searchable table with sticky header; rows beyond 300 are windowed by page. */
+/** Sortable, searchable, compact table with sticky header; rows beyond 300 are windowed by page. */
 export function DataTable<T>({ columns, rows, rowKey, empty = 'Nothing to show.', search = true, defaultSort, onRowClick, rowClass, id, toolbar, loading }: Props<T>) {
   const pref = id ? `kubit.table.${id}` : ''
   const [sort, setSort] = useState<{ id: string; dir: 'asc' | 'desc' } | undefined>(pref ? read(pref + '.sort', defaultSort) : defaultSort)
   const [q, setQ] = useState('')
-  const [dense, setDense] = useState<boolean>(pref ? read(pref + '.dense', false) : false)
   const [page, setPage] = useState(0)
   const pageSize = 300
 
@@ -82,14 +81,11 @@ export function DataTable<T>({ columns, rows, rowKey, empty = 'Nothing to show.'
         <div class="flex items-center gap-2 px-3 py-2 border-b border-border">
           {search && <input class="input !w-64" placeholder="Filter…" value={q} onInput={(e) => { setQ((e.target as HTMLInputElement).value); setPage(0) }} aria-label="Filter rows" />}
           <span class="text-[12px] text-muted">{filtered.length === rows.length ? `${rows.length} rows` : `${filtered.length} of ${rows.length}`}</span>
-          <div class="ml-auto flex items-center gap-2">
-            {toolbar}
-            <button class="btn !py-1 !px-2 text-[12px]" title="Toggle row density" onClick={() => { setDense(!dense); if (pref) try { localStorage.setItem(pref + '.dense', JSON.stringify(!dense)) } catch {} }}>{dense ? 'Comfortable' : 'Compact'}</button>
-          </div>
+          {toolbar && <div class="ml-auto flex items-center gap-2">{toolbar}</div>}
         </div>
       )}
       <div class="scroll-x">
-        <table class={`data ${dense ? 'dense' : ''}`}>
+        <table class="data">
           <thead>
             <tr>
               {columns.map((c) => (

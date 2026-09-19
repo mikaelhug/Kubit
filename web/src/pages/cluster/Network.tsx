@@ -38,11 +38,11 @@ export function Network({ ctx }: { ctx: ClusterCtx }) {
   ]
 
   return (
-    <div class="flex flex-col gap-6">
+    <div class="flex flex-col gap-5">
       <ErrorBox error={error} />
       <div class="grid grid-cols-1 lg:grid-cols-2 gap-4">
         <Section title="Cluster addressing">
-          <div class="panel p-4">
+          <div class="panel p-3">
             <KeyValue rows={[
               ['API endpoint', <span class="mono">{spec.controlPlane.endpoint}</span>],
               ['Control plane VIP', spec.controlPlane.vip ? <span class="mono">{spec.controlPlane.vip}</span> : <span class="text-muted">none — endpoint follows the first control plane</span>],
@@ -57,7 +57,7 @@ export function Network({ ctx }: { ctx: ClusterCtx }) {
           {!spec.platform.metallb.enabled && <Notice tone="muted">MetalLB is disabled; LoadBalancer services stay pending.</Notice>}
           {view?.poolError && <Notice tone="bad">{view.poolError}</Notice>}
           {pool && (
-            <div class="panel p-4 flex flex-col gap-3">
+            <div class="panel p-3 flex flex-col gap-3">
               <div class="flex items-baseline justify-between"><span class="mono">{pool.range}</span><span class="num text-[13px]"><strong>{pool.allocated.length}</strong> <span class="text-muted">/ {pool.total} in use</span></span></div>
               <div class="flex flex-wrap gap-1">
                 {Array.from({ length: pool.total }, (_, i) => {

@@ -57,7 +57,7 @@ function Shell() {
 
   return (
     <div class="flex h-full min-h-screen">
-      <nav class="w-56 shrink-0 border-r border-border bg-panel flex flex-col overflow-y-auto">
+      <nav class="w-52 shrink-0 border-r border-border bg-panel flex flex-col overflow-y-auto">
         <a href="/" class="px-4 py-3.5 border-b border-border flex items-center gap-2">
           <span class="inline-block h-2.5 w-2.5 rounded-sm bg-accent" />
           <span class="font-semibold tracking-tight">Kubit</span>
@@ -65,15 +65,15 @@ function Shell() {
         <div class="mt-2"><NavLink href="/" path={path} exact>Home</NavLink></div>
         <div class="px-4 pt-4 pb-1 label">Clusters</div>
         {list.map((c) => (
-          <a key={c.name} href={`/clusters/${c.name}/overview`} class={`mx-2 rounded-md px-2 py-1.5 flex items-center justify-between hover:bg-panel-2 ${activeCluster === c.name ? 'bg-panel-2' : ''}`}>
+          <a key={c.name} href={`/clusters/${c.name}/overview`} class={`${navCls(activeCluster === c.name)} flex items-center justify-between`}>
             <span class="truncate font-medium">{c.name}</span>
             <ClusterPill state={c.state} status={statuses.value.get(c.name)} />
           </a>
         ))}
-        <a href="/clusters/new" class={`mx-2 mt-1 rounded-md px-2 py-1.5 text-accent hover:bg-panel-2 ${path === '/clusters/new' ? 'bg-panel-2' : ''}`}>+ New cluster</a>
+        <a href="/clusters/new" class={`${navCls(path === '/clusters/new')} mt-0.5 text-accent`}>+ New cluster</a>
         {labHosts.length > 0 && <div class="px-4 pt-5 pb-1 label">Lab hosts</div>}
         {labHosts.map((h) => (
-          <a key={h.mac} href={`/labhosts/${h.mac}/overview`} class={`mx-2 rounded-md px-2 py-1.5 flex items-center justify-between hover:bg-panel-2 ${path.startsWith(`/labhosts/${h.mac}`) ? 'bg-panel-2' : ''}`}>
+          <a key={h.mac} href={`/labhosts/${h.mac}/overview`} class={`${navCls(path.startsWith(`/labhosts/${h.mac}`))} flex items-center justify-between`}>
             <span class="truncate font-medium">{hostName(h)}</span>
             <Pill tone={stateTone(h.labhost!.state)} title={`${(h.labhost!.vms ?? []).length} VMs`}>{h.labhost!.state}</Pill>
           </a>
@@ -120,9 +120,11 @@ function Shell() {
   )
 }
 
+const navCls = (active: boolean) => `pl-[14px] pr-3 py-1.5 border-l-2 hover:bg-panel-2 ${active ? 'bg-panel-2 border-accent' : 'border-transparent'}`
+
 function NavLink({ href, path, children, exact }: { href: string; path: string; children: preact.ComponentChildren; exact?: boolean }) {
   const active = path === href || (!exact && path.startsWith(href + '/'))
-  return <a href={href} class={`mx-2 rounded-md px-2 py-1.5 flex items-center justify-between hover:bg-panel-2 ${active ? 'bg-panel-2' : ''}`}>{children}</a>
+  return <a href={href} class={`${navCls(active)} flex items-center justify-between`}>{children}</a>
 }
 
 function DaemonUptime() {

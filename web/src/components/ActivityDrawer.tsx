@@ -41,13 +41,13 @@ export function ActivityDrawer() {
   const active = drawerTab.value !== null && operations.value.has(drawerTab.value) ? drawerTab.value : tabs[0]?.id ?? null
 
   if (!open) return (
-    <button class="fixed bottom-3 right-3 z-30 btn shadow-lg" onClick={() => { drawerOpen.value = true; persist('kubit.drawer', true) }} title="Activity (a)">
+    <button class="fixed bottom-3 right-3 z-30 btn" onClick={() => { drawerOpen.value = true; persist('kubit.drawer', true) }} title="Activity (a)">
       Activity {running.value.length > 0 && <Pill tone="warn">{running.value.length}</Pill>}
     </button>
   )
 
   return (
-    <div class="fixed left-56 right-0 bottom-0 z-30 flex flex-col bg-panel border-t border-border shadow-[0_-8px_24px_rgba(0,0,0,0.25)]" style={{ height }}>
+    <div class="fixed left-52 right-0 bottom-0 z-30 flex flex-col bg-panel border-t border-border" style={{ height }}>
       <div class="h-1.5 cursor-row-resize hover:bg-accent/40" onMouseDown={() => { dragging.current = true }} title="Drag to resize" />
       <div class="flex items-center gap-1 px-2 border-b border-border scroll-x">
         <span class="label px-2">Activity</span>

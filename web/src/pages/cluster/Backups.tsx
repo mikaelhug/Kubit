@@ -47,7 +47,7 @@ export function Backups({ ctx }: { ctx: ClusterCtx }) {
   ]
   const cps = cluster.spec.spec.nodes.filter((n) => n.role === 'controlplane')
   return (
-    <div class="flex flex-col gap-6">
+    <div class="flex flex-col gap-5">
       <Section title="etcd snapshots" help="Consistent, verified, sealed snapshots of the cluster state. Scheduled ones are pruned to the retention count; manual ones stay."
         actions={<button class="btn btn-primary" disabled={running || !status?.etcd.healthy} title={!status?.etcd.healthy ? 'etcd must be healthy' : ''} onClick={() => api.takeSnapshot(name).then((r) => watch(r)).catch((e) => toast(e.message, 'error'))}>Take snapshot</button>}>
         <ErrorBox error={error} />
@@ -60,7 +60,7 @@ export function Backups({ ctx }: { ctx: ClusterCtx }) {
       </Section>
 
       <Section title="Schedule" help="Taken when the cluster is healthy and idle.">
-        <div class="panel p-4 flex flex-wrap items-end gap-4">
+        <div class="panel p-3 flex flex-wrap items-end gap-4">
           <Field label="Interval" hint="Go duration ≥ 5m, or 0 to disable."><input class="input mono w-32" value={schedule.interval} onInput={(e) => setSchedule({ ...schedule, interval: (e.target as HTMLInputElement).value.trim() })} /></Field>
           <Field label="Keep" hint="Scheduled snapshots retained."><input class="input mono w-24" type="number" min={1} value={schedule.keep} onInput={(e) => setSchedule({ ...schedule, keep: (e.target as HTMLInputElement).value })} /></Field>
           <button class="btn btn-primary" disabled={!scheduleDirty} onClick={saveSchedule}>Save</button>
@@ -93,7 +93,7 @@ export function Backups({ ctx }: { ctx: ClusterCtx }) {
 
 function Stat({ label, value, sub, tone }: { label: string; value: string; sub?: string; tone?: 'warn' }) {
   return (
-    <div class="panel p-4 flex flex-col gap-1">
+    <div class="panel p-3 flex flex-col gap-1">
       <span class="label">{label}</span>
       <span class={`text-xl font-semibold num ${tone === 'warn' ? 'text-warn' : ''}`}>{value}</span>
       {sub && <span class="text-[12px] text-muted">{sub}</span>}

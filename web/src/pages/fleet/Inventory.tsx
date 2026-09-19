@@ -94,10 +94,10 @@ export function Inventory() {
   ]
 
   return (
-    <div class="p-6 flex flex-col gap-5">
+    <div class="p-5 flex flex-col gap-4">
       <Section title="Inventory" help="Every physical machine Kubit has seen, by MAC: what it does now and what it can do next."
         actions={<button class="btn btn-primary" onClick={() => setAddAMT(true)} title="Register a machine by its Intel AMT or BMC address">+ Add by remote management</button>}>
-        <div class="panel p-4 flex flex-col gap-2">
+        <div class="panel p-3 flex flex-col gap-2">
           <div class="flex gap-2">
             <input class="input mono" value={targets} onInput={(e) => setTargets((e.target as HTMLInputElement).value)} placeholder="192.168.1.0/24, 10.0.0.5" aria-label="Subnets or addresses to scan" />
             <button class="btn btn-primary shrink-0" disabled={scanning || !targets.trim()} onClick={() => api.discover(targets.split(/[,\s]+/).filter(Boolean)).then((r) => watch(r)).catch((e) => toast(e.message, 'error'))}>{scanning ? 'Scanning' : 'Scan'}</button>

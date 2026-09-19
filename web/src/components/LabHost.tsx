@@ -187,7 +187,7 @@ export function HostStateNotice({ host }: { host: NodeRow }) {
       {retry && <MakeLabHostDialog m={host} onClose={() => setRetry(false)} />}
       {lh.state === 'installing' && <Notice tone="warn">Installing Debian{lh.install ? <> · {installStage(lh.install.stage)} · {fmt.when(lh.install.at)}</> : ' · waiting for the machine to boot the installer'}. Details in Activity.</Notice>}
       {lh.state === 'installing' && !lh.install && lh.boot && (
-        <div class="panel p-4 flex flex-col gap-2">
+        <div class="panel p-3 flex flex-col gap-2">
           <span class="label">Boot the installer with</span>
           <div class="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-[12px] items-center">
             <span class="text-muted">kernel</span><Code text={lh.boot.kernel} />
@@ -216,7 +216,7 @@ export function LabVMControls({ vm }: { vm: NodeRow }) {
   const run = (p: Promise<{ operationId: number }>) => p.then((r) => watch(r, false)).catch((e) => toast(e.message, 'error'))
   const member = !!vm.cluster
   return (
-    <div class="panel p-4 flex items-center gap-4">
+    <div class="panel p-3 flex items-center gap-4">
       <div class="flex-1 min-w-0">
         <div class="font-medium">VM on <a class="text-accent hover:underline" href={`/labhosts/${host.mac}/overview`}>{hostName(host)}</a></div>
         <p class="text-[12.5px] text-muted">{entry.cpus} vCPU · {fmt.bytes(mib(entry.memMiB))} · {entry.diskGiB} GiB · {entry.state}{entry.boot === 'disk' ? ' · boots from disk' : ' · boots Talos over the network'}</p>
@@ -271,7 +271,7 @@ export function HostMetrics({ host, lh }: { host: NodeRow; lh: LabHost }) {
   const memPct = m && m.memTotal ? fmt.pct(m.memUsed, m.memTotal) : 0
   const tone = (pct: number, warn: number, bad: number) => (pct >= bad ? 'text-bad' : pct >= warn ? 'text-warn' : '')
   return (
-    <div class="panel p-4 flex flex-col gap-3">
+    <div class="panel p-3 flex flex-col gap-3">
       <div class="flex items-center gap-2">
         <span class="label">Host utilisation</span>
         {m && <span class="text-[12px] text-muted">load {m.load1.toFixed(2)} · up {fmt.uptime(m.uptimeSec)} · read {fmt.when(m.at)}</span>}

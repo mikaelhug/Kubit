@@ -46,8 +46,8 @@ export function Meter({ label, used, cap, format }: { label: string; used: numbe
         <span class="label">{label}</span>
         <span class="num text-[13px]"><strong>{format(used)}</strong> <span class="text-muted">/ {format(cap)} · {pct}%</span></span>
       </div>
-      <div class="h-1.5 w-full rounded-full bg-panel-2 overflow-hidden">
-        <div class="h-full rounded-full transition-[width]" style={{ width: pct + '%', background: tone }} />
+      <div class="h-1 w-full bg-panel-2 overflow-hidden">
+        <div class="h-full transition-[width]" style={{ width: pct + '%', background: tone }} />
       </div>
     </div>
   )
@@ -162,12 +162,12 @@ export function Field({ label, children, hint }: { label: string; children: Comp
 
 export function ErrorBox({ error }: { error: string | null | undefined }) {
   if (!error) return null
-  return <div class="rounded-md border border-bad/40 bg-bad/10 px-3 py-2 text-[13px] text-bad break-words">{error}</div>
+  return <div class="rounded-[var(--r)] border border-bad/40 bg-bad/10 px-3 py-2 text-[13px] text-bad break-words">{error}</div>
 }
 
 export function Notice({ tone = 'info', children }: { tone?: Tone; children: ComponentChildren }) {
   const cls = { good: 'border-good/40 bg-good/10 text-good', warn: 'border-warn/40 bg-warn/10 text-warn', bad: 'border-bad/40 bg-bad/10 text-bad', info: 'border-info/40 bg-info/10 text-info', muted: 'border-border bg-panel-2 text-muted' }[tone]
-  return <div class={`rounded-md border px-3 py-2 text-[13px] ${cls}`}>{children}</div>
+  return <div class={`rounded-[var(--r)] border px-3 py-2 text-[13px] ${cls}`}>{children}</div>
 }
 
 export function EmptyState({ title, children, action }: { title: string; children?: ComponentChildren; action?: ComponentChildren }) {

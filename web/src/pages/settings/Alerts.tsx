@@ -13,7 +13,7 @@ export function Alerts() {
     <Section title="Alerts" help="Health events at or above a severity go to a webhook and/or e-mail; a heartbeat proves the daemon is alive.">
       <ErrorBox error={f.error} />
       <MovedNotice show={f.movedUnderneath} onDiscard={f.discard} />
-      <div class="panel p-4 grid grid-cols-1 md:grid-cols-2 gap-4">
+      <div class="panel p-3 grid grid-cols-1 md:grid-cols-2 gap-4">
         <Field label="Minimum severity">
           <select class="input" value={a.minSeverity} onChange={(e) => set({ minSeverity: (e.target as HTMLSelectElement).value as any })}>
             <option value="info">info (everything)</option><option value="warn">warn</option><option value="critical">critical only</option>
@@ -23,7 +23,7 @@ export function Alerts() {
         <Field label="Ignore namespaces" hint="No workload alerts for these; comma-separated."><input class="input mono" value={(a.ignoreNamespaces ?? []).join(', ')} placeholder="dev, ci" onInput={(e) => set({ ignoreNamespaces: (e.target as HTMLInputElement).value.split(/[,\s]+/).filter(Boolean) })} /></Field>
         <Field label="Webhook URL" hint="Slack, Discord, Teams or generic JSON. Empty = off."><input class="input mono" value={a.webhookUrl} placeholder="https://hooks.slack.com/services/…" onInput={(e) => set({ webhookUrl: (e.target as HTMLInputElement).value.trim() })} /></Field>
       </div>
-      <div class="panel p-4 grid grid-cols-1 md:grid-cols-2 gap-4">
+      <div class="panel p-3 grid grid-cols-1 md:grid-cols-2 gap-4">
         <Field label="SMTP host" hint="Empty = off."><input class="input mono" value={a.smtp.host} placeholder="smtp.example.com" onInput={(e) => smtp({ host: (e.target as HTMLInputElement).value.trim() })} /></Field>
         <div class="grid grid-cols-2 gap-3">
           <Field label="SMTP port"><input class="input num" type="number" value={a.smtp.port} onInput={(e) => smtp({ port: Number((e.target as HTMLInputElement).value) })} /></Field>

@@ -47,7 +47,7 @@ export function MachinesStep({ draft, patch, setError }: { draft: Draft; patch: 
   const chosen = draft.machines.filter((m) => draft.selected.includes(m.mac))
   return (
     <>
-      <div class="panel p-4 flex flex-col gap-3">
+      <div class="panel p-3 flex flex-col gap-3">
         <p class="text-[13px] text-muted">Machines in Talos maintenance mode. Boot media and remote management live in <a class="text-accent hover:underline" href="/fleet/inventory">Inventory</a>.</p>
         <div class="flex gap-2">
           <input class="input mono" value={targets} onInput={(e) => setTargets((e.target as HTMLInputElement).value)} placeholder="192.168.1.0/24, 10.0.0.5" aria-label="Subnets or addresses to scan" />
@@ -135,7 +135,7 @@ export function DesignStep({ draft, setCluster, reset, busy }: { draft: Draft; s
   const allData = (on: boolean) => setCluster((c) => ({ ...c, spec: { ...c.spec, nodes: c.spec.nodes.map((n) => ({ ...n, dataDisks: on ? dataCandidates(machineOf(draft, n), n.installDisk?.path).map((d) => d.devPath) : undefined })) } }))
   return (
     <>
-      <div class="panel p-4 flex flex-col gap-1">
+      <div class="panel p-3 flex flex-col gap-1">
         <div class="flex items-center gap-3">
           <span class="label">Proposal</span>
           <span class="text-[13px]">{cps} control plane{cps === 1 ? '' : 's'}{cps >= 3 ? ' (etcd HA)' : ''}, {c.spec.nodes.length - cps} worker{c.spec.nodes.length - cps === 1 ? '' : 's'}{c.spec.controlPlane.allowScheduling ? ', control planes schedulable' : ', dedicated control planes'}</span>
@@ -232,7 +232,7 @@ export function NetworkStep({ draft, setCluster }: { draft: Draft; setCluster: S
 
   return (
     <>
-      <div class="panel p-4 grid grid-cols-1 md:grid-cols-2 gap-4">
+      <div class="panel p-3 grid grid-cols-1 md:grid-cols-2 gap-4">
         <Field label="Control plane VIP" hint="Layer-2 address the control planes share for the API. Empty = clients talk to the first control plane directly.">
           <input class="input mono" value={cp.vip ?? ''} placeholder="none" onInput={(e) => { const vip = (e.target as HTMLInputElement).value.trim(); setCP({ vip: vip || undefined, endpoint: vip ? `https://${vip}:6443` : cps[0] ? `https://${cps[0].ip}:6443` : cp.endpoint }) }} />
         </Field>
@@ -313,7 +313,7 @@ export function PlatformStep({ draft, setCluster, patch }: { draft: Draft; setCl
   const toggle = (key: keyof ClusterSpec['spec']['platform'], enabled: boolean) => setCluster((c) => ({ ...c, spec: { ...c.spec, platform: { ...c.spec.platform, [key]: { ...c.spec.platform[key], enabled } } } }))
   return (
     <>
-      <div class="panel p-4"><p class="text-[13px] text-muted">Applied after the nodes are Ready; each can be changed later under Add-ons. ingress-nginx needs MetalLB.</p></div>
+      <div class="panel p-3"><p class="text-[13px] text-muted">Applied after the nodes are Ready; each can be changed later under Add-ons. ingress-nginx needs MetalLB.</p></div>
       <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
         {addons.map((a) => {
           const on = c.spec.platform[a.key].enabled
@@ -437,7 +437,7 @@ export function Summary({ draft }: { draft: Draft }) {
   }
   const warn = draft.warnings.filter((w) => w.level === 'warn').length
   return (
-    <aside class="panel p-4 flex flex-col gap-3 xl:sticky xl:top-4">
+    <aside class="panel p-3 flex flex-col gap-3 xl:sticky xl:top-4">
       <span class="label">Summary</span>
       <dl class="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1.5 text-[12.5px]">
         {rows.map(([k, v]) => <><dt class="text-muted whitespace-nowrap">{k}</dt><dd class="min-w-0 break-words">{v}</dd></>)}

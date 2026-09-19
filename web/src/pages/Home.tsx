@@ -48,9 +48,9 @@ export function Home() {
   const recent = ops.filter((o) => o.status !== 'running').slice(0, 5)
 
   return (
-    <div class="p-6 flex flex-col gap-6 max-w-[1300px]">
+    <div class="p-5 flex flex-col gap-4 max-w-[1300px]">
       <Section title="Needs attention" help={quiet ? undefined : 'Open alerts across every cluster and lab host, and Kubit notices.'}>
-        {quiet && <div class="panel p-4 text-[13px] text-muted">Nothing needs attention.</div>}
+        {quiet && <div class="panel p-3 text-[13px] text-muted">Nothing needs attention.</div>}
         {notices.map((n, i) => <Notice key={i} tone={n.tone}>{n.text}</Notice>)}
         {groups.map((g) => (
           <div key={g.key} class="panel border-warn/50">
@@ -65,7 +65,7 @@ export function Home() {
       </Section>
 
       <Section title="Clusters" actions={<a href="/clusters/new" class="btn btn-primary">+ New cluster</a>}>
-        {list.length === 0 && <div class="panel p-4 text-[13px] text-muted">No cluster yet.</div>}
+        {list.length === 0 && <div class="panel p-3 text-[13px] text-muted">No cluster yet.</div>}
         <div class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
           {list.map((c) => <ClusterCard key={c.name} name={c.name} state={c.state} talos={c.spec.spec.talosVersion} k8s={c.spec.spec.kubernetesVersion} update={updates.includes(c)} alerts={alertsOf(c.name).length} />)}
         </div>
@@ -113,7 +113,7 @@ function ClusterCard({ name, state, talos, k8s, update, alerts }: { name: string
   const st = statuses.value.get(name)
   const t = st?.totals
   return (
-    <a href={`/clusters/${name}/overview`} class="panel p-4 flex flex-col gap-2 hover:border-accent min-w-0">
+    <a href={`/clusters/${name}/overview`} class="panel p-3 flex flex-col gap-2 hover:border-accent min-w-0">
       <div class="flex items-center gap-2"><span class="font-semibold truncate">{name}</span><ClusterPill state={state} status={st} />{alerts > 0 && <Pill tone="warn">{alerts} alert{alerts === 1 ? '' : 's'}</Pill>}</div>
       <div class="text-[13px] num flex gap-3">
         <span class={t && t.nodesReady < t.nodes ? 'text-warn' : ''}>{t ? `${t.nodesReady}/${t.nodes}` : '—'} <span class="text-muted">nodes</span></span>
@@ -133,7 +133,7 @@ function LabHostCard({ h, alerts }: { h: NodeRow; alerts: number }) {
   const u = lh.updates
   const pct = (a: number, b: number) => (b ? `${fmt.pct(a, b)}%` : '—')
   return (
-    <a href={`/labhosts/${h.mac}/overview`} class="panel p-4 flex flex-col gap-2 hover:border-accent min-w-0">
+    <a href={`/labhosts/${h.mac}/overview`} class="panel p-3 flex flex-col gap-2 hover:border-accent min-w-0">
       <div class="flex items-center gap-2"><span class="font-semibold truncate">{hostName(h)}</span><Pill tone={stateTone(lh.state)}>{lh.state}</Pill>{alerts > 0 && <Pill tone="warn">{alerts} alert{alerts === 1 ? '' : 's'}</Pill>}</div>
       <div class="text-[13px] num flex gap-3">
         <span>{m ? `${Math.round(m.cpuPct)}%` : '—'} <span class="text-muted">cpu</span></span>
@@ -148,7 +148,7 @@ function LabHostCard({ h, alerts }: { h: NodeRow; alerts: number }) {
 function Counter({ label, value, href, sub, tone }: { label: string; value: number; href: string; sub: string; tone: 'good' | 'warn' | 'muted' }) {
   const color = { good: 'text-good', warn: 'text-warn', muted: '' }[tone]
   return (
-    <a href={href} class="panel p-4 flex flex-col gap-1 hover:border-accent">
+    <a href={href} class="panel p-3 flex flex-col gap-1 hover:border-accent">
       <span class="label">{label}</span>
       <span class={`text-2xl font-semibold num ${color}`}>{value}</span>
       <span class="text-[12px] text-muted">{sub}</span>
@@ -191,7 +191,7 @@ function Welcome({ versions }: { versions: Versions | null }) {
 function Step({ n, title, children }: { n: number; title: string; children: preact.ComponentChildren }) {
   return (
     <div class="panel p-5 flex gap-4">
-      <span class="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-full border border-accent text-accent text-[13px] font-semibold">{n}</span>
+      <span class="inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-[var(--r-sm)] border border-accent text-accent text-[11px] font-semibold">{n}</span>
       <div class="flex flex-col gap-1 min-w-0 text-[13.5px]">
         <h2 class="font-semibold text-[15px]">{title}</h2>
         {children}

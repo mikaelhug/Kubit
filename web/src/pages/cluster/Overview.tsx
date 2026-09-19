@@ -67,7 +67,7 @@ export function Overview({ ctx }: { ctx: ClusterCtx }) {
         <BackupsCard cluster={name} status={status} interval={spec.backup?.etcd.interval ?? '6h'} />
       </div>
       <div class="grid grid-cols-1 lg:grid-cols-2 gap-4">
-        <div class="panel p-4 flex flex-col gap-4">
+        <div class="panel p-3 flex flex-col gap-4">
           <div class="flex items-center gap-2">
             <span class="label">Capacity trend</span>
             <div class="ml-auto flex gap-1">
@@ -123,7 +123,7 @@ export function EventRow({ e, onAck }: { e: HealthEvent; onAck?: () => void }) {
         {onAck && <button class="btn !py-0.5 !px-2 text-[11px]" onClick={onAck}>Ack</button>}
       </div>
       {open && rb && (
-        <div class="mx-4 mb-3 rounded-md border border-border bg-panel-2/60 px-4 py-3 text-[13px] flex flex-col gap-2">
+        <div class="mx-4 mb-3 rounded-[var(--r)] border border-border bg-panel-2/60 px-4 py-3 text-[13px] flex flex-col gap-2">
           <div><span class="font-medium">{rb.title}</span> <span class="text-muted">— {rb.why}</span></div>
           <ol class="list-decimal pl-5 flex flex-col gap-1">
             {rb.steps.map((s, i) => <li key={i}>{s.text} {s.link && <a href={s.link.href} class="text-accent hover:underline whitespace-nowrap">{s.link.label} →</a>}</li>)}
@@ -188,6 +188,6 @@ export function Card({ label, value, tone, sub, href }: { label: string; value: 
       {sub && <span class="text-[12px] text-muted truncate" title={sub}>{sub}</span>}
     </>
   )
-  if (href) return <a href={href} class="panel p-4 flex flex-col gap-1 min-w-0 hover:border-accent">{body}</a>
-  return <div class="panel p-4 flex flex-col gap-1 min-w-0">{body}</div>
+  if (href) return <a href={href} class="panel p-3 flex flex-col gap-1 min-w-0 hover:border-accent">{body}</a>
+  return <div class="panel p-3 flex flex-col gap-1 min-w-0">{body}</div>
 }

@@ -72,13 +72,13 @@ export function NewCluster() {
 
   const canNext = step === 'machines' ? draft.selected.length > 0 && /^[a-z0-9]([-a-z0-9]*[a-z0-9])?$/.test(draft.name) : !!draft.cluster
   return (
-    <div class="p-6 flex flex-col gap-5 max-w-[1400px]">
+    <div class="p-5 flex flex-col gap-4 max-w-[1400px]">
       <header class="flex flex-wrap items-center gap-4">
         <h1 class="text-xl font-semibold">New cluster</h1>
         <ol class="flex gap-3 text-[12px]">
           {steps.map((s, i) => (
             <li key={s.id} class={`flex items-center gap-1.5 ${s.id === step ? 'text-text' : 'text-muted'}`}>
-              <button class={`inline-flex h-5 w-5 items-center justify-center rounded-full border text-[11px] ${s.id === step ? 'border-accent text-accent' : i < idx ? 'border-good text-good' : 'border-border'} ${i < idx ? 'cursor-pointer' : 'cursor-default'}`} disabled={i > idx} onClick={() => i < idx && setStep(s.id)}>{i < idx ? '✓' : i + 1}</button>
+              <button class={`inline-flex h-5 w-5 items-center justify-center rounded-[var(--r-sm)] border text-[11px] ${s.id === step ? 'border-accent text-accent' : i < idx ? 'border-good text-good' : 'border-border'} ${i < idx ? 'cursor-pointer' : 'cursor-default'}`} disabled={i > idx} onClick={() => i < idx && setStep(s.id)}>{i < idx ? '✓' : i + 1}</button>
               {s.label}
             </li>
           ))}

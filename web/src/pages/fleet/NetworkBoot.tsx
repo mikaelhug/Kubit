@@ -24,7 +24,7 @@ export function NetworkBoot() {
     { id: 'last', header: 'Last seen', sort: (b) => b.lastSeen, cell: (b) => <span class="num text-muted">{fmt.when(b.lastSeen)}</span> },
   ]
   return (
-    <div class="p-6 flex flex-col gap-5">
+    <div class="p-5 flex flex-col gap-4">
       <Section title="Network boot" help="The PXE server: boots machines into Talos maintenance mode next to the LAN's own DHCP; cluster members are left alone."
         actions={<EnrollmentSwitch />}>
         {!st && <div class="text-muted">Checking…</div>}
@@ -39,7 +39,7 @@ export function NetworkBoot() {
         )}
         {st?.running && (
           <div class="grid grid-cols-1 lg:grid-cols-2 gap-4">
-            <div class="panel p-4">
+            <div class="panel p-3">
               <KeyValue rows={[
                 ['State', <span class="flex items-center gap-2"><Pill tone="good">running since {fmt.when(st.startedAt ?? '')}</Pill>{st.httpOnly && <Pill tone="warn" title="No DHCP or TFTP: machines must be booted by hand from the boot assets">HTTP only</Pill>}</span>],
                 ['Interface', <span class="flex flex-col"><span class="mono">{st.interface} ({st.ip})</span><span class="text-[11px] text-muted">Clients must share this segment. Wi-Fi works only if the access point forwards DHCP both ways.</span></span>],
@@ -48,7 +48,7 @@ export function NetworkBoot() {
                 ['Schematic', <span class="mono text-[12px] break-all">{st.schematicId}</span>],
               ]} />
             </div>
-            <div class="panel p-4 flex flex-col gap-2">
+            <div class="panel p-3 flex flex-col gap-2">
               <span class="label">Log</span>
               <pre class="log !max-h-[220px]">{(st.log ?? []).slice(-60).join('\n') || 'Nothing yet.'}</pre>
             </div>

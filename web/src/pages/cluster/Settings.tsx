@@ -28,7 +28,7 @@ export function Settings({ ctx }: { ctx: ClusterCtx }) {
   const apply = () => api.applyCluster(name).then((r) => watch(r)).catch((e) => setError(e.message))
 
   return (
-    <div class="flex flex-col gap-6">
+    <div class="flex flex-col gap-5">
       <Section title="Declaration" actions={<span class="text-[12px] text-muted num">created {new Date(cluster.createdAt).toLocaleDateString()} · changed {fmt.when(cluster.updatedAt)}</span>} help="Save changes cluster.yaml; Apply node configs pushes it to the nodes. Add-ons are planned under Add-ons.">
         <ErrorBox error={error} />
         <Tabs active={tab} onSelect={(t) => setTab(t as any)} tabs={[{ id: 'form', label: 'Form' }, { id: 'yaml', label: 'YAML' }]} />
@@ -88,7 +88,7 @@ export function Settings({ ctx }: { ctx: ClusterCtx }) {
 
 function Group({ title, help, children }: { title: string; help?: string; children: ComponentChildren }) {
   return (
-    <div class="panel p-4 flex flex-col gap-3">
+    <div class="panel p-3 flex flex-col gap-3">
       <div><span class="label">{title}</span>{help && <p class="text-[12px] text-muted mt-0.5">{help}</p>}</div>
       <div class="grid grid-cols-1 md:grid-cols-2 gap-4">{children}</div>
     </div>

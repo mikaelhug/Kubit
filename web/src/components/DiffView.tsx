@@ -91,7 +91,7 @@ function Val({ v, cls, multi, label }: { v?: string; cls: string; multi?: boolea
 function Warnings({ items }: { items: string[] }) {
   const [open, setOpen] = useState(false)
   return (
-    <div class="rounded-md border border-warn/40 bg-warn/10 text-[13px]">
+    <div class="rounded-[var(--r)] border border-warn/40 bg-warn/10 text-[13px]">
       <button class="w-full text-left px-3 py-2 text-warn" onClick={() => setOpen(!open)}>{items.length} provider warning{items.length === 1 ? '' : 's'} (deprecations; harmless) {open ? '▾' : '▸'}</button>
       {open && <ul class="px-3 pb-2 text-muted list-disc pl-7">{items.map((w, i) => <li key={i}>{w}</li>)}</ul>}
     </div>

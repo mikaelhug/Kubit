@@ -15,7 +15,7 @@ export function Sso() {
     <Section title="Single sign-on" help="OpenID Connect for the console. Provider groups decide the role; everyone else gets the default role, or no access.">
       <ErrorBox error={f.error} />
       <MovedNotice show={f.movedUnderneath} onDiscard={f.discard} />
-      <div class="panel p-4 grid grid-cols-1 md:grid-cols-2 gap-4">
+      <div class="panel p-3 grid grid-cols-1 md:grid-cols-2 gap-4">
         <label class="flex items-center gap-2 text-[13px] font-medium md:col-span-2"><input type="checkbox" checked={o.enabled} onChange={(e) => set({ enabled: (e.target as HTMLInputElement).checked })} /> Enable sign-in with an OpenID Connect provider</label>
         <Field label="Button label" hint="Shown on the sign-in screen."><input class="input" value={o.name} onInput={(e) => set({ name: (e.target as HTMLInputElement).value })} /></Field>
         <Field label="Issuer URL" hint="Where /.well-known/openid-configuration lives."><input class="input mono" value={o.issuer} placeholder="https://login.example.com/realms/ops" onInput={(e) => set({ issuer: (e.target as HTMLInputElement).value.trim() })} /></Field>

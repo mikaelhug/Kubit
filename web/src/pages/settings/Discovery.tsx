@@ -13,7 +13,7 @@ export function Discovery() {
     <Section title="Discovery" help="What a scan covers and how it authenticates to management engines.">
       <ErrorBox error={f.error} />
       <MovedNotice show={f.movedUnderneath} onDiscard={f.discard} />
-      <div class="panel p-4 grid grid-cols-1 md:grid-cols-2 gap-4">
+      <div class="panel p-3 grid grid-cols-1 md:grid-cols-2 gap-4">
         <Field label="Discovery subnets" hint="Pre-filled in the scan box; comma-separated CIDRs or addresses. Include the BMC subnet."><input class="input mono" value={v.discoverySubnets.join(', ')} onInput={(e) => set({ discoverySubnets: (e.target as HTMLInputElement).value.split(/[,\s]+/).filter(Boolean) })} /></Field>
         <Field label="PXE status URL" hint="Where the separate kubit pxe process publishes its status."><input class="input mono" value={v.pxeStatusUrl} onInput={(e) => set({ pxeStatusUrl: (e.target as HTMLInputElement).value })} /></Field>
         <Field label="Default AMT user" hint="Tried on every address answering on 16992."><input class="input mono" value={v.amt.user} onInput={(e) => set({ amt: { ...v.amt, user: (e.target as HTMLInputElement).value.trim() } })} /></Field>

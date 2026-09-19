@@ -11,7 +11,7 @@ export function Lifecycle({ ctx }: { ctx: ClusterCtx }) {
   const { name, cluster } = ctx
   const spec = cluster.spec.spec
   return (
-    <div class="flex flex-col gap-6">
+    <div class="flex flex-col gap-5">
       <UpgradesSection name={name} talos={spec.talosVersion} k8s={spec.kubernetesVersion} />
       <CredentialsSection name={name} />
       <Section title="Export" help="Everything needed to run this cluster without Kubit: Talos secrets and configs, kubeconfig, an OpenTofu root.">

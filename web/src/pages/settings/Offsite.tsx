@@ -17,7 +17,7 @@ export function Offsite() {
     <Section title="Off-site copies" help="etcd snapshots and a daily sealed Kubit backup, copied elsewhere. Keep the master key outside this machine too.">
       <ErrorBox error={f.error} />
       <MovedNotice show={f.movedUnderneath} onDiscard={f.discard} />
-      <div class="panel p-4 grid grid-cols-1 md:grid-cols-2 gap-4">
+      <div class="panel p-3 grid grid-cols-1 md:grid-cols-2 gap-4">
         <Field label="Target">
           <select class="input" value={o.type} onChange={(e) => set({ type: (e.target as HTMLSelectElement).value as any })}>
             <option value="">Off</option><option value="dir">Directory (mounted share, USB disk, synced folder)</option><option value="s3">S3-compatible bucket</option>

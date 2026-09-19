@@ -1,51 +1,53 @@
 @import "tailwindcss";
 
-/* Kubit console tokens. Dark is the working default for an ops console; light mirrors it. */
+/* Kubit console tokens: graphite greys, one steel-blue accent, 3px corners, no shadows. */
 :root {
-  --bg: #f3f5f7;
+  --bg: #f4f4f3;
   --panel: #ffffff;
-  --panel-2: #eaeef2;
-  --border: #d5dbe2;
-  --text: #171c22;
-  --muted: #5d6877;
-  --accent: #0f8f77;
+  --panel-2: #ebecea;
+  --border: #d6d8d5;
+  --text: #1a1c1e;
+  --muted: #5f666d;
+  --accent: #2f5f9e;
   --accent-ink: #ffffff;
-  --good: #1f8f3e;
-  --warn: #b7791f;
-  --bad: #c9342b;
-  --info: #2f6fdb;
+  --good: #2e7d4a;
+  --warn: #9a6b12;
+  --bad: #b3261e;
+  --info: #2f5f9e;
+  --r: 3px;
+  --r-sm: 2px;
   color-scheme: light;
 }
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme="light"]) {
-    --bg: #101317;
-    --panel: #171b20;
-    --panel-2: #1e242b;
-    --border: #2a323b;
-    --text: #e4e8ec;
-    --muted: #8a95a3;
-    --accent: #4cc2a5;
-    --accent-ink: #08221b;
-    --good: #3fb950;
-    --warn: #d29922;
-    --bad: #f0584f;
-    --info: #6ea2ff;
+    --bg: #0e0f11;
+    --panel: #141618;
+    --panel-2: #1b1e22;
+    --border: #262a30;
+    --text: #d9dcdf;
+    --muted: #8b9299;
+    --accent: #5b8fd1;
+    --accent-ink: #0b1420;
+    --good: #4caf6d;
+    --warn: #c9973a;
+    --bad: #d9534f;
+    --info: #5b8fd1;
     color-scheme: dark;
   }
 }
 :root[data-theme="dark"] {
-  --bg: #101317;
-  --panel: #171b20;
-  --panel-2: #1e242b;
-  --border: #2a323b;
-  --text: #e4e8ec;
-  --muted: #8a95a3;
-  --accent: #4cc2a5;
-  --accent-ink: #08221b;
-  --good: #3fb950;
-  --warn: #d29922;
-  --bad: #f0584f;
-  --info: #6ea2ff;
+  --bg: #0e0f11;
+  --panel: #141618;
+  --panel-2: #1b1e22;
+  --border: #262a30;
+  --text: #d9dcdf;
+  --muted: #8b9299;
+  --accent: #5b8fd1;
+  --accent-ink: #0b1420;
+  --good: #4caf6d;
+  --warn: #c9973a;
+  --bad: #d9534f;
+  --info: #5b8fd1;
   color-scheme: dark;
 }
 
@@ -67,27 +69,27 @@
 }
 
 html, body, #app { height: 100%; }
-body { background: var(--bg); color: var(--text); font-family: var(--font-sans); font-size: 14px; margin: 0; }
+body { background: var(--bg); color: var(--text); font-family: var(--font-sans); font-size: 13px; letter-spacing: -0.01em; font-variant-numeric: tabular-nums; margin: 0; }
 .num { font-variant-numeric: tabular-nums; }
-.mono { font-family: var(--font-mono); font-size: 12.5px; }
-.label { font-size: 11px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--muted); }
-.btn { @apply inline-flex items-center gap-1.5 rounded-md border border-border bg-panel-2 px-3 py-1.5 text-[13px] font-medium text-text hover:border-muted disabled:opacity-50 disabled:cursor-not-allowed; }
+.mono { font-family: var(--font-mono); font-size: 12px; letter-spacing: 0; }
+.label { font-size: 10.5px; letter-spacing: 0.06em; text-transform: uppercase; color: var(--muted); }
+.btn { @apply inline-flex items-center gap-1.5 rounded-[var(--r)] border border-border bg-panel px-2.5 py-1 text-[12.5px] font-medium text-text hover:border-muted disabled:opacity-50 disabled:cursor-not-allowed; }
 .btn-primary { @apply border-accent bg-accent text-accent-ink hover:brightness-110; }
 .btn-danger { @apply border-bad/60 text-bad hover:bg-bad/10; }
-.input { @apply w-full rounded-md border border-border bg-bg px-2.5 py-1.5 text-[13px] text-text outline-none focus:border-accent; }
-.panel { @apply rounded-lg border border-border bg-panel; }
-.pill { @apply inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[11px] font-medium; }
+.input { @apply w-full rounded-[var(--r)] border border-border bg-bg px-2 py-1 text-[12.5px] text-text outline-none focus:border-accent; }
+.panel { @apply rounded-[var(--r)] border border-border bg-panel; }
+.pill { @apply inline-flex items-center gap-1 rounded-[var(--r-sm)] px-1.5 py-px text-[10.5px] font-medium uppercase tracking-[0.04em] whitespace-nowrap; }
 .scroll-x { overflow-x: auto; overflow-y: hidden; }
-table.data { @apply w-full text-[13px]; }
-table.data th { @apply py-2 px-2 whitespace-nowrap text-left font-medium border-b border-border text-[11px] uppercase tracking-[0.08em] text-muted; }
-table.data td { @apply py-2 px-2 whitespace-nowrap border-b border-border/60 align-middle; }
+table.data { @apply w-full text-[12.5px]; }
+table.data th { @apply py-1 px-2 whitespace-nowrap text-left font-medium border-b border-border text-[10.5px] uppercase tracking-[0.06em] text-muted; }
+table.data td { @apply py-1 px-2 whitespace-nowrap border-b border-border/60 align-middle; }
+table.data tbody tr:hover td { @apply bg-panel-2/50; }
 table.data tr:last-child td { @apply border-b-0; }
 table.data thead th { @apply sticky top-0 bg-panel z-10; }
-table.data.dense th, table.data.dense td { @apply py-1; }
 /* Tables that must fit the panel: cells wrap instead of forcing a horizontal scrollbar. */
 table.data.wrap td, table.data.wrap th { white-space: normal; }
 table.data.wrap td { @apply align-top; }
-.log { @apply break-words rounded-md border border-border bg-bg p-3 max-h-[420px] overflow-auto leading-5; font-family: var(--font-mono); font-size: 12.5px; }
+.log { @apply break-words rounded-[var(--r)] border border-border bg-bg p-3 max-h-[420px] overflow-auto leading-5; font-family: var(--font-mono); font-size: 12px; }
 pre.log { white-space: pre-wrap; }
-:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+:focus-visible { outline: 1px solid var(--accent); outline-offset: 1px; }
 @media (prefers-reduced-motion: reduce) { * { transition: none !important; animation: none !important; } }

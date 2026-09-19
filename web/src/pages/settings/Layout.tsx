@@ -11,10 +11,10 @@ const adminOnly: SettingsPage[] = ['accounts', 'sso']
 export function SettingsLayout({ page, children }: { page: SettingsPage; children: ComponentChildren }) {
   const pages = settingsPages.filter(([id]) => !adminOnly.includes(id) || can('admin'))
   return (
-    <div class="p-6 flex gap-6 max-w-5xl">
+    <div class="p-5 flex gap-5 max-w-5xl">
       <nav class="w-44 shrink-0 flex flex-col gap-0.5 pt-1">
         <span class="label px-2 pb-2">Kubit settings</span>
-        {pages.map(([id, label]) => <a key={id} href={`/settings/${id}`} class={`rounded-md px-2 py-1.5 text-[13px] hover:bg-panel-2 ${id === page ? 'bg-panel-2 font-medium' : 'text-muted'}`}>{label}</a>)}
+        {pages.map(([id, label]) => <a key={id} href={`/settings/${id}`} class={`pl-2.5 pr-2 py-1.5 text-[12.5px] border-l-2 hover:bg-panel-2 ${id === page ? 'bg-panel-2 border-accent font-medium' : 'border-transparent text-muted'}`}>{label}</a>)}
       </nav>
       <div class="flex-1 min-w-0 flex flex-col gap-6">{children}</div>
     </div>
