@@ -5,6 +5,7 @@ import { clusters, loadOperationLog, operations, reloadOperations } from '../sto
 import { DataTable, type Column } from '../components/DataTable'
 import { OperationView } from '../components/ActivityDrawer'
 import { Breadcrumbs, Pill, Section, stateTone } from '../components/ui'
+import { Tabs } from '../components/Tabs'
 import { AuditLog } from '../components/AuditLog'
 import { elapsed } from '../clock'
 
@@ -13,7 +14,9 @@ export function Operations({ id }: { id?: string }) {
   useEffect(() => { reloadOperations() }, [])
   const { query } = useLocation()
   const [cluster, setCluster] = useState(query.cluster ?? '')
+  const [view, setView] = useState<'operations' | 'audit'>(query.view === 'audit' ? 'audit' : 'operations')
   useEffect(() => { setCluster(query.cluster ?? '') }, [query.cluster])
+  const url = (c: string, v: string) => { const p = new URLSearchParams(); if (c) p.set('cluster', c); if (v === 'audit') p.set('view', v); const q = p.toString(); return q ? `/operations?${q}` : '/operations' }
   const rows = [...operations.value.values()].filter((o) => !cluster || o.cluster === cluster)
   const selected = id ? operations.value.get(Number(id)) : undefined
   useEffect(() => { if (id) loadOperationLog(Number(id)).catch(() => {}) }, [id])
@@ -47,16 +50,17 @@ export function Operations({ id }: { id?: string }) {
   ]
   return (
     <div class="p-6 flex flex-col gap-4">
-      <Section title="Activity" help="Everything Kubit has run, with steps and logs. Running operations are also in the drawer (a)."
+      <Section title="Activity" help="What Kubit has run, and who did what. Running operations are also in the drawer (a)."
         actions={
-          <select class="input !py-1 w-auto" value={cluster} onChange={(e) => { const v = (e.target as HTMLSelectElement).value; setCluster(v); history.replaceState(null, '', v ? `/operations?cluster=${v}` : '/operations') }} aria-label="Filter by cluster">
+          <select class="input !py-1 w-auto" value={cluster} onChange={(e) => { const v = (e.target as HTMLSelectElement).value; setCluster(v); history.replaceState(null, '', url(v, view)) }} aria-label="Filter by cluster">
             <option value="">All clusters</option>
             {clusters.value.map((c) => <option key={c.name} value={c.name}>{c.name}</option>)}
           </select>
         }>
-        <DataTable id="ops" columns={columns} rows={rows} rowKey={(o) => String(o.id)} defaultSort={{ id: 'id', dir: 'desc' }} />
+        <Tabs active={view} onSelect={(v) => { setView(v as any); history.replaceState(null, '', url(cluster, v)) }} tabs={[{ id: 'operations', label: 'Operations', badge: rows.length }, { id: 'audit', label: 'Audit' }]} />
+        {view === 'operations' && <DataTable id="ops" columns={columns} rows={rows} rowKey={(o) => String(o.id)} defaultSort={{ id: 'id', dir: 'desc' }} />}
+        {view === 'audit' && <AuditLog cluster={cluster || undefined} />}
       </Section>
-      <AuditLog cluster={cluster || undefined} />
     </div>
   )
 }

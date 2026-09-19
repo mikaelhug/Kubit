@@ -198,3 +198,10 @@
 - Two daemons on one KUBIT_HOME (e.g. `kubit serve` on :8080 and a dev one on :8090)
   both run the watcher: samples land twice a minute and alerts can be raised twice.
   Detect the sibling (pid file / lock) and refuse or run watcher-less.
+- Console rework leftovers (2026-09-19): Home computes update notices from
+  `api.versions()` per page load rather than the daemon's `versions` message carrying
+  the latest Kubernetes too; Inventory's *Boot all into Talos* fires one power op per
+  machine (no single bulk operation); the lab host Hardware tab shows host capacity
+  only, no disks or links until Debian reports them (`labTick` refresh from lsblk is
+  still open above); Kubit-level events (`kubit` pseudo-cluster: test alert,
+  heartbeat) are not listed anywhere in the console.

@@ -372,10 +372,22 @@ and a host on the machines' L2 segment.
 
 ## Console (web UI)
 
-Object tree in the sidebar: each cluster expands into Overview · Nodes · Workloads ·
-Network · Storage · Add-ons · Operations · Settings; Fleet holds Inventory and PXE;
-Activity lists every operation. A bottom **Activity drawer** (`a`) shows running
-operations full-width: stepper on the left, searchable log on the right, Cancel/Retry.
+One page per question. Sidebar: **Home** · Clusters (one line each) · Lab hosts (one
+line each) · Fleet: Inventory, Network boot · Kubit: Activity, Settings.
+
+| route | question it answers |
+|---|---|
+| `/` Home | Is everything I run all right, what needs me? Open alerts across every cluster and lab host, Kubit notices (no accounts, PXE down while a machine is armed, off-site failing, updates available), cluster and lab host cards, machines by next step, running and recent operations. With nothing known it shows the three steps to a cluster. |
+| `/clusters/<name>/…` | One cluster: Overview (health, alerts with runbooks, cards, capacity), Nodes, Workloads · Network · Storage (read-only Kubernetes views), Add-ons (plan → review → apply), Backups (etcd snapshots, schedule, restore), **Lifecycle** (upgrades, credentials, export, forget), Settings (the declaration: form, YAML, pools, apply node configs). |
+| `/machines/<mac>` | One machine, rendered by kind: Overview · Hardware · Kubernetes · Services · Logs · Actions, tabs only where they can answer. Actions are grouped *Node* (cordon … remove) and *Machine* (remote management, VM controls, Wake-on-LAN, adopt, make lab host, retire). `/nodes/<ip>` redirects here. |
+| `/labhosts/<mac>/…` | One lab host: Overview (alerts, utilisation, System with Update/Reboot host), VMs (start, stop, resize, re-provision, delete, add), Hardware, Actions (add VMs, remote management, release). |
+| `/fleet/inventory` | The hardware ledger: every physical machine by MAC, grouped by what happens next (Available · Needs boot · In use), with lab VMs behind a toggle. Scan, add by remote management, ISO links, bulk *Boot into Talos*. |
+| `/fleet/network-boot` | The PXE server: state and command, enrollment switch, machines that booted through it. |
+| `/operations` | Activity: Operations · Audit, filtered per cluster; `/operations/<id>` shows steps and log. |
+| `/settings/<page>` | This installation: General, Discovery, Alerts, Off-site, Accounts, Single sign-on, Backup. Each page saves only its own fields and keeps unsaved edits while you look at another page. |
+
+A bottom **Activity drawer** (`a`) shows running operations full-width: stepper on the
+left, searchable log on the right, Cancel/Retry.
 
 Operations are structured: each declares its steps up front (`Sink.plan`), brackets
 them with `begin/end/fail/skip`, and the API persists steps, log, request and an
@@ -511,32 +523,34 @@ heartbeat that stops arriving means the daemon is down — the dead-man's switch
 
 ## Console conventions
 
-- **First run** (`/start`, also the home page while no cluster exists): per-arch ISO
-  downloads built from the factory's vanilla schematic and the current stable Talos,
-  the three steps to a cluster, and the network-boot page (`/fleet/pxe`, reachable
-  from Inventory rather than the sidebar until PXE is verified on hardware).
+- **Objects have one URL.** Cluster, machine (by MAC) and lab host pages are canonical;
+  old paths (`/nodes/<ip>`, `/machines/<lab host mac>`, `/fleet/pxe`, `/start`,
+  `/settings`) redirect. Actions live where their object lives and nowhere else: the
+  create wizard only picks available machines; booting, adding VMs and lab-host
+  maintenance happen in Inventory and on the lab host page.
 - **Alerts carry runbooks**: every warn/critical kind has a *What to do* panel
   (`web/src/runbooks.ts`) — cause in one line, numbered steps, each linked to the
   place in Kubit where the action lives (node Actions tab, Backups, Add-ons, settings).
 - **No replayed popups**: a fresh page load asks the daemon for the head of the message
   ring only, and anything replayed on a reconnect updates state without a toast; a
   health toast needs a live, unacknowledged event.
-- **Machine pages render by kind**: a lab host opens on its Debian facts, capacity and
-  host operations (no Talos probes); a lab VM links to its host and carries the host's
+- **Machine pages render by kind**: a lab VM links to its host and carries the host's
   start/stop/re-provision controls; an unbooted or configured machine shows what it is
   waiting for; Services, Logs and Kubernetes tabs appear only where they can answer.
   Inventory pills read the kind (`lab host · ready`, `not running Talos · off`,
-  `boot→Debian` while a Debian install is armed) and the Cluster column links a VM to
-  its host. Adopt, Retire, Make lab host and Boot into Talos are offered only where the
-  daemon would accept them (`web/src/machine.tsx`).
+  `boot→Debian` while a Debian install is armed). Adopt, Retire, Make lab host and Boot
+  into Talos are offered only where the daemon would accept them (`web/src/machine.tsx`,
+  `groupOf` decides the Inventory group).
 - **Navigation**: one line per cluster in the sidebar, and one per lab host (state
   pill, VM count on hover) as soon as one exists; the cluster's tabs live in its
-  header. `⌘K`/`Ctrl+K` jumps to any cluster page, machine or Kubit page; `a` toggles
+  header. `⌘K`/`Ctrl+K` jumps to any cluster page, machine, lab host or settings page; `a` toggles
   the Activity drawer; `/` focuses a table filter; `?` lists shortcuts. Theme follows
   the OS with a toggle in the status bar (remembered, applied before first paint).
 - **Overview shows only what matters**: unacknowledged alerts with runbooks, alert
   history limited to alerts and their recoveries, five recent operations linking to
-  Activity (filtered to the cluster). Info-only transitions stay in the events API.
+  Activity (filtered to the cluster), a Backups card (last snapshot, schedule, off-site
+  copy). Watcher freshness is "observed n s ago" in the cluster header. Info-only
+  transitions stay in the events API.
 - Tables show placeholder rows while loading and an explicit empty message after.
 - **Nothing polls; everything is live.** One WebSocket (`/api/v1/ws`) carries every
   change. The store notifies on each write (`store.OnChange`) and `internal/api/live.go`
@@ -653,7 +667,7 @@ never needs PXE because `node remove` resets Talos to maintenance mode from disk
 
 ## Lab hosts (one machine, several Talos VMs)
 
-A machine with AMT can become a **lab host**: wizard → Machines → *Make lab host…* (or
+A machine with AMT can become a **lab host**: Inventory → *Make lab host* (or
 the machine page). Kubit arms a network boot (`provision_kind = labhost`, the PXE
 process serves the Debian 13 netboot installer with a preseed from
 `GET /api/v1/labhost/preseed`), resets the box via AMT, and the unattended install
@@ -674,8 +688,8 @@ lab host). They are picked in the wizard like any machine; when the cluster inst
 VM, Kubit flips it to boot from its disk before Talos's post-install reboot. *Make lab host* can carry a plan — VM count and sizes, cluster name and 1 or 3
 control planes — so one click runs install → VMs → `cluster.create` (`labhost.cluster`
 operation; hostnames `<name>-cp-NN` / `<name>-worker-NN`, no VIP for a single control
-plane) and the operator comes back to a running cluster. The machine page's *Lab
-host* tab has the VM table (start/stop/re-provision/delete/resize); *Add VMs* and
+plane) and the operator comes back to a running cluster. The lab host page's *VMs*
+tab has the VM table (start/stop/re-provision/delete/resize); *Add VMs* and
 *Release* live on its Actions tab. Release deletes the VMs, drops the role and leaves
 the machine `unknown` (Debian stays on disk); it is refused while installing, in setup
 or updating, and Retire is refused until the host is released (a VM row is deleted
@@ -688,7 +702,7 @@ The install is not a blind wait any more. The preseed reports each stage back
 (`early_command` → `installer`, partman → `partitioning`, `late_command` →
 `packages` … `late-done`, a one-shot unit on first boot → `booted`) through the pxe
 proxy's `/labhost/<mac>/progress` to `GET /api/v1/labhost/progress`, which lands on
-`LabHost.Install` (live in the Lab host tab and the wizard row). The operation runs
+`LabHost.Install` (live on the lab host page). The operation runs
 phases with their own budgets and diagnoses — `boot` (PXE saw the MAC, 3 min: else
 "check BIOS boot order / AMT override / Wi-Fi interface"), `ipxe` (kernel fetched,
 2 min: else "TFTP/HTTP blocked"), `installer` (5 min: else "installer never reached
@@ -742,7 +756,7 @@ The host itself gets the treatment nodes get. Every service interval the watcher
 SSH tick also reads `/proc` and `df` (`labhost.Client.Metrics`: load, CPU %, memory
 used, the filesystem carrying `/var/lib/kubit`, running VMs, uptime) and files a
 sample under the pseudo-cluster `labhost:<mac>` in the same `samples` table
-(`disk`/`disk_cap` columns, migration v11) — so the *Lab host* tab shows CPU, memory,
+(`disk`/`disk_cap` columns, migration v11) — so the lab host page shows CPU, memory,
 VM disk and VM count with the same sparklines and ranges as a cluster overview, and
 a `hostSample` live message appends each reading. Alerts come from the same path
 (`events` under `labhost:<mac>`, runbooks, Inventory pill, forwarders):

@@ -2,7 +2,6 @@ import { useEffect } from 'preact/hooks'
 import { fmt, type AuditEntry } from '../api'
 import { audit, loadAudit, refreshKey } from '../store'
 import { DataTable, type Column } from './DataTable'
-import { Section } from './ui'
 
 /** Who did what, when: every administrative action Kubit recorded. */
 export function AuditLog({ cluster }: { cluster?: string }) {
@@ -20,9 +19,5 @@ export function AuditLog({ cluster }: { cluster?: string }) {
     const url = URL.createObjectURL(new Blob([lines.join('\n')], { type: 'text/csv' }))
     const el = document.createElement('a'); el.href = url; el.download = `kubit-audit${cluster ? '-' + cluster : ''}.csv`; el.click(); URL.revokeObjectURL(url)
   }
-  return (
-    <Section title="Audit log" help="Administrative actions, newest first." actions={<button class="btn" onClick={csv} disabled={rows.length === 0}>Export CSV</button>}>
-      <DataTable id={`audit-${cluster ?? 'all'}`} columns={columns} rows={rows} rowKey={(a) => String(a.id)} defaultSort={{ id: 'at', dir: 'desc' }} empty="Nothing recorded yet." />
-    </Section>
-  )
+  return <DataTable id={`audit-${cluster ?? 'all'}`} columns={columns} rows={rows} rowKey={(a) => String(a.id)} defaultSort={{ id: 'at', dir: 'desc' }} empty="Nothing recorded yet." toolbar={<button class="btn !py-1 !px-2 text-[12px]" onClick={csv} disabled={rows.length === 0}>Export CSV</button>} />
 }
