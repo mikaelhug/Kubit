@@ -426,8 +426,10 @@ watcher's latest result; `?fresh=true` forces a live query; it carries `observed
 held for three consecutive ticks with no gap between them (`internal/watch/confirm.go`,
 45 s at the default interval); a recovery is recorded at once, and only if the alert was
 raised. A tick that arrives more than twice the interval after the previous one is a
-*gap*: the daemon's host slept or the process was suspended, so the counters restart
-and that tick is a new baseline, never an alert (gaps are counted, `GET /observer`).
+*gap*: the laptop running Kubit slept, which is a normal thing for it to do. Kubit is a
+tool, not a service the clusters depend on: on wake the tick re-baselines, alerts start
+counting again from zero, a due snapshot is taken then, and `backup.stale` is not
+raised for time Kubit was asleep (gaps are counted, `GET /observer`).
 Every dial failure is classified (`internal/cluster/reach.go`): a refusal or timeout is
 the target's problem, `EHOSTUNREACH`/`ENETUNREACH`/`EHOSTDOWN` is the observer's. When
 every probe in a status fails for the observer's reason *and* the default gateway
@@ -436,10 +438,10 @@ cannot be dialed either, the status is `observer: offline`: no cluster alert is 
 pseudo-cluster (cleared by `observer.online`). Scheduled snapshots skip such ticks and a
 failed attempt waits ten minutes before the next. `kubit serve` takes `serve.lock` in
 `KUBIT_HOME`; a second daemon on the same home refuses to start (two watchers would
-double every sample and alert). Found on the EliteDesk lab: a MacBook running the daemon
-slept some forty times a day, each DarkWake tick raised a critical alert that cleared on
-the next wake, and one detached process lost LAN access altogether while every other
-process on the Mac could reach the cluster.
+double every sample and alert). Found on the EliteDesk lab: the MacBook running the daemon
+slept some forty times a day and each DarkWake tick had raised a critical alert that
+cleared on the next wake; separately, one detached daemon process lost LAN access
+altogether while every other process on the Mac could reach the cluster.
 
 **Health verdict.** Every tick on a ready cluster also sets `status.health`:
 `down` when a confirmed alert about the API, etcd or a node is open, `degraded`

@@ -48,7 +48,10 @@ func (s *Server) maybeScheduleSnapshot(ctx context.Context, name string, st *clu
 	if err != nil || !s.manager.SnapshotDue(ctx, c) {
 		return
 	}
-	if s.manager.SnapshotStale(ctx, c) && !s.store.HasOpenEvent(ctx, name, "", "backup.stale") {
+	// Staleness is only the schedule's fault when Kubit was awake to run it: a laptop
+	// that slept past the interval, or a daemon started after the due time, simply
+	// takes the snapshot now.
+	if s.manager.SnapshotStale(ctx, c) && s.observedSince(name) && !s.store.HasOpenEvent(ctx, name, "", "backup.stale") {
 		age, _ := s.manager.SnapshotAge(ctx, name)
 		s.raiseEvent(ctx, store.EventRow{Cluster: name, Severity: "warn", Kind: "backup.stale", Message: fmt.Sprintf("Last etcd snapshot is %s old; schedule is every %s. Check the Backups tab for failed snapshot operations.", age.Round(time.Minute), c.Spec.Backup.Etcd.Interval)})
 	}
@@ -63,6 +66,32 @@ func (s *Server) maybeScheduleSnapshot(ctx context.Context, name string, st *clu
 	}); err != nil {
 		log.Printf("snapshot schedule %s: %v", name, err)
 	}
+}
+
+// observedSince reports whether Kubit has been awake and running since the last
+// snapshot became due, so a missed schedule is a real failure rather than a nap.
+func (s *Server) observedSince(name string) bool {
+	if s.watcher == nil {
+		return true
+	}
+	c, _, err := s.manager.LoadCluster(context.Background(), name)
+	if err != nil {
+		return true
+	}
+	age, ok := s.manager.SnapshotAge(context.Background(), name)
+	if !ok {
+		return true
+	}
+	due := time.Now().Add(-age).Add(c.Spec.Backup.Etcd.IntervalDuration())
+	if s.started.After(due) {
+		return false
+	}
+	if o := s.watcher.Observer(); o.LastGapAt != "" {
+		if gap, err := time.Parse(time.RFC3339, o.LastGapAt); err == nil && gap.After(due) {
+			return false
+		}
+	}
+	return true
 }
 
 // raiseEvent records a health event and pushes it to SSE subscribers.

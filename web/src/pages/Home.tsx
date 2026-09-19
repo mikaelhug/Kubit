@@ -39,7 +39,6 @@ export function Home() {
   const notices: { tone: 'warn' | 'bad' | 'info'; text: preact.ComponentChildren }[] = []
   const obs = observer.value
   if (!obs.online) notices.push({ tone: 'bad', text: <>Kubit cannot reach the local network{obs.since ? ` since ${fmt.when(obs.since)}` : ''}{obs.error ? ` (${obs.error})` : ''}. Cluster alerts are paused. <a class="underline" href="/settings/general">Why</a></> })
-  if (obs.gaps24h >= 3) notices.push({ tone: 'warn', text: <>Observation paused {obs.gaps24h} times in 24 h: Kubit's host sleeps. Run Kubit on an always-on machine (<span class="mono">kubit service install</span>).</> })
   if (authState.value.setup) notices.push({ tone: 'warn', text: <>No accounts: anyone reaching this address is an administrator. <a class="underline" href="/settings/accounts">Add the first account</a></> })
   if (armed && pxe && !pxe.running) notices.push({ tone: 'bad', text: <>A machine is armed for a network boot but the PXE server is not running. <a class="underline" href="/fleet/network-boot">Network boot</a></> })
   if (off?.error) notices.push({ tone: 'bad', text: <>Off-site copies failing: {off.error} <a class="underline" href="/settings/offsite">Off-site</a></> })
