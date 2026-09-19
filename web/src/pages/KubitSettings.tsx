@@ -1,145 +1,33 @@
-import { useEffect, useState } from 'preact/hooks'
-import { api, fmt, type OIDCSettings, type OffsiteStatus, type Settings } from '../api'
-import { can, loadSettings, settings, toast, watch } from '../store'
-import { ErrorBox, Field, Notice, Section } from '../components/ui'
+import { useLocation } from 'preact-iso'
+import { useEffect } from 'preact/hooks'
+import { can } from '../store'
+import { settingsPages, type SettingsPage } from '../app'
 import { UsersSection } from '../components/Users'
+import { SettingsLayout } from './settings/Layout'
+import { General } from './settings/General'
+import { Discovery } from './settings/Discovery'
+import { Alerts } from './settings/Alerts'
+import { Offsite } from './settings/Offsite'
+import { Sso } from './settings/Sso'
+import { Backup } from './settings/Backup'
 
-export function KubitSettings() {
-  const [s, setS] = useState<Settings | null>(null)
-  const [orig, setOrig] = useState<Settings | null>(null)
-  const [error, setError] = useState<string | null>(null)
-  const [off, setOff] = useState<OffsiteStatus | null>(null)
-  const loadOff = () => api.offsiteStatus().then(setOff).catch(() => {})
-  const pushed = settings.value
-  // The daemon pushes the saved row; adopt it unless the form has unsaved edits, in
-  // which case a notice says the baseline moved.
-  useEffect(() => {
-    if (!pushed) { loadSettings(); return }
-    const dirtyNow = s && orig && JSON.stringify(s) !== JSON.stringify(orig)
-    if (!dirtyNow) setS(pushed)
-    setOrig(pushed)
-    loadOff()
-  }, [pushed]) // eslint-disable-line
-  if (!s) return <div class="p-6 text-muted">{error ?? 'Loading…'}</div>
-  const dirty = JSON.stringify(s) !== JSON.stringify(orig)
-  const movedUnderneath = dirty && pushed && JSON.stringify(pushed) !== JSON.stringify(orig)
-  const save = () => api.saveSettings(s).then((v) => { setS(v); setOrig(v); setError(null); toast('Settings saved', 'good') }).catch((e) => setError(e.message))
-  const oidc: OIDCSettings = s.auth?.oidc ?? { enabled: false, name: 'SSO', issuer: '', clientId: '', clientSecret: '', usernameClaim: 'preferred_username', groupsClaim: 'groups', adminGroups: [], operatorGroups: [], viewerGroups: [], defaultRole: '' }
-  const setOidc = (patch: Partial<OIDCSettings>) => setS({ ...s, auth: { ...(s.auth ?? {}), oidc: { ...oidc, ...patch } } })
+/** /settings/:page — one page of this installation's settings. */
+export function KubitSettings({ page }: { page?: string }) {
+  const { route } = useLocation()
+  const known = settingsPages.some(([id]) => id === page)
+  const allowed = known && ((page !== 'accounts' && page !== 'sso') || can('admin'))
+  useEffect(() => { if (!allowed) route('/settings/general', true) }, [allowed, route])
+  if (!allowed) return null
+  const p = page as SettingsPage
   return (
-    <div class="p-6 flex flex-col gap-6 max-w-3xl">
-      <Section title="Kubit settings" help="Preferences of this Kubit installation. Cluster-specific settings live under each cluster.">
-        <ErrorBox error={error} />
-        {movedUnderneath && <Notice tone="warn">Settings were changed elsewhere while you were editing. Saving overwrites them; <button class="underline" onClick={() => { setS(pushed); setOrig(pushed) }}>discard your edits</button> to see the current values.</Notice>}
-        <div class="panel p-4 grid grid-cols-1 md:grid-cols-2 gap-4">
-          <Field label="Image Factory URL" hint="Where installer images, ISOs and PXE assets come from. Point at a self-hosted factory for air-gapped sites."><input class="input mono" value={s.factoryUrl} onInput={(e) => setS({ ...s, factoryUrl: (e.target as HTMLInputElement).value })} /></Field>
-          <Field label="Health poll interval (seconds)" hint="How often every cluster is queried for samples and events. Minimum 5."><input class="input num" type="number" min={5} value={s.watchIntervalSec} onInput={(e) => setS({ ...s, watchIntervalSec: Number((e.target as HTMLInputElement).value) })} /></Field>
-          <Field label="Discovery subnets" hint="Pre-filled in the scan box (comma-separated CIDRs or addresses)."><input class="input mono" value={s.discoverySubnets.join(', ')} onInput={(e) => setS({ ...s, discoverySubnets: (e.target as HTMLInputElement).value.split(/[,\s]+/).filter(Boolean) })} /></Field>
-          <Field label="Default MetalLB range" hint="Suggested pool for new clusters; empty derives one from the first node's subnet."><input class="input mono" value={s.defaultMetalLBRange} onInput={(e) => setS({ ...s, defaultMetalLBRange: (e.target as HTMLInputElement).value })} placeholder="192.168.1.200-192.168.1.220" /></Field>
-          <Field label="Default AMT user" hint="Used by discovery on every address that answers on 16992."><input class="input mono" value={s.amt?.user ?? 'admin'} onInput={(e) => setS({ ...s, amt: { ...(s.amt ?? { type: 'amt', host: '', tls: false, password: '' }), user: (e.target as HTMLInputElement).value.trim() } })} /></Field>
-          <Field label="Default AMT password" hint="The MEBx password; sealed with the master key, shown masked."><input class="input mono" type="password" value={s.amt?.password ?? ''} onInput={(e) => setS({ ...s, amt: { ...(s.amt ?? { type: 'amt', host: '', tls: false, user: 'admin' }), password: (e.target as HTMLInputElement).value } })} /></Field>
-          <Field label="Default BMC user" hint="Used by discovery on every address that serves a Redfish root."><input class="input mono" value={s.bmc?.user ?? 'root'} onInput={(e) => setS({ ...s, bmc: { ...(s.bmc ?? { type: 'redfish', host: '', tls: false, password: '' }), user: (e.target as HTMLInputElement).value.trim() } })} /></Field>
-          <Field label="Default BMC password" hint="Sealed with the master key, shown masked."><input class="input mono" type="password" value={s.bmc?.password ?? ''} onInput={(e) => setS({ ...s, bmc: { ...(s.bmc ?? { type: 'redfish', host: '', tls: false, user: 'root' }), password: (e.target as HTMLInputElement).value } })} /></Field>
-          <Field label="PXE status URL" hint="Where the separate kubit pxe process publishes its status."><input class="input mono" value={s.pxeStatusUrl} onInput={(e) => setS({ ...s, pxeStatusUrl: (e.target as HTMLInputElement).value })} /></Field>
-        </div>
-        <div class="flex gap-2 items-center">
-          <button class="btn btn-primary" disabled={!dirty} onClick={save}>Save</button>
-          {dirty && <span class="text-[12px] text-warn">unsaved changes</span>}
-        </div>
-      </Section>
-      <Section title="Alert forwarding" help="Alerts at or above this severity go to a webhook (Slack, Discord, Teams, generic JSON) and/or e-mail.">
-        <div class="panel p-4 grid grid-cols-1 md:grid-cols-2 gap-4">
-          <Field label="Minimum severity">
-            <select class="input" value={s.alerts.minSeverity} onChange={(e) => setS({ ...s, alerts: { ...s.alerts, minSeverity: (e.target as HTMLSelectElement).value as any } })}>
-              <option value="info">info (everything)</option><option value="warn">warn</option><option value="critical">critical only</option>
-            </select>
-          </Field>
-          <Field label="Heartbeat (hours)" hint="A summary this often, regardless of severity; 0 = off. Silence means the daemon is down."><input class="input num" type="number" min={0} value={s.alerts.heartbeatHours ?? 0} onInput={(e) => setS({ ...s, alerts: { ...s.alerts, heartbeatHours: Number((e.target as HTMLInputElement).value) } })} /></Field>
-          <Field label="Ignore namespaces" hint="No workload alerts for these namespaces. Comma-separated."><input class="input mono" value={(s.alerts.ignoreNamespaces ?? []).join(', ')} placeholder="dev, ci" onInput={(e) => setS({ ...s, alerts: { ...s.alerts, ignoreNamespaces: (e.target as HTMLInputElement).value.split(/[,\s]+/).filter(Boolean) } })} /></Field>
-          <Field label="Webhook URL" hint="Empty = off."><input class="input mono" value={s.alerts.webhookUrl} placeholder="https://hooks.slack.com/services/…" onInput={(e) => setS({ ...s, alerts: { ...s.alerts, webhookUrl: (e.target as HTMLInputElement).value.trim() } })} /></Field>
-          <Field label="SMTP host" hint="Empty = off."><input class="input mono" value={s.alerts.smtp.host} placeholder="smtp.example.com" onInput={(e) => setS({ ...s, alerts: { ...s.alerts, smtp: { ...s.alerts.smtp, host: (e.target as HTMLInputElement).value.trim() } } })} /></Field>
-          <div class="grid grid-cols-2 gap-3">
-            <Field label="SMTP port"><input class="input num" type="number" value={s.alerts.smtp.port} onInput={(e) => setS({ ...s, alerts: { ...s.alerts, smtp: { ...s.alerts.smtp, port: Number((e.target as HTMLInputElement).value) } } })} /></Field>
-            <Field label="Encryption">
-              <select class="input" value={s.alerts.smtp.tls ?? (s.alerts.smtp.startTLS ? 'starttls' : 'none')} onChange={(e) => { const tls = (e.target as HTMLSelectElement).value as any; setS({ ...s, alerts: { ...s.alerts, smtp: { ...s.alerts.smtp, tls, port: tls === 'tls' && s.alerts.smtp.port === 587 ? 465 : tls === 'starttls' && s.alerts.smtp.port === 465 ? 587 : s.alerts.smtp.port } } }) }}>
-                <option value="starttls">STARTTLS (587)</option><option value="tls">Implicit TLS (465)</option><option value="none">None (local relay)</option>
-              </select>
-            </Field>
-          </div>
-          <Field label="From"><input class="input mono" value={s.alerts.smtp.from} placeholder="kubit@example.com" onInput={(e) => setS({ ...s, alerts: { ...s.alerts, smtp: { ...s.alerts.smtp, from: (e.target as HTMLInputElement).value.trim() } } })} /></Field>
-          <Field label="To" hint="Comma-separated."><input class="input mono" value={s.alerts.smtp.to.join(', ')} onInput={(e) => setS({ ...s, alerts: { ...s.alerts, smtp: { ...s.alerts.smtp, to: (e.target as HTMLInputElement).value.split(/[,\s]+/).filter(Boolean) } } })} /></Field>
-          <Field label="Username" hint="Empty = no authentication."><input class="input mono" value={s.alerts.smtp.username} onInput={(e) => setS({ ...s, alerts: { ...s.alerts, smtp: { ...s.alerts.smtp, username: (e.target as HTMLInputElement).value } } })} /></Field>
-          <Field label="Password" hint="Stored sealed with the master key; shown masked."><input class="input mono" type="password" value={s.alerts.smtp.password} onInput={(e) => setS({ ...s, alerts: { ...s.alerts, smtp: { ...s.alerts.smtp, password: (e.target as HTMLInputElement).value } } })} /></Field>
-        </div>
-        <div class="flex gap-2 items-center">
-          <button class="btn btn-primary" disabled={!dirty} onClick={save}>Save</button>
-          <button class="btn" disabled={dirty} title={dirty ? 'Save first' : 'Send a test alert through the saved sinks'} onClick={() => api.testAlerts().then((r) => toast(r.ok ? 'Test alert delivered' : r.errors.join('; '), r.ok ? 'good' : 'error')).catch((e) => toast(e.message, 'error'))}>Send test alert</button>
-        </div>
-      </Section>
-      <Section title="Off-site copies" help="etcd snapshots and a daily sealed Kubit backup, copied elsewhere. Keep the master key (kubit key export) outside this machine too.">
-        <div class="panel p-4 grid grid-cols-1 md:grid-cols-2 gap-4">
-          <Field label="Target">
-            <select class="input" value={s.offsite.type} onChange={(e) => setS({ ...s, offsite: { ...s.offsite, type: (e.target as HTMLSelectElement).value as any } })}>
-              <option value="">Off</option><option value="dir">Directory (mounted share, USB disk, synced folder)</option><option value="s3">S3-compatible bucket</option>
-            </select>
-          </Field>
-          <Field label="Keep daily Kubit backups" hint="Older ones are deleted remotely; snapshots follow each cluster's own retention."><input class="input num" type="number" min={1} value={s.offsite.keepBackups} onInput={(e) => setS({ ...s, offsite: { ...s.offsite, keepBackups: Number((e.target as HTMLInputElement).value) } })} /></Field>
-          {s.offsite.type === 'dir' && <Field label="Directory" hint="Must be reachable from the daemon's host; an SMB/NFS mount or a folder synced elsewhere."><input class="input mono" value={s.offsite.dir} placeholder="/Volumes/backup/kubit" onInput={(e) => setS({ ...s, offsite: { ...s.offsite, dir: (e.target as HTMLInputElement).value.trim() } })} /></Field>}
-          {s.offsite.type === 's3' && (<>
-            <Field label="Endpoint" hint="Host[:port]; https unless marked insecure. AWS: s3.<region>.amazonaws.com; MinIO/B2/Wasabi/Hetzner all work."><input class="input mono" value={s.offsite.endpoint} placeholder="s3.eu-central-1.amazonaws.com" onInput={(e) => setS({ ...s, offsite: { ...s.offsite, endpoint: (e.target as HTMLInputElement).value.trim() } })} /></Field>
-            <Field label="Bucket"><input class="input mono" value={s.offsite.bucket} onInput={(e) => setS({ ...s, offsite: { ...s.offsite, bucket: (e.target as HTMLInputElement).value.trim() } })} /></Field>
-            <Field label="Region" hint="Empty = auto."><input class="input mono" value={s.offsite.region} onInput={(e) => setS({ ...s, offsite: { ...s.offsite, region: (e.target as HTMLInputElement).value.trim() } })} /></Field>
-            <Field label="Access key"><input class="input mono" value={s.offsite.accessKey} onInput={(e) => setS({ ...s, offsite: { ...s.offsite, accessKey: (e.target as HTMLInputElement).value.trim() } })} /></Field>
-            <Field label="Secret key" hint="Stored sealed with the master key; shown masked."><input class="input mono" type="password" value={s.offsite.secretKey} onInput={(e) => setS({ ...s, offsite: { ...s.offsite, secretKey: (e.target as HTMLInputElement).value } })} /></Field>
-            <div class="flex flex-col gap-2 text-[13px]">
-              <label class="flex items-center gap-2"><input type="checkbox" checked={s.offsite.insecure} onChange={(e) => setS({ ...s, offsite: { ...s.offsite, insecure: (e.target as HTMLInputElement).checked } })} /> Plain http (LAN MinIO)</label>
-              <label class="flex items-center gap-2"><input type="checkbox" checked={s.offsite.pathStyle} onChange={(e) => setS({ ...s, offsite: { ...s.offsite, pathStyle: (e.target as HTMLInputElement).checked } })} /> Path-style bucket addressing</label>
-            </div>
-          </>)}
-          {s.offsite.type && <Field label="Prefix" hint="Optional folder inside the target."><input class="input mono" value={s.offsite.prefix} placeholder="kubit" onInput={(e) => setS({ ...s, offsite: { ...s.offsite, prefix: (e.target as HTMLInputElement).value.trim() } })} /></Field>}
-        </div>
-        <div class="flex gap-2 items-center flex-wrap">
-          <button class="btn btn-primary" disabled={!dirty} onClick={save}>Save</button>
-          <button class="btn" disabled={!s.offsite.type} title="Write, read back and delete a probe object with the settings as shown (saved or not)" onClick={() => api.offsiteTest(s.offsite).then((r) => toast(r.ok ? `Target reachable (${r.roundTripMs} ms round trip)` : r.error ?? 'failed', r.ok ? 'good' : 'error')).catch((e) => toast(e.message, 'error'))}>Test target</button>
-          <button class="btn" disabled={dirty || !s.offsite.type} title={dirty ? 'Save first' : 'Upload a Kubit backup now'} onClick={() => api.offsiteBackup().then((r) => { watch(r); setTimeout(loadOff, 5000) }).catch((e) => toast(e.message, 'error'))}>Copy Kubit backup now</button>
-          {off?.enabled && <span class="text-[12px] text-muted">{off.error ? <span class="text-bad">{off.error}</span> : `${off.target}: ${off.backups} backup(s), ${off.snapshots} snapshot(s), ${fmt.bytes(off.bytes)} · last backup ${off.lastBackup ? fmt.when(off.lastBackup) : 'never'}`}</span>}
-        </div>
-      </Section>
-      {can('admin') && <UsersSection />}
-      {can('admin') && (
-        <Section title="Single sign-on" help="OpenID Connect. Groups from the provider decide the role; people outside every listed group get the default role, or no access.">
-          <div class="panel p-4 grid grid-cols-1 md:grid-cols-2 gap-4">
-            <label class="flex items-center gap-2 text-[13px] font-medium md:col-span-2"><input type="checkbox" checked={oidc.enabled} onChange={(e) => setOidc({ enabled: (e.target as HTMLInputElement).checked })} /> Enable sign-in with an OpenID Connect provider</label>
-            <Field label="Button label" hint="Shown on the sign-in screen."><input class="input" value={oidc.name} onInput={(e) => setOidc({ name: (e.target as HTMLInputElement).value })} /></Field>
-            <Field label="Issuer URL" hint="Where /.well-known/openid-configuration lives."><input class="input mono" value={oidc.issuer} placeholder="https://login.example.com/realms/ops" onInput={(e) => setOidc({ issuer: (e.target as HTMLInputElement).value.trim() })} /></Field>
-            <Field label="Client ID"><input class="input mono" value={oidc.clientId} onInput={(e) => setOidc({ clientId: (e.target as HTMLInputElement).value.trim() })} /></Field>
-            <Field label="Client secret" hint="Sealed with the master key, shown masked."><input class="input mono" type="password" value={oidc.clientSecret} onInput={(e) => setOidc({ clientSecret: (e.target as HTMLInputElement).value })} /></Field>
-            <Field label="Redirect URL" hint="Register this at the provider."><code class="mono text-[12px] break-all">{typeof location !== 'undefined' ? `${location.origin}/api/v1/auth/oidc/callback` : '/api/v1/auth/oidc/callback'}</code></Field>
-            <Field label="Username claim"><input class="input mono" value={oidc.usernameClaim} onInput={(e) => setOidc({ usernameClaim: (e.target as HTMLInputElement).value.trim() })} /></Field>
-            <Field label="Groups claim"><input class="input mono" value={oidc.groupsClaim} onInput={(e) => setOidc({ groupsClaim: (e.target as HTMLInputElement).value.trim() })} /></Field>
-            <Field label="Default role" hint="For people in none of the groups below."><select class="input" value={oidc.defaultRole} onChange={(e) => setOidc({ defaultRole: (e.target as HTMLSelectElement).value as any })}><option value="">no access</option><option value="viewer">viewer</option><option value="operator">operator</option><option value="admin">admin</option></select></Field>
-            <Field label="Administrator groups" hint="Comma-separated."><input class="input mono" value={oidc.adminGroups.join(', ')} onInput={(e) => setOidc({ adminGroups: splitList((e.target as HTMLInputElement).value) })} /></Field>
-            <Field label="Operator groups"><input class="input mono" value={oidc.operatorGroups.join(', ')} onInput={(e) => setOidc({ operatorGroups: splitList((e.target as HTMLInputElement).value) })} /></Field>
-            <Field label="Viewer groups"><input class="input mono" value={oidc.viewerGroups.join(', ')} onInput={(e) => setOidc({ viewerGroups: splitList((e.target as HTMLInputElement).value) })} /></Field>
-          </div>
-          <div class="flex gap-2 items-center">
-            <button class="btn btn-primary" disabled={!dirty} onClick={save}>Save</button>
-            {dirty && <span class="text-[12px] text-warn">unsaved changes</span>}
-          </div>
-        </Section>
-      )}
-      <Section title="Kubit backup" help="Sealed archive of Kubit's own state (database, kubeconfigs, talosconfigs, OpenTofu state). Cluster data is under each cluster's Backups tab.">
-        <Notice tone="muted">
-          <div class="flex flex-col gap-2">
-            <span>The archive is encrypted with this Mac's master key (Keychain: service <span class="mono">kubit</span>). To restore elsewhere, export the key here and set <span class="mono">KUBIT_MASTER_KEY</span> there:</span>
-            <code class="mono block rounded bg-bg border border-border px-3 py-2">kubit key export</code>
-            <span>Restore with the daemon stopped: <span class="mono">kubit restore file.kubitbak</span></span>
-          </div>
-        </Notice>
-        <a class="btn btn-primary self-start" href="/api/v1/backup" download>Download backup</a>
-      </Section>
-    </div>
+    <SettingsLayout page={p}>
+      {p === 'general' && <General />}
+      {p === 'discovery' && <Discovery />}
+      {p === 'alerts' && <Alerts />}
+      {p === 'offsite' && <Offsite />}
+      {p === 'accounts' && <UsersSection />}
+      {p === 'sso' && <Sso />}
+      {p === 'backup' && <Backup />}
+    </SettingsLayout>
   )
 }
-
-function splitList(v: string) { return v.split(/[,\s]+/).map((x) => x.trim()).filter(Boolean) }
