@@ -74,16 +74,17 @@ type NodeStatus struct {
 	Registered bool `json:"registered"`
 	// Pool is the node's pool; SeenAt is set when discovery last saw the machine on a
 	// different address than the one declared (DHCP lease moved).
-	Pool        string `json:"pool"`
-	SeenAt      string `json:"seenAt,omitempty"`
-	Stage       string `json:"stage"`
-	CPUMilli    int64  `json:"cpuMilli"`
-	CPUCapMilli int64  `json:"cpuCapMilli"`
-	MemBytes    int64  `json:"memBytes"`
-	MemCapBytes int64  `json:"memCapBytes"`
-	Pods        int    `json:"pods"`
-	PodCap      int64  `json:"podCap"`
-	GVisor      bool   `json:"gvisor"`
+	Pool          string `json:"pool"`
+	SeenAt        string `json:"seenAt,omitempty"`
+	Stage         string `json:"stage"`
+	CPUMilli      int64  `json:"cpuMilli"`
+	CPUCapMilli   int64  `json:"cpuCapMilli"`
+	MemBytes      int64  `json:"memBytes"`
+	MemCapBytes   int64  `json:"memCapBytes"`
+	MemAllocBytes int64  `json:"memAllocBytes"`
+	Pods          int    `json:"pods"`
+	PodCap        int64  `json:"podCap"`
+	GVisor        bool   `json:"gvisor"`
 }
 
 type EtcdStatus struct {
@@ -212,8 +213,9 @@ func (m *Manager) Status(ctx context.Context, name string) (*Status, error) {
 				ns.Ready = kn.Ready
 				ns.Unschedulable = kn.Unschedulable
 				ns.KubeletVersion = kn.KubeletVersion
-				ns.CPUCapMilli = kn.AllocatableCPU
-				ns.MemCapBytes = kn.AllocatableMem
+				ns.CPUCapMilli = kn.CapacityCPU
+				ns.MemCapBytes = kn.CapacityMem
+				ns.MemAllocBytes = kn.AllocatableMem
 				ns.PodCap = kn.CapacityPods
 				ns.GVisor = kn.Labels[config.LabelGVisor] == "true"
 				ns.CPUMilli = usage[kn.Name].CPUMilli

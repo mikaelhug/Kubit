@@ -70,7 +70,7 @@ func (c *Client) NodeDetail(ctx context.Context, name string) (*NodeDetail, erro
 		Name: n.Name, Ready: s.Ready, Unschedulable: s.Unschedulable, KubeletVersion: s.KubeletVersion,
 		Runtime: n.Status.NodeInfo.ContainerRuntimeVersion, Kernel: n.Status.NodeInfo.KernelVersion, OSImage: s.OSImage,
 		InternalIP: s.InternalIP, Labels: n.Labels,
-		Capacity:    Resources{CPUMilli: n.Status.Capacity.Cpu().MilliValue(), MemBytes: n.Status.Capacity.Memory().Value(), Pods: n.Status.Capacity.Pods().Value()},
+		Capacity:    Resources{CPUMilli: s.CapacityCPU, MemBytes: s.CapacityMem, Pods: s.CapacityPods},
 		Allocatable: Resources{CPUMilli: s.AllocatableCPU, MemBytes: s.AllocatableMem, Pods: s.CapacityPods},
 	}
 	for _, cond := range n.Status.Conditions {

@@ -407,7 +407,8 @@ machine configs; platform changes always go through a reviewed plan. The CLI's
 ## Health watcher
 
 `kubit serve` runs one watcher loop per ready cluster calling `Manager.Status` every
-15 s. Each tick writes capacity samples (cluster totals and per node) and diffs the
+15 s. Each tick writes capacity samples (cluster totals and per node; usage is
+metrics-server's whole-node reading, so its ceiling is node capacity, not allocatable) and diffs the
 previous status into events with a severity: `talos.unreachable`/`talos.back`,
 `node.notready`/`node.ready`, `node.cordoned`, `api.unreachable`/`api.back`,
 `etcd.unhealthy`/`etcd.members`/`etcd.leader`, `talos.version`/`kubelet.version`,

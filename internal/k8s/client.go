@@ -42,6 +42,8 @@ type NodeStatus struct {
 	Labels         map[string]string
 	AllocatableCPU int64 // millicores
 	AllocatableMem int64 // bytes
+	CapacityCPU    int64
+	CapacityMem    int64
 	CapacityPods   int64
 }
 
@@ -65,6 +67,8 @@ func statusOf(n *corev1.Node) NodeStatus {
 	}
 	s.AllocatableCPU = n.Status.Allocatable.Cpu().MilliValue()
 	s.AllocatableMem = n.Status.Allocatable.Memory().Value()
+	s.CapacityCPU = n.Status.Capacity.Cpu().MilliValue()
+	s.CapacityMem = n.Status.Capacity.Memory().Value()
 	s.CapacityPods = n.Status.Capacity.Pods().Value()
 	for _, c := range n.Status.Conditions {
 		if c.Type == corev1.NodeReady && c.Status == corev1.ConditionTrue {

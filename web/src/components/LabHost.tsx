@@ -265,7 +265,7 @@ export function HostMetrics({ host, lh }: { host: NodeRow; lh: LabHost }) {
     setSamples((prev) => (prev.length && prev[prev.length - 1].ts >= live.ts ? prev : [...prev, live]))
   }, [live?.ts]) // eslint-disable-line
   const m = lh.metrics
-  const pts = (f: (s: Sample) => number) => samples.filter((s) => s.reachable).map((s) => ({ t: new Date(s.ts).getTime(), v: f(s) }))
+  const pts = (f: (s: Sample) => number) => samples.map((s) => ({ t: new Date(s.ts).getTime(), v: s.reachable ? f(s) : null }))
   const committed = vms.reduce((s, v) => s + v.diskGiB, 0)
   const diskPct = m && m.diskTotal ? fmt.pct(m.diskUsed, m.diskTotal) : 0
   const memPct = m && m.memTotal ? fmt.pct(m.memUsed, m.memTotal) : 0

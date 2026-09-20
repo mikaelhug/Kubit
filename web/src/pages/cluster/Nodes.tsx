@@ -16,7 +16,7 @@ export function Nodes({ ctx }: { ctx: ClusterCtx }) {
   const [readdress, setReaddress] = useState<NodeStatus | null>(null)
   const [pool, setPool] = useState('')
   const specs = cluster.spec.spec.nodes
-  const all: NodeStatus[] = status?.nodes ?? specs.map((n) => ({ ...n, role: n.role ?? 'worker', pool: n.pool ?? '', kvm: !!n.kvm, ready: false, unschedulable: false, registered: false, stage: '', talosVersion: '', kubeletVersion: '', cpuMilli: 0, cpuCapMilli: 0, memBytes: 0, memCapBytes: 0, pods: 0, podCap: 0, gvisor: false, talosReachable: false, talosError: 'querying…' }))
+  const all: NodeStatus[] = status?.nodes ?? specs.map((n) => ({ ...n, role: n.role ?? 'worker', pool: n.pool ?? '', kvm: !!n.kvm, ready: false, unschedulable: false, registered: false, stage: '', talosVersion: '', kubeletVersion: '', cpuMilli: 0, cpuCapMilli: 0, memBytes: 0, memCapBytes: 0, memAllocBytes: 0, pods: 0, podCap: 0, gvisor: false, talosReachable: false, talosError: 'querying…' }))
   const rows = pool ? all.filter((n) => n.pool === pool) : all
   const pools = cluster.spec.spec.pools ?? []
   const apiUp = !!status?.apiReachable
@@ -40,7 +40,7 @@ export function Nodes({ ctx }: { ctx: ClusterCtx }) {
     { id: 'talos', header: 'Talos', sort: (n) => n.talosVersion, mono: true, cell: (n) => n.talosVersion || '—' },
     { id: 'kubelet', header: 'Kubelet', sort: (n) => n.kubeletVersion, mono: true, cell: (n) => n.kubeletVersion || '—' },
     { id: 'cpu', header: 'CPU', align: 'right', sort: (n) => n.cpuMilli, cell: (n) => <>{fmt.cores(n.cpuMilli)}<span class="text-muted">/{fmt.cores(n.cpuCapMilli)}</span></> },
-    { id: 'ram', header: 'RAM used / allocatable', align: 'right', sort: (n) => n.memBytes, cell: (n) => <span title={n.memCapBytes && n.memCapBytes < 768 * 1048576 ? 'Under 768 MiB allocatable: too small for the platform add-ons' : undefined}><span class={n.memCapBytes && n.memBytes >= n.memCapBytes ? 'text-bad' : ''}>{fmt.bytes(n.memBytes)}</span><span class={n.memCapBytes && n.memCapBytes < 768 * 1048576 ? 'text-warn' : 'text-muted'}>/{fmt.bytes(n.memCapBytes)}</span></span> },
+    { id: 'ram', header: 'RAM used / total', align: 'right', sort: (n) => n.memBytes, cell: (n) => <span title={n.memAllocBytes && n.memAllocBytes < 768 * 1048576 ? `${fmt.bytes(n.memAllocBytes)} allocatable for pods: too small for the platform add-ons` : n.memAllocBytes ? `${fmt.bytes(n.memAllocBytes)} allocatable for pods` : undefined}><span class={n.memCapBytes && n.memBytes >= n.memCapBytes * 0.95 ? 'text-bad' : ''}>{fmt.bytes(n.memBytes)}</span><span class={n.memAllocBytes && n.memAllocBytes < 768 * 1048576 ? 'text-warn' : 'text-muted'}>/{fmt.bytes(n.memCapBytes)}</span></span> },
     { id: 'pods', header: 'Pods', align: 'right', sort: (n) => n.pods, cell: (n) => <a href={`/clusters/${name}/workloads?view=pods&node=${encodeURIComponent(n.hostname)}`} class="hover:underline">{n.pods}</a> },
     { id: 'gvisor', header: 'gVisor', sort: (n) => n.gvisor ? 1 : 0, cell: (n) => n.gvisor ? <Pill tone="good">{n.kvm ? 'kvm' : 'runsc'}</Pill> : <span class="text-muted">—</span> },
     { id: 'actions', header: '', align: 'right', cell: (n) => (

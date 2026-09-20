@@ -72,9 +72,9 @@ func TestDeriveAPIAndRemoval(t *testing.T) {
 
 func TestDeriveSmallNodeMemory(t *testing.T) {
 	small := node("w1", true, true)
-	small.MemCapBytes = 454 << 20
+	small.MemAllocBytes = 454 << 20
 	big := node("w1", true, true)
-	big.MemCapBytes = 1300 << 20
+	big.MemAllocBytes = 1300 << 20
 	got := kinds(watch.Derive("c", nil, st(true, 3, true, small)))
 	if len(got) != 1 || got[0] != "warn:node.memory-small" {
 		t.Errorf("first observation of a starved node: %v", got)

@@ -2,7 +2,8 @@ import { useEffect, useState } from 'preact/hooks'
 import { api, fmt, type HealthEvent, type Sample, type ServiceHealth, type Status, type Versions } from '../../api'
 import { ack, clusters, health, latestTalos as latestTalosSignal, loadSnapshots, operations, refreshKey, snapshots } from '../../store'
 import { runbookFor } from '../../runbooks'
-import { Sparkline } from '../../components/Sparkline'
+import { ageSec } from '../../clock'
+import { Sparkline, spanOf } from '../../components/Sparkline'
 import { Notice, Pill, Section, SeenAgo, StatusDot } from '../../components/ui'
 import type { ClusterCtx } from './ClusterPage'
 
@@ -41,7 +42,7 @@ export function Overview({ ctx }: { ctx: ClusterCtx }) {
       return [...prev, point]
     })
   }, [status?.observedAt]) // eslint-disable-line
-  const pts = (f: (s: Sample) => number) => samples.map((s) => ({ t: new Date(s.ts).getTime(), v: f(s) }))
+  const pts = (f: (s: Sample) => number, metered = false) => samples.map((s) => ({ t: new Date(s.ts).getTime(), v: s.reachable && (!metered || s.memBytes > 0) ? f(s) : null }))
   const last = samples[samples.length - 1]
 
   return (
@@ -57,7 +58,7 @@ export function Overview({ ctx }: { ctx: ClusterCtx }) {
           {alerts.map((e) => <EventRow key={e.id} e={e} onAck={() => ack(name, e.id)} />)}
         </div>
       )}
-      <div class="grid grid-cols-2 xl:grid-cols-6 gap-4">
+      <div class="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-6 gap-3">
         <Card label="Control plane" tone={!status ? 'muted' : cpDown === 0 ? 'good' : 'bad'} value={status ? `${status.nodes.filter((n) => n.role === 'controlplane').length - cpDown}/${status.nodes.filter((n) => n.role === 'controlplane').length}` : '—'} sub={spec.controlPlane.vip ? `VIP ${spec.controlPlane.vip}` : 'no VIP: endpoint is the first control plane'} />
         <Card label="etcd quorum" tone={!status ? 'muted' : status.etcd.healthy ? 'good' : 'bad'} value={status ? `${status.etcd.members}/${status.etcd.expected}` : '—'} sub={status?.etcd.leader ? `leader ${status.etcd.leader}` : status?.etcd.alarms?.join(', ') || 'no leader reported'} />
         <Card label="Nodes Ready" tone={!t ? 'muted' : t.nodesReady === t.nodes ? 'good' : 'warn'} value={t ? `${t.nodesReady}/${t.nodes}` : '—'} sub={`${spec.nodes.filter((n) => n.role === 'worker').length} worker${spec.nodes.filter((n) => n.role === 'worker').length === 1 ? '' : 's'}`} />
@@ -73,9 +74,9 @@ export function Overview({ ctx }: { ctx: ClusterCtx }) {
               {['1h', '6h', '24h', '7d'].map((r) => <button key={r} class={`btn !py-0.5 !px-2 text-[11px] ${r === range ? 'border-accent text-accent' : ''}`} onClick={() => setRange(r)}>{r}</button>)}
             </div>
           </div>
-          <Sparkline label="CPU used" points={pts((s) => s.cpuMilli)} max={last?.cpuCap} format={fmt.cores} />
-          <Sparkline label="Memory used" points={pts((s) => s.memBytes)} max={last?.memCap} format={fmt.bytes} />
-          <Sparkline label="Pods" points={pts((s) => s.pods)} max={t?.podCap} format={String} />
+          <Sparkline label="CPU used" points={pts((s) => s.cpuMilli, true)} max={t?.cpuCapMilli || last?.cpuCap} format={fmt.cores} height={84} span={spanOf(range)} />
+          <Sparkline label="Memory used" points={pts((s) => s.memBytes, true)} max={t?.memCapBytes || last?.memCap} format={fmt.bytes} height={84} span={spanOf(range)} />
+          <Sparkline label="Pods" points={pts((s) => s.pods)} max={t?.podCap} format={String} height={84} span={spanOf(range)} />
         </div>
         <div class="flex flex-col gap-4">
           <Section title="Recent events">
@@ -181,10 +182,11 @@ function BackupsCard({ cluster, status, interval: spec }: { cluster: string; sta
   const latest = (snapshots.value.get(cluster) ?? []).find((s) => s.status === 'ok')
   const interval = parseDuration(status?.snapshotInterval ?? spec)
   const at = latest?.ts ?? status?.lastSnapshotAt
-  const ago = at ? (Date.now() - new Date(at).getTime()) / 1000 : null
+  const ago = at ? ageSec(at) : null
   const late = interval > 0 && (ago === null || ago > 2 * interval)
   const sub = interval === 0 ? 'schedule off' : `every ${status?.snapshotInterval ?? spec}${latest ? latest.offsite ? ' · off-site copy' : ' · no off-site copy' : ''}`
-  return <Card label="Backups" tone={!at ? 'warn' : late ? 'warn' : 'good'} value={at ? fmt.when(at) : 'none'} sub={late && at ? `behind schedule · ${sub}` : sub} href={`/clusters/${cluster}/backups`} />
+  const value = ago === null ? 'none' : ago < 60 ? 'just now' : ago < 3600 ? `${Math.round(ago / 60)} min ago` : ago < 86400 ? `${Math.round(ago / 3600)} h ago` : `${Math.round(ago / 86400)} d ago`
+  return <Card label="Backups" tone={!at ? 'warn' : late ? 'warn' : 'good'} value={value} title={at ? fmt.datetime(at) : undefined} sub={late && at ? `behind schedule · ${sub}` : sub} href={`/clusters/${cluster}/backups`} />
 }
 
 /** Semver-ish compare on the numeric part; prereleases never count as newer. */
@@ -210,15 +212,15 @@ function objectLink(e: HealthEvent): string | null {
   return `/clusters/${e.cluster}/${page}?ns=${encodeURIComponent(ns)}`
 }
 
-export function Card({ label, value, tone, sub, href }: { label: string; value: string; tone: 'good' | 'warn' | 'bad' | 'muted'; sub?: string; href?: string }) {
+export function Card({ label, value, tone, sub, href, title }: { label: string; value: string; tone: 'good' | 'warn' | 'bad' | 'muted'; sub?: string; href?: string; title?: string }) {
   const color = { good: 'text-good', warn: 'text-warn', bad: 'text-bad', muted: 'text-muted' }[tone]
   const body = (
     <>
       <span class="label">{label}</span>
-      <span class={`text-2xl font-semibold num truncate ${color}`}>{value}</span>
+      <span class={`text-lg font-semibold num truncate ${color}`} title={title ?? value}>{value}</span>
       {sub && <span class="text-[12px] text-muted truncate" title={sub}>{sub}</span>}
     </>
   )
-  if (href) return <a href={href} class="panel p-3 flex flex-col gap-1 min-w-0 hover:border-accent">{body}</a>
-  return <div class="panel p-3 flex flex-col gap-1 min-w-0">{body}</div>
+  if (href) return <a href={href} class="panel px-3 py-2 flex flex-col gap-0.5 min-w-0 hover:border-accent">{body}</a>
+  return <div class="panel px-3 py-2 flex flex-col gap-0.5 min-w-0">{body}</div>
 }

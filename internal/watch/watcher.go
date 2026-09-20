@@ -748,8 +748,8 @@ func (w *Watcher) reconcileOpen(ctx context.Context, name string, st *cluster.St
 		}
 	}
 	for _, n := range st.Nodes {
-		if st.APIReachable && n.MemCapBytes >= minAllocatableBytes {
-			rec("node.memory-ok", n.Hostname, fmt.Sprintf("%s has %d MiB allocatable for pods", n.Hostname, n.MemCapBytes>>20))
+		if st.APIReachable && n.MemAllocBytes >= minAllocatableBytes {
+			rec("node.memory-ok", n.Hostname, fmt.Sprintf("%s has %d MiB allocatable for pods", n.Hostname, n.MemAllocBytes>>20))
 		}
 	}
 	if st.Platform != nil && st.Platform.Outputs["ingress_ip"] != "" {
@@ -810,13 +810,13 @@ func Derive(name string, prev, cur *cluster.Status) []store.EventRow {
 			if had && p.TalosVersion != "" && n.TalosVersion != "" && p.TalosVersion != n.TalosVersion {
 				ev("info", "talos.version", n.Hostname, fmt.Sprintf("%s: Talos %s → %s", n.Hostname, p.TalosVersion, n.TalosVersion))
 			}
-			small := n.Registered && n.MemCapBytes > 0 && n.MemCapBytes < minAllocatableBytes
-			wasSmall := had && p.Registered && p.MemCapBytes > 0 && p.MemCapBytes < minAllocatableBytes
+			small := n.Registered && n.MemAllocBytes > 0 && n.MemAllocBytes < minAllocatableBytes
+			wasSmall := had && p.Registered && p.MemAllocBytes > 0 && p.MemAllocBytes < minAllocatableBytes
 			switch {
 			case small && (prev == nil || !wasSmall):
-				ev("warn", "node.memory-small", n.Hostname, fmt.Sprintf("%s has %d MiB allocatable for pods; the platform add-ons alone need more. Give it at least 2 GiB.", n.Hostname, n.MemCapBytes>>20))
+				ev("warn", "node.memory-small", n.Hostname, fmt.Sprintf("%s has %d MiB allocatable for pods; the platform add-ons alone need more. Give it at least 2 GiB.", n.Hostname, n.MemAllocBytes>>20))
 			case !small && wasSmall:
-				ev("info", "node.memory-ok", n.Hostname, fmt.Sprintf("%s has %d MiB allocatable for pods", n.Hostname, n.MemCapBytes>>20))
+				ev("info", "node.memory-ok", n.Hostname, fmt.Sprintf("%s has %d MiB allocatable for pods", n.Hostname, n.MemAllocBytes>>20))
 			}
 			if had && p.KubeletVersion != "" && n.KubeletVersion != "" && p.KubeletVersion != n.KubeletVersion {
 				ev("info", "kubelet.version", n.Hostname, fmt.Sprintf("%s: kubelet %s → %s", n.Hostname, p.KubeletVersion, n.KubeletVersion))
