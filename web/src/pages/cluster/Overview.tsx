@@ -43,7 +43,9 @@ export function Overview({ ctx }: { ctx: ClusterCtx }) {
     })
   }, [status?.observedAt]) // eslint-disable-line
   const pts = (f: (s: Sample) => number, metered = false) => samples.map((s) => ({ t: new Date(s.ts).getTime(), v: s.reachable && (!metered || s.memBytes > 0) ? f(s) : null }))
-  const last = samples[samples.length - 1]
+  const capOf = (f: (s: Sample) => number) => f(samples.filter((s) => s.reachable).pop() ?? { cpuCap: 0, memCap: 0 } as Sample)
+  const down = !!status && !status.apiReachable
+  const graph = down ? 'bad' : 'accent'
 
   return (
     <>
@@ -61,9 +63,9 @@ export function Overview({ ctx }: { ctx: ClusterCtx }) {
       <div class="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-6 gap-3">
         <Card label="Control plane" tone={!status ? 'muted' : cpDown === 0 ? 'good' : 'bad'} value={status ? `${status.nodes.filter((n) => n.role === 'controlplane').length - cpDown}/${status.nodes.filter((n) => n.role === 'controlplane').length}` : '—'} sub={spec.controlPlane.vip ? `VIP ${spec.controlPlane.vip}` : 'no VIP: endpoint is the first control plane'} />
         <Card label="etcd quorum" tone={!status ? 'muted' : status.etcd.healthy ? 'good' : 'bad'} value={status ? `${status.etcd.members}/${status.etcd.expected}` : '—'} sub={status?.etcd.leader ? `leader ${status.etcd.leader}` : status?.etcd.alarms?.join(', ') || 'no leader reported'} />
-        <Card label="Nodes Ready" tone={!t ? 'muted' : t.nodesReady === t.nodes ? 'good' : 'warn'} value={t ? `${t.nodesReady}/${t.nodes}` : '—'} sub={`${spec.nodes.filter((n) => n.role === 'worker').length} worker${spec.nodes.filter((n) => n.role === 'worker').length === 1 ? '' : 's'}`} />
-        <WorkloadsCard cluster={name} pods={t?.pods} service={service} />
-        <Card label="Load balancer" tone={status?.platform?.outputs?.ingress_ip ? 'good' : spec.platform.metallb.enabled ? 'warn' : 'muted'} value={status?.platform?.outputs?.ingress_ip ?? (spec.platform.metallb.enabled ? 'pending' : 'off')} sub={spec.platform.metallb.enabled ? `pool ${spec.platform.metallb.range}` : 'MetalLB disabled'} href={`/clusters/${name}/network`} />
+        <Card label="Nodes Ready" tone={!t ? 'muted' : t.nodesReady === t.nodes ? 'good' : t.nodesReady === 0 ? 'bad' : 'warn'} value={t ? `${t.nodesReady}/${t.nodes}` : '—'} sub={`${spec.nodes.filter((n) => n.role === 'worker').length} worker${spec.nodes.filter((n) => n.role === 'worker').length === 1 ? '' : 's'}`} />
+        <WorkloadsCard cluster={name} pods={t?.pods} service={service} unreachable={down} />
+        <Card label="Load balancer" tone={down ? 'muted' : status?.platform?.outputs?.ingress_ip ? 'good' : spec.platform.metallb.enabled ? 'warn' : 'muted'} value={status?.platform?.outputs?.ingress_ip ?? (spec.platform.metallb.enabled ? 'pending' : 'off')} sub={spec.platform.metallb.enabled ? `pool ${spec.platform.metallb.range}` : 'MetalLB disabled'} href={`/clusters/${name}/network`} />
         <BackupsCard cluster={name} status={status} interval={spec.backup?.etcd.interval ?? '6h'} />
       </div>
       <div class="grid grid-cols-1 lg:grid-cols-2 gap-4">
@@ -74,9 +76,9 @@ export function Overview({ ctx }: { ctx: ClusterCtx }) {
               {['1h', '6h', '24h', '7d'].map((r) => <button key={r} class={`btn !py-0.5 !px-2 text-[11px] ${r === range ? 'border-accent text-accent' : ''}`} onClick={() => setRange(r)}>{r}</button>)}
             </div>
           </div>
-          <Sparkline label="CPU used" points={pts((s) => s.cpuMilli, true)} max={t?.cpuCapMilli || last?.cpuCap} format={fmt.cores} height={84} span={spanOf(range)} />
-          <Sparkline label="Memory used" points={pts((s) => s.memBytes, true)} max={t?.memCapBytes || last?.memCap} format={fmt.bytes} height={84} span={spanOf(range)} />
-          <Sparkline label="Pods" points={pts((s) => s.pods)} max={t?.podCap} format={String} height={84} span={spanOf(range)} />
+          <Sparkline label="CPU used" points={pts((s) => s.cpuMilli, true)} max={t?.cpuCapMilli || capOf((s) => s.cpuCap)} format={fmt.cores} height={84} span={spanOf(range)} tone={graph} />
+          <Sparkline label="Memory used" points={pts((s) => s.memBytes, true)} max={t?.memCapBytes || capOf((s) => s.memCap)} format={fmt.bytes} height={84} span={spanOf(range)} tone={graph} />
+          <Sparkline label="Pods" points={pts((s) => s.pods)} max={t?.podCap || undefined} format={String} height={84} span={spanOf(range)} tone={graph} />
         </div>
         <div class="flex flex-col gap-4">
           <Section title="Recent events">
@@ -167,7 +169,8 @@ export function EventRow({ e, onAck }: { e: HealthEvent; onAck?: () => void }) {
 }
 
 /** How current the watcher's view is, and whether scheduled snapshots are keeping up. */
-function WorkloadsCard({ cluster, pods, service }: { cluster: string; pods?: number; service: ServiceHealth | null }) {
+function WorkloadsCard({ cluster, pods, service, unreachable }: { cluster: string; pods?: number; service: ServiceHealth | null; unreachable: boolean }) {
+  if (unreachable) return <Card label="Workloads" tone="bad" value="—" sub="API unreachable" href={`/clusters/${cluster}/workloads?view=pods`} />
   const controllers = service?.workloads ?? []
   const down = controllers.filter((w) => !w.available).length
   const failing = (service?.pods ?? []).filter((p) => p.phase !== 'Running' && p.phase !== 'Succeeded' && p.phase !== 'Pending').length

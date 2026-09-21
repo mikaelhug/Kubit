@@ -17,7 +17,7 @@ export function Pill({ tone, children, title }: { tone: Tone; children: Componen
 export function stateTone(state: string): Tone {
   switch (state) {
     case 'ready': case 'done': case 'running': case 'maintenance': case 'joined': return 'good'
-    case 'failed': case 'error': case 'down': return 'bad'
+    case 'failed': case 'error': case 'down': case 'offline': return 'bad'
     case 'cancelled': case 'unknown': return 'muted'
     case 'provisioning': case 'installing': case 'bootstrapped': case 'booting': case 'pending': case 'discovered': case 'setup': case 'updating': case 'degraded': return 'warn'
     case 'amt': case 'off': case 'labhost': case 'configured': return 'info'
@@ -30,7 +30,7 @@ export function ClusterPill({ state, status }: { state: string; status?: { healt
   const h = state === 'ready' && status?.health && status.health !== 'healthy' ? status.health : ''
   const label = h || state
   const title = h === 'degraded' ? `${status?.openAlerts ?? 0} open alert${status?.openAlerts === 1 ? '' : 's'}` : h === 'down' ? 'A confirmed outage: API, etcd or a node' : h === 'unknown' ? `Kubit cannot reach the network${status?.observerError ? ` (${status.observerError})` : ''}` : undefined
-  return <Pill tone={stateTone(label)} title={title}>{label}</Pill>
+  return <Pill tone={state === 'ready' && !status ? 'muted' : stateTone(label)} title={state === 'ready' && !status ? 'not observed yet' : title}>{label}</Pill>
 }
 
 /** How long ago the observer last saw anything of this object, ticking from the clock. */

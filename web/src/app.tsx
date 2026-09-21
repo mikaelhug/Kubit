@@ -6,7 +6,7 @@ import { api } from './api'
 import { SignIn } from './pages/SignIn'
 import { now } from './clock'
 import { ClusterPill, Pill, stateTone } from './components/ui'
-import { hostName } from './machine'
+import { hostName, labState } from './machine'
 import { ActivityDrawer } from './components/ActivityDrawer'
 import { Toasts } from './components/Toasts'
 import { Palette, Shortcuts, ThemeToggle } from './components/Palette'
@@ -75,7 +75,7 @@ function Shell() {
         {labHosts.map((h) => (
           <a key={h.mac} href={`/labhosts/${h.mac}/overview`} class={`${navCls(path.startsWith(`/labhosts/${h.mac}`))} flex items-center justify-between`}>
             <span class="truncate font-medium">{hostName(h)}</span>
-            <Pill tone={stateTone(h.labhost!.state)} title={`${(h.labhost!.vms ?? []).length} VMs`}>{h.labhost!.state}</Pill>
+            <Pill tone={stateTone(labState(h.labhost))} title={`${(h.labhost!.vms ?? []).length} VMs`}>{labState(h.labhost)}</Pill>
           </a>
         ))}
         <div class="px-4 pt-5 pb-1 label">Fleet</div>

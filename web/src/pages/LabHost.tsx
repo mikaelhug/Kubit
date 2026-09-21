@@ -7,7 +7,7 @@ import { RemoteManagement } from '../components/RemoteManagement'
 import { HardwareTab } from './Node'
 import { Tabs } from '../components/Tabs'
 import { AlertPill, Breadcrumbs, KeyValue, Pill, Section, SeenAgo, stateTone } from '../components/ui'
-import { hostName, modelOf } from '../machine'
+import { hostName, labOffline, labState, modelOf } from '../machine'
 
 type TabId = 'overview' | 'vms' | 'hardware' | 'actions'
 const tabs: { id: TabId; label: string }[] = [{ id: 'overview', label: 'Overview' }, { id: 'vms', label: 'VMs' }, { id: 'hardware', label: 'Hardware' }, { id: 'actions', label: 'Actions' }]
@@ -24,7 +24,7 @@ export function LabHostPage({ mac, tab = 'overview' }: { mac: string; tab?: stri
   const shown = (tabs.some((t) => t.id === tab) ? tab : 'overview') as TabId
   const alert = (health.value.get(labHostKey(host.mac)) ?? []).find((e) => !e.acked && e.severity !== 'info')
   const running = [...operations.value.values()].filter((o) => o.status === 'running' && (o.cluster === labHostKey(host.mac) || (o.request as { host?: string; mac?: string } | undefined)?.host === host.mac || (o.request as { mac?: string } | undefined)?.mac === host.mac))
-  const busy = running.length > 0 || lh.state !== 'ready'
+  const busy = running.length > 0 || lh.state !== 'ready' || labOffline(lh)
 
   return (
     <div class="flex flex-col">
@@ -32,8 +32,8 @@ export function LabHostPage({ mac, tab = 'overview' }: { mac: string; tab?: stri
         <Breadcrumbs items={[{ label: 'Inventory', href: '/fleet/inventory' }, { label: hostName(host) }]} />
         <div class="flex flex-wrap items-center gap-3 mt-2 mb-3">
           <h1 class="text-xl font-semibold">{hostName(host)}</h1>
-          <Pill tone={stateTone(lh.state)} title={lh.error}>{lh.state}</Pill>
-          <AlertPill e={alert} />
+          <Pill tone={stateTone(labState(lh))} title={lh.error}>{labState(lh)}</Pill>
+          {alert?.kind !== 'labhost.unreachable' && <AlertPill e={alert} />}
           {host.oobType && <Pill tone="info">{host.oobType === 'redfish' ? 'BMC' : 'AMT'}</Pill>}
           {running.map((o) => <Pill key={o.id} tone="warn">{fmt.kind(o.kind)} running</Pill>)}
           {lh.metrics?.at && <SeenAgo contact={lh.metrics.at} blind={lh.failures ? lh.failures >= 3 : false} />}
@@ -78,7 +78,7 @@ function OverviewTab({ host, busy }: { host: NodeRow; busy: boolean }) {
               ['Memory', lh.capacity.memMiB ? fmt.bytes(lh.capacity.memMiB * 1048576) : '—'],
               ['VM disk free', lh.metrics?.diskTotal ? `${fmt.bytes(lh.metrics.diskTotal - lh.metrics.diskUsed)} of ${fmt.bytes(lh.metrics.diskTotal)}` : lh.capacity.diskGiB ? `${lh.capacity.diskGiB} GiB` : '—'],
               ['KVM', lh.capacity.kvm ? 'available' : lh.state === 'ready' ? 'absent' : '—'],
-              ['VMs', <a class="text-accent hover:underline" href={`/labhosts/${host.mac}/vms`}>{vms.length} defined · {vms.filter((v) => v.state === 'running').length} running</a>],
+              ['VMs', <a class="text-accent hover:underline" href={`/labhosts/${host.mac}/vms`}>{vms.length} defined{labOffline(lh) ? '' : ` · ${vms.filter((v) => v.state === 'running').length} running`}</a>],
             ]} />
           </div>
         </Section>
@@ -93,12 +93,13 @@ function ActionsTab({ host }: { host: NodeRow }) {
   const [release, setRelease] = useState(false)
   const vms = lh.vms ?? []
   const members = vms.filter((v) => machines.value.get(v.mac)?.cluster).length
+  const offline = labOffline(lh)
   return (
     <div class="flex flex-col gap-3 max-w-3xl">
-      <Action title="Add VMs" what={`${vms.length} VM${vms.length === 1 ? '' : 's'} defined. New VMs boot Talos in maintenance mode and appear in Inventory.`} button="Add VMs" disabled={lh.state !== 'ready'} onClick={() => setAddVMs(true)} />
+      <Action title="Add VMs" what={`${vms.length} VM${vms.length === 1 ? '' : 's'} defined. New VMs boot Talos in maintenance mode and appear in Inventory.`} button="Add VMs" disabled={lh.state !== 'ready' || offline} onClick={() => setAddVMs(true)} />
       <Action title="Update or reboot the host" what="Package updates and reboots park the VMs first; both live on the Overview tab under System." button="Overview" href={`/labhosts/${host.mac}/overview`} />
       <RemoteManagement node={host} />
-      <Action title="Release lab host" what={`Deletes every VM${members ? ` (${members} still in a cluster: remove them first)` : ''} and drops the lab-host role. Debian stays on the disk.`} button="Release" disabled={lh.state === 'installing' || lh.state === 'setup' || lh.state === 'updating' || members > 0} onClick={() => setRelease(true)} />
+      <Action title="Release lab host" what={`Deletes every VM${members ? ` (${members} still in a cluster: remove them first)` : ''} and drops the lab-host role. Debian stays on the disk.`} button="Release" disabled={lh.state === 'installing' || lh.state === 'setup' || lh.state === 'updating' || members > 0 || offline} onClick={() => setRelease(true)} />
       {addVMs && <AddVMsDialog host={host} onClose={() => setAddVMs(false)} />}
       {release && <ReleaseHostDialog host={host} onClose={() => setRelease(false)} />}
     </div>

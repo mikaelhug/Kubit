@@ -4,7 +4,7 @@ import { api, fmt, labHostKey, labNeedsReboot, vmsOf, type LabHost, type LabVM, 
 import { ack, health, hostSamples, loadHealth, machineList, toast, watch } from '../store'
 import { Code, ConfirmDialog, Dialog, ErrorBox, Field, MaintenanceNotice, Meter, Notice, Pill } from './ui'
 import { usePxeGated } from './PxeGate'
-import { hostName, hostOf, installCandidates, KindPill } from '../machine'
+import { hostName, hostOf, installCandidates, KindPill, labOffline } from '../machine'
 import { Sparkline } from './Sparkline'
 import { EventRow } from '../pages/cluster/Overview'
 
@@ -108,6 +108,7 @@ export function HostVMs({ host }: { host: NodeRow }) {
   const rows = machineList.value
   const rowOf = (vm: LabVM) => rows.find((m) => m.mac === vm.mac)
   const run = (p: Promise<{ operationId: number }>) => p.then((r) => watch(r, false)).catch((e) => toast(e.message, 'error'))
+  const offline = labOffline(lh)
   return (
     <div class="flex flex-col gap-4">
       <div class="panel">
@@ -115,7 +116,7 @@ export function HostVMs({ host }: { host: NodeRow }) {
           <span class="font-medium">Virtual machines</span>
           <span class="text-[12px] text-muted">{fmt.bytes(mib(vms.reduce((s, v) => s + v.memMiB, 0)))} of {fmt.bytes(mib(Math.max(0, lh.capacity.memMiB - RESERVED_MIB)))} assigned</span>
           <span class="ml-auto flex gap-2">
-            <button class="btn btn-primary !py-1" disabled={lh.state !== 'ready'} onClick={() => setAdd(true)}>+ Add VMs</button>
+            <button class="btn btn-primary !py-1" disabled={lh.state !== 'ready' || offline} onClick={() => setAdd(true)}>+ Add VMs</button>
           </span>
         </div>
         <table class="data wrap">
@@ -128,15 +129,15 @@ export function HostVMs({ host }: { host: NodeRow }) {
               return (
                 <tr key={vm.name}>
                   <td class="pl-4">{row ? <a class="font-medium mono hover:underline" href={`/machines/${row.mac}`}>{vm.name}</a> : <span class="font-medium mono">{vm.name}</span>}<span class="block text-[11px] text-muted mono">{vm.mac}{row?.ip || vm.ip ? ` · ${row?.ip || vm.ip}` : ''}</span></td>
-                  <td><Pill tone={vm.state === 'running' ? 'good' : 'muted'}>{vm.state}</Pill></td>
+                  <td><Pill tone={offline ? 'muted' : vm.state === 'running' ? 'good' : 'muted'}>{vm.state}</Pill></td>
                   <td class="num">{vm.cpus} vCPU · {fmt.bytes(mib(vm.memMiB))} · {vm.diskGiB} GiB{vm.dataGiB ? ` + ${vm.dataGiB} GiB data` : ''}</td>
                   <td><Pill tone={vm.boot === 'disk' ? 'info' : 'muted'}>{vm.boot === 'disk' ? 'disk' : 'Talos (RAM)'}</Pill></td>
                   <td>{row ? (row.cluster ? <a class="text-accent hover:underline" href={`/clusters/${row.cluster}/nodes`}>{row.cluster} · {row.hostname}</a> : <KindPill m={row} />) : <span class="text-muted">—</span>}</td>
                   <td class="text-right pr-3 whitespace-nowrap">
-                    {vm.state === 'running' ? <button class="btn !py-1" disabled={member} title={member ? 'Drain and remove it from the cluster first' : ''} onClick={() => run(api.labVM(host.mac, vm.name, 'stop'))}>Stop</button> : <button class="btn !py-1" onClick={() => run(api.labVM(host.mac, vm.name, 'start'))}>Start</button>}
-                    {' '}<button class="btn !py-1" onClick={() => setResize(vm)}>Resize</button>
-                    {' '}<button class="btn !py-1" disabled={member} title={member ? 'Remove it from the cluster first' : 'Boot back into Talos maintenance mode'} onClick={() => run(api.labVM(host.mac, vm.name, 'reprovision'))}>Re-provision</button>
-                    {' '}<button class="btn btn-danger !py-1" disabled={member} onClick={() => setDel(vm)}>Delete</button>
+                    {vm.state === 'running' ? <button class="btn !py-1" disabled={member || offline} title={member ? 'Drain and remove it from the cluster first' : ''} onClick={() => run(api.labVM(host.mac, vm.name, 'stop'))}>Stop</button> : <button class="btn !py-1" disabled={offline} onClick={() => run(api.labVM(host.mac, vm.name, 'start'))}>Start</button>}
+                    {' '}<button class="btn !py-1" disabled={offline} onClick={() => setResize(vm)}>Resize</button>
+                    {' '}<button class="btn !py-1" disabled={member || offline} title={member ? 'Remove it from the cluster first' : 'Boot back into Talos maintenance mode'} onClick={() => run(api.labVM(host.mac, vm.name, 'reprovision'))}>Re-provision</button>
+                    {' '}<button class="btn btn-danger !py-1" disabled={member || offline} onClick={() => setDel(vm)}>Delete</button>
                   </td>
                 </tr>
               )
@@ -270,27 +271,30 @@ export function HostMetrics({ host, lh }: { host: NodeRow; lh: LabHost }) {
   const diskPct = m && m.diskTotal ? fmt.pct(m.diskUsed, m.diskTotal) : 0
   const memPct = m && m.memTotal ? fmt.pct(m.memUsed, m.memTotal) : 0
   const tone = (pct: number, warn: number, bad: number) => (pct >= bad ? 'text-bad' : pct >= warn ? 'text-warn' : '')
+  const offline = labOffline(lh)
+  const graph = offline ? 'bad' : 'accent'
+  const stale = (cls: string) => (offline ? 'text-muted' : cls)
   return (
     <div class="panel p-3 flex flex-col gap-3">
       <div class="flex items-center gap-2">
         <span class="label">Host utilisation</span>
-        {m && <span class="text-[12px] text-muted">load {m.load1.toFixed(2)} · up {fmt.uptime(m.uptimeSec)} · read {fmt.when(m.at)}</span>}
+        {m && !offline && <span class="text-[12px] text-muted">load {m.load1.toFixed(2)} · up {fmt.uptime(m.uptimeSec)}</span>}
         <div class="ml-auto flex gap-1">
           {['1h', '6h', '24h', '7d'].map((r) => <button key={r} class={`btn !py-0.5 !px-2 text-[11px] ${r === range ? 'border-accent text-accent' : ''}`} onClick={() => setRange(r)}>{r}</button>)}
         </div>
       </div>
       <div class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-4">
-        <MetricCard label="CPU" value={m ? `${Math.round(m.cpuPct)}%` : '—'} sub={`${lh.capacity.cpus} cores · ${vms.reduce((s, v) => s + v.cpus, 0)} vCPU assigned`} cls={m ? tone(m.cpuPct, 80, 95) : ''}>
-          <Sparkline label="" points={pts((s) => s.cpuMilli / 10)} max={100} format={(v) => `${Math.round(v)}%`} height={44} />
+        <MetricCard label="CPU" value={m ? `${Math.round(m.cpuPct)}%` : '—'} sub={`${lh.capacity.cpus} cores · ${vms.reduce((s, v) => s + v.cpus, 0)} vCPU assigned`} cls={stale(m ? tone(m.cpuPct, 80, 95) : '')}>
+          <Sparkline label="" points={pts((s) => s.cpuMilli / 10)} max={100} format={(v) => `${Math.round(v)}%`} height={44} tone={graph} />
         </MetricCard>
-        <MetricCard label="Memory" value={m ? fmt.bytes(m.memUsed) : '—'} sub={m ? `of ${fmt.bytes(m.memTotal)} · ${fmt.bytes(mib(vms.reduce((s, v) => s + v.memMiB, 0)))} assigned to VMs` : ''} cls={tone(memPct, 85, 92)}>
-          <Sparkline label="" points={pts((s) => s.memBytes)} max={m?.memTotal} format={fmt.bytes} height={44} />
+        <MetricCard label="Memory" value={m ? fmt.bytes(m.memUsed) : '—'} sub={m ? `of ${fmt.bytes(m.memTotal)} · ${fmt.bytes(mib(vms.reduce((s, v) => s + v.memMiB, 0)))} assigned to VMs` : ''} cls={stale(tone(memPct, 85, 92))}>
+          <Sparkline label="" points={pts((s) => s.memBytes)} max={m?.memTotal} format={fmt.bytes} height={44} tone={graph} />
         </MetricCard>
-        <MetricCard label="VM disk" value={m ? `${diskPct}%` : '—'} sub={m ? `${fmt.bytes(m.diskUsed)} of ${fmt.bytes(m.diskTotal)} · VMs may grow to ${committed} GiB` : ''} cls={tone(diskPct, 85, 95)}>
-          <Sparkline label="" points={pts((s) => s.disk ?? 0)} max={m?.diskTotal} format={fmt.bytes} height={44} />
+        <MetricCard label="VM disk" value={m ? `${diskPct}%` : '—'} sub={m ? `${fmt.bytes(m.diskUsed)} of ${fmt.bytes(m.diskTotal)} · VMs may grow to ${committed} GiB` : ''} cls={stale(tone(diskPct, 85, 95))}>
+          <Sparkline label="" points={pts((s) => s.disk ?? 0)} max={m?.diskTotal} format={fmt.bytes} height={44} tone={graph} />
         </MetricCard>
-        <MetricCard label="VMs running" value={m ? `${m.vmsRunning}/${vms.length}` : `${vms.filter((v) => v.state === 'running').length}/${vms.length}`} sub="defined on this host">
-          <Sparkline label="" points={pts((s) => s.pods)} max={Math.max(1, vms.length)} format={String} height={44} />
+        <MetricCard label="VMs running" value={offline ? '—' : m ? `${m.vmsRunning}/${vms.length}` : `${vms.filter((v) => v.state === 'running').length}/${vms.length}`} sub={`${vms.length} defined on this host`} cls={stale('')}>
+          <Sparkline label="" points={pts((s) => s.pods)} max={Math.max(1, vms.length)} format={String} height={44} tone={graph} />
         </MetricCard>
       </div>
       <span class="text-[11px] text-muted">Read over SSH once a minute; kept 24 h, then hourly for 30 d. Gaps mean the host did not answer.</span>

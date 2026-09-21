@@ -1,4 +1,4 @@
-import type { MachineKind, NodeRow } from './api'
+import type { LabHost, MachineKind, NodeRow } from './api'
 import { machines } from './store'
 import { Pill, stateTone, type Tone } from './components/ui'
 
@@ -14,7 +14,7 @@ export const kindLabel: Record<MachineKind, string> = {
 export function kindTone(m: NodeRow): Tone {
   switch (m.kind) {
     case 'member': case 'maintenance': return 'good'
-    case 'labhost': return stateTone(m.labhost?.state ?? 'labhost')
+    case 'labhost': return stateTone(labState(m.labhost) || 'labhost')
     case 'booting': return 'warn'
     case 'configured': return 'info'
     default: return stateTone(m.state)
@@ -68,7 +68,10 @@ export function installCandidates(m?: NodeRow | null) {
 }
 export function dataCandidates(m: NodeRow | undefined | null, install?: string) { return installCandidates(m).filter((d) => d.devPath !== install) }
 
-export function kindDetail(m: NodeRow) { return m.kind === 'labhost' ? m.labhost?.state ?? '' : m.kind === 'unbooted' && m.state !== 'unknown' ? m.state : '' }
+export function labState(lh?: LabHost | null) { return lh ? lh.state === 'ready' && (lh.failures ?? 0) >= 3 ? 'offline' : lh.state : '' }
+export function labOffline(lh?: LabHost | null) { return labState(lh) === 'offline' }
+
+export function kindDetail(m: NodeRow) { return m.kind === 'labhost' ? labState(m.labhost) : m.kind === 'unbooted' && m.state !== 'unknown' ? m.state : '' }
 
 export function KindPill({ m }: { m: NodeRow }) {
   const detail = kindDetail(m)

@@ -24,13 +24,13 @@ function ceilingFor(v: number, max?: number): number {
  * samples given (a compact sparkline). A null value (observed but unreachable) or a
  * silence longer than 3× the median interval breaks the line rather than being bridged.
  */
-export function Sparkline({ points, max, height = 56, format, label, span }: { points: Point[]; max?: number; height?: number; format: (v: number) => string; label: string; span?: number }) {
+export function Sparkline({ points, max, height = 56, format, label, span, tone = 'accent' }: { points: Point[]; max?: number; height?: number; format: (v: number) => string; label: string; span?: number; tone?: 'accent' | 'bad' }) {
   const ref = useRef<HTMLCanvasElement>(null)
   useEffect(() => {
     const canvas = ref.current
     if (!canvas) return
     const css = getComputedStyle(document.documentElement)
-    const accent = css.getPropertyValue('--accent').trim()
+    const accent = css.getPropertyValue(`--${tone}`).trim()
     const muted = css.getPropertyValue('--muted').trim()
     const border = css.getPropertyValue('--border').trim()
     const dpr = window.devicePixelRatio || 1
@@ -120,7 +120,7 @@ export function Sparkline({ points, max, height = 56, format, label, span }: { p
       ctx.fillStyle = accent
       ctx.beginPath(); ctx.arc(x(last.t), y(last.v), 2.5, 0, Math.PI * 2); ctx.fill()
     }
-  }, [points, max, height, span])
+  }, [points, max, height, span, tone])
   const last = points.filter((p) => p.v !== null).pop()
   return (
     <div class="flex flex-col gap-1">

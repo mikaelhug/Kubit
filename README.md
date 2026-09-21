@@ -560,7 +560,10 @@ heartbeat that stops arriving means the daemon is down — the dead-man's switch
 - **Machine pages render by kind**: a lab VM links to its host and carries the host's
   start/stop/re-provision controls; an unbooted or configured machine shows what it is
   waiting for; Services, Logs and Kubernetes tabs appear only where they can answer.
-  Inventory pills read the kind (`lab host · ready`, `not running Talos · off`,
+  Inventory pills read the kind (`lab host · ready`, `lab host · offline` once SSH has
+  failed three checks while the stored state stays ready — the pill and the host's
+  graphs turn red, the last readings and VM states go muted, and every action that
+  needs SSH is disabled until it answers; `not running Talos · off`,
   `boot→Debian` while a Debian install is armed). Adopt, Retire, Make lab host and Boot
   into Talos are offered only where the daemon would accept them (`web/src/machine.tsx`,
   `groupOf` decides the Inventory group).

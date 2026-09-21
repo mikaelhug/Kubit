@@ -3,7 +3,7 @@ import { api, fmt, kubitKey, labHostKey, type HealthEvent, type NodeRow, type Of
 import { authState, clusters, health, latestTalos, loadAllHealth, machineList, observer, operations, refreshKey, settings, statuses, ack } from '../store'
 import { ClusterPill, Notice, Pill, Section, StatusDot, stateTone } from '../components/ui'
 import { EventRow, verLess } from './cluster/Overview'
-import { groupOf, hostName, type MachineGroup } from '../machine'
+import { groupOf, hostName, labOffline, labState, type MachineGroup } from '../machine'
 import { elapsed } from '../clock'
 
 const vanillaSchematic = '376567988ad370138ad8b2698212367b8edcb69b5fd68c80be1f2ec7d603b4ba'
@@ -121,7 +121,7 @@ function ClusterCard({ name, state, talos, k8s, update, alerts }: { name: string
       <div class="text-[13px] num flex gap-3">
         <span class={t && t.nodesReady < t.nodes ? 'text-warn' : ''}>{t ? `${t.nodesReady}/${t.nodes}` : '—'} <span class="text-muted">nodes</span></span>
         <span class={st && !st.etcd.healthy ? 'text-bad' : ''}>{st ? `${st.etcd.members}/${st.etcd.expected}` : '—'} <span class="text-muted">etcd</span></span>
-        <span>{t?.pods ?? '—'} <span class="text-muted">pods</span></span>
+        <span>{st?.apiReachable ? t?.pods ?? '—' : '—'} <span class="text-muted">pods</span></span>
       </div>
       <div class="text-[12px] text-muted mono flex items-center gap-2 min-w-0"><span class="truncate">Talos {talos} · Kubernetes {k8s}</span>{update && <Pill tone="info">update</Pill>}</div>
       <div class="text-[12px] text-muted">{st?.lastSnapshotAt ? `last etcd snapshot ${fmt.when(st.lastSnapshotAt)}` : 'no etcd snapshot yet'}</div>
@@ -135,15 +135,16 @@ function LabHostCard({ h, alerts }: { h: NodeRow; alerts: number }) {
   const vms = lh.vms ?? []
   const u = lh.updates
   const pct = (a: number, b: number) => (b ? `${fmt.pct(a, b)}%` : '—')
+  const offline = labOffline(lh)
   return (
     <a href={`/labhosts/${h.mac}/overview`} class="panel p-3 flex flex-col gap-2 hover:border-accent min-w-0">
-      <div class="flex items-center gap-2"><span class="font-semibold truncate">{hostName(h)}</span><Pill tone={stateTone(lh.state)}>{lh.state}</Pill>{alerts > 0 && <Pill tone="warn">{alerts} alert{alerts === 1 ? '' : 's'}</Pill>}</div>
-      <div class="text-[13px] num flex gap-3">
+      <div class="flex items-center gap-2"><span class="font-semibold truncate">{hostName(h)}</span><Pill tone={stateTone(labState(lh))}>{labState(lh)}</Pill>{alerts > 0 && <Pill tone="warn">{alerts} alert{alerts === 1 ? '' : 's'}</Pill>}</div>
+      <div class={`text-[13px] num flex gap-3 ${offline ? 'text-muted' : ''}`}>
         <span>{m ? `${Math.round(m.cpuPct)}%` : '—'} <span class="text-muted">cpu</span></span>
         <span>{m ? pct(m.memUsed, m.memTotal) : '—'} <span class="text-muted">memory</span></span>
         <span>{m ? pct(m.diskUsed, m.diskTotal) : '—'} <span class="text-muted">vm disk</span></span>
       </div>
-      <div class="text-[12px] text-muted">{vms.filter((v) => v.state === 'running').length}/{vms.length} VMs running{u && (u.count > 0 || u.rebootRequired) ? ` · ${u.count} update${u.count === 1 ? '' : 's'}${u.rebootRequired ? ', reboot required' : ''}` : ''}</div>
+      <div class="text-[12px] text-muted">{offline ? `${vms.length} VM${vms.length === 1 ? '' : 's'}` : `${vms.filter((v) => v.state === 'running').length}/${vms.length} VMs running`}{u && (u.count > 0 || u.rebootRequired) ? ` · ${u.count} update${u.count === 1 ? '' : 's'}${u.rebootRequired ? ', reboot required' : ''}` : ''}</div>
     </a>
   )
 }
