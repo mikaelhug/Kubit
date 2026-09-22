@@ -603,29 +603,15 @@ step as an API operation visible in Activity, asserting with `kubectl` after eac
 `--teardown` forgets the cluster and, with `--vm-ids`, recreates the hack/vm VMs so
 the run repeats cleanly. It is the acceptance script for the hardware run.
 
-## CI and releases
+## Linux QEMU lab
 
-`.github/workflows/ci.yml` runs on every push and pull request: `npm ci`, `tsc`,
-`vite build`, `gofmt -l`, `go vet`, `go test -race ./...`, `go build`, then a smoke
-start of the daemon (fresh `KUBIT_HOME`, `KUBIT_MASTER_KEY` from `/dev/urandom`, `GET
-auth/me` reports first-run setup) and uploads the Linux binary.
-`release.yml` builds `linux/{amd64,arm64}` and `darwin/{arm64,amd64}` on a `v*` tag
-(`CGO_ENABLED=0`, trimmed, version from the tag), writes `SHA256SUMS`, signs every
-file keyless with cosign (Sigstore, GitHub OIDC identity; verify with `cosign
-verify-blob --certificate kubit-linux-amd64.pem --signature kubit-linux-amd64.sig
---certificate-identity-regexp github.com/<owner>/kubit --certificate-oidc-issuer
-https://token.actions.githubusercontent.com kubit-linux-amd64`) and publishes a
-GitHub release with generated notes.
-
-`e2e.yml` (nightly and on demand) is the VM lab on a GitHub-hosted Linux runner:
 `hack/qemu/lab.sh` puts four Talos amd64 VMs (2 vCPU, 2.5 GiB, QEMU/KVM, OVMF) on a
-bridge `kubit0` at 192.168.105.1/24 with dnsmasq DHCP and NAT, waits for the Talos API
-on each, starts the daemon, and runs `hack/e2e.sh 192.168.105.0/24 --with-restore`.
-Console, daemon and DHCP logs are uploaded on every outcome. The same script works on
-any Linux box with KVM (`lab.sh net up`, `create`, `start`, `wait`, `ip`, `stop`,
-`destroy`; `net down` removes the bridge and the masquerade rule). **The Linux lab and
-the e2e workflow are unverified** — written on macOS, where hack/vm (vfkit) is the
-harness; the first run on a runner is the proof.
+bridge `kubit0` at 192.168.105.1/24 with dnsmasq DHCP and NAT on any Linux box with
+KVM (`net up`, `iso`, `create`, `start`, `wait`, `ip`, `stop`, `destroy`; `net down`
+removes the bridge and the masquerade rule), for running `hack/e2e.sh
+192.168.105.0/24 --with-restore` against a daemon on that host. **Unverified** —
+written on macOS, where hack/vm (vfkit) is the harness. There is no CI: builds, tests
+and releases are run locally (`make`).
 
 ## Remote management (Intel AMT, Redfish BMCs) and member-aware PXE
 
@@ -879,4 +865,4 @@ cert-manager add-ons.
 - [x] M18 — Identity: local accounts with viewer/operator/admin roles enforced per route, sessions and API tokens, first-admin setup, OpenID Connect sign-in with group→role mapping, audit actor, cluster `spec.auth.oidc` → API server `AuthenticationConfiguration` + admin group binding. Unit-tested end to end (fake IdP); **unverified against a real provider**
 - [~] M19 — Storage: Longhorn platform add-on on data disks (node labelling in the generator, privileged namespace, replica default from the data-disk node count, wizard/Add-ons/Storage-tab hooks). **Unverified on a cluster**
 - [x] M19 — Honest health and right-sized labs: `hub.since(0)` replays nothing and replayed messages never toast; service alerts raise after two and clear after three collections; `status.health` (`healthy` / `degraded` / `down`) drives the cluster pill; `node.memory-small` alert with runbook; 2 GiB floor for every lab VM with host-fitting defaults; `worker-undersized` lint and preflight floor when add-ons are on; MetalLB layer-2 only with resource requests on every add-on and `atomic` releases; 2 s host CPU sample. Unit-tested (hub, tracker flap, Derive, lint, tofu golden, validate); the EliteDesk lab reshaped to 1 CP + 1 worker at 2816 MiB and re-applied without FRR
-- [~] M7 — tests, CI, packaging: GitHub Actions CI (web build, gofmt/vet/race tests, daemon smoke), signed multi-platform releases on tags, nightly QEMU/KVM e2e lab on a Linux runner (`hack/qemu/lab.sh` + `hack/e2e.sh`). **First runs pending**
+- [~] M7 — tests and packaging: gofmt/vet/race tests and `hack/e2e.sh` run locally; GitHub Actions (CI, signed releases, nightly e2e lab) removed as unused. The QEMU lab script (`hack/qemu/lab.sh`) stays for a Linux KVM box, **unverified**

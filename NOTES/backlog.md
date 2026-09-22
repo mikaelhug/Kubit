@@ -181,9 +181,9 @@
   Keycloak/Entra (groups claim name differs: Entra sends object ids unless configured).
 - Identity: the PXE service needs an API token once accounts exist; `kubit service
   install --pxe` should mint one instead of relying on `KUBIT_TOKEN` by hand.
-- CI: first run of ci.yml/release.yml/e2e.yml pending; the QEMU lab (`hack/qemu`) was
-  written on macOS and has not booted a VM yet (OVMF path, tap ownership, dnsmasq
-  lease file permissions are the likely first fixes).
+- QEMU lab (`hack/qemu`): written on macOS and has not booted a VM yet (OVMF path,
+  tap ownership, dnsmasq lease file permissions are the likely first fixes). GitHub
+  Actions removed; signed releases would need a new home if ever wanted.
 - Longhorn: unverified on a cluster. Check that Talos propagates `/var/mnt/data-N`
   user volumes into the kubelet with shared propagation (needed for Longhorn's
   bind mounts); if not, a UserVolumeConfig-based `longhorn` volume or a v1alpha1
