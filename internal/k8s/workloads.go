@@ -7,6 +7,7 @@ import (
 	"sort"
 	"strings"
 
+	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
@@ -57,6 +58,13 @@ func (c *Client) Workloads(ctx context.Context) ([]Workload, error) {
 	for _, j := range jobs.Items {
 		out = append(out, Workload{Kind: "Job", Namespace: j.Namespace, Name: j.Name, Ready: j.Status.Succeeded, Desired: 1, Available: j.Status.Succeeded > 0, Images: images(j.Spec.Template.Spec), Age: age(j.CreationTimestamp), AgeSec: secs(j.CreationTimestamp)})
 	}
+	crons, err := c.BatchV1().CronJobs("").List(ctx, metav1.ListOptions{})
+	if err != nil {
+		return nil, err
+	}
+	for _, j := range crons.Items {
+		out = append(out, cronWorkload(j))
+	}
 	sort.Slice(out, func(i, j int) bool {
 		if out[i].Namespace != out[j].Namespace {
 			return out[i].Namespace < out[j].Namespace
@@ -64,6 +72,34 @@ func (c *Client) Workloads(ctx context.Context) ([]Workload, error) {
 		return out[i].Name < out[j].Name
 	})
 	return out, nil
+}
+
+func cronWorkload(j batchv1.CronJob) Workload {
+	return Workload{Kind: "CronJob", Namespace: j.Namespace, Name: j.Name, Ready: int32(len(j.Status.Active)), Available: true, Images: images(j.Spec.JobTemplate.Spec.Template.Spec), Age: metav1.Now().Sub(j.CreationTimestamp.Time).Truncate(1e9).String(), AgeSec: int64(metav1.Now().Sub(j.CreationTimestamp.Time).Seconds())}
+}
+
+type Namespace struct {
+	Name     string `json:"name"`
+	Phase    string `json:"phase"`
+	Security string `json:"security,omitempty"`
+	AgeSec   int64  `json:"ageSec"`
+}
+
+func (c *Client) Namespaces(ctx context.Context) ([]Namespace, error) {
+	list, err := c.CoreV1().Namespaces().List(ctx, metav1.ListOptions{})
+	if err != nil {
+		return nil, err
+	}
+	out := make([]Namespace, 0, len(list.Items))
+	for _, n := range list.Items {
+		out = append(out, namespaceOf(n))
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
+	return out, nil
+}
+
+func namespaceOf(n corev1.Namespace) Namespace {
+	return Namespace{Name: n.Name, Phase: string(n.Status.Phase), Security: n.Labels["pod-security.kubernetes.io/enforce"], AgeSec: int64(metav1.Now().Sub(n.CreationTimestamp.Time).Seconds())}
 }
 
 func images(spec corev1.PodSpec) string {

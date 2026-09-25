@@ -4,6 +4,7 @@ import { DataTable, type Column } from '../../components/DataTable'
 import { AlertPill, ErrorBox, Notice, Pill, Section } from '../../components/ui'
 import { openAlert, refreshKey } from '../../store'
 import type { ClusterCtx } from './ClusterPage'
+import { NamespaceScope, useNamespaceScope } from '../../components/NamespaceScope'
 
 type SC = StorageView['classes'][number]
 type PV = StorageView['volumes'][number]
@@ -14,6 +15,8 @@ export function Storage({ ctx }: { ctx: ClusterCtx }) {
   const [view, setView] = useState<StorageView | null>(null)
   const [error, setError] = useState<string | null>(null)
   useEffect(() => { api.storage(name).then(setView).catch((e) => setError(e.message)) }, [name, refreshKey(name, 'storage')])
+  const s = useNamespaceScope(name)
+  const claims = (view?.claims ?? []).filter((c) => s.keep(c.namespace))
   const scols: Column<SC>[] = [
     { id: 'name', header: 'Class', sort: (c) => c.name, cell: (c) => <span class="font-medium">{c.name} {c.default && <Pill tone="info">default</Pill>}</span> },
     { id: 'prov', header: 'Provisioner', mono: true, cell: (c) => c.provisioner },
@@ -48,8 +51,8 @@ export function Storage({ ctx }: { ctx: ClusterCtx }) {
       <Section title={`Storage classes (${view?.classes.length ?? 0})`}>
         <DataTable loading={!view && !error} search={false} columns={scols} rows={view?.classes ?? []} rowKey={(c) => c.name} empty="None." />
       </Section>
-      <Section title={`Persistent volume claims (${view?.claims.length ?? 0})`}>
-        <DataTable loading={!view && !error} id="pvcs" columns={ccols} rows={view?.claims ?? []} rowKey={(c) => c.namespace + '/' + c.name} empty="No claims." />
+      <Section title={`Persistent volume claims (${claims.length})`} actions={<NamespaceScope s={s} rows={(view?.claims ?? []).map((c) => c.namespace)} />}>
+        <DataTable loading={(!view && !error) || s.loading} id="pvcs" columns={s.ns ? ccols.filter((c) => c.id !== 'ns') : ccols} rows={claims} rowKey={(c) => c.namespace + '/' + c.name} empty={s.scope === 'apps' && !s.ns ? 'No app claims yet.' : 'No claims.'} />
       </Section>
       <Section title={`Persistent volumes (${view?.volumes.length ?? 0})`}>
         <DataTable loading={!view && !error} id="pvs" columns={vcols} rows={view?.volumes ?? []} rowKey={(v) => v.name} empty="No volumes." />

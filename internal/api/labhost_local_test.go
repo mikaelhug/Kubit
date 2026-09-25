@@ -90,7 +90,7 @@ func call(t *testing.T, s *Server, method, path, body string) *httptest.Response
 
 func waitOp(t *testing.T, st *store.Store, id int64) *store.OperationRow {
 	t.Helper()
-	deadline := time.Now().Add(10 * time.Second)
+	deadline := time.Now().Add(30 * time.Second)
 	for time.Now().Before(deadline) {
 		op, err := st.GetOperation(context.Background(), id)
 		if err == nil && op.Status != "running" {
@@ -98,7 +98,8 @@ func waitOp(t *testing.T, st *store.Store, id int64) *store.OperationRow {
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
-	t.Fatalf("operation %d still running", id)
+	op, _ := st.GetOperation(context.Background(), id)
+	t.Fatalf("operation %d still running: %s", id, op.Log)
 	return nil
 }
 

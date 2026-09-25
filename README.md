@@ -386,6 +386,17 @@ line each) · Fleet: Inventory, Network boot · Kubit: Activity, Settings.
 | `/operations` | Activity: Operations · Audit, filtered per cluster; `/operations/<id>` shows steps and log. |
 | `/settings/<page>` | This installation: General, Discovery, Alerts, Off-site, Accounts, Single sign-on, Backup. Each page saves only its own fields and keeps unsaved edits while you look at another page. |
 
+**Namespaces.** Workloads, Network and Storage open on **Apps**: every namespace that is
+not the platform. **Platform** is `kube-system`, `kube-public`, `kube-node-lease` and the
+namespaces of Kubit's add-ons (`metallb-system`, `ingress-nginx`, `cert-manager`,
+`argocd`, `longhorn-system`; `cluster.PlatformNamespace`, served with each namespace's
+Pod Security level by `GET /api/v1/clusters/{name}/namespaces`); the `kubernetes` API
+Service in `default` counts as platform too. **All** shows both. A namespace picker narrows
+to one namespace; scope and namespace live in the URL (`?scope=`, `?ns=`), so alert
+links land filtered. Kubit creates namespaces only for its add-ons: an app's namespace
+belongs in Git next to the app (Argo CD `CreateNamespace=true` or a Namespace manifest).
+Workloads also lists CronJobs; Jobs and CronJobs never count as unavailable controllers.
+
 A bottom **Activity drawer** (`a`) shows running operations full-width: stepper on the
 left, searchable log on the right, Cancel/Retry.
 
@@ -921,5 +932,6 @@ cert-manager add-ons.
 - [x] M18 — Identity: local accounts with viewer/operator/admin roles enforced per route, sessions and API tokens, first-admin setup, OpenID Connect sign-in with group→role mapping, audit actor, cluster `spec.auth.oidc` → API server `AuthenticationConfiguration` + admin group binding. Unit-tested end to end (fake IdP); **unverified against a real provider**
 - [~] M19 — Storage: Longhorn platform add-on on data disks (node labelling in the generator, privileged namespace, replica default from the data-disk node count, wizard/Add-ons/Storage-tab hooks). **Unverified on a cluster**
 - [x] M19 — Honest health and right-sized labs: `hub.since(0)` replays nothing and replayed messages never toast; service alerts raise after two and clear after three collections; `status.health` (`healthy` / `degraded` / `down`) drives the cluster pill; `node.memory-small` alert with runbook; 2 GiB floor for every lab VM with host-fitting defaults; `worker-undersized` lint and preflight floor when add-ons are on; MetalLB layer-2 only with resource requests on every add-on and `atomic` releases; 2 s host CPU sample. Unit-tested (hub, tracker flap, Derive, lint, tofu golden, validate); the EliteDesk lab reshaped to 1 CP + 1 worker at 2816 MiB and re-applied without FRR
+- [x] M21 — Namespace scopes: Apps · Platform · All with a namespace picker on Workloads, Network and Storage (URL-backed, live on namespace changes), Overview counts app and platform pods apart, CronJobs listed. Verified on a lab cluster on this Mac: fresh cluster opens on an empty Apps (14 platform pods), a new `shop` namespace appears live, `?ns=` links filter Network and Storage
 - [x] M20 — Lab host drivers: `labhost.Driver` seam (libvirt unchanged), *Lab host on this Mac* with vfkit + vmnet-helper VMs under launchd, driver-aware lab host page, per-host memory reserve. Verified end to end on this Mac (see *On this Mac*); firmware reboot, sleep during setup and the launchd-run daemon are not. Hyper-V: feasibility only, in NOTES/backlog.md. Full-stack run on this Mac (2026-09-25): three control planes (4 GiB, data disks) from the dialog to Ready with MetalLB, ingress, gVisor and metrics-server in 3 min 35 s; cert-manager and Argo CD applied from the Add-ons tab in 51 s; an Argo CD Application (podinfo from GitHub) synced and served over HTTPS through ingress with a cert-manager certificate; a gVisor pod ran; a control plane killed and restarted kept the API up on the VIP and raised and auto-resolved `talos.unreachable`. Longhorn not exercised
 - [~] M7 — tests and packaging: gofmt/vet/race tests and `hack/e2e.sh` run locally; GitHub Actions (CI, signed releases, nightly e2e lab) removed as unused. The QEMU lab script (`hack/qemu/lab.sh`) stays for a Linux KVM box, **unverified**

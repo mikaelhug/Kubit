@@ -4,6 +4,7 @@ import { DataTable, type Column } from '../../components/DataTable'
 import { AlertPill, ErrorBox, KeyValue, Notice, Pill, Section } from '../../components/ui'
 import { openAlert, refreshKey } from '../../store'
 import type { ClusterCtx } from './ClusterPage'
+import { NamespaceScope, useNamespaceScope } from '../../components/NamespaceScope'
 
 export function Network({ ctx }: { ctx: ClusterCtx }) {
   const { name, cluster } = ctx
@@ -14,6 +15,11 @@ export function Network({ ctx }: { ctx: ClusterCtx }) {
     api.network(name).then((v) => { setView(v); setError(null) }).catch((e) => setError(e.message))
   }, [name, refreshKey(name, 'network'), refreshKey(name, 'addons')])
   const pool = view?.pool
+  const s = useNamespaceScope(name)
+  const home = (x: KService) => (x.namespace === 'default' && x.name === 'kubernetes' ? 'kube-system' : x.namespace)
+  const services = (view?.services ?? []).filter((x) => s.keep(home(x)))
+  const ingresses = (view?.ingresses ?? []).filter((x) => s.keep(x.namespace))
+  const loading = (!view && !error) || s.loading
   const scols: Column<KService>[] = [
     { id: 'ns', header: 'Namespace', sort: (s) => s.namespace, cell: (s) => s.namespace },
     { id: 'name', header: 'Service', sort: (s) => s.name, cell: (s) => <span class="flex items-center gap-2"><span class="font-medium">{s.name}</span><AlertPill e={openAlert(name, 'Service', s.namespace, s.name)} /></span> },
@@ -71,11 +77,12 @@ export function Network({ ctx }: { ctx: ClusterCtx }) {
           )}
         </Section>
       </div>
-      <Section title={`Services (${view?.services.length ?? 0})`} help="Endpoints counts ready backends; a selector-backed service with 0 endpoints receives traffic nowhere.">
-        <DataTable loading={!view && !error} id="services" columns={scols} rows={view?.services ?? []} rowKey={(s) => s.namespace + '/' + s.name} defaultSort={{ id: 'type', dir: 'desc' }} />
+      <div class="flex justify-end"><NamespaceScope s={s} rows={[...(view?.services ?? []).map(home), ...(view?.ingresses ?? []).map((x) => x.namespace)]} /></div>
+      <Section title={`Services (${services.length})`} help="Endpoints counts ready backends; a selector-backed service with 0 endpoints receives traffic nowhere.">
+        <DataTable loading={loading} id="services" columns={s.ns ? scols.filter((c) => c.id !== 'ns') : scols} rows={services} rowKey={(x) => x.namespace + '/' + x.name} defaultSort={{ id: 'type', dir: 'desc' }} empty={s.scope === 'apps' && !s.ns ? 'No app services yet.' : 'No services.'} />
       </Section>
-      <Section title={`Ingresses (${view?.ingresses.length ?? 0})`} help={`HTTP routes handled by Ingress-NGINX${view?.pool?.allocated.find((a) => a.service.startsWith('ingress-nginx/')) ? ` at ${view.pool.allocated.find((a) => a.service.startsWith('ingress-nginx/'))!.ip}` : ''}.`}>
-        <DataTable loading={!view && !error} id="ingresses" columns={icols} rows={view?.ingresses ?? []} rowKey={(i) => i.namespace + '/' + i.name} empty="No Ingress objects yet. Create one to expose an HTTP service by hostname." />
+      <Section title={`Ingresses (${ingresses.length})`} help={`HTTP routes handled by Ingress-NGINX${view?.pool?.allocated.find((a) => a.service.startsWith('ingress-nginx/')) ? ` at ${view.pool.allocated.find((a) => a.service.startsWith('ingress-nginx/'))!.ip}` : ''}.`}>
+        <DataTable loading={loading} id="ingresses" columns={s.ns ? icols.filter((c) => c.id !== 'ns') : icols} rows={ingresses} rowKey={(i) => i.namespace + '/' + i.name} empty="No Ingress objects yet. Create one to expose an HTTP service by hostname." />
       </Section>
     </div>
   )

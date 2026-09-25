@@ -2,7 +2,8 @@ import { useEffect, useState } from 'preact/hooks'
 import { api, fmt, podLogsUrl, type PodEvent, type PodSummary, type Workload } from '../../api'
 import { DataTable, type Column } from '../../components/DataTable'
 import { AlertPill, Dialog, ErrorBox, Notice, Pill, Section, StatusDot } from '../../components/ui'
-import { clusters, nsFromQuery, openAlert, refreshKey } from '../../store'
+import { clusters, openAlert, refreshKey } from '../../store'
+import { NamespaceScope, useNamespaceScope } from '../../components/NamespaceScope'
 import { Tabs } from '../../components/Tabs'
 import { LogStream } from '../../components/LogStream'
 import type { ClusterCtx } from './ClusterPage'
@@ -14,7 +15,7 @@ export function Workloads({ ctx }: { ctx: ClusterCtx }) {
   const [workloads, setWorkloads] = useState<Workload[]>([])
   const [loaded, setLoaded] = useState(false)
   const [pods, setPods] = useState<PodSummary[]>([])
-  const [ns, setNs] = useState(nsFromQuery())
+  const s = useNamespaceScope(name)
   const [error, setError] = useState<string | null>(null)
   const [pod, setPod] = useState<PodSummary | null>(null)
   const query = typeof location !== 'undefined' ? new URLSearchParams(location.search) : new URLSearchParams()
@@ -26,16 +27,16 @@ export function Workloads({ ctx }: { ctx: ClusterCtx }) {
     api.pods(name).then(setPods).catch((e) => setError(e.message))
   }
   useEffect(() => { load() }, [name, refreshKey(name, 'workloads')]) // eslint-disable-line
-  const namespaces = [...new Set([...workloads.map((w) => w.namespace), ...pods.map((p) => p.namespace)])].sort()
-  const wl = ns ? workloads.filter((w) => w.namespace === ns) : workloads
+  const wl = workloads.filter((w) => s.keep(w.namespace))
   const nodeNames = [...new Set(pods.map((p) => p.node).filter((n): n is string => !!n))].sort()
-  const pl = pods.filter((p) => (!ns || p.namespace === ns) && (!nodeFilter || p.node === nodeFilter))
-  const unhealthy = workloads.filter((w) => !w.available).length
+  const pl = pods.filter((p) => s.keep(p.namespace) && (!nodeFilter || p.node === nodeFilter))
+  const unhealthy = wl.filter((w) => !w.available && w.kind !== 'Job' && w.kind !== 'CronJob').length
+  const empty = (what: string) => s.ns ? `Nothing in ${s.ns}.` : s.scope === 'apps' ? `No app ${what} yet; Kubernetes and Kubit's add-ons are under Platform.` : `No ${what}.`
 
   const wcols: Column<Workload>[] = [
     { id: 'ns', header: 'Namespace', sort: (w) => w.namespace, cell: (w) => w.namespace },
     { id: 'kind', header: 'Kind', sort: (w) => w.kind, cell: (w) => w.kind },
-    { id: 'name', header: 'Name', sort: (w) => w.name, cell: (w) => <span class="flex items-center gap-2"><button class="font-medium hover:underline text-left" onClick={() => { setNs(w.namespace); setView('pods') }}>{w.name}</button><AlertPill e={openAlert(name, w.kind, w.namespace, w.name)} /></span> },
+    { id: 'name', header: 'Name', sort: (w) => w.name, cell: (w) => <span class="flex items-center gap-2"><button class="font-medium hover:underline text-left" onClick={() => { s.set({ ns: w.namespace }); setView('pods') }}>{w.name}</button><AlertPill e={openAlert(name, w.kind, w.namespace, w.name)} /></span> },
     { id: 'ready', header: 'Ready', sort: (w) => w.ready / Math.max(1, w.desired), cell: (w) => <span class="flex items-center gap-2"><StatusDot tone={w.available ? 'good' : w.ready > 0 ? 'warn' : 'bad'} /><span class="num">{w.ready}/{w.desired}</span></span> },
     { id: 'images', header: 'Images', text: (w) => w.images, cell: (w) => <span class="mono text-[12px] text-muted truncate inline-block max-w-[420px]" title={w.images}>{w.images}</span> },
     { id: 'age', header: 'Age', cell: (w) => <span class="num text-muted">{w.age}</span> },
@@ -54,27 +55,22 @@ export function Workloads({ ctx }: { ctx: ClusterCtx }) {
 
   return (
     <>
-      <Section title="Workloads" help="Controllers and pods, all namespaces. Read-only; exec, edit and delete with kubectl or k9s."
-        actions={
-          <>
-            {view === 'pods' && (
-              <select class="input !w-48" value={nodeFilter} onChange={(e) => setNodeFilter((e.target as HTMLSelectElement).value)}>
-                <option value="">All nodes</option>
-                {nodeNames.map((n) => <option key={n} value={n}>{n}</option>)}
-              </select>
-            )}
-            <select class="input !w-56" value={ns} onChange={(e) => setNs((e.target as HTMLSelectElement).value)}>
-              <option value="">All namespaces</option>
-              {namespaces.map((n) => <option key={n} value={n}>{n}</option>)}
-            </select>
-            <a class="btn" href={`/api/v1/clusters/${name}/kubeconfig`} download="kubeconfig">Kubeconfig</a>
-          </>
-        }>
+      <Section title="Workloads" help="Apps are the namespaces outside Kubernetes and Kubit's add-ons. Read-only; change them with kubectl or k9s."
+        actions={<a class="btn" href={`/api/v1/clusters/${name}/kubeconfig`} download="kubeconfig">Kubeconfig</a>}>
         <ErrorBox error={error} />
+        <div class="flex flex-wrap items-center gap-2">
+          <NamespaceScope s={s} rows={view === 'pods' ? pods.map((p) => p.namespace) : workloads.map((w) => w.namespace)} />
+          {view === 'pods' && (
+            <select class="input !w-48" value={nodeFilter} aria-label="Node" onChange={(e) => setNodeFilter((e.target as HTMLSelectElement).value)}>
+              <option value="">All nodes</option>
+              {nodeNames.map((n) => <option key={n} value={n}>{n}</option>)}
+            </select>
+          )}
+        </div>
         {unhealthy > 0 && <Notice tone="warn">{unhealthy} controller{unhealthy === 1 ? '' : 's'} below desired replicas.</Notice>}
         <Tabs active={view} onSelect={(v) => setView(v as any)} tabs={[{ id: 'controllers', label: 'Controllers', badge: wl.length }, { id: 'pods', label: 'Pods', badge: pl.length }]} />
-        {view === 'controllers' && <DataTable loading={!loaded} id="workloads" columns={wcols} rows={wl} rowKey={(w) => `${w.kind}/${w.namespace}/${w.name}`} defaultSort={{ id: 'ns', dir: 'asc' }} />}
-        {view === 'pods' && <DataTable loading={!loaded} id="pods" columns={pcols} rows={pl} rowKey={(p) => `${p.namespace}/${p.name}`} defaultSort={{ id: 'ns', dir: 'asc' }} />}
+        {view === 'controllers' && <DataTable loading={!loaded || s.loading} id="workloads" columns={s.ns ? wcols.filter((c) => c.id !== 'ns') : wcols} rows={wl} rowKey={(w) => `${w.kind}/${w.namespace}/${w.name}`} defaultSort={{ id: 'ns', dir: 'asc' }} empty={empty('workloads')} />}
+        {view === 'pods' && <DataTable loading={!loaded || s.loading} id="pods" columns={s.ns ? pcols.filter((c) => c.id !== 'ns') : pcols} rows={pl} rowKey={(p) => `${p.namespace}/${p.name}`} defaultSort={{ id: 'ns', dir: 'asc' }} empty={empty('pods')} />}
       </Section>
       {pod && <PodDialog cluster={name} pod={pod} onClose={() => setPod(null)} />}
     </>

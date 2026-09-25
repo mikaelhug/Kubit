@@ -34,6 +34,19 @@ var addonMeta = []struct{ key, namespace, pin string }{
 	{"longhorn", "longhorn-system", "1.10.1"},
 }
 
+func PlatformNamespace(ns string) (string, bool) {
+	switch ns {
+	case "kube-system", "kube-public", "kube-node-lease":
+		return "kubernetes", true
+	}
+	for _, a := range addonMeta {
+		if a.namespace != "" && a.namespace == ns {
+			return a.key, true
+		}
+	}
+	return "", false
+}
+
 var addonTofuName = map[string]string{"metallb": "metallb", "ingressNginx": "ingress-nginx", "gvisor": "gvisor", "metricsServer": "metrics-server", "certManager": "cert-manager", "argocd": "argocd", "longhorn": "longhorn"}
 
 func addonSpec(p config.Platform, key string) (bool, map[string]any) {

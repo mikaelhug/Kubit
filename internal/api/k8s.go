@@ -5,12 +5,14 @@ import (
 	"net/http"
 	"strconv"
 
+	"github.com/mikael/kubit/internal/cluster"
 	"github.com/mikael/kubit/internal/k8s"
 )
 
 func (s *Server) k8sRoutes() {
 	r := s.mux
 	r.HandleFunc("GET /api/v1/clusters/{name}/workloads", s.handleWorkloads)
+	r.HandleFunc("GET /api/v1/clusters/{name}/namespaces", s.handleNamespaces)
 	r.HandleFunc("GET /api/v1/clusters/{name}/pods", s.handlePods)
 	r.HandleFunc("GET /api/v1/clusters/{name}/pods/{namespace}/{pod}/events", s.handlePodEvents)
 	r.HandleFunc("GET /api/v1/clusters/{name}/pods/{namespace}/{pod}/logs", s.handlePodLogs)
@@ -41,6 +43,34 @@ func (s *Server) handleWorkloads(w http.ResponseWriter, r *http.Request) {
 		list = []k8s.Workload{}
 	}
 	writeJSON(w, http.StatusOK, list)
+}
+
+type namespaceRow struct {
+	k8s.Namespace
+	Platform bool   `json:"platform"`
+	Addon    string `json:"addon,omitempty"`
+}
+
+func (s *Server) handleNamespaces(w http.ResponseWriter, r *http.Request) {
+	kc, ok := s.kube(w, r)
+	if !ok {
+		return
+	}
+	list, err := kc.Namespaces(r.Context())
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, namespaceRows(list))
+}
+
+func namespaceRows(list []k8s.Namespace) []namespaceRow {
+	out := make([]namespaceRow, 0, len(list))
+	for _, n := range list {
+		addon, platform := cluster.PlatformNamespace(n.Name)
+		out = append(out, namespaceRow{Namespace: n, Platform: platform, Addon: addon})
+	}
+	return out
 }
 
 func (s *Server) handlePods(w http.ResponseWriter, r *http.Request) {

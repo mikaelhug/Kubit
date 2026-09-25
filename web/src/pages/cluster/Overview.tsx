@@ -6,6 +6,7 @@ import { ageSec } from '../../clock'
 import { Sparkline, spanOf } from '../../components/Sparkline'
 import { Notice, Pill, Section, SeenAgo, StatusDot } from '../../components/ui'
 import type { ClusterCtx } from './ClusterPage'
+import { useNamespaces } from '../../components/NamespaceScope'
 
 const recoveryKinds = new Set(['talos.back', 'node.ready', 'api.back', 'etcd.healthy', 'lb.assigned', 'workload.available', 'pod.recovered', 'pvc.bound', 'service.endpoints', 'ingress.address', 'lb.pool-free'])
 
@@ -170,13 +171,20 @@ export function EventRow({ e, onAck }: { e: HealthEvent; onAck?: () => void }) {
 
 /** How current the watcher's view is, and whether scheduled snapshots are keeping up. */
 function WorkloadsCard({ cluster, pods, service, unreachable }: { cluster: string; pods?: number; service: ServiceHealth | null; unreachable: boolean }) {
+  const namespaces = useNamespaces(cluster)
   if (unreachable) return <Card label="Workloads" tone="bad" value="—" sub="API unreachable" href={`/clusters/${cluster}/workloads?view=pods`} />
-  const controllers = service?.workloads ?? []
-  const down = controllers.filter((w) => !w.available).length
-  const failing = (service?.pods ?? []).filter((p) => p.phase !== 'Running' && p.phase !== 'Succeeded' && p.phase !== 'Pending').length
-  const bad = down + failing
-  const sub = !service ? 'no service health yet' : bad === 0 ? `${controllers.length} controller${controllers.length === 1 ? '' : 's'}, all available` : [down ? `${down} controller${down === 1 ? '' : 's'} unavailable` : '', failing ? `${failing} pod${failing === 1 ? '' : 's'} failing` : ''].filter(Boolean).join(', ')
-  return <Card label="Workloads" tone={!service ? 'muted' : down > 0 ? 'bad' : failing > 0 ? 'warn' : 'good'} value={pods === undefined ? '—' : `${pods} pods`} sub={sub} href={`/clusters/${cluster}/workloads?view=pods`} />
+  const platform = new Set((namespaces ?? []).filter((n) => n.platform).map((n) => n.name))
+  const controllers = (service?.workloads ?? []).filter((w) => w.kind !== 'Job' && w.kind !== 'CronJob')
+  const down = controllers.filter((w) => !w.available)
+  const failing = (service?.pods ?? []).filter((p) => p.phase !== 'Running' && p.phase !== 'Succeeded' && p.phase !== 'Pending')
+  const bad = down.length + failing.length
+  const first = down[0]?.namespace ?? failing[0]?.namespace
+  const scope = first !== undefined && platform.has(first) ? 'platform' : 'apps'
+  const all = service?.pods ?? []
+  const apps = all.filter((p) => !platform.has(p.namespace)).length
+  const value = service && namespaces ? `${apps} app pod${apps === 1 ? '' : 's'}` : pods === undefined ? '—' : `${pods} pods`
+  const sub = !service ? 'no service health yet' : bad === 0 ? `${all.length - apps} platform pods · all ${controllers.length} controllers available` : [down.length ? `${down.length} controller${down.length === 1 ? '' : 's'} unavailable` : '', failing.length ? `${failing.length} pod${failing.length === 1 ? '' : 's'} failing` : ''].filter(Boolean).join(', ')
+  return <Card label="Workloads" tone={!service ? 'muted' : down.length > 0 ? 'bad' : failing.length > 0 ? 'warn' : 'good'} value={value} sub={sub} href={`/clusters/${cluster}/workloads?view=pods&scope=${scope}`} />
 }
 
 /** Last etcd snapshot, whether it has an off-site copy, and whether the schedule is keeping up. */

@@ -240,3 +240,7 @@
   `/dev/vda`, but Hyper-V SCSI disks are `sda`/`sdb`; needs Windows Pro/Server.
 
 - Web copy: `Scanning…` (create wizard scan button) and `linting…` (review checks) still carry ellipses; Inventory already uses `Scanning`.
+- Namespace management (create/delete an app namespace with a Pod Security level) is left
+  out on purpose: app namespaces live in Git with the app. Revisit only if Kubit ever
+  deploys apps itself. The node page's pod table still lists every namespace (platform pods
+  matter there); a scope toggle could follow if it gets long.

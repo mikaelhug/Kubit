@@ -34,6 +34,8 @@ func (c *Client) WatchScopes(ctx context.Context, changed func(scope string)) {
 	_, _ = f.Apps().V1().DaemonSets().Informer().AddEventHandler(hook(ScopeWorkloads))
 	_, _ = f.Apps().V1().StatefulSets().Informer().AddEventHandler(hook(ScopeWorkloads))
 	_, _ = f.Batch().V1().Jobs().Informer().AddEventHandler(hook(ScopeWorkloads))
+	_, _ = f.Batch().V1().CronJobs().Informer().AddEventHandler(hook(ScopeWorkloads))
+	_, _ = f.Core().V1().Namespaces().Informer().AddEventHandler(hook(ScopeWorkloads))
 	_, _ = f.Core().V1().Services().Informer().AddEventHandler(hook(ScopeNetwork))
 	_, _ = f.Discovery().V1().EndpointSlices().Informer().AddEventHandler(hook(ScopeNetwork))
 	_, _ = f.Networking().V1().Ingresses().Informer().AddEventHandler(hook(ScopeNetwork))
