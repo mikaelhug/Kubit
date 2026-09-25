@@ -327,6 +327,8 @@ type LabHost struct {
 	Schematic string           `json:"schematic,omitempty"` // schematic id of those assets
 	Kernel    string           `json:"kernel,omitempty"`
 	Initrd    string           `json:"initrd,omitempty"`
+	ISO       string           `json:"iso,omitempty"`
+	Driver    string           `json:"driver,omitempty"`
 	Index     int              `json:"index"` // for MAC assignment
 	VMs       []labhost.VM     `json:"vms"`
 	Metrics   *labhost.Metrics `json:"metrics,omitempty"`
@@ -411,7 +413,7 @@ func (s *Store) SetMachineHost(ctx context.Context, mac, host string) error {
 // NextLabHostIndex hands out the per-host byte used in VM MAC addresses.
 func (s *Store) NextLabHostIndex(ctx context.Context) int {
 	var n int
-	_ = s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM machines WHERE labhost != ''`).Scan(&n)
+	_ = s.db.QueryRowContext(ctx, `SELECT COALESCE(MAX(CAST(json_extract(labhost, '$.index') AS INTEGER)), 0) FROM machines WHERE labhost != ''`).Scan(&n)
 	return n + 1
 }
 

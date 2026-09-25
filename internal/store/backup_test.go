@@ -29,6 +29,8 @@ func TestBackupRestoreRoundTrip(t *testing.T) {
 	os.WriteFile(filepath.Join(home, "clusters", "a", "kubeconfig"), []byte("kc"), 0o600)
 	os.MkdirAll(filepath.Join(home, "bin"), 0o700)
 	os.WriteFile(filepath.Join(home, "bin", "tofu"), []byte("big"), 0o700)
+	os.MkdirAll(filepath.Join(home, "vms", "vm-01"), 0o755)
+	os.WriteFile(filepath.Join(home, "vms", "vm-01", "disk.raw"), []byte("disk"), 0o644)
 
 	var buf bytes.Buffer
 	if err := store.Backup(home, c, &buf); err != nil {
@@ -47,6 +49,9 @@ func TestBackupRestoreRoundTrip(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(other, "bin", "tofu")); err == nil {
 		t.Error("bin/ must not be part of the backup")
+	}
+	if _, err := os.Stat(filepath.Join(other, "vms")); err == nil {
+		t.Error("vms/ must not be part of the backup")
 	}
 	s2, err := store.Open(other, c)
 	if err != nil {

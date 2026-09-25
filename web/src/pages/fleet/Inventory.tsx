@@ -1,12 +1,12 @@
 import { useEffect, useState } from 'preact/hooks'
 import { api, fmt, labHostKey, type NodeRow, type Versions } from '../../api'
 import { useLocation } from 'preact-iso'
-import { clusters, connected, health, latestTalos, loadHealth, machineList, operations, resyncing, settings, toast, watch } from '../../store'
+import { clusters, connected, daemon, health, latestTalos, loadHealth, machineList, operations, resyncing, settings, toast, watch } from '../../store'
 import { DataTable, type Column } from '../../components/DataTable'
 import { AlertPill, ConfirmDialog, Pill, Section } from '../../components/ui'
-import { bootTalosBlocked, canAdopt, canMakeLabHost, canRetire, formOf, groupLabel, groupOf, hostName, hostOf, KindPill, modelOf, provisionLabel, type MachineGroup } from '../../machine'
+import { bootTalosBlocked, canAdopt, canMakeLabHost, canRetire, formOf, groupLabel, groupOf, hostName, hostOf, KindPill, modelOf, onMac, provisionLabel, type MachineGroup } from '../../machine'
 import { AddAMTDialog } from '../../components/RemoteManagement'
-import { MakeLabHostDialog } from '../../components/LabHost'
+import { MakeLabHostDialog, ThisMacDialog } from '../../components/LabHost'
 import { PxeGate } from '../../components/PxeGate'
 
 const vanillaSchematic = '376567988ad370138ad8b2698212367b8edcb69b5fd68c80be1f2ec7d603b4ba'
@@ -31,6 +31,8 @@ export function Inventory() {
   const [retire, setRetire] = useState<NodeRow | null>(null)
   const [addAMT, setAddAMT] = useState(false)
   const [lab, setLab] = useState<NodeRow | null>(null)
+  const [mac, setMac] = useState(false)
+  const macFree = daemon.value?.os === 'darwin' && !all.some((m) => onMac(m.labhost))
   const [gate, setGate] = useState<string[] | null>(null)
   const [busy, setBusy] = useState<Record<string, boolean>>({})
   const subnets = settings.value?.discoverySubnets ?? []
@@ -96,7 +98,7 @@ export function Inventory() {
   return (
     <div class="p-5 flex flex-col gap-4">
       <Section title="Inventory" help="Every physical machine Kubit has seen, by MAC: what it does now and what it can do next."
-        actions={<button class="btn btn-primary" onClick={() => setAddAMT(true)} title="Register a machine by its Intel AMT or BMC address">+ Add by remote management</button>}>
+        actions={<span class="flex gap-2">{macFree && <button class="btn" onClick={() => setMac(true)} title="Run Talos VMs on this Mac">+ Lab host on this Mac</button>}<button class="btn btn-primary" onClick={() => setAddAMT(true)} title="Register a machine by its Intel AMT or BMC address">+ Add by remote management</button></span>}>
         <div class="panel p-3 flex flex-col gap-2">
           <div class="flex gap-2">
             <input class="input mono" value={targets} onInput={(e) => setTargets((e.target as HTMLInputElement).value)} placeholder="192.168.1.0/24, 10.0.0.5" aria-label="Subnets or addresses to scan" />
@@ -117,6 +119,7 @@ export function Inventory() {
       </Section>
       {addAMT && <AddAMTDialog onClose={() => setAddAMT(false)} />}
       {lab && <MakeLabHostDialog m={lab} onClose={() => setLab(null)} />}
+      {mac && <ThisMacDialog onClose={() => setMac(false)} />}
       {gate && <PxeGate what="Boot into Talos" onClose={() => setGate(null)} onReady={() => { const macs = gate; setGate(null); boot(macs) }} />}
       {retire && <ConfirmDialog title={`Retire ${retire.hostname || retire.mac}`} action="Retire" tone="danger" onClose={() => setRetire(null)}
         onConfirm={() => api.retireMachine(retire.mac).then(() => setRetire(null)).catch((e) => toast(e.message, 'error'))}

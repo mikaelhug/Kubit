@@ -25,8 +25,8 @@ func Backup(home string, crypto *Crypto, w io.Writer) error {
 				return err
 			}
 			rel, _ := filepath.Rel(home, path)
-			if rel == "." || strings.HasPrefix(rel, "bin") || strings.HasPrefix(rel, "cache") || strings.Contains(rel, ".terraform/") || strings.HasSuffix(rel, ".part") || strings.HasSuffix(rel, "-wal") || strings.HasSuffix(rel, "-shm") {
-				if info.IsDir() && rel != "." && (rel == "bin" || rel == "cache" || strings.HasSuffix(rel, ".terraform")) {
+			if rel == "." || strings.HasPrefix(rel, "bin") || strings.HasPrefix(rel, "cache") || rel == "vms" || strings.HasPrefix(rel, "vms/") || strings.Contains(rel, ".terraform/") || strings.HasSuffix(rel, ".part") || strings.HasSuffix(rel, "-wal") || strings.HasSuffix(rel, "-shm") {
+				if info.IsDir() && rel != "." && (rel == "bin" || rel == "cache" || rel == "vms" || strings.HasSuffix(rel, ".terraform")) {
 					return filepath.SkipDir
 				}
 				return nil
@@ -97,7 +97,7 @@ func Restore(home string, crypto *Crypto, r io.Reader, force bool) error {
 	if entries, _ := os.ReadDir(home); len(entries) > 0 && !force {
 		var names []string
 		for _, e := range entries {
-			if e.Name() != "bin" && e.Name() != "cache" {
+			if e.Name() != "bin" && e.Name() != "cache" && e.Name() != "vms" {
 				names = append(names, e.Name())
 			}
 		}

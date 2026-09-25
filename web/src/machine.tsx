@@ -22,6 +22,7 @@ export function kindTone(m: NodeRow): Tone {
 }
 
 export function isLabVM(m?: NodeRow | null) { return !!m?.host }
+export function onMac(lh?: LabHost | null) { return lh?.driver === 'vfkit' }
 export function hostOf(m?: NodeRow | null) { return m?.host ? machines.value.get(m.host.toLowerCase()) : undefined }
 export function hostName(m?: NodeRow | null) { return m ? m.labhost?.capacity.hostname || m.hostname || m.mac : '' }
 
@@ -36,7 +37,7 @@ export function groupOf(m: NodeRow): MachineGroup {
 }
 
 export function canAdopt(m: NodeRow) { return m.kind === 'maintenance' }
-export function canMakeLabHost(m: NodeRow) { return !m.host && !m.cluster && (!m.labhost || m.labhost.state === 'error') }
+export function canMakeLabHost(m: NodeRow) { return !m.host && !m.cluster && (!m.labhost || (m.labhost.state === 'error' && !onMac(m.labhost))) }
 export function canRetire(m: NodeRow) { return m.kind !== 'labhost' && !(m.host && hostOf(m)) }
 export function bootTalosBlocked(m: NodeRow): string {
   if (m.cluster) return 'Members are removed from the cluster first; that resets them to maintenance mode from disk'
@@ -80,6 +81,6 @@ export function KindPill({ m }: { m: NodeRow }) {
 
 export function TypePill({ m }: { m?: NodeRow | null }) {
   const form = formOf(m)
-  const title = { 'lab host': 'KVM host Kubit installed', 'lab VM': `Talos VM on lab host ${hostName(hostOf(m)) || m?.host}`, VM: "Virtual machine: shares its host's failure domain", metal: 'Bare metal' }[form]
+  const title = { 'lab host': onMac(m?.labhost) ? 'This Mac, running Talos VMs' : 'KVM host Kubit installed', 'lab VM': `Talos VM on lab host ${hostName(hostOf(m)) || m?.host}`, VM: "Virtual machine: shares its host's failure domain", metal: 'Bare metal' }[form]
   return <Pill tone={form === 'metal' ? 'muted' : 'info'} title={title}>{form}</Pill>
 }

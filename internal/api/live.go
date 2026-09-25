@@ -6,6 +6,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"runtime"
 	"strconv"
 	"time"
 
@@ -110,7 +111,7 @@ func (s *Server) handleLive(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 	since, _ := strconv.ParseInt(r.URL.Query().Get("since"), 10, 64)
 	missed, head, ok := s.hub.since(since)
-	if err := send(Message{Kind: "hello", Hello: &Hello{Seq: head, Version: s.version, StartedAt: s.started.UTC().Format(time.RFC3339), Service: os.Getenv("KUBIT_SERVICE") != "", PID: os.Getpid()}}); err != nil {
+	if err := send(Message{Kind: "hello", Hello: &Hello{Seq: head, Version: s.version, StartedAt: s.started.UTC().Format(time.RFC3339), Service: os.Getenv("KUBIT_SERVICE") != "", PID: os.Getpid(), OS: runtime.GOOS}}); err != nil {
 		return
 	}
 	if !ok {

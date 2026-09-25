@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"net/netip"
 	"os"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -20,6 +21,7 @@ import (
 
 	"github.com/mikael/kubit/internal/cluster"
 	"github.com/mikael/kubit/internal/config"
+	"github.com/mikael/kubit/internal/labhost"
 	"github.com/mikael/kubit/internal/store"
 	"github.com/mikael/kubit/internal/talos"
 	"github.com/mikael/kubit/internal/tofu"
@@ -122,7 +124,7 @@ func Loopback(addr string) bool {
 }
 
 func (s *Server) handleVersion(w http.ResponseWriter, _ *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]any{"kubit": s.version, "startedAt": s.started.UTC().Format(time.RFC3339), "service": os.Getenv("KUBIT_SERVICE") != "", "pid": os.Getpid()})
+	writeJSON(w, http.StatusOK, map[string]any{"kubit": s.version, "startedAt": s.started.UTC().Format(time.RFC3339), "service": os.Getenv("KUBIT_SERVICE") != "", "pid": os.Getpid(), "os": runtime.GOOS})
 }
 
 func (s *Server) handleOperations(w http.ResponseWriter, r *http.Request) {
@@ -886,6 +888,9 @@ func (e *statusError) Error() string { return e.Msg }
 func noTalosReason(m *store.Machine) string {
 	switch m.Kind() {
 	case store.KindLabHost:
+		if m.LabHost != nil && m.LabHost.Driver == labhost.DriverVFKit {
+			return "This Mac runs the lab VMs; it has no Talos API."
+		}
 		return "This machine is a lab host running Debian; it has no Talos API."
 	case store.KindConfigured:
 		return "Runs Talos configured outside Kubit; no credentials to query it."

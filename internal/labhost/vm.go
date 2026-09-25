@@ -23,6 +23,7 @@ type VMSpec struct {
 	// Kernel/Initrd set = boot Talos maintenance mode from RAM; empty = boot from disk.
 	Kernel string `json:"-"`
 	Initrd string `json:"-"`
+	ISO    string `json:"-"`
 	Arch   string `json:"-"`
 	Bridge string `json:"-"`
 	// Routed puts the VM on Kubit's own libvirt network (RoutedSubnet, DHCP from
@@ -242,12 +243,12 @@ func (c *Client) SetDiskBoot(ctx context.Context, name string) error {
 var kernelBlock = regexp.MustCompile(`(?s)<kernel>.*?</kernel>\s*<initrd>.*?</initrd>\s*<cmdline>.*?</cmdline>`)
 
 // SetTalosBoot puts a VM back on the maintenance-mode kernel (re-provisioning).
-func (c *Client) SetTalosBoot(ctx context.Context, name, kernel, initrd, arch string) error {
+func (c *Client) SetTalosBoot(ctx context.Context, name string, b Boot, arch string) error {
 	out, err := c.Run(ctx, "virsh dumpxml "+name+" --inactive")
 	if err != nil {
 		return err
 	}
-	block := fmt.Sprintf("<kernel>%s</kernel>\n    <initrd>%s</initrd>\n    <cmdline>talos.platform=metal %s console=tty0</cmdline>", kernel, initrd, serialConsole(arch))
+	block := fmt.Sprintf("<kernel>%s</kernel>\n    <initrd>%s</initrd>\n    <cmdline>talos.platform=metal %s console=tty0</cmdline>", b.Kernel, b.Initrd, serialConsole(arch))
 	xml := strings.Replace(out, "<boot dev='hd'/>", block, 1)
 	if xml == out {
 		return fmt.Errorf("%s: no <boot dev='hd'/> found in the domain XML — cannot switch to Talos boot (libvirt XML format may have changed)", name)

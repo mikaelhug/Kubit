@@ -134,3 +134,50 @@ func TestLabUnreachable(t *testing.T) {
 		t.Error("labhost.back must resolve the alert")
 	}
 }
+
+type macLab struct {
+	vms []labhost.VM
+}
+
+func (d *macLab) Capacity(context.Context) (labhost.Capacity, error) {
+	return labhost.Capacity{Hostname: "mbp", MemMiB: 24576}, nil
+}
+func (d *macLab) EnsureTalosBoot(context.Context, string, string, string, string) (labhost.Boot, error) {
+	return labhost.Boot{}, nil
+}
+func (d *macLab) Define(context.Context, labhost.VMSpec) error                     { return nil }
+func (d *macLab) Start(context.Context, string) error                              { return nil }
+func (d *macLab) Stop(context.Context, string, bool) error                         { return nil }
+func (d *macLab) Delete(context.Context, string) error                             { return nil }
+func (d *macLab) Resize(context.Context, string, int, int) error                   { return nil }
+func (d *macLab) List(context.Context) ([]labhost.VM, error)                       { return d.vms, nil }
+func (d *macLab) SetDiskBoot(context.Context, string) error                        { return nil }
+func (d *macLab) SetTalosBoot(context.Context, string, labhost.Boot, string) error { return nil }
+func (d *macLab) Close() error                                                     { return nil }
+func (d *macLab) Metrics(context.Context) (labhost.Metrics, error) {
+	return labhost.Metrics{MemTotal: 100, MemUsed: 10, DiskTotal: 100, DiskUsed: 10}, nil
+}
+
+func TestLabTickOnThisMac(t *testing.T) {
+	w, _ := labWatcher(t)
+	ctx := t.Context()
+	d := &macLab{vms: []labhost.VM{{Name: "vm-01", MAC: "52:54:00:6b:01:01", State: "running", MemMiB: 3072}}}
+	w.Manager.Local = func() (labhost.Driver, error) { return d, nil }
+	mac := "84:2f:57:45:7e:dc"
+	if err := w.Store.UpsertNode(ctx, store.NodeRow{MAC: mac, IP: "192.168.105.1", Source: "labhost", State: "labhost"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.Store.SetLabHost(ctx, mac, &store.LabHost{State: "ready", Driver: labhost.DriverVFKit}); err != nil {
+		t.Fatal(err)
+	}
+	host, _ := w.Store.GetMachine(ctx, mac)
+	w.labTick(ctx, host)
+	got, _ := w.Store.GetMachine(ctx, mac)
+	lh := got.LabHost
+	if len(lh.VMs) != 1 || lh.Capacity.Hostname != "mbp" || lh.Metrics == nil || lh.Failures != 0 {
+		t.Errorf("tick: %+v", lh)
+	}
+	if lh.Updates != nil {
+		t.Error("a Mac has no package updates to check")
+	}
+}

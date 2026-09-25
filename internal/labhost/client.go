@@ -127,17 +127,23 @@ func (c *Client) Put(ctx context.Context, path string, content []byte, mode stri
 
 // Capacity is what the host can give to VMs.
 type Capacity struct {
-	CPUs      int    `json:"cpus"`
-	MemMiB    int    `json:"memMiB"`
-	DiskGiB   int    `json:"diskGiB"` // free under VMDir
-	KVM       bool   `json:"kvm"`
-	Kernel    string `json:"kernel"`
-	Libvirt   string `json:"libvirt"`
-	Hostname  string `json:"hostname"`
-	Arch      string `json:"arch"`
-	Bridge    string `json:"bridge"`
-	Ready     bool   `json:"ready"`
-	CheckedAt string `json:"checkedAt"`
+	CPUs       int    `json:"cpus"`
+	MemMiB     int    `json:"memMiB"`
+	DiskGiB    int    `json:"diskGiB"` // free under VMDir
+	KVM        bool   `json:"kvm"`
+	Kernel     string `json:"kernel"`
+	Libvirt    string `json:"libvirt"`
+	Hostname   string `json:"hostname"`
+	Arch       string `json:"arch"`
+	Bridge     string `json:"bridge"`
+	Ready      bool   `json:"ready"`
+	CheckedAt  string `json:"checkedAt"`
+	Model      string `json:"model,omitempty"`
+	OS         string `json:"os,omitempty"`
+	Hypervisor string `json:"hypervisor,omitempty"`
+	ReserveMiB int    `json:"reserveMiB,omitempty"`
+	Problem    string `json:"problem,omitempty"`
+	Command    string `json:"command,omitempty"`
 }
 
 // Capacity reads CPU, memory, free disk and the virtualisation prerequisites.
@@ -174,16 +180,16 @@ func (c *Client) Capacity(ctx context.Context) (Capacity, error) {
 // file is fetched to a .part and renamed only once complete, and a still-empty file
 // is a hard error: an incomplete initramfs boots a VM into nothing, which reads as a
 // VM stuck "booting".
-func (c *Client) EnsureTalosBoot(ctx context.Context, factoryURL, schematic, version, arch string) (kernel, initrd string, err error) {
+func (c *Client) EnsureTalosBoot(ctx context.Context, factoryURL, schematic, version, arch string) (Boot, error) {
 	dir := fmt.Sprintf("%s/%s-%s", BootDir, version, schematic[:12])
-	kernel, initrd = dir+"/kernel-"+arch, dir+"/initramfs-"+arch+".xz"
+	kernel, initrd := dir+"/kernel-"+arch, dir+"/initramfs-"+arch+".xz"
 	base := fmt.Sprintf("%s/image/%s/%s", factoryURL, schematic, version)
-	_, err = c.Run(ctx, fmt.Sprintf(`set -e
+	_, err := c.Run(ctx, fmt.Sprintf(`set -e
 mkdir -p %[1]s && cd %[1]s
 get() { [ -s "$1" ] && return 0; curl -fSL --retry 3 -o "$1.part" "$2" && mv -f "$1.part" "$1" || { rm -f "$1.part"; echo "download failed: $2" >&2; return 1; }; [ -s "$1" ] || { echo "empty after download: $1" >&2; return 1; }; }
 get kernel-%[2]s %[3]s/kernel-%[2]s
 get initramfs-%[2]s.xz %[3]s/initramfs-%[2]s.xz`, dir, arch, base))
-	return kernel, initrd, err
+	return Boot{Kernel: kernel, Initrd: initrd}, err
 }
 
 // connDropped reports whether err is the control connection dying mid-command rather

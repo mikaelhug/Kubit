@@ -32,7 +32,7 @@ export const can = (role: 'viewer' | 'operator' | 'admin') => { const r = me.val
 /** Newest stable Talos the factory publishes; bumps when the daemon's hourly check changes. */
 export const latestTalos = signal<string>('')
 /** Daemon facts from the hello message. */
-export const daemon = signal<{ version: string; startedAt: string; service: boolean } | null>(null)
+export const daemon = signal<{ version: string; startedAt: string; service: boolean; os?: string } | null>(null)
 export const operations = signal<Map<number, Operation>>(new Map())
 export const opEvents = signal<Map<number, Event[]>>(new Map())
 export const connected = signal(false)

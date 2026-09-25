@@ -380,7 +380,7 @@ line each) · Fleet: Inventory, Network boot · Kubit: Activity, Settings.
 | `/` Home | Is everything I run all right, what needs me? Open alerts across every cluster and lab host, Kubit notices (no accounts, PXE down while a machine is armed, off-site failing, updates available), cluster and lab host cards, machines by next step, running and recent operations. With nothing known it shows the three steps to a cluster. |
 | `/clusters/<name>/…` | One cluster: Overview (health, alerts with runbooks, cards, capacity), Nodes, Workloads · Network · Storage (read-only Kubernetes views), Add-ons (plan → review → apply), Backups (etcd snapshots, schedule, restore), **Lifecycle** (upgrades, credentials, export, forget), Settings (the declaration: form, YAML, pools, apply node configs). |
 | `/machines/<mac>` | One machine, rendered by kind: Overview · Hardware · Kubernetes · Services · Logs · Actions, tabs only where they can answer. Actions are grouped *Node* (cordon … remove) and *Machine* (remote management, VM controls, Wake-on-LAN, adopt, make lab host, retire). `/nodes/<ip>` redirects here. |
-| `/labhosts/<mac>/…` | One lab host: Overview (alerts, utilisation, System with Update/Reboot host), VMs (start, stop, resize, re-provision, delete, add), Hardware, Actions (add VMs, remote management, release). |
+| `/labhosts/<mac>/…` | One lab host: Overview (alerts, utilisation, System with Update/Reboot host), VMs (start, stop, resize, re-provision, delete, add), Actions (add VMs, remote management, release). |
 | `/fleet/inventory` | The hardware ledger: every physical machine by MAC, grouped by what happens next (Available · Needs boot · In use), with lab VMs behind a toggle. Scan, add by remote management, ISO links, bulk *Boot into Talos*. |
 | `/fleet/network-boot` | The PXE server: state and command, enrollment switch, machines that booted through it. |
 | `/operations` | Activity: Operations · Audit, filtered per cluster; `/operations/<id>` shows steps and log. |
@@ -457,7 +457,9 @@ is the last observation in which anything answered; the console shows it as "see
 Every `--service-interval` (default 4× the watch interval, 60 s) the watcher lists
 workloads, pods, claims, services and ingresses (`Manager.ServiceHealth`) and applies
 the rules in `internal/watch/services.go`. Nothing is installed in the cluster; the
-API server already knows all of this. Alerts carry the object as
+API server already knows all of this. For 10 minutes after a disruptive operation
+(create, apply, upgrade, reboot, add-on apply) the collection still refreshes what the
+console shows, but no workload alerts are derived. Alerts carry the object as
 `kind/namespace/name` and auto-resolve when the object recovers or is deleted:
 
 | alert | when | clears with |
@@ -577,7 +579,9 @@ heartbeat that stops arriving means the daemon is down — the dead-man's switch
   Activity (filtered to the cluster), a Backups card (last snapshot, schedule, off-site
   copy). Watcher freshness is "observed n s ago" in the cluster header. Info-only
   transitions stay in the events API.
-- Tables show placeholder rows while loading and an explicit empty message after.
+- Every table is the shared `DataTable` (`web/src/components/DataTable.tsx`): one row height,
+  cells vertically centred, two-line cells as a stacked name and muted detail. Tables show
+  placeholder rows while loading and an explicit empty message after.
 - **Nothing polls; everything is live.** One WebSocket (`/api/v1/ws`) carries every
   change. The store notifies on each write (`store.OnChange`) and `internal/api/live.go`
   turns that into typed messages — `cluster`, `clusterRemoved`, `machine`,
@@ -762,6 +766,58 @@ via the lab host — the `setup` step logs it. For uplinks that drop frames from
 MACs: Wi-Fi hosts, switch ports with port security, and the vfkit harness (vmnet
 filters foreign MACs, which is why `lab.sh` uses it and has `lab.sh route`).
 
+### On this Mac (vfkit)
+
+The Mac running Kubit can be a lab host too: Inventory → *+ Lab host on this Mac*
+(shown when the daemon runs on macOS and no such host exists). `GET
+/api/v1/labhosts/local` reports what the Mac can give (CPUs, memory, free disk, macOS,
+vfkit version) and what is missing, with the brew command; `POST /api/v1/labhosts
+{"driver":"vfkit", "vms":…, "cluster":…}` creates the host row synchronously (keyed by
+the hardware MAC from `networksetup`, since Go sees en0's private Wi-Fi address; IP
+`192.168.105.1`, the vmnet gateway, so the row does not move between networks) and runs
+`labhost.local`: `setup` (prerequisites, Talos ISO from the Image Factory into
+`~/.kubit/vms/boot/<version>-<schematic>/`) → `define` → `vmboot` → `cluster`, holding
+`caffeinate -i`. Needs `brew install vfkit` and vmnet-helper (see *Dev VMs*), macOS 26+.
+
+Driver seam: `labhost.Driver` (`internal/labhost/driver.go`) is what the API, the
+cluster manager and the watcher use; `Manager.LabDial` picks it from
+`LabHost.Driver` (`""` = Debian/libvirt over SSH, `vfkit` = `internal/labhost/vfkit`).
+Debian-only parts sit behind optional interfaces (`Updater`, `Router`) or `LabSSH`, so
+updates, reboot, remote management and the install notices do not exist for the Mac
+(the routes answer 409).
+
+Each VM is `~/.kubit/vms/<name>/` (`spec.json`, sparse `disk.raw`/`data.raw`,
+`efi-vars`, `console.log`, `vfkit.log`) and a launchd job
+`dev.kubit.vm.<hash of the VM directory>.<name>` (so a scratch `KUBIT_HOME` never
+touches another home's VMs) bootstrapped into `gui/<uid>` from `launchd.plist` in that directory (not
+`~/Library/LaunchAgents`, so no login-item prompts): `vmnet-run --operation-mode shared`
+(192.168.105.1–.100) → `vfkit` with EFI, virtio disk(s) and net, its REST API on the
+unix socket `rest.sock` in the VM's 0700 directory (owner only; the path must stay under
+macOS's 104-byte limit, which setup checks), and the Talos ISO as a read-only USB disk
+while the VM boots Talos. VMs outlive daemon restarts; Stop is REST `Stop` (guest
+shutdown; the operation waits up to 90 s for the VM to be off), force stop is `HardStop`
++ `bootout` and returns once vfkit is gone; spec changes are serialised per daemon; Resize applies at the next start; the disk-boot switch
+before the install drops the ISO from the job; Re-provision re-attaches it and wipes
+the disk and EFI variables at the next start. `spec.json` `run` is the desired state:
+at daemon start, VMs that should run but are not loaded (after logout or a reboot) are
+started. Addresses come from `/var/db/dhcpd_leases` by MAC. The lab cluster's MetalLB
+range and VIP follow the VM subnet (`.200–.220`, `.250`), reachable from the Mac only.
+macOS keeps `max(4 GiB, ¼ of RAM)` (`Capacity.reserveMiB`); the dialog proposes 3 GiB VMs
+and cluster `mac`. Release deletes every VM, its files and the Mac's row. `vms/` is
+left out of Kubit backups.
+
+Verified on an M4 Pro (24 GiB, macOS 27, vfkit 0.6.4, 2026-09-25): 1 control plane +
+1 worker from click to Ready with the platform applied in about 5 minutes (ISO fetch
+included), both VMs in maintenance mode 30 s after start; ingress on `192.168.105.200`
+answers from the Mac; Talos's post-install and `node reboot` reboots are kexec and keep
+the vfkit process; force stop → start boots the installed disk (Ready in 20 s); daemon
+restart leaves the VMs running; an unloaded job comes back through autostart; add VM
+with data disk (`vda`/`vdb` virtio, the ISO is a read-only USB `sda` and never an
+install candidate), re-provision and delete. **Not verified:** a firmware reboot
+(`talosctl reboot --mode powercycle`) — the VM probably stops and shows `shut off`
+until started; laptop sleep during setup; the daemon under launchd (`kubit service`)
+reaching the VM subnet through macOS Local Network privacy.
+
 ### Host metrics, alerts and updates
 
 The host itself gets the treatment nodes get. Every service interval the watcher's
@@ -818,7 +874,7 @@ the WAL is checkpointed.
 ## Backup and restore
 
 `kubit backup -o file.kubitbak` (or Settings → Download backup) writes a tar.gz of
-`~/.kubit` minus `bin/`, `cache/` and `.terraform/`, sealed with the master key
+`~/.kubit` minus `bin/`, `cache/`, `vms/` and `.terraform/`, sealed with the master key
 (AES-256-GCM; magic `KUBITBAK1`). The database's WAL is checkpointed first. Cluster
 secrets are therefore double-sealed; kubeconfig/talosconfig files and tofu state are
 sealed once. `kubit restore file` unpacks into an empty `KUBIT_HOME` (`--force` to
@@ -865,4 +921,5 @@ cert-manager add-ons.
 - [x] M18 — Identity: local accounts with viewer/operator/admin roles enforced per route, sessions and API tokens, first-admin setup, OpenID Connect sign-in with group→role mapping, audit actor, cluster `spec.auth.oidc` → API server `AuthenticationConfiguration` + admin group binding. Unit-tested end to end (fake IdP); **unverified against a real provider**
 - [~] M19 — Storage: Longhorn platform add-on on data disks (node labelling in the generator, privileged namespace, replica default from the data-disk node count, wizard/Add-ons/Storage-tab hooks). **Unverified on a cluster**
 - [x] M19 — Honest health and right-sized labs: `hub.since(0)` replays nothing and replayed messages never toast; service alerts raise after two and clear after three collections; `status.health` (`healthy` / `degraded` / `down`) drives the cluster pill; `node.memory-small` alert with runbook; 2 GiB floor for every lab VM with host-fitting defaults; `worker-undersized` lint and preflight floor when add-ons are on; MetalLB layer-2 only with resource requests on every add-on and `atomic` releases; 2 s host CPU sample. Unit-tested (hub, tracker flap, Derive, lint, tofu golden, validate); the EliteDesk lab reshaped to 1 CP + 1 worker at 2816 MiB and re-applied without FRR
+- [x] M20 — Lab host drivers: `labhost.Driver` seam (libvirt unchanged), *Lab host on this Mac* with vfkit + vmnet-helper VMs under launchd, driver-aware lab host page, per-host memory reserve. Verified end to end on this Mac (see *On this Mac*); firmware reboot, sleep during setup and the launchd-run daemon are not. Hyper-V: feasibility only, in NOTES/backlog.md. Full-stack run on this Mac (2026-09-25): three control planes (4 GiB, data disks) from the dialog to Ready with MetalLB, ingress, gVisor and metrics-server in 3 min 35 s; cert-manager and Argo CD applied from the Add-ons tab in 51 s; an Argo CD Application (podinfo from GitHub) synced and served over HTTPS through ingress with a cert-manager certificate; a gVisor pod ran; a control plane killed and restarted kept the API up on the VIP and raised and auto-resolved `talos.unreachable`. Longhorn not exercised
 - [~] M7 — tests and packaging: gofmt/vet/race tests and `hack/e2e.sh` run locally; GitHub Actions (CI, signed releases, nightly e2e lab) removed as unused. The QEMU lab script (`hack/qemu/lab.sh`) stays for a Linux KVM box, **unverified**

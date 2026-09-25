@@ -2,15 +2,14 @@ import { useState } from 'preact/hooks'
 import { useLocation } from 'preact-iso'
 import { fmt, labHostKey, type NodeRow } from '../api'
 import { connected, health, machines, operations, resyncing } from '../store'
-import { AddVMsDialog, HostAlerts, HostMetrics, HostStateNotice, HostSystem, HostVMs, ReleaseHostDialog } from '../components/LabHost'
+import { AddVMsDialog, HostAlerts, HostMetrics, HostStateNotice, HostSystem, HostVMs, MacSystem, ReleaseHostDialog } from '../components/LabHost'
 import { RemoteManagement } from '../components/RemoteManagement'
-import { HardwareTab } from './Node'
 import { Tabs } from '../components/Tabs'
 import { AlertPill, Breadcrumbs, KeyValue, Pill, Section, SeenAgo, stateTone } from '../components/ui'
-import { hostName, labOffline, labState, modelOf } from '../machine'
+import { hostName, labOffline, labState, modelOf, onMac } from '../machine'
 
-type TabId = 'overview' | 'vms' | 'hardware' | 'actions'
-const tabs: { id: TabId; label: string }[] = [{ id: 'overview', label: 'Overview' }, { id: 'vms', label: 'VMs' }, { id: 'hardware', label: 'Hardware' }, { id: 'actions', label: 'Actions' }]
+type TabId = 'overview' | 'vms' | 'actions'
+const tabs: { id: TabId; label: string }[] = [{ id: 'overview', label: 'Overview' }, { id: 'vms', label: 'VMs' }, { id: 'actions', label: 'Actions' }]
 
 /** One lab host: is it healthy, what VMs does it carry, how is it maintained. */
 export function LabHostPage({ mac, tab = 'overview' }: { mac: string; tab?: string }) {
@@ -43,7 +42,6 @@ export function LabHostPage({ mac, tab = 'overview' }: { mac: string; tab?: stri
       <div class="p-5 flex flex-col gap-4 max-w-[1300px]">
         {shown === 'overview' && <OverviewTab host={host} busy={busy} />}
         {shown === 'vms' && <><HostStateNotice host={host} /><HostVMs host={host} /></>}
-        {shown === 'hardware' && <HardwareTab inv={null} invErr={null} node={host} />}
         {shown === 'actions' && <ActionsTab host={host} />}
       </div>
     </div>
@@ -58,7 +56,7 @@ function OverviewTab({ host, busy }: { host: NodeRow; busy: boolean }) {
       <HostStateNotice host={host} />
       <HostAlerts mac={host.mac} />
       {lh.state !== 'installing' && <HostMetrics host={host} lh={lh} />}
-      {lh.state !== 'installing' && <HostSystem host={host} lh={lh} busy={busy} />}
+      {lh.state !== 'installing' && (onMac(lh) ? <MacSystem host={host} lh={lh} /> : <HostSystem host={host} lh={lh} busy={busy} />)}
       <div class="grid grid-cols-1 lg:grid-cols-2 gap-4">
         <Section title="Machine">
           <div class="panel p-3">
@@ -67,7 +65,7 @@ function OverviewTab({ host, busy }: { host: NodeRow; busy: boolean }) {
               ['Identity', <span class="mono text-[12px]">{host.mac}{host.uuid ? ` · ${host.uuid}` : ''}{host.serial ? ` · ${host.serial}` : ''}</span>],
               ['Addresses seen', <span class="mono text-[12px]">{[...new Set([...(host.ipsSeen ?? []), host.ip])].filter(Boolean).join(' → ') || '—'}</span>],
               ['Last seen', fmt.datetime(host.lastSeen)],
-              ['Network', lh.network === 'routed' ? 'routed (192.168.123.0/24)' : `bridged on ${lh.capacity.bridge || 'br0'}`],
+              ['Network', onMac(lh) ? `vmnet ${host.ip.replace(/\.\d+$/, '.0/24')}` : lh.network === 'routed' ? 'routed (192.168.123.0/24)' : `bridged on ${lh.capacity.bridge || 'br0'}`],
             ]} />
           </div>
         </Section>
@@ -76,8 +74,8 @@ function OverviewTab({ host, busy }: { host: NodeRow; busy: boolean }) {
             <KeyValue rows={[
               ['CPUs', String(lh.capacity.cpus || '—')],
               ['Memory', lh.capacity.memMiB ? fmt.bytes(lh.capacity.memMiB * 1048576) : '—'],
-              ['VM disk free', lh.metrics?.diskTotal ? `${fmt.bytes(lh.metrics.diskTotal - lh.metrics.diskUsed)} of ${fmt.bytes(lh.metrics.diskTotal)}` : lh.capacity.diskGiB ? `${lh.capacity.diskGiB} GiB` : '—'],
-              ['KVM', lh.capacity.kvm ? 'available' : lh.state === 'ready' ? 'absent' : '—'],
+              ['VM disk free', `${lh.metrics?.diskTotal ? `${fmt.bytes(lh.metrics.diskTotal - lh.metrics.diskUsed)} of ${fmt.bytes(lh.metrics.diskTotal)}` : lh.capacity.diskGiB ? `${lh.capacity.diskGiB} GiB` : '—'}${lh.disk ? ` on ${lh.disk}` : ''}`],
+              onMac(lh) ? ['Hypervisor', lh.capacity.hypervisor || '—'] : ['KVM', lh.capacity.kvm ? 'available' : lh.state === 'ready' ? 'absent' : '—'],
               ['VMs', <a class="text-accent hover:underline" href={`/labhosts/${host.mac}/vms`}>{vms.length} defined{labOffline(lh) ? '' : ` · ${vms.filter((v) => v.state === 'running').length} running`}</a>],
             ]} />
           </div>
@@ -97,9 +95,9 @@ function ActionsTab({ host }: { host: NodeRow }) {
   return (
     <div class="flex flex-col gap-3 max-w-3xl">
       <Action title="Add VMs" what={`${vms.length} VM${vms.length === 1 ? '' : 's'} defined. New VMs boot Talos in maintenance mode and appear in Inventory.`} button="Add VMs" disabled={lh.state !== 'ready' || offline} onClick={() => setAddVMs(true)} />
-      <Action title="Update or reboot the host" what="Package updates and reboots park the VMs first; both live on the Overview tab under System." button="Overview" href={`/labhosts/${host.mac}/overview`} />
-      <RemoteManagement node={host} />
-      <Action title="Release lab host" what={`Deletes every VM${members ? ` (${members} still in a cluster: remove them first)` : ''} and drops the lab-host role. Debian stays on the disk.`} button="Release" disabled={lh.state === 'installing' || lh.state === 'setup' || lh.state === 'updating' || members > 0 || offline} onClick={() => setRelease(true)} />
+      {!onMac(lh) && <Action title="Update or reboot the host" what="Package updates and reboots park the VMs first; both live on the Overview tab under System." button="Overview" href={`/labhosts/${host.mac}/overview`} />}
+      {!onMac(lh) && <RemoteManagement node={host} />}
+      <Action title="Release lab host" what={`Deletes every VM${members ? ` (${members} still in a cluster: remove them first)` : ''}${onMac(lh) ? ' and its disks, and removes this Mac from Inventory.' : ' and drops the lab-host role. Debian stays on the disk.'}`} button="Release" disabled={lh.state === 'installing' || lh.state === 'setup' || lh.state === 'updating' || members > 0 || offline} onClick={() => setRelease(true)} />
       {addVMs && <AddVMsDialog host={host} onClose={() => setAddVMs(false)} />}
       {release && <ReleaseHostDialog host={host} onClose={() => setRelease(false)} />}
     </div>

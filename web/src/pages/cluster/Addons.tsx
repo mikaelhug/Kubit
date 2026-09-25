@@ -23,7 +23,7 @@ const stateText: Record<AddonStatus['state'], string> = { disabled: 'disabled', 
 export function Addons({ ctx }: { ctx: ClusterCtx }) {
   const { route } = useLocation()
   const { name, status, cluster } = ctx
-  const [addons, setAddons] = useState<AddonStatus[]>([])
+  const [addons, setAddons] = useState<AddonStatus[] | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [edit, setEdit] = useState<AddonStatus | null>(null)
   const ops = [...operations.value.values()].filter((o) => o.cluster === name)
@@ -32,7 +32,7 @@ export function Addons({ ctx }: { ctx: ClusterCtx }) {
   const lastPlan = ops.filter((o) => o.kind === 'platform.plan' && o.status === 'done').sort((a, b) => b.id - a.id)[0]
   const planStale = lastPlan && cluster.updatedAt > lastPlan.startedAt
   const busy = ops.some((o) => o.status === 'running' && o.kind.startsWith('platform'))
-  const drift = addons.some((a) => a.state === 'pending' || a.state === 'orphaned')
+  const drift = (addons ?? []).some((a) => a.state === 'pending' || a.state === 'orphaned')
   const [pendingPlan, setPendingPlan] = useState<number | null>(null)
   const plan = () => api.platformPlan(name).then((r) => { watch(r, false); toast('Planning… the review opens when it finishes'); setPendingPlan(r.operationId) }).catch((e) => toast(e.message, 'error'))
   // The plan's completion arrives over SSE; open the review then.
@@ -59,16 +59,16 @@ export function Addons({ ctx }: { ctx: ClusterCtx }) {
         {!drift && status?.platform?.appliedAt && <Notice tone="muted">In sync with cluster.yaml; last applied {fmt.datetime(status.platform.appliedAt)}.</Notice>}
         <div class="grid grid-cols-1 lg:grid-cols-2 gap-3">
           {defs.map((d) => {
-            const a = addons.find((x) => x.key === d.key)
+            const a = addons?.find((x) => x.key === d.key)
             const link = d.link?.(ctx)
-            const st = a?.state ?? 'disabled'
+            const st = a?.state ?? (addons ? 'disabled' : null)
             return (
               <div key={d.key} class={`panel p-4 flex gap-3 ${st === 'disabled' ? 'opacity-75' : ''}`}>
-                <div class="pt-1"><StatusDot tone={stateTone[st]} pulse={st === 'deploying'} /></div>
+                <div class="pt-1"><StatusDot tone={st ? stateTone[st] : 'muted'} pulse={st === 'deploying'} /></div>
                 <div class="flex flex-col gap-1.5 min-w-0 flex-1">
                   <div class="flex items-center gap-2">
                     <span class="font-medium">{d.name}</span>
-                    <Pill tone={stateTone[st]}>{stateText[st]}</Pill>
+                    {st && <Pill tone={stateTone[st]}>{stateText[st]}</Pill>}
                     <span class="ml-auto flex gap-1">
                       {link && <a href={link} target="_blank" rel="noreferrer" class="btn !py-0.5 !px-2 text-[12px]">Open ↗</a>}
                       <button class="btn !py-0.5 !px-2 text-[12px]" disabled={!a} onClick={() => a && setEdit(a)}>Configure</button>

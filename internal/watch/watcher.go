@@ -401,8 +401,8 @@ func (w *Watcher) labTick(ctx context.Context, host *store.Machine) {
 		w.emit(tctx, key, w.labResourceEvents(tctx, host, m))
 	}
 	// The package index is refreshed hourly; it needs the network and a minute.
-	if u := host.LabHost.Updates; u == nil || staleBy(u.CheckedAt, time.Hour) {
-		if u, err := lc.CheckUpdates(tctx); err == nil {
+	if up, ok := lc.(labhost.Updater); ok && (host.LabHost.Updates == nil || staleBy(host.LabHost.Updates.CheckedAt, time.Hour)) {
+		if u, err := up.CheckUpdates(tctx); err == nil {
 			host.LabHost.Updates = &u
 			if (u.Count > 0 || u.NeedsReboot()) && time.Since(w.Store.LastEventAt(tctx, key, "labhost.updates")) > 24*time.Hour {
 				w.emit(tctx, key, []store.EventRow{{Cluster: key, Severity: "info", Kind: "labhost.updates", Message: labName(host) + ": " + updatesSummary(u)}})
@@ -475,7 +475,11 @@ func (w *Watcher) labFailed(ctx context.Context, host *store.Machine, err error)
 	})
 	host.LabHost.Failures = failures
 	if failures == labUnreachableAfter {
-		w.emit(ctx, key, []store.EventRow{{Cluster: key, Severity: "critical", Kind: "labhost.unreachable", Message: fmt.Sprintf("%s: no SSH for %d checks (%v)", labName(host), labUnreachableAfter, err)}})
+		what := "no SSH"
+		if host.LabHost.Driver != "" {
+			what = "not answering"
+		}
+		w.emit(ctx, key, []store.EventRow{{Cluster: key, Severity: "critical", Kind: "labhost.unreachable", Message: fmt.Sprintf("%s: %s for %d checks (%v)", labName(host), what, labUnreachableAfter, err)}})
 	}
 	_ = w.Store.AddSamples(ctx, key, time.Now(), []store.Sample{{Reachable: false}})
 }
@@ -580,12 +584,15 @@ func (w *Watcher) serviceTick(ctx context.Context, name string) {
 	if st := w.Latest(name); st == nil || !st.APIReachable || st.State != cluster.StateReady {
 		return
 	}
-	if last := w.Store.LastFinished(ctx, name, disruptive); time.Since(last) < quietAfterOperation {
-		return
-	}
 	sh, err := w.Manager.ServiceHealth(ctx, name)
 	if err != nil {
 		log.Printf("watch %s: services: %v", name, err)
+		return
+	}
+	w.mu.Lock()
+	w.lastServices[name] = sh
+	w.mu.Unlock()
+	if last := w.Store.LastFinished(ctx, name, disruptive); time.Since(last) < quietAfterOperation {
 		return
 	}
 	w.mu.Lock()
@@ -597,7 +604,6 @@ func (w *Watcher) serviceTick(ctx context.Context, name string) {
 		}
 		w.trackers[name] = tr
 	}
-	w.lastServices[name] = sh
 	w.mu.Unlock()
 	var ignore []string
 	if set, err := w.Store.GetSettings(ctx); err == nil {

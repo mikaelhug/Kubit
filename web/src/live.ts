@@ -66,7 +66,7 @@ function apply(m: Message) {
       connected.value = true
       attempt = 0
       reconnectAttempt.value = 0
-      if (m.hello) daemon.value = { version: m.hello.version, startedAt: m.hello.startedAt, service: m.hello.service }
+      if (m.hello) daemon.value = { version: m.hello.version, startedAt: m.hello.startedAt, service: m.hello.service, os: m.hello.os }
       // First connection, or a daemon restart (sequence went backwards): full load.
       const restarted = m.hello && m.hello.seq < lastSeq
       helloSeq = m.hello?.seq ?? 0

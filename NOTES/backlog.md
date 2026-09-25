@@ -209,3 +209,34 @@
   only, no disks or links until Debian reports them (`labTick` refresh from lsblk is
   still open above); Kubit-level events (`kubit` pseudo-cluster: test alert,
   heartbeat) are not listed anywhere in the console.
+- Lab host on this Mac (vfkit, 2026-09-25) leftovers:
+  - Firmware reboot (`talosctl reboot --mode powercycle`) is unverified; Virtualization.framework
+    likely stops the VM (vfkit exits 0, same as a guest shutdown), so it shows `shut off`
+    until started. If that bites (Talos upgrades without kexec), restart VMs whose
+    `spec.json` has `run: true` from the watcher tick, not only at daemon start.
+  - `caffeinate -i` covers `labhost.local` only; the nested `cluster.create` can still be
+    interrupted by a lid-close sleep. Laptop sleep during setup is untested.
+  - The daemon under launchd (`kubit service install`) reaching 192.168.105.x is untested
+    (macOS Local Network privacy; see the 2026-09-19 EHOSTUNREACH entry).
+  - Memory alert on a Mac: `vm_stat` used (active + wired + compressed) sat at 75 % with
+    6 GiB of VMs on a 24 GiB machine; `labhost.memory-pressure` (92 %) may be noisy on a
+    busy desktop. Consider macOS's memory-pressure level instead.
+  - VM disk % on APFS is the whole container (total − available), not the VM files.
+  - Old Talos ISOs under `~/.kubit/vms/boot/` are never pruned; the serial console is
+    empty (arm64 ISO logs to ttyAMA0); Intel Macs untested (amd64 path exists).
+  - Runbook text for `labhost.unreachable` and the Home empty state still speak of SSH/Debian.
+  - README Endpoints list is stale (machines, oob, labhost, labhosts routes missing).
+  - `vfkit.download` repeats `internal/pxe/assets.go`'s `.part`/size/rename rules; share
+    one exported helper if either changes.
+- Hyper-V lab host (feasibility, no Windows machine yet): fits the `labhost.Driver` seam.
+  Kubit stays on macOS/Linux and drives Windows over its built-in OpenSSH server with
+  `powershell -EncodedCommand` returning JSON (Kubit's ed25519 key in
+  `administrators_authorized_keys`). Gen 2 VMs, Secure Boot off, static memory, the
+  factory ISO on a DVD (downloaded by the host with `curl.exe`), `SetDiskBoot` via
+  `Set-VMFirmware -FirstBootDevice`, static MACs from `labhost.MAC`, no `Updater`.
+  Networking: an External vSwitch on Ethernet (internal switches have no DHCP; Wi-Fi
+  bridging is unreliable). Talos has no KVP daemon, so addresses come from the existing
+  subnet scan by MAC. Blockers: `designDisks` and the web `installCandidates` pin
+  `/dev/vda`, but Hyper-V SCSI disks are `sda`/`sdb`; needs Windows Pro/Server.
+
+- Web copy: `Scanning…` (create wizard scan button) and `linting…` (review checks) still carry ellipses; Inventory already uses `Scanning`.

@@ -8,7 +8,7 @@ export interface Step { id: string; title: string; status: StepStatus; node?: st
 export interface Event { time: string; clock?: string; kind?: 'log' | 'steps' | 'step'; level: Level; step: string; node?: string; message: string; steps?: Step[]; status?: StepStatus }
 export type OpStatus = 'running' | 'done' | 'failed' | 'cancelled'
 export interface Operation { id: number; cluster: string; kind: string; status: OpStatus; log?: string; startedAt: string; finishedAt?: string; steps: Step[]; artifact?: unknown; request?: unknown }
-export interface Message { seq?: number; kind: 'hello' | 'resync' | 'event' | 'operation' | 'status' | 'health' | 'refresh' | 'cluster' | 'clusterRemoved' | 'machine' | 'machineRemoved' | 'snapshot' | 'snapshotRemoved' | 'audit' | 'settings' | 'healthAck' | 'healthResolved' | 'versions' | 'hostSample' | 'observer'; observer?: ObserverState; operationId?: number; event?: Event; operation?: Operation; cluster?: string; status?: Status; health?: HealthEvent; scope?: string; clusterRow?: ClusterRow; machine?: NodeRow; snapshot?: Snapshot; audit?: AuditEntry; settings?: Settings; sample?: Sample; key?: string; node?: string; hello?: { seq: number; version: string; startedAt: string; service: boolean; pid: number } }
+export interface Message { seq?: number; kind: 'hello' | 'resync' | 'event' | 'operation' | 'status' | 'health' | 'refresh' | 'cluster' | 'clusterRemoved' | 'machine' | 'machineRemoved' | 'snapshot' | 'snapshotRemoved' | 'audit' | 'settings' | 'healthAck' | 'healthResolved' | 'versions' | 'hostSample' | 'observer'; observer?: ObserverState; operationId?: number; event?: Event; operation?: Operation; cluster?: string; status?: Status; health?: HealthEvent; scope?: string; clusterRow?: ClusterRow; machine?: NodeRow; snapshot?: Snapshot; audit?: AuditEntry; settings?: Settings; sample?: Sample; key?: string; node?: string; hello?: { seq: number; version: string; startedAt: string; service: boolean; pid: number; os?: string } }
 /** Kubit's own ability to observe: network reach and observation gaps (host asleep). */
 export interface ObserverState { online: boolean; since?: string; error?: string; gaps24h: number; lastGapAt?: string }
 export const kubitKey = 'kubit'
@@ -89,14 +89,15 @@ export interface OOBConfig { type: '' | 'amt' | 'redfish'; host: string; user: s
 export const oobLabel = (t?: string) => t === 'amt' ? 'Intel AMT' : t === 'redfish' ? 'BMC (Redfish)' : 'remote management'
 export interface OOBInfo { version: string; mac: string; uuid?: string; manufacturer?: string; model?: string; serial?: string; power: string; cpus?: number; memoryBytes?: number; disks?: { model?: string; sizeBytes: number; transport?: string; media?: string }[] }
 export interface LabVM { name: string; mac: string; state: string; cpus: number; memMiB: number; diskGiB: number; dataGiB?: number; boot: 'talos' | 'disk'; ip?: string }
-export interface LabCapacity { cpus: number; memMiB: number; diskGiB: number; kvm: boolean; kernel: string; libvirt: string; hostname: string; arch: string; bridge: string; ready: boolean; checkedAt: string }
+export interface LabCapacity { cpus: number; memMiB: number; diskGiB: number; kvm: boolean; kernel: string; libvirt: string; hostname: string; arch: string; bridge: string; ready: boolean; checkedAt: string; model?: string; os?: string; hypervisor?: string; reserveMiB?: number; problem?: string; command?: string }
+export interface LabLocal { supported: boolean; problem?: string; command?: string; capacity?: LabCapacity; subnet?: string; host?: string }
 export interface LabMetrics { load1: number; cpuPct: number; memUsed: number; memTotal: number; diskUsed: number; diskTotal: number; vmsRunning: number; uptimeSec: number; at: string }
 export interface LabUpdates { count: number; security: number; rebootRequired: boolean; kernelRunning: string; kernelInstalled: string; release: string; unattended: boolean; checkedAt: string }
 export interface VMSize { name?: string; role: 'controlplane' | 'worker'; cpus: number; memMiB: number; diskGiB: number; dataGiB: number }
 export interface VMPlan { each: VMSize[]; prefix?: string }
 export interface LabBootLine { kernel: string; initrd: string; cmdline: string }
 export interface LabInstall { stage: 'installer' | 'partitioning' | 'packages' | 'late-done' | 'booted' | string; at: string }
-export interface LabHost { state: 'installing' | 'setup' | 'ready' | 'updating' | 'error'; error?: string; capacity: LabCapacity; talos?: string; /** null from the daemon while installing; readers use vmsOf */ vms: LabVM[] | null; metrics?: LabMetrics; updates?: LabUpdates; install?: LabInstall; network?: 'bridge' | 'routed'; disk?: string; boot?: LabBootLine; failures?: number; updatedAt: string }
+export interface LabHost { state: 'installing' | 'setup' | 'ready' | 'updating' | 'error'; error?: string; capacity: LabCapacity; talos?: string; /** null from the daemon while installing; readers use vmsOf */ vms: LabVM[] | null; metrics?: LabMetrics; updates?: LabUpdates; install?: LabInstall; network?: 'bridge' | 'routed'; disk?: string; boot?: LabBootLine; failures?: number; driver?: 'libvirt' | 'vfkit'; iso?: string; updatedAt: string }
 export function vmsOf(lh?: LabHost | null): LabVM[] { return lh?.vms ?? [] }
 /** Samples and events of a lab host are filed under this pseudo-cluster. */
 export function labHostKey(mac: string) { return `labhost:${mac.toLowerCase()}` }
@@ -197,6 +198,8 @@ export const api = {
   addOOBMachine: (c: OOBConfig) => req<{ machine: NodeRow; info: OOBInfo }>('POST', '/machines/oob', c),
   labProvision: (mac: string, plan?: { manual?: boolean; network?: 'bridge' | 'routed'; disk?: string; vms?: VMPlan; cluster?: { name: string; controlPlanes: 1 | 3; skipPlatform?: boolean } }) => req<OpRef>('POST', `/machines/${mac}/labhost`, plan ?? {}),
   labRelease: (mac: string) => req<void>('DELETE', `/machines/${mac}/labhost`),
+  labLocal: () => req<LabLocal>('GET', '/labhosts/local'),
+  labLocalCreate: (plan: { vms?: VMPlan; cluster?: { name: string; controlPlanes: 1 | 3; skipPlatform?: boolean } }) => req<OpRef & { mac: string }>('POST', '/labhosts', { driver: 'vfkit', ...plan }),
   addMachine: (r: { mac: string; ip?: string; hostname?: string; arch?: string }) => req<NodeRow>('POST', '/machines', r),
   labSamples: (mac: string, range: string) => req<Sample[]>('GET', `/machines/${mac}/labhost/samples?range=${range}`),
   labCheck: (mac: string) => req<LabUpdates>('POST', `/machines/${mac}/labhost/check`),
@@ -333,7 +336,7 @@ export const fmt = {
       'cluster.create': 'Create cluster', 'cluster.apply': 'Apply cluster.yaml', 'platform.plan': 'Plan add-ons', 'platform.apply': 'Apply add-ons',
       'upgrade.talos': 'Upgrade Talos', 'upgrade.kubernetes': 'Upgrade Kubernetes', 'node.add': 'Add node', 'node.remove': 'Remove node', discover: 'Discover nodes',
       'node.cordon': 'Cordon node', 'node.uncordon': 'Uncordon node', 'node.drain': 'Drain node', 'node.reboot': 'Reboot node', 'node.upgrade': 'Upgrade node',
-      'node.rename': 'Rename node', 'node.pool': 'Move node to pool', 'node.readdress': 'Re-address node', 'machine.power': 'Remote power action', 'kubit.backup': 'Kubit backup off-site', 'labhost.provision': 'Install lab host', 'labhost.cluster': 'Lab cluster', 'labhost.vms': 'Add lab VMs', 'labhost.vm.start': 'Start VM', 'labhost.vm.stop': 'Stop VM', 'labhost.vm.kill': 'Force-stop VM', 'labhost.vm.reprovision': 'Re-provision VM', 'labhost.update': 'Update lab host', 'labhost.reboot': 'Reboot lab host',
+      'node.rename': 'Rename node', 'node.pool': 'Move node to pool', 'node.readdress': 'Re-address node', 'machine.power': 'Remote power action', 'kubit.backup': 'Kubit backup off-site', 'labhost.provision': 'Install lab host', 'labhost.local': 'Lab host on this Mac', 'labhost.cluster': 'Lab cluster', 'labhost.vms': 'Add lab VMs', 'labhost.vm.start': 'Start VM', 'labhost.vm.stop': 'Stop VM', 'labhost.vm.kill': 'Force-stop VM', 'labhost.vm.reprovision': 'Re-provision VM', 'labhost.update': 'Update lab host', 'labhost.reboot': 'Reboot lab host',
       'etcd.snapshot': 'etcd snapshot', 'etcd.restore': 'Restore etcd from snapshot', 'cert.rotate': 'Rotate credential',
     } as Record<string, string>)[kind] || kind
   },

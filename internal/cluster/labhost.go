@@ -9,16 +9,35 @@ import (
 	"github.com/mikael/kubit/internal/store"
 )
 
-// LabDial opens SSH to a lab host by its machine row (address = the row's IP).
-func (m *Manager) LabDial(ctx context.Context, host *store.Machine) (*labhost.Client, error) {
+// LabSSH opens SSH to a Debian lab host by its machine row (address = the row's IP).
+func (m *Manager) LabSSH(ctx context.Context, host *store.Machine) (*labhost.Client, error) {
 	if host.LabHost == nil {
 		return nil, fmt.Errorf("%s is not a lab host", host.MAC)
+	}
+	if d := host.LabHost.Driver; d != "" && d != labhost.DriverLibvirt {
+		return nil, fmt.Errorf("%s is not a Debian lab host", host.MAC)
 	}
 	priv, _, err := m.Store.SSHKey(ctx)
 	if err != nil {
 		return nil, err
 	}
 	return labhost.Dial(ctx, host.IP, priv)
+}
+
+func (m *Manager) LabDial(ctx context.Context, host *store.Machine) (labhost.Driver, error) {
+	if host.LabHost == nil {
+		return nil, fmt.Errorf("%s is not a lab host", host.MAC)
+	}
+	switch host.LabHost.Driver {
+	case "", labhost.DriverLibvirt:
+		return m.LabSSH(ctx, host)
+	case labhost.DriverVFKit:
+		if m.Local == nil {
+			return nil, fmt.Errorf("VMs on this machine are not supported here")
+		}
+		return m.Local()
+	}
+	return nil, fmt.Errorf("unknown lab host driver %q", host.LabHost.Driver)
 }
 
 // LabVMName is the VM's libvirt name for a machine row (kept in the hostname column

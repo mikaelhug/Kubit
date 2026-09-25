@@ -38,9 +38,13 @@ func (s *Server) handleLabCheck(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "not a lab host", http.StatusNotFound)
 		return
 	}
+	if host.LabHost.Driver != "" {
+		http.Error(w, "Not available on this lab host.", http.StatusConflict)
+		return
+	}
 	ctx, cancel := context.WithTimeout(r.Context(), 3*time.Minute)
 	defer cancel()
-	lc, err := s.manager.LabDial(ctx, host)
+	lc, err := s.manager.LabSSH(ctx, host)
 	if err != nil {
 		writeErr(w, err)
 		return
@@ -76,6 +80,10 @@ func (s *Server) handleLabMaintain(upgrade bool) http.HandlerFunc {
 		host, err := s.store.GetMachine(r.Context(), strings.ToLower(r.PathValue("mac")))
 		if err != nil || host.LabHost == nil {
 			http.Error(w, "not a lab host", http.StatusNotFound)
+			return
+		}
+		if host.LabHost.Driver != "" {
+			http.Error(w, "Not available on this lab host.", http.StatusConflict)
 			return
 		}
 		if host.LabHost.State != "ready" {
@@ -148,7 +156,7 @@ func (s *Server) labMaintain(ctx context.Context, host *store.Machine, upgrade b
 		setState(rctx, "ready")
 	}()
 
-	lc, err := s.manager.LabDial(ctx, host)
+	lc, err := s.manager.LabSSH(ctx, host)
 	if err != nil {
 		return err
 	}
@@ -297,7 +305,7 @@ func (s *Server) labWaitSSH(ctx context.Context, host *store.Machine, timeout ti
 		d := net.Dialer{Timeout: 2 * time.Second}
 		if conn, err := d.DialContext(ctx, "tcp", net.JoinHostPort(host.IP, "22")); err == nil {
 			conn.Close()
-			if lc, err := s.manager.LabDial(ctx, host); err == nil {
+			if lc, err := s.manager.LabSSH(ctx, host); err == nil {
 				if _, err := lc.Run(ctx, "test -f /var/lib/kubit/READY"); err == nil {
 					return lc, nil
 				}

@@ -189,37 +189,27 @@ function OverviewTab({ inv, invErr, k8s, k8sErr, node, spec }: { inv: Inventory 
   )
 }
 
-export function HardwareTab({ inv: live, invErr, node }: { inv: Inventory | null; invErr: string | null; node: NodeRow | null }) {
+function HardwareTab({ inv: live, invErr, node }: { inv: Inventory | null; invErr: string | null; node: NodeRow | null }) {
   if (!node) return <div class="text-muted">Loading…</div>
-  const lh = node.labhost
-  const inv: Inventory | null = live ?? node.inventory ?? (lh ? { ip: node.ip, cpus: lh.capacity.cpus, memoryBytes: lh.capacity.memMiB * 1048576, kvm: lh.capacity.kvm, arch: lh.capacity.arch || node.arch, talosVersion: '', platform: '', stage: '', disks: [], links: [] } : null)
+  const inv: Inventory | null = live ?? node.inventory ?? null
   const stored = !live && !!node.inventory
   if (node.talos && !inv && !invErr) return <div class="text-muted">Loading…</div>
   const note = invErr ? `${invErr} Showing what was recorded ${fmt.when(node.lastSeen)}.`
-    : lh ? (node.inventory ? 'Recorded before the Debian install; capacity is read from the host.' : 'No Talos scan on record; capacity is read from the host.')
     : stored && inv?.disks.some((d) => !d.devPath) ? `Reported by the ${node.oobType === 'redfish' ? 'BMC' : 'management engine'}; device names arrive when the machine boots Talos.`
     : stored ? `Recorded ${fmt.when(node.lastSeen)}; the machine is not running Talos now.`
     : ''
-  if (!inv || (!inv.cpus && inv.disks.length === 0 && !lh)) {
+  if (!inv || (!inv.cpus && inv.disks.length === 0)) {
     return <Notice tone="muted">{inv ? `${modelOf(node)}. ` : ''}Hardware details arrive when the machine boots Talos.</Notice>
   }
   return (
     <div class="flex flex-col gap-5">
       {note && <Notice tone={invErr ? 'bad' : 'muted'}>{note}</Notice>}
-      {lh && (
-        <div class="grid grid-cols-2 lg:grid-cols-4 gap-4">
-          <Stat label="CPUs" value={String(lh.capacity.cpus || inv.cpus)} sub={lh.capacity.arch || inv.arch} />
-          <Stat label="Memory" value={lh.capacity.memMiB ? fmt.bytes(lh.capacity.memMiB * 1048576) : fmt.bytes(inv.memoryBytes)} />
-          <Stat label="KVM" value={lh.capacity.kvm ? 'available' : lh.state === 'ready' ? 'absent' : '—'} sub="for the VMs" />
-          <Stat label="VM disk free" value={lh.metrics?.diskTotal ? fmt.bytes(lh.metrics.diskTotal - lh.metrics.diskUsed) : lh.capacity.diskGiB ? `${lh.capacity.diskGiB} GiB` : '—'} sub={lh.disk ? `on ${lh.disk}` : undefined} />
-        </div>
-      )}
-      {!lh && <div class="grid grid-cols-2 lg:grid-cols-4 gap-4">
+      <div class="grid grid-cols-2 lg:grid-cols-4 gap-4">
         <Stat label="CPUs" value={String(inv.cpus)} sub={inv.arch} />
         <Stat label="Memory" value={fmt.bytes(inv.memoryBytes)} />
         <Stat label="KVM" value={inv.kvm ? 'available' : 'absent'} sub={inv.kvm ? 'runsc-kvm eligible' : 'gVisor uses systrap'} />
         <Stat label="Disks" value={String(inv.disks.length)} sub={fmt.bytes(inv.disks.reduce((a, d) => a + d.sizeBytes, 0)) + ' total'} />
-      </div>}
+      </div>
       <Section title="Disks">
         <DataTable search={false} columns={[
           { id: 'dev', header: 'Device', mono: true, sort: (d) => d.devPath, cell: (d) => d.devPath || <span class="text-muted">—</span> },

@@ -48,6 +48,7 @@ type Hello struct {
 	StartedAt string `json:"startedAt"`
 	Service   bool   `json:"service"`
 	PID       int    `json:"pid"`
+	OS        string `json:"os"`
 }
 
 // refresh tells connected consoles that a view of a cluster ("" = Kubit-wide) is

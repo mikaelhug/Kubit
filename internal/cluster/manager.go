@@ -9,6 +9,8 @@ import (
 	"github.com/mikael/kubit/internal/config"
 	"github.com/mikael/kubit/internal/factory"
 	"github.com/mikael/kubit/internal/k8s"
+	"github.com/mikael/kubit/internal/labhost"
+	"github.com/mikael/kubit/internal/labhost/vfkit"
 	"github.com/mikael/kubit/internal/store"
 	"github.com/siderolabs/talos/pkg/machinery/config/generate/secrets"
 )
@@ -44,11 +46,12 @@ type Manager struct {
 	Factory  *factory.Client
 	Timeouts Timeouts
 	// Home is $KUBIT_HOME; per-cluster files live under Home/clusters/<name>.
-	Home string
+	Home  string
+	Local func() (labhost.Driver, error)
 }
 
 func NewManager(s *store.Store, home string) *Manager {
-	return &Manager{Store: s, Factory: factory.New(), Timeouts: DefaultTimeouts, Home: home}
+	return &Manager{Store: s, Factory: factory.New(), Timeouts: DefaultTimeouts, Home: home, Local: func() (labhost.Driver, error) { return vfkit.New(home) }}
 }
 
 // EnsureSchematic resolves the cluster schematic and one per pool that declares its
