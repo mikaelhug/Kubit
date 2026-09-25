@@ -4,6 +4,7 @@ import { machineList, operations, settings, toast, watch } from '../../store'
 import { Field, Notice } from '../../components/ui'
 import { Tabs } from '../../components/Tabs'
 import { PoolsEditor } from '../../components/PoolsEditor'
+import { DataTable, type Column } from '../../components/DataTable'
 import type { Draft } from './NewCluster'
 import { addrOf, guessGateway, inRange, ip4, parseRange, prefixOf, sameSubnet } from './net'
 import { ageSec } from '../../clock'
@@ -45,6 +46,29 @@ export function MachinesStep({ draft, patch, setError }: { draft: Draft; patch: 
   const scanning = [...operations.value.values()].some((o) => o.kind === 'discover' && o.status === 'running')
   const toggle = (mac: string) => patch({ selected: draft.selected.includes(mac) ? draft.selected.filter((x) => x !== mac) : [...draft.selected, mac] })
   const chosen = draft.machines.filter((m) => draft.selected.includes(m.mac))
+  const machineCols: Column<{ m: NodeRow; stale: boolean }>[] = [
+    { id: 'pick', header: <input type="checkbox" checked={draft.machines.length > 0 && chosen.length === draft.machines.length} onChange={(e) => patch({ selected: (e.target as HTMLInputElement).checked ? draft.machines.map((m) => m.mac) : [] })} aria-label="Select all" />, width: '2rem', cell: ({ m, stale }) => stale ? <input type="checkbox" disabled /> : <input type="checkbox" class="pointer-events-none" checked={draft.selected.includes(m.mac)} readOnly /> },
+    { id: 'machine', header: 'Machine', cell: ({ m, stale }) => (
+      <span class="flex flex-col min-w-0">
+        <span class="flex items-center gap-2"><span class="font-medium">{modelOf(m)}</span>{!stale && <TypePill m={m} />}</span>
+        <span class="text-[10px] text-muted mono">{stale ? m.mac : `${m.serial ? `${m.serial} · ` : ''}${m.mac} · Talos ${m.talosVersion}`}</span>
+      </span>
+    ) },
+    { id: 'ip', header: 'Address', mono: true, cell: ({ m }) => m.ip },
+    { id: 'resources', header: 'Resources', cell: ({ m, stale }) => stale ? null : (
+      <span class="flex flex-col num">
+        <span>{m.arch} · {m.inventory?.cpus ?? '?'} CPU · {fmt.bytes(m.inventory?.memoryBytes ?? 0)}{m.inventory?.kvm && <span class="text-[10px] text-muted"> · kvm</span>}</span>
+        <span class="text-[10px] text-muted">{m.inventory?.links?.length ?? 0} NIC{(m.inventory?.links?.length ?? 0) === 1 ? '' : 's'}, {m.inventory?.links?.filter((l) => l.up).length ?? 0} up</span>
+      </span>
+    ) },
+    { id: 'disk', header: 'Install disk', mono: true, cell: ({ m, stale }) => { if (stale) return null; const disks = installCandidates(m); return disks[0] ? (
+      <span class="flex flex-col">
+        <span>{disks[0].devPath} {fmt.bytes(disks[0].sizeBytes)}</span>
+        <span class="text-[10px] text-muted">{disks[0].transport ?? ''}{disks[0].rotational && disks[0].transport !== 'virtio' ? ' hdd' : ''}{disks.length > 1 ? ` +${disks.length - 1} more` : ''}</span>
+      </span>
+    ) : <span class="text-bad">none</span> } },
+    { id: 'notes', header: 'Notes', wrap: true, cell: ({ m, stale }) => { if (stale) return <span class="text-[12px] text-muted">not answering, last seen {fmt.when(m.lastSeen)}</span>; const warns = machineWarnings(m, chosen.length ? chosen : draft.machines); return warns.length ? <span class="text-warn text-[12px]">{warns.join('; ')}</span> : <span class="text-muted">—</span> } },
+  ]
   return (
     <>
       <div class="panel p-3 flex flex-col gap-3">
@@ -54,36 +78,9 @@ export function MachinesStep({ draft, patch, setError }: { draft: Draft; patch: 
           <button class="btn shrink-0" disabled={scanning || !targets.trim()} onClick={() => api.discover(targets.split(/[,\s]+/).filter(Boolean)).then((r) => watch(r, false)).catch((e) => setError(e.message))}>{scanning ? 'Scanning…' : 'Scan'}</button>
         </div>
       </div>
-      <div class="panel">
-        <table class="data wrap">
-          <thead><tr><th class="pl-4 w-8"><input type="checkbox" checked={draft.machines.length > 0 && chosen.length === draft.machines.length} onChange={(e) => patch({ selected: (e.target as HTMLInputElement).checked ? draft.machines.map((m) => m.mac) : [] })} aria-label="Select all" /></th><th>Machine</th><th>Address</th><th>Resources</th><th>Install disk</th><th>Notes</th></tr></thead>
-          <tbody>
-            {draft.machines.length === 0 && <tr><td colSpan={6} class="pl-4 text-muted py-3">{scanning ? 'Scanning…' : 'No machines in maintenance mode right now. Boot one from a Talos ISO and scan its subnet.'}</td></tr>}
-            {draft.machines.map((m) => {
-              const disks = installCandidates(m)
-              const warns = machineWarnings(m, chosen.length ? chosen : draft.machines)
-              return (
-                <tr key={m.mac} class="cursor-pointer" onClick={() => toggle(m.mac)}>
-                  <td class="pl-4"><input type="checkbox" class="pointer-events-none" checked={draft.selected.includes(m.mac)} readOnly /></td>
-                  <td><span class="flex items-center gap-2 flex-wrap"><span class="font-medium">{modelOf(m)}</span><TypePill m={m} /></span><span class="block text-[11px] text-muted mono break-all">{m.serial ? `${m.serial} · ` : ''}{m.mac} · Talos {m.talosVersion}</span></td>
-                  <td class="mono">{m.ip}</td>
-                  <td class="num whitespace-nowrap">{m.arch} · {m.inventory?.cpus ?? '?'} CPU · {fmt.bytes(m.inventory?.memoryBytes ?? 0)}{m.inventory?.kvm && <span class="text-[10px] text-muted"> · kvm</span>}<span class="block text-[10px] text-muted">{m.inventory?.links?.length ?? 0} NIC{(m.inventory?.links?.length ?? 0) === 1 ? '' : 's'}, {m.inventory?.links?.filter((l) => l.up).length ?? 0} up</span></td>
-                  <td class="mono whitespace-nowrap">{disks[0] ? <>{disks[0].devPath} {fmt.bytes(disks[0].sizeBytes)}<span class="block text-[10px] text-muted">{disks[0].transport ?? ''}{disks[0].rotational && disks[0].transport !== 'virtio' ? ' hdd' : ''}{disks.length > 1 ? ` +${disks.length - 1} more` : ''}</span></> : <span class="text-bad">none</span>}</td>
-                  <td>{warns.length ? <span class="text-warn text-[12px]">{warns.join('; ')}</span> : <span class="text-muted">—</span>}</td>
-                </tr>
-              )
-            })}
-            {stale.map((m) => (
-              <tr key={m.mac} class="opacity-50">
-                <td class="pl-4"><input type="checkbox" disabled /></td>
-                <td><span class="font-medium">{modelOf(m)}</span><span class="block text-[11px] text-muted mono">{m.mac}</span></td>
-                <td class="mono">{m.ip}</td>
-                <td colSpan={3} class="text-[12px] text-muted">not answering — last seen {fmt.when(m.lastSeen)}</td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
+      <DataTable search={false} columns={machineCols} rows={[...draft.machines.map((m) => ({ m, stale: false })), ...stale.map((m) => ({ m, stale: true }))]} rowKey={(r) => r.m.mac}
+        onRowClick={(r) => { if (!r.stale) toggle(r.m.mac) }} rowClass={(r) => (r.stale ? 'opacity-50 !cursor-default' : '')}
+        empty={scanning ? 'Scanning' : 'No machines in maintenance mode right now. Boot one from a Talos ISO and scan its subnet.'} />
       <HiddenMachinesNote />
       <div class="flex items-end gap-3">
         <Field label="Cluster name" hint="DNS label; prefixes hostnames and names the kubeconfig context.">
@@ -133,6 +130,43 @@ export function DesignStep({ draft, setCluster, reset, busy }: { draft: Draft; s
   const spare = c.spec.nodes.reduce((s, n) => s + dataCandidates(machineOf(draft, n), n.installDisk?.path).length, 0)
   const claimed = c.spec.nodes.reduce((s, n) => s + (n.dataDisks?.length ?? 0), 0)
   const allData = (on: boolean) => setCluster((c) => ({ ...c, spec: { ...c.spec, nodes: c.spec.nodes.map((n) => ({ ...n, dataDisks: on ? dataCandidates(machineOf(draft, n), n.installDisk?.path).map((d) => d.devPath) : undefined })) } }))
+  const designCols: Column<number>[] = [
+    { id: 'machine', header: 'Machine', cell: (i) => { const n = c.spec.nodes[i]; const m = machineOf(draft, n); return (
+      <span class="flex flex-col">
+        <span class="flex items-center gap-2"><span class="font-medium">{modelOf(m)}</span><TypePill m={m} /></span>
+        <span class="text-[10px] text-muted mono">{n.ip} · {n.mac} · {m?.inventory?.cpus ?? '?'} CPU · {fmt.bytes(m?.inventory?.memoryBytes ?? 0)}{n.kvm ? ' · kvm' : ''}</span>
+      </span>
+    ) } },
+    { id: 'pool', header: 'Pool', cell: (i) => (
+      <select class="input !py-1" value={c.spec.nodes[i].pool} onChange={(e) => { const p = poolOf((e.target as HTMLSelectElement).value)!; updateNode(i, { pool: p.name, role: p.role }) }}>
+        {pools.map((p) => <option key={p.name} value={p.name}>{p.name}{p.role === 'controlplane' ? ' (control plane)' : ''}</option>)}
+      </select>
+    ) },
+    { id: 'hostname', header: 'Hostname', cell: (i) => <input class="input !py-1 mono w-48" value={c.spec.nodes[i].hostname} onInput={(e) => updateNode(i, { hostname: (e.target as HTMLInputElement).value })} /> },
+    { id: 'install', header: 'Install disk', cell: (i) => { const n = c.spec.nodes[i]; const disks = installCandidates(machineOf(draft, n)); return (
+      <select class="input !py-1 mono" value={n.installDisk?.path ?? ''} onChange={(e) => { const v = (e.target as HTMLSelectElement).value; updateNode(i, { installDisk: v ? { path: v } : undefined, dataDisks: (n.dataDisks ?? []).filter((d) => d !== v).length ? (n.dataDisks ?? []).filter((d) => d !== v) : undefined }) }}>
+        {poolOf(n.pool)?.installDisk && <option value="">pool policy</option>}
+        {disks.map((d) => <option key={d.devPath} value={d.devPath}>{d.devPath} · {fmt.bytes(d.sizeBytes)}{d.model ? ` · ${d.model}` : ''}{d.transport ? ` · ${d.transport}` : ''}</option>)}
+        {disks.length === 0 && <option value="">no disk</option>}
+      </select>
+    ) } },
+    { id: 'data', header: <>Data disks{spare > 0 && <button class="btn !py-0 !px-1.5 text-[11px] ml-2 font-normal" onClick={() => allData(claimed < spare)}>{claimed < spare ? 'Use all' : 'None'}</button>}</>, cell: (i) => {
+      const n = c.spec.nodes[i]
+      const data = dataCandidates(machineOf(draft, n), n.installDisk?.path)
+      const toggle = (path: string, on: boolean) => {
+        const cur = (n.dataDisks ?? []).filter((d) => d !== path)
+        const next = on ? data.map((d) => d.devPath).filter((d) => d === path || cur.includes(d)) : cur
+        updateNode(i, { dataDisks: next.length ? next : undefined })
+      }
+      return (
+        <span class="flex flex-col mono text-[12px]">
+          {data.length === 0 && <span class="text-muted">—</span>}
+          {data.map((d) => <label key={d.devPath} class="flex items-center gap-1.5"><input type="checkbox" checked={n.dataDisks?.includes(d.devPath) ?? false} onChange={(e) => toggle(d.devPath, (e.target as HTMLInputElement).checked)} />{d.devPath} <span class="text-muted">{fmt.bytes(d.sizeBytes)}{d.model ? ` · ${d.model}` : ''}</span></label>)}
+        </span>
+      )
+    } },
+    { id: 'labels', header: 'Node labels', cell: (i) => { const n = c.spec.nodes[i]; return <span class="text-[12px] text-muted mono">{Object.entries({ ...(poolOf(n.pool)?.labels ?? {}), ...(n.labels ?? {}) }).map(([k, v]) => `${k}=${v}`).join(' ') || '—'}</span> } },
+  ]
   return (
     <>
       <div class="panel p-3 flex flex-col gap-1">
@@ -146,46 +180,7 @@ export function DesignStep({ draft, setCluster, reset, busy }: { draft: Draft; s
         </div>
         <p class="text-[13px] text-muted">Proposed roles: bare metal first for the control plane, KVM-capable machines as workers. Change any cell. Data disks are wiped and mounted at <span class="mono">/var/mnt/data-N</span>.</p>
       </div>
-      <div class="panel scroll-x">
-        <table class="data">
-          <thead><tr><th class="pl-4">Machine</th><th>Pool</th><th>Hostname</th><th>Install disk</th><th>Data disks{spare > 0 && <button class="btn !py-0 !px-1.5 text-[11px] ml-2 font-normal" onClick={() => allData(claimed < spare)}>{claimed < spare ? 'Use all' : 'None'}</button>}</th><th>Node labels</th></tr></thead>
-          <tbody>
-            {c.spec.nodes.map((n, i) => {
-              const m = machineOf(draft, n)
-              const disks = installCandidates(m)
-              const data = dataCandidates(m, n.installDisk?.path)
-              const toggle = (path: string, on: boolean) => {
-                const cur = (n.dataDisks ?? []).filter((d) => d !== path)
-                const next = on ? data.map((d) => d.devPath).filter((d) => d === path || cur.includes(d)) : cur
-                updateNode(i, { dataDisks: next.length ? next : undefined })
-              }
-              return (
-                <tr key={n.mac ?? n.ip}>
-                  <td class="pl-4 whitespace-nowrap"><span class="flex items-center gap-2"><span class="font-medium">{modelOf(m)}</span><TypePill m={m} /></span><span class="text-[11px] text-muted mono">{n.ip} · {n.mac} · {m?.inventory?.cpus ?? '?'} CPU · {fmt.bytes(m?.inventory?.memoryBytes ?? 0)}{n.kvm ? ' · kvm' : ''}</span></td>
-                  <td>
-                    <select class="input !py-1" value={n.pool} onChange={(e) => { const p = poolOf((e.target as HTMLSelectElement).value)!; updateNode(i, { pool: p.name, role: p.role }) }}>
-                      {pools.map((p) => <option key={p.name} value={p.name}>{p.name}{p.role === 'controlplane' ? ' (control plane)' : ''}</option>)}
-                    </select>
-                  </td>
-                  <td><input class="input !py-1 mono w-48" value={n.hostname} onInput={(e) => updateNode(i, { hostname: (e.target as HTMLInputElement).value })} /></td>
-                  <td>
-                    <select class="input !py-1 mono" value={n.installDisk?.path ?? ''} onChange={(e) => { const v = (e.target as HTMLSelectElement).value; updateNode(i, { installDisk: v ? { path: v } : undefined, dataDisks: (n.dataDisks ?? []).filter((d) => d !== v).length ? (n.dataDisks ?? []).filter((d) => d !== v) : undefined }) }}>
-                      {poolOf(n.pool)?.installDisk && <option value="">pool policy</option>}
-                      {disks.map((d) => <option key={d.devPath} value={d.devPath}>{d.devPath} · {fmt.bytes(d.sizeBytes)}{d.model ? ` · ${d.model}` : ''}{d.transport ? ` · ${d.transport}` : ''}</option>)}
-                      {disks.length === 0 && <option value="">no disk</option>}
-                    </select>
-                  </td>
-                  <td class="mono text-[12px]">
-                    {data.length === 0 && <span class="text-muted">—</span>}
-                    {data.map((d) => <label key={d.devPath} class="flex items-center gap-1.5 whitespace-nowrap"><input type="checkbox" checked={n.dataDisks?.includes(d.devPath) ?? false} onChange={(e) => toggle(d.devPath, (e.target as HTMLInputElement).checked)} />{d.devPath} <span class="text-muted">{fmt.bytes(d.sizeBytes)}{d.model ? ` · ${d.model}` : ''}</span></label>)}
-                  </td>
-                  <td class="text-[12px] text-muted mono">{Object.entries({ ...(poolOf(n.pool)?.labels ?? {}), ...(n.labels ?? {}) }).map(([k, v]) => `${k}=${v}`).join(' ') || '—'}</td>
-                </tr>
-              )
-            })}
-          </tbody>
-        </table>
-      </div>
+      <DataTable search={false} columns={designCols} rows={c.spec.nodes.map((_, i) => i)} rowKey={(i) => c.spec.nodes[i].mac ?? c.spec.nodes[i].ip} />
       <div class="flex flex-col gap-2">
         <div><span class="label">Pools</span><p class="text-[13px] text-muted">A pool owns role, labels, taints, extensions and disk policy. Nodes inherit it.</p></div>
         <PoolsEditor pools={pools} onChange={setPools} inUse={(name) => c.spec.nodes.filter((n) => n.pool === name).length} defaultExtensions={c.spec.extensions} />
@@ -229,6 +224,22 @@ export function NetworkStep({ draft, setCluster }: { draft: Draft; setCluster: S
   const staticAddrs = c.spec.nodes.flatMap((n) => n.network?.addresses ?? []).map(addrOf)
   const dupes = staticAddrs.filter((a, i) => staticAddrs.indexOf(a) !== i)
   if (dupes.length) checks.push({ tone: 'bad', text: `Duplicate static address: ${[...new Set(dupes)].join(', ')}.` })
+  const addrCols: Column<number>[] = [
+    { id: 'node', header: 'Node', cell: (i) => { const n = c.spec.nodes[i]; return <span class="flex flex-col"><span class="mono">{n.hostname}</span><span class="text-[10px] text-muted mono">lease {n.ip}</span></span> } },
+    { id: 'mode', header: 'Mode', cell: (i) => { const n = c.spec.nodes[i]; return (
+      <select class="input !py-1" value={n.network ? 'static' : 'dhcp'} onChange={(e) => {
+        if ((e.target as HTMLSelectElement).value === 'dhcp') updateNode(i, { network: undefined })
+        else updateNode(i, { network: { addresses: [`${n.ip}/24`], gateway: guessGateway(n.ip, 24) } })
+      }}>
+        <option value="dhcp">DHCP</option>
+        <option value="static">Static</option>
+      </select>
+    ) } },
+    { id: 'addr', header: 'Address (CIDR)', cell: (i) => { const n = c.spec.nodes[i]; return <input class="input !py-1 mono w-52" disabled={!n.network} value={n.network?.addresses?.[0] ?? ''} placeholder={`${n.ip}/24`} onInput={(e) => updateNode(i, { network: { ...n.network!, addresses: [(e.target as HTMLInputElement).value.trim()] } })} /> } },
+    { id: 'gw', header: 'Gateway', cell: (i) => { const n = c.spec.nodes[i]; return <input class="input !py-1 mono w-36" disabled={!n.network} value={n.network?.gateway ?? ''} placeholder={guessGateway(n.ip, prefixOf(n.network?.addresses?.[0] ?? '', 24))} onInput={(e) => updateNode(i, { network: { ...n.network!, gateway: (e.target as HTMLInputElement).value.trim() || undefined } })} /> } },
+    { id: 'dns', header: 'DNS', cell: (i) => { const n = c.spec.nodes[i]; return <input class="input !py-1 mono w-44" disabled={!n.network} value={(n.network?.nameservers ?? []).join(', ')} placeholder="cluster default" onInput={(e) => { const v = list((e.target as HTMLInputElement).value); updateNode(i, { network: { ...n.network!, nameservers: v.length ? v : undefined } }) }} /> } },
+    { id: 'vlan', header: 'VLAN', cell: (i) => { const n = c.spec.nodes[i]; return <input class="input !py-1 mono w-20" type="number" min={0} max={4094} disabled={!n.network} value={n.network?.vlan ?? ''} placeholder="none" onInput={(e) => { const v = Number((e.target as HTMLInputElement).value); updateNode(i, { network: { ...n.network!, vlan: v > 0 ? v : undefined } }) }} /> } },
+  ]
 
   return (
     <>
@@ -262,35 +273,7 @@ export function NetworkStep({ draft, setCluster }: { draft: Draft; setCluster: S
       {checks.length > 0 && <div class="flex flex-col gap-1">{checks.map((k, i) => <Notice key={i} tone={k.tone}>{k.text}</Notice>)}</div>}
       <div class="flex flex-col gap-2">
         <div><span class="label">Node addressing</span><p class="text-[13px] text-muted">DHCP by default; Kubit follows the machine by MAC. Static pins the address in the machine config.</p></div>
-        <div class="panel scroll-x">
-          <table class="data">
-            <thead><tr><th class="pl-4">Node</th><th>Mode</th><th>Address (CIDR)</th><th>Gateway</th><th>DNS</th><th>VLAN</th></tr></thead>
-            <tbody>
-              {c.spec.nodes.map((n, i) => {
-                const st = !!n.network
-                const prefix = prefixOf(n.network?.addresses?.[0] ?? '', 24)
-                return (
-                  <tr key={n.mac ?? n.ip}>
-                    <td class="pl-4 whitespace-nowrap"><span class="mono">{n.hostname}</span><br /><span class="text-[11px] text-muted mono">lease {n.ip}</span></td>
-                    <td>
-                      <select class="input !py-1" value={st ? 'static' : 'dhcp'} onChange={(e) => {
-                        if ((e.target as HTMLSelectElement).value === 'dhcp') updateNode(i, { network: undefined })
-                        else updateNode(i, { network: { addresses: [`${n.ip}/24`], gateway: guessGateway(n.ip, 24) } })
-                      }}>
-                        <option value="dhcp">DHCP</option>
-                        <option value="static">Static</option>
-                      </select>
-                    </td>
-                    <td><input class="input !py-1 mono w-52" disabled={!st} value={n.network?.addresses?.[0] ?? ''} placeholder={`${n.ip}/24`} onInput={(e) => updateNode(i, { network: { ...n.network!, addresses: [(e.target as HTMLInputElement).value.trim()] } })} /></td>
-                    <td><input class="input !py-1 mono w-36" disabled={!st} value={n.network?.gateway ?? ''} placeholder={guessGateway(n.ip, prefix)} onInput={(e) => updateNode(i, { network: { ...n.network!, gateway: (e.target as HTMLInputElement).value.trim() || undefined } })} /></td>
-                    <td><input class="input !py-1 mono w-44" disabled={!st} value={(n.network?.nameservers ?? []).join(', ')} placeholder="cluster default" onInput={(e) => { const v = list((e.target as HTMLInputElement).value); updateNode(i, { network: { ...n.network!, nameservers: v.length ? v : undefined } }) }} /></td>
-                    <td><input class="input !py-1 mono w-20" type="number" min={0} max={4094} disabled={!st} value={n.network?.vlan ?? ''} placeholder="none" onInput={(e) => { const v = Number((e.target as HTMLInputElement).value); updateNode(i, { network: { ...n.network!, vlan: v > 0 ? v : undefined } }) }} /></td>
-                  </tr>
-                )
-              })}
-            </tbody>
-          </table>
-        </div>
+        <DataTable search={false} columns={addrCols} rows={c.spec.nodes.map((_, i) => i)} rowKey={(i) => c.spec.nodes[i].mac ?? c.spec.nodes[i].ip} />
       </div>
     </>
   )
@@ -355,6 +338,16 @@ export function ReviewStep({ draft, setCluster, patch, onCreate, busy }: { draft
   // Findings that guarantee an unusable or failing cluster block Create; the rest stay advisory.
   const blocking = ['no-disk', 'no-schedulable-nodes', 'control-plane-undersized', 'worker-undersized']
   const blockers = draft.warnings.filter((w) => blocking.includes(w.code))
+  const poolFor = (n: NodeSpec) => (c.spec.pools ?? []).find((x) => x.name === n.pool)
+  const summaryCols: Column<NodeSpec>[] = [
+    { id: 'hostname', header: 'Hostname', mono: true, cell: (n) => n.hostname },
+    { id: 'pool', header: 'Pool', cell: (n) => <><span class="mono">{n.pool}</span> <span class="text-muted text-[11px]">{n.role === 'controlplane' ? 'control plane' : 'worker'}</span></> },
+    { id: 'addr', header: 'Address', mono: true, cell: (n) => n.network ? <>{n.network.addresses.join(', ')}{n.network.vlan ? ` vlan ${n.network.vlan}` : ''} <span class="text-muted text-[11px]">static</span></> : <>{n.ip} <span class="text-muted text-[11px]">dhcp</span></> },
+    { id: 'install', header: 'Install disk', mono: true, cell: (n) => { const p = poolFor(n); return n.installDisk?.path ?? (p?.installDisk?.selector ? `selector ${Object.values(p.installDisk.selector).join(' ')}` : '—') } },
+    { id: 'data', header: 'Data disks', mono: true, cell: (n) => <span class="text-[11px]">{n.dataDisks?.join(' ') ?? '—'}</span> },
+    { id: 'labels', header: 'Labels', mono: true, cell: (n) => { const p = poolFor(n); return <span class="text-[11px]">{Object.entries({ ...(p?.labels ?? {}), ...(n.labels ?? {}) }).map(([k, v]) => `${k}=${v}`).join(' ') || '—'}</span> } },
+    { id: 'taints', header: 'Taints', mono: true, cell: (n) => { const p = poolFor(n); return <span class="text-[11px]">{Object.entries({ ...(p?.taints ?? {}), ...(n.taints ?? {}) }).map(([k, v]) => `${k}=${v}`).join(' ') || (n.role === 'controlplane' && c.spec.controlPlane.allowScheduling === false ? 'control-plane:NoSchedule' : '—')}</span> } },
+  ]
   return (
     <>
       <Tabs active={tab} onSelect={(t) => setTab(t as any)} tabs={[{ id: 'summary', label: 'Summary' }, { id: 'yaml', label: 'cluster.yaml' }]} />
@@ -366,27 +359,7 @@ export function ReviewStep({ draft, setCluster, patch, onCreate, busy }: { draft
             {!lintErr && draft.warnings.length === 0 && !linting && <Notice tone="good">No findings. The declaration is valid and follows the recommendations.</Notice>}
             {draft.warnings.map((w, i) => <WarningLine key={i} w={w} />)}
           </div>
-          <div class="panel scroll-x">
-            <table class="data">
-              <thead><tr><th class="pl-4">Hostname</th><th>Pool</th><th>Address</th><th>Install disk</th><th>Data disks</th><th>Labels</th><th>Taints</th></tr></thead>
-              <tbody>
-                {c.spec.nodes.map((n) => {
-                  const p = (c.spec.pools ?? []).find((x) => x.name === n.pool)
-                  return (
-                    <tr key={n.hostname}>
-                      <td class="pl-4 mono">{n.hostname}</td>
-                      <td><span class="mono">{n.pool}</span> <span class="text-muted text-[11px]">{n.role === 'controlplane' ? 'control plane' : 'worker'}</span></td>
-                      <td class="mono">{n.network ? <>{n.network.addresses.join(', ')}{n.network.vlan ? ` vlan ${n.network.vlan}` : ''} <span class="text-muted text-[11px]">static</span></> : <>{n.ip} <span class="text-muted text-[11px]">dhcp</span></>}</td>
-                      <td class="mono">{n.installDisk?.path ?? (p?.installDisk?.selector ? `selector ${Object.values(p.installDisk.selector).join(' ')}` : '—')}</td>
-                      <td class="mono text-[11px]">{n.dataDisks?.join(' ') ?? '—'}</td>
-                      <td class="mono text-[11px]">{Object.entries({ ...(p?.labels ?? {}), ...(n.labels ?? {}) }).map(([k, v]) => `${k}=${v}`).join(' ') || '—'}</td>
-                      <td class="mono text-[11px]">{Object.entries({ ...(p?.taints ?? {}), ...(n.taints ?? {}) }).map(([k, v]) => `${k}=${v}`).join(' ') || (n.role === 'controlplane' && c.spec.controlPlane.allowScheduling === false ? 'control-plane:NoSchedule' : '—')}</td>
-                    </tr>
-                  )
-                })}
-              </tbody>
-            </table>
-          </div>
+          <DataTable search={false} columns={summaryCols} rows={c.spec.nodes} rowKey={(n) => n.hostname} />
         </>
       )}
       {tab === 'yaml' && (

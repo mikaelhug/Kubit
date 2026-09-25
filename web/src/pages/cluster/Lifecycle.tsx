@@ -5,6 +5,7 @@ import { latestTalos, operations, toast, watch, refreshKey } from '../../store'
 import { ConfirmDialog, ErrorBox, Field, MaintenanceNotice, Notice, Pill, Section } from '../../components/ui'
 import type { ClusterCtx } from './ClusterPage'
 import { verLess } from './Overview'
+import { DataTable, type Column } from '../../components/DataTable'
 
 /** Operations on the cluster as a whole: upgrades, credentials, hand-over, forgetting it. */
 export function Lifecycle({ ctx }: { ctx: ClusterCtx }) {
@@ -68,25 +69,17 @@ function CredentialsSection({ name }: { name: string }) {
   useEffect(() => { api.certificates(name).then(setCerts).catch((e) => setError(e.message)) }, [name, finished, refreshKey(name, 'certificates')])
   const label: Record<string, string> = { talosconfig: 'Admin talosconfig', kubeconfig: 'Admin kubeconfig', 'talos-ca': 'Talos API CA', 'kubernetes-ca': 'Kubernetes CA', 'etcd-ca': 'etcd CA', 'aggregator-ca': 'Aggregator CA' }
   const tone = (d: number) => d <= 7 ? 'bad' : d <= 30 ? 'warn' : 'good'
+  const columns: Column<CertInfo>[] = [
+    { id: 'name', header: 'Credential', cell: (c) => <span class="font-medium">{label[c.name] ?? c.name}</span> },
+    { id: 'expires', header: 'Expires', cell: (c) => c.error ? <span class="text-bad">{c.error}</span> : <span class="flex items-center gap-2"><Pill tone={tone(c.daysLeft)}>{c.daysLeft} days</Pill><span class="num text-muted">{fmt.datetime(c.notAfter)}</span></span> },
+    { id: 'issued', header: 'Issued', cell: (c) => <span class="num text-muted">{c.notBefore ? fmt.datetime(c.notBefore) : '—'}</span> },
+    { id: 'subject', header: 'Subject', cell: (c) => <span class="block mono text-[11px] text-muted truncate max-w-[260px]" title={c.subject}>{c.subject}</span> },
+    { id: 'actions', header: '', align: 'right', cell: (c) => c.rotatable && <button class="btn !py-1" onClick={() => api.rotateCredential(name, c.name as 'talosconfig' | 'kubeconfig').then((r) => watch(r)).catch((e) => toast(e.message, 'error'))}>Rotate</button> },
+  ]
   return (
     <Section title="Credentials" help="Client certificates last one year and can be rotated here; CAs last ten. Kubit alerts 30 days before expiry.">
       <ErrorBox error={error} />
-      <div class="panel scroll-x">
-        <table class="data">
-          <thead><tr><th class="pl-4">Credential</th><th>Expires</th><th>Issued</th><th>Subject</th><th></th></tr></thead>
-          <tbody>
-            {certs.map((c) => (
-              <tr key={c.name}>
-                <td class="pl-4 font-medium">{label[c.name] ?? c.name}</td>
-                <td>{c.error ? <span class="text-bad">{c.error}</span> : <span class="flex items-center gap-2"><Pill tone={tone(c.daysLeft)}>{c.daysLeft} days</Pill><span class="num text-muted">{fmt.datetime(c.notAfter)}</span></span>}</td>
-                <td class="num text-muted">{c.notBefore ? fmt.datetime(c.notBefore) : '—'}</td>
-                <td class="mono text-[11px] text-muted truncate max-w-[260px]" title={c.subject}>{c.subject}</td>
-                <td class="text-right pr-3">{c.rotatable && <button class="btn !py-1" onClick={() => api.rotateCredential(name, c.name as 'talosconfig' | 'kubeconfig').then((r) => watch(r)).catch((e) => toast(e.message, 'error'))}>Rotate</button>}</td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
+      <DataTable search={false} columns={columns} rows={certs} rowKey={(c) => c.name} />
     </Section>
   )
 }

@@ -86,9 +86,6 @@ table.data td { @apply py-1 px-2 whitespace-nowrap border-b border-border/60 ali
 table.data tbody tr:hover td { @apply bg-panel-2/50; }
 table.data tr:last-child td { @apply border-b-0; }
 table.data thead th { @apply sticky top-0 bg-panel z-10; }
-/* Tables that must fit the panel: cells wrap instead of forcing a horizontal scrollbar. */
-table.data.wrap td, table.data.wrap th { white-space: normal; }
-table.data.wrap td { @apply align-top; }
 .log { @apply break-words rounded-[var(--r)] border border-border bg-bg p-3 max-h-[420px] overflow-auto leading-5; font-family: var(--font-mono); font-size: 12px; }
 pre.log { white-space: pre-wrap; }
 :focus-visible { outline: 1px solid var(--accent); outline-offset: 1px; }

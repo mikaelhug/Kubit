@@ -3,7 +3,7 @@ import type { ComponentChildren } from 'preact'
 
 export interface Column<T> {
   id: string
-  header: string
+  header: ComponentChildren
   cell: (row: T) => ComponentChildren
   /** Sort key; omit for unsortable columns. */
   sort?: (row: T) => string | number | boolean
@@ -12,6 +12,7 @@ export interface Column<T> {
   align?: 'left' | 'right'
   width?: string
   mono?: boolean
+  wrap?: boolean
 }
 
 interface Props<T> {
@@ -26,6 +27,7 @@ interface Props<T> {
   /** Persisted table id for sort/density preferences. */
   id?: string
   toolbar?: ComponentChildren
+  title?: ComponentChildren
   /** Rows are still being fetched: show placeholders instead of the empty message. */
   loading?: boolean
 }
@@ -35,7 +37,7 @@ function read<T>(key: string, fallback: T): T {
 }
 
 /** Sortable, searchable, compact table with sticky header; rows beyond 300 are windowed by page. */
-export function DataTable<T>({ columns, rows, rowKey, empty = 'Nothing to show.', search = true, defaultSort, onRowClick, rowClass, id, toolbar, loading }: Props<T>) {
+export function DataTable<T>({ columns, rows, rowKey, empty = 'Nothing to show.', search = true, defaultSort, onRowClick, rowClass, id, toolbar, title, loading }: Props<T>) {
   const pref = id ? `kubit.table.${id}` : ''
   const [sort, setSort] = useState<{ id: string; dir: 'asc' | 'desc' } | undefined>(pref ? read(pref + '.sort', defaultSort) : defaultSort)
   const [q, setQ] = useState('')
@@ -77,10 +79,11 @@ export function DataTable<T>({ columns, rows, rowKey, empty = 'Nothing to show.'
 
   return (
     <div class="panel flex flex-col overflow-hidden">
-      {(search || toolbar) && (
+      {(search || toolbar || title) && (
         <div class="flex items-center gap-2 px-3 py-2 border-b border-border">
+          {title}
           {search && <input class="input !w-64" placeholder="Filter…" value={q} onInput={(e) => { setQ((e.target as HTMLInputElement).value); setPage(0) }} aria-label="Filter rows" />}
-          <span class="text-[12px] text-muted">{filtered.length === rows.length ? `${rows.length} rows` : `${filtered.length} of ${rows.length}`}</span>
+          {(search || !title) && <span class="text-[12px] text-muted">{filtered.length === rows.length ? `${rows.length} rows` : `${filtered.length} of ${rows.length}`}</span>}
           {toolbar && <div class="ml-auto flex items-center gap-2">{toolbar}</div>}
         </div>
       )}
@@ -100,7 +103,7 @@ export function DataTable<T>({ columns, rows, rowKey, empty = 'Nothing to show.'
             {visible.length === 0 && !loading && <tr><td colSpan={columns.length} class="text-muted !py-6 text-center">{empty}</td></tr>}
             {visible.map((r) => (
               <tr key={rowKey(r)} class={`${onRowClick ? 'cursor-pointer hover:bg-panel-2' : ''} ${rowClass?.(r) ?? ''}`} onClick={() => onRowClick?.(r)}>
-                {columns.map((c) => <td key={c.id} class={`${c.align === 'right' ? 'text-right num' : ''} ${c.mono ? 'mono' : ''}`}>{c.cell(r)}</td>)}
+                {columns.map((c) => <td key={c.id} class={`${c.align === 'right' ? 'text-right num' : ''} ${c.mono ? 'mono' : ''} ${c.wrap ? '!whitespace-normal' : ''}`}>{c.cell(r)}</td>)}
               </tr>
             ))}
           </tbody>
