@@ -68,6 +68,7 @@ func (s *Server) watchVersions(ctx context.Context) {
 		}
 		s.versionsMu.Lock()
 		s.versionsAt = time.Time{}
+		s.talosList = talosList{}
 		s.versionsMu.Unlock()
 		if v := s.latestStableTalos(ctx); v != last {
 			last = v
@@ -86,10 +87,13 @@ func (s *Server) watchPXE(ctx context.Context) {
 			return
 		case <-t.C:
 		}
-		statusURL, b, _ := s.pxeFetch(ctx)
+		statusURL, b, err := s.pxeFetch(ctx)
 		if statusURL == "" {
 			continue
 		}
+		s.pxeMu.Lock()
+		s.pxeLast = pxeSnapshot{url: statusURL, body: b, err: err, at: time.Now()}
+		s.pxeMu.Unlock()
 		if body := string(b); body != last {
 			last = body
 			s.refresh("", "pxe")
@@ -122,12 +126,9 @@ func (s *Server) handleServiceHealth(w http.ResponseWriter, r *http.Request) {
 	if s.watcher != nil {
 		latest = s.watcher.LatestServices(name)
 	}
-	open, _ := s.store.Events(r.Context(), name, 500, true)
-	alerts := []store.EventRow{}
-	for _, e := range open {
-		if strings.Contains(e.Node, "/") {
-			alerts = append(alerts, e)
-		}
+	alerts, err := s.store.OpenWorkloadEvents(r.Context(), name, 500)
+	if err != nil {
+		alerts = []store.EventRow{}
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"latest": latest, "alerts": alerts})
 }
@@ -198,13 +199,13 @@ type Versions struct {
 func (s *Server) handleVersions(w http.ResponseWriter, r *http.Request) {
 	v := Versions{Machinery: gendata.VersionTag, MinTalos: config.MinTalosVersion, KubernetesLatest: "v" + constants.DefaultKubernetesVersion,
 		Note: "Kubernetes compatibility is checked against Talos " + gendata.VersionTag + "'s support window; a Talos release newer than Kubit's machinery may support more."}
-	if list, err := s.manager.Factory.Versions(r.Context()); err == nil {
+	if list, source, err := s.factoryVersions(r.Context()); err == nil {
 		for _, t := range list {
 			if strings.HasPrefix(t, "v1.") && talosAtLeast(t, config.MinTalosVersion) {
 				v.Talos = append(v.Talos, t)
 			}
 		}
-		v.TalosSource = s.manager.Factory.BaseURL()
+		v.TalosSource = source
 	}
 	sort.Slice(v.Talos, func(i, j int) bool { return versionLess(v.Talos[j], v.Talos[i]) })
 	if kv, err := utilversion.ParseMajorMinor(constants.DefaultKubernetesVersion); err == nil {
@@ -213,6 +214,30 @@ func (s *Server) handleVersions(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	writeJSON(w, http.StatusOK, v)
+}
+
+type talosList struct {
+	source string
+	list   []string
+	at     time.Time
+}
+
+func (s *Server) factoryVersions(ctx context.Context) ([]string, string, error) {
+	source := s.manager.Factory.BaseURL()
+	s.versionsMu.Lock()
+	cached := s.talosList
+	s.versionsMu.Unlock()
+	if cached.source == source && time.Since(cached.at) < time.Hour {
+		return cached.list, source, nil
+	}
+	list, err := s.manager.Factory.Versions(ctx)
+	if err != nil {
+		return nil, "", err
+	}
+	s.versionsMu.Lock()
+	s.talosList = talosList{source: source, list: list, at: time.Now()}
+	s.versionsMu.Unlock()
+	return list, source, nil
 }
 
 func (s *Server) latestStableTalos(ctx context.Context) string {

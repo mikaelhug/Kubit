@@ -8,7 +8,6 @@ import (
 
 	"github.com/mikael/kubit/internal/config"
 	corev1 "k8s.io/api/core/v1"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
 type Service struct {
@@ -54,16 +53,16 @@ type PoolAlloc struct {
 }
 
 func (c *Client) Services(ctx context.Context) ([]Service, error) {
-	list, err := c.CoreV1().Services("").List(ctx, metav1.ListOptions{})
+	list, err := c.services(ctx)
 	if err != nil {
 		return nil, err
 	}
-	eps, err := c.DiscoveryV1().EndpointSlices("").List(ctx, metav1.ListOptions{})
+	eps, err := c.endpointSlices(ctx)
 	if err != nil {
 		return nil, err
 	}
 	ready := map[string]int{}
-	for _, s := range eps.Items {
+	for _, s := range eps {
 		svc := s.Labels["kubernetes.io/service-name"]
 		for _, e := range s.Endpoints {
 			if e.Conditions.Ready == nil || *e.Conditions.Ready {
@@ -71,8 +70,8 @@ func (c *Client) Services(ctx context.Context) ([]Service, error) {
 			}
 		}
 	}
-	out := make([]Service, 0, len(list.Items))
-	for _, s := range list.Items {
+	out := make([]Service, 0, len(list))
+	for _, s := range list {
 		sv := Service{Namespace: s.Namespace, Name: s.Name, Type: string(s.Spec.Type), ClusterIP: s.Spec.ClusterIP, Endpoints: ready[s.Namespace+"/"+s.Name]}
 		sv.Age, sv.AgeSec = age(s.CreationTimestamp)
 		for _, ing := range s.Status.LoadBalancer.Ingress {
@@ -101,12 +100,12 @@ func (c *Client) Services(ctx context.Context) ([]Service, error) {
 }
 
 func (c *Client) Ingresses(ctx context.Context) ([]Ingress, error) {
-	list, err := c.NetworkingV1().Ingresses("").List(ctx, metav1.ListOptions{})
+	list, err := c.ingresses(ctx)
 	if err != nil {
 		return nil, err
 	}
-	out := make([]Ingress, 0, len(list.Items))
-	for _, ing := range list.Items {
+	out := make([]Ingress, 0, len(list))
+	for _, ing := range list {
 		i := Ingress{Namespace: ing.Namespace, Name: ing.Name, Rules: []IngressRule{}}
 		i.Age, i.AgeSec = age(ing.CreationTimestamp)
 		if ing.Spec.IngressClassName != nil {

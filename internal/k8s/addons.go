@@ -2,8 +2,6 @@ package k8s
 
 import (
 	"context"
-
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
 type Readiness struct {
@@ -15,11 +13,11 @@ type Readiness struct {
 
 func (c *Client) NamespaceReadiness(ctx context.Context, namespace string) (*Readiness, error) {
 	r := &Readiness{Namespace: namespace}
-	deps, err := c.AppsV1().Deployments(namespace).List(ctx, metav1.ListOptions{})
+	deps, err := c.deployments(ctx, namespace)
 	if err != nil {
 		return nil, err
 	}
-	for _, d := range deps.Items {
+	for _, d := range deps {
 		r.Total++
 		if d.Spec.Replicas != nil && d.Status.AvailableReplicas == *d.Spec.Replicas {
 			r.Ready++
@@ -27,11 +25,11 @@ func (c *Client) NamespaceReadiness(ctx context.Context, namespace string) (*Rea
 			r.Detail = append(r.Detail, "Deployment "+d.Name)
 		}
 	}
-	dss, err := c.AppsV1().DaemonSets(namespace).List(ctx, metav1.ListOptions{})
+	dss, err := c.daemonSets(ctx, namespace)
 	if err != nil {
 		return nil, err
 	}
-	for _, d := range dss.Items {
+	for _, d := range dss {
 		r.Total++
 		if d.Status.NumberReady == d.Status.DesiredNumberScheduled {
 			r.Ready++
@@ -39,11 +37,11 @@ func (c *Client) NamespaceReadiness(ctx context.Context, namespace string) (*Rea
 			r.Detail = append(r.Detail, "DaemonSet "+d.Name)
 		}
 	}
-	sts, err := c.AppsV1().StatefulSets(namespace).List(ctx, metav1.ListOptions{})
+	sts, err := c.statefulSets(ctx, namespace)
 	if err != nil {
 		return nil, err
 	}
-	for _, d := range sts.Items {
+	for _, d := range sts {
 		r.Total++
 		if d.Spec.Replicas != nil && d.Status.ReadyReplicas == *d.Spec.Replicas {
 			r.Ready++

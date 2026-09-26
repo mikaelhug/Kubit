@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"net"
+	"sync"
 
 	"github.com/mikael/kubit/internal/config"
 	"github.com/mikael/kubit/internal/k8s"
@@ -82,10 +83,12 @@ func (m *Manager) Addons(ctx context.Context, name string) ([]AddonStatus, error
 		}
 	}
 	kc, kerr := m.KubeClient(ctx, name)
-	out := make([]AddonStatus, 0, len(addonMeta))
-	for _, meta := range addonMeta {
+	out := make([]AddonStatus, len(addonMeta))
+	var wg sync.WaitGroup
+	for i, meta := range addonMeta {
 		enabled, values := addonSpec(c.Spec.Platform, meta.key)
-		st := AddonStatus{Key: meta.key, Enabled: enabled, Values: values, Pinned: meta.pin}
+		st := &out[i]
+		*st = AddonStatus{Key: meta.key, Enabled: enabled, Values: values, Pinned: meta.pin}
 		if meta.key == "builds" && c.RegistryIP() != "" {
 			st.Address = net.JoinHostPort(c.RegistryIP(), fmt.Sprint(config.RegistryPort))
 		}
@@ -95,14 +98,20 @@ func (m *Manager) Addons(ctx context.Context, name string) ([]AddonStatus, error
 			}
 		}
 		chartless := meta.pin == "" && meta.namespace != ""
-		if meta.namespace != "" && kerr == nil && (st.Release != nil || enabled || chartless) {
+		if meta.namespace == "" || kerr != nil || (st.Release == nil && !enabled && !chartless) {
+			st.State = addonState(*st, meta.namespace == "", chartless)
+			continue
+		}
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
 			if r, err := kc.NamespaceReadiness(ctx, meta.namespace); err == nil {
 				st.Readiness = r
 			}
-		}
-		st.State = addonState(st, meta.namespace == "", chartless)
-		out = append(out, st)
+			st.State = addonState(*st, false, chartless)
+		}()
 	}
+	wg.Wait()
 	return out, nil
 }
 

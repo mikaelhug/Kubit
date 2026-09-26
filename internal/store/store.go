@@ -20,6 +20,9 @@ type Store struct {
 
 	labMu    sync.Mutex
 	labLocks map[string]*sync.Mutex
+
+	settings settingsCache
+	tokenUse tokenUse
 }
 
 func (s *Store) labLock(mac string) *sync.Mutex {
@@ -222,12 +225,19 @@ var migrations = []string{
 	);`,
 	`UPDATE clusters SET platform = json_remove(platform, '$.outputs.argocd_admin_password', '$.outputs.argocd_ip') WHERE json_valid(platform);`,
 	`ALTER TABLE machines ADD COLUMN system_split INTEGER NOT NULL DEFAULT 0;`,
+	`CREATE TABLE operation_log (
+		op_id INTEGER NOT NULL REFERENCES operations(id) ON DELETE CASCADE,
+		seq   INTEGER NOT NULL,
+		line  TEXT NOT NULL,
+		PRIMARY KEY (op_id, seq)
+	);`,
 }
 
 var alreadyApplied = map[int]string{
 	13: `SELECT actor FROM audit_log LIMIT 0`,
 	14: `SELECT cluster FROM sops_keys LIMIT 0`,
 	16: `SELECT system_split FROM machines LIMIT 0`,
+	17: `SELECT op_id FROM operation_log LIMIT 0`,
 }
 
 func (s *Store) migrate(ctx context.Context) error {

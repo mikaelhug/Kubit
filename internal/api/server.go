@@ -46,6 +46,9 @@ type Server struct {
 	versionsMu  sync.Mutex
 	versionsAt  time.Time
 	latestTalos string
+	talosList   talosList
+	pxeMu       sync.Mutex
+	pxeLast     pxeSnapshot
 	crypto      *store.Crypto
 	ctx         context.Context
 	stop        context.CancelFunc
@@ -444,16 +447,7 @@ func (s *Server) handlePlatformApplyPlan(w http.ResponseWriter, r *http.Request)
 }
 
 func (s *Server) latestPlan(ctx context.Context, name string) int64 {
-	ops, err := s.store.ListOperations(ctx, 200)
-	if err != nil {
-		return 0
-	}
-	for _, op := range ops {
-		if op.Cluster == name && op.Kind == "platform.plan" && op.Status == "done" {
-			return op.ID
-		}
-	}
-	return 0
+	return s.store.LatestOperation(ctx, name, "platform.plan", "done")
 }
 
 func (s *Server) handleImageStatus(w http.ResponseWriter, r *http.Request) {

@@ -15,7 +15,7 @@ func (m *Manager) ApplyConfigs(ctx context.Context, c *config.Cluster, wantKubel
 	if err != nil {
 		return err
 	}
-	kc, err := kubeClientOf(name, sec)
+	kc, err := m.KubeClientFor(name, sec)
 	if err != nil {
 		return err
 	}

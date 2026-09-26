@@ -23,17 +23,17 @@ type Build struct {
 }
 
 func (c *Client) Builds(ctx context.Context) ([]Build, error) {
-	jobs, err := c.BatchV1().Jobs(BuildsNamespace).List(ctx, metav1.ListOptions{})
+	jobs, err := c.jobs(ctx, BuildsNamespace)
 	if err != nil {
 		return nil, err
 	}
-	pods, err := c.CoreV1().Pods(BuildsNamespace).List(ctx, metav1.ListOptions{LabelSelector: "job-name"})
+	pods, err := c.pods(ctx, BuildsNamespace, metav1.ListOptions{LabelSelector: "job-name"})
 	if err != nil {
 		return nil, err
 	}
 	out := []Build{}
-	for _, j := range jobs.Items {
-		out = append(out, buildOf(j, pods.Items))
+	for _, j := range jobs {
+		out = append(out, buildOf(j, pods))
 	}
 	sort.Slice(out, func(a, b int) bool { return out[a].StartedAt > out[b].StartedAt })
 	return out, nil

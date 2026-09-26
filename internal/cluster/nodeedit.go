@@ -46,7 +46,7 @@ func (m *Manager) RenameNode(ctx context.Context, name, hostname, newName string
 	if err != nil {
 		return err
 	}
-	kc, err := kubeClientOf(name, sec)
+	kc, err := m.KubeClientFor(name, sec)
 	if err != nil {
 		return err
 	}
@@ -220,7 +220,7 @@ func (m *Manager) ReaddressNode(ctx context.Context, name, hostname string, netw
 	if err != nil {
 		return err
 	}
-	kc, err := kubeClientOf(name, sec)
+	kc, err := m.KubeClientFor(name, sec)
 	if err != nil {
 		return err
 	}

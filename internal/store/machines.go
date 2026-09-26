@@ -198,6 +198,30 @@ func (s *Store) GetMachine(ctx context.Context, mac string) (*Machine, error) {
 	return machineByMAC(ctx, s.db, mac)
 }
 
+func (s *Store) MachineIPs(ctx context.Context, macs []string) (map[string]string, error) {
+	out := map[string]string{}
+	if len(macs) == 0 {
+		return out, nil
+	}
+	args := make([]any, len(macs))
+	for i, mac := range macs {
+		args[i] = strings.ToLower(mac)
+	}
+	rows, err := s.db.QueryContext(ctx, `SELECT mac, COALESCE(ip,'') FROM machines WHERE mac IN (?`+strings.Repeat(`, ?`, len(macs)-1)+`)`, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var mac, ip string
+		if err := rows.Scan(&mac, &ip); err != nil {
+			return nil, err
+		}
+		out[mac] = ip
+	}
+	return out, rows.Err()
+}
+
 func machineByMAC(ctx context.Context, q rowQuerier, mac string) (*Machine, error) {
 	m, err := scanMachine(q.QueryRowContext(ctx, `SELECT `+machineCols+` FROM machines WHERE mac = ?`, strings.ToLower(mac)))
 	return m, notFound(err, "machine %s", mac)
@@ -266,15 +290,22 @@ func (s *Store) NodeSystemSplit(ctx context.Context, ip string) bool {
 }
 
 func (s *Store) GetNodeMachineConfig(ctx context.Context, ip string) ([]byte, error) {
+	cfg, _, err := s.NodeMachineConfigSplit(ctx, ip)
+	return cfg, err
+}
+
+func (s *Store) NodeMachineConfigSplit(ctx context.Context, ip string) ([]byte, bool, error) {
 	var sealed []byte
-	err := s.db.QueryRowContext(ctx, `SELECT machine_config FROM machines`+byIPOrMAC, ipArgs(ip)...).Scan(&sealed)
+	var split bool
+	err := s.db.QueryRowContext(ctx, `SELECT machine_config, system_split FROM machines`+byIPOrMAC, ipArgs(ip)...).Scan(&sealed, &split)
 	if err == nil && sealed == nil {
 		err = sql.ErrNoRows
 	}
 	if err := notFound(err, "machine config for %s", ip); err != nil {
-		return nil, err
+		return nil, false, err
 	}
-	return s.crypto.Open(sealed)
+	cfg, err := s.crypto.Open(sealed)
+	return cfg, split, err
 }
 
 func (s *Store) SetMachineOOB(ctx context.Context, mac string, c *oob.Config) error {

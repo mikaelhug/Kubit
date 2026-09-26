@@ -95,18 +95,18 @@ func (m *Manager) ServiceHealth(ctx context.Context, name string) (*ServiceHealt
 	for _, w := range wls {
 		out.Workloads = append(out.Workloads, WorkloadHealth{Kind: w.Kind, Namespace: w.Namespace, Name: w.Name, Ready: w.Ready, Desired: w.Desired, Available: w.Available, AgeSec: w.AgeSec})
 	}
-	pods, err := kc.Pods(ctx, "", "")
+	pods, err := kc.PodSummaries(ctx, "", "")
 	if err != nil {
 		return nil, err
 	}
 	for _, p := range pods {
 		out.Pods = append(out.Pods, PodHealth{Namespace: p.Namespace, Name: p.Name, Node: p.Node, Owner: p.Owner, Phase: p.Phase, Restarts: p.Restarts, AgeSec: p.AgeSec})
 	}
-	st, err := kc.Storage(ctx)
+	claims, err := kc.Claims(ctx)
 	if err != nil {
 		return nil, err
 	}
-	for _, cl := range st.Claims {
+	for _, cl := range claims {
 		out.Claims = append(out.Claims, ClaimHealth{Namespace: cl.Namespace, Name: cl.Name, Phase: cl.Phase, AgeSec: cl.AgeSec})
 	}
 	svcs, err := kc.Services(ctx)

@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 
 	"golang.org/x/crypto/bcrypt"
@@ -297,8 +298,30 @@ func (s *Store) ResolveToken(ctx context.Context, token string) (*User, string, 
 			return nil, "", ErrNotFound
 		}
 	}
-	_, _ = s.db.ExecContext(ctx, `UPDATE sessions SET last_used = `+sqlNow+` WHERE token_hash = ?`, hashToken(token))
+	if s.tokenUse.due(hashToken(token), time.Now()) {
+		_, _ = s.db.ExecContext(ctx, `UPDATE sessions SET last_used = `+sqlNow+` WHERE token_hash = ?`, hashToken(token))
+	}
 	return &user, kind, nil
+}
+
+const tokenUseEvery = time.Minute
+
+type tokenUse struct {
+	mu   sync.Mutex
+	last map[string]time.Time
+}
+
+func (t *tokenUse) due(hash string, now time.Time) bool {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if last, ok := t.last[hash]; ok && now.Sub(last) < tokenUseEvery {
+		return false
+	}
+	if t.last == nil || len(t.last) >= 1024 {
+		t.last = map[string]time.Time{}
+	}
+	t.last[hash] = now
+	return true
 }
 
 func (s *Store) RevokeToken(ctx context.Context, token string) error {

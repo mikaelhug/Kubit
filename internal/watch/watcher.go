@@ -339,10 +339,7 @@ func (w *Watcher) kubeClient(ctx context.Context, name string) (*k8s.Client, []b
 	if err != nil {
 		return nil, nil, err
 	}
-	if sec.Kubeconfig == nil {
-		return nil, nil, fmt.Errorf("cluster %s has no kubeconfig yet", name)
-	}
-	kc, err := k8s.New(sec.Kubeconfig)
+	kc, err := w.Manager.KubeClientFor(name, sec)
 	return kc, sec.Kubeconfig, err
 }
 
@@ -423,42 +420,50 @@ func (w *Watcher) onStoreChange(c store.Change) {
 }
 
 func (w *Watcher) candidateLoop(ctx context.Context) {
-	t := time.NewTicker(w.ServiceInterval)
+	w.every(ctx, w.ServiceInterval, w.candidateTick)
+}
+
+func (w *Watcher) every(ctx context.Context, d time.Duration, tick func(context.Context)) {
+	t := time.NewTicker(d)
 	defer t.Stop()
 	for {
+		tick(ctx)
 		select {
 		case <-ctx.Done():
 			return
 		case <-t.C:
 		}
-		rows, err := w.Store.ListNodes(ctx, "")
-		if err != nil {
+	}
+}
+
+func (w *Watcher) candidateTick(ctx context.Context) {
+	rows, err := w.Store.ListNodes(ctx, "")
+	if err != nil {
+		return
+	}
+	for _, m := range rows {
+		if m.IsLabVM() || m.IP == "" {
 			continue
 		}
-		for _, m := range rows {
-			if m.IsLabVM() || m.IP == "" {
-				continue
+		switch m.Kind() {
+		case store.KindMaintenance, store.KindConfigured:
+			pctx, cancel := context.WithTimeout(ctx, 6*time.Second)
+			res := talos.Probe(pctx, m.IP, 2*time.Second)
+			cancel()
+			if res.Err == nil {
+				_ = w.Store.UpsertNode(ctx, cluster.RowFromScan(res))
 			}
-			switch m.Kind() {
-			case store.KindMaintenance, store.KindConfigured:
+		case store.KindUnbooted:
+			switch {
+			case m.OOB != nil && m.OOB.Type == "redfish":
 				pctx, cancel := context.WithTimeout(ctx, 6*time.Second)
-				res := talos.Probe(pctx, m.IP, 2*time.Second)
+				ok := oob.ProbeRedfish(pctx, m.OOB.Host, 2*time.Second)
 				cancel()
-				if res.Err == nil {
-					_ = w.Store.UpsertNode(ctx, cluster.RowFromScan(res))
+				if ok {
+					_ = w.Store.UpsertNode(ctx, store.NodeRow{MAC: m.MAC, IP: m.IP, Source: "redfish", State: m.State})
 				}
-			case store.KindUnbooted:
-				switch {
-				case m.OOB != nil && m.OOB.Type == "redfish":
-					pctx, cancel := context.WithTimeout(ctx, 6*time.Second)
-					ok := oob.ProbeRedfish(pctx, m.OOB.Host, 2*time.Second)
-					cancel()
-					if ok {
-						_ = w.Store.UpsertNode(ctx, store.NodeRow{MAC: m.MAC, IP: m.IP, Source: "redfish", State: m.State})
-					}
-				case m.OOB != nil && portOpen(ctx, m.OOB.Host, oob.AMTPort), portOpen(ctx, m.IP, oob.AMTPort):
-					_ = w.Store.UpsertNode(ctx, store.NodeRow{MAC: m.MAC, IP: m.IP, Source: "amt", State: m.State})
-				}
+			case m.OOB != nil && portOpen(ctx, m.OOB.Host, oob.AMTPort), portOpen(ctx, m.IP, oob.AMTPort):
+				_ = w.Store.UpsertNode(ctx, store.NodeRow{MAC: m.MAC, IP: m.IP, Source: "amt", State: m.State})
 			}
 		}
 	}
@@ -469,25 +474,20 @@ func portOpen(ctx context.Context, host, port string) bool {
 }
 
 func (w *Watcher) labLoop(ctx context.Context) {
-	t := time.NewTicker(w.ServiceInterval)
-	defer t.Stop()
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-t.C:
-		}
-		rows, err := w.Store.ListNodes(ctx, "")
-		if err != nil {
+	w.every(ctx, w.ServiceInterval, w.labHostsTick)
+}
+
+func (w *Watcher) labHostsTick(ctx context.Context) {
+	rows, err := w.Store.ListNodes(ctx, "")
+	if err != nil {
+		return
+	}
+	for i := range rows {
+		host := rows[i]
+		if host.LabHost == nil || host.LabHost.State != "ready" {
 			continue
 		}
-		for i := range rows {
-			host := rows[i]
-			if host.LabHost == nil || host.LabHost.State != "ready" {
-				continue
-			}
-			w.labTick(ctx, &host)
-		}
+		w.labTick(ctx, &host)
 	}
 }
 

@@ -26,6 +26,9 @@ func (s *Store) OnChange(fn func(Change)) {
 }
 
 func (s *Store) notify(c Change) {
+	if c.Table == "settings" || c.Table == "*" {
+		s.settings.invalidate()
+	}
 	s.n.writes.Add(1)
 	s.n.mu.RLock()
 	fns := s.n.fns

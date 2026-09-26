@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
+	"sync"
 )
 
 type Release struct {
@@ -20,15 +22,44 @@ type Release struct {
 	LastDeployed int64  `json:"lastDeployed,omitempty"`
 }
 
+type stateStamp struct {
+	mod, size int64
+}
+
+type releasesEntry struct {
+	stamp    stateStamp
+	releases []Release
+}
+
+var (
+	releasesMu    sync.Mutex
+	releasesCache = map[string]releasesEntry{}
+)
+
 func (r *Runner) Releases(ctx context.Context) ([]Release, error) {
-	if _, err := os.Stat(filepath.Join(r.Dir, "terraform.tfstate")); err != nil {
+	fi, err := os.Stat(filepath.Join(r.Dir, "terraform.tfstate"))
+	if err != nil {
 		return []Release{}, nil
+	}
+	stamp := stateStamp{mod: fi.ModTime().UnixNano(), size: fi.Size()}
+	releasesMu.Lock()
+	e, ok := releasesCache[r.Dir]
+	releasesMu.Unlock()
+	if ok && e.stamp == stamp {
+		return slices.Clone(e.releases), nil
 	}
 	out, err := r.output(ctx, "show", "-json")
 	if err != nil {
 		return nil, err
 	}
-	return ParseReleases(out)
+	releases, err := ParseReleases(out)
+	if err != nil {
+		return nil, err
+	}
+	releasesMu.Lock()
+	releasesCache[r.Dir] = releasesEntry{stamp: stamp, releases: releases}
+	releasesMu.Unlock()
+	return slices.Clone(releases), nil
 }
 
 func ParseReleases(raw []byte) ([]Release, error) {

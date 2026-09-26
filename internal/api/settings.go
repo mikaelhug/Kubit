@@ -149,13 +149,32 @@ func (s *Server) pxeRunning(ctx context.Context) bool {
 	return err == nil
 }
 
+type pxeSnapshot struct {
+	url  string
+	body []byte
+	err  error
+	at   time.Time
+}
+
+const pxeSnapshotFresh = 15 * time.Second
+
+func (s *Server) latestPXE(ctx context.Context, statusURL string) ([]byte, error) {
+	s.pxeMu.Lock()
+	last := s.pxeLast
+	s.pxeMu.Unlock()
+	if last.url == statusURL && time.Since(last.at) < pxeSnapshotFresh {
+		return last.body, last.err
+	}
+	return fetchPXE(ctx, statusURL)
+}
+
 func (s *Server) handlePXEStatus(w http.ResponseWriter, r *http.Request) {
 	v, err := s.store.GetSettings(r.Context())
 	if err != nil {
 		writeErr(w, err)
 		return
 	}
-	body, err := fetchPXE(r.Context(), v.PXEStatusURL)
+	body, err := s.latestPXE(r.Context(), v.PXEStatusURL)
 	if err != nil {
 		writeJSON(w, http.StatusOK, map[string]any{"running": false, "statusUrl": v.PXEStatusURL, "error": err.Error(),
 			"command": pxeCommand(r.Host, false), "serviceCommand": fmt.Sprintf("sudo kubit service install --pxe --iface en0 --kubit-url http://%s", r.Host)})

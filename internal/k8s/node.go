@@ -78,12 +78,12 @@ func (c *Client) NodeDetail(ctx context.Context, name string) (*NodeDetail, erro
 	for _, t := range n.Spec.Taints {
 		d.Taints = append(d.Taints, fmt.Sprintf("%s=%s:%s", t.Key, t.Value, t.Effect))
 	}
-	pods, err := c.CoreV1().Pods("").List(ctx, metav1.ListOptions{FieldSelector: "spec.nodeName=" + name})
+	pods, err := c.pods(ctx, "", metav1.ListOptions{FieldSelector: "spec.nodeName=" + name})
 	if err != nil {
 		return nil, err
 	}
 	usage, _ := c.podUsages(ctx)
-	for _, p := range pods.Items {
+	for _, p := range pods {
 		ps := podSummary(&p)
 		if p.Status.Phase == corev1.PodRunning {
 			d.Requests.CPUMilli += ps.CPUMilli
@@ -109,5 +109,5 @@ func (c *Client) Cordon(ctx context.Context, name string) error {
 	if err != nil {
 		return err
 	}
-	return drain.RunCordonOrUncordon(&drain.Helper{Ctx: ctx, Client: c.Clientset}, node, true)
+	return drain.RunCordonOrUncordon(&drain.Helper{Ctx: ctx, Client: c.Interface}, node, true)
 }

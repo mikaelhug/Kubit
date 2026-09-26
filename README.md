@@ -746,6 +746,13 @@ heartbeat that stops arriving means the daemon is down — the dead-man's switch
   `resync`. While disconnected the console shows a banner and the status dot pulses;
   the only timer in the UI is the shared clock (`web/src/clock.ts`), read only by leaf
   components (`Ago`, `Elapsed`, `SeenAgo`) so a tick never re-renders a page.
+- **Reads are cheap.** The daemon keeps one Kubernetes client per cluster (replaced when
+  the kubeconfig changes, dropped on forget) and serves workloads, pods, network,
+  storage, namespaces, builds, add-on readiness, service health and pod counts from the
+  watcher's synced informer caches (`k8s.Cache`), falling back to live lists until they
+  sync. Add-on releases come from `tofu show -json` cached by the state file's mtime and
+  size; schematic IDs, the Factory version list (1 h) and settings are cached in memory.
+  Operation logs are append-only rows (`operation_log`).
 - **Copy is short**: a section help is one sentence, a hint a fragment, and background
   lives here. Examples the forms no longer carry: a maintenance window reads
   `Sat,Sun 22:00-04:00` or `daily 01:00-05:00`; alert webhooks accept Slack, Discord,

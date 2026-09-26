@@ -21,7 +21,7 @@ var deprecatedLine = regexp.MustCompile(`^apiserver_requested_deprecated_apis\{(
 var labelPair = regexp.MustCompile(`(\w+)="([^"]*)"`)
 
 func (c *Client) DeprecatedAPIs(ctx context.Context) ([]DeprecatedAPI, error) {
-	body, err := c.RESTClient().Get().AbsPath("/metrics").DoRaw(ctx)
+	body, err := c.Discovery().RESTClient().Get().AbsPath("/metrics").DoRaw(ctx)
 	if err != nil {
 		return nil, err
 	}

@@ -6,6 +6,8 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"slices"
+	"sync"
 
 	"github.com/mikael/kubit/internal/offsite"
 	"github.com/mikael/kubit/internal/oob"
@@ -83,7 +85,50 @@ func DefaultSettings() Settings {
 	return Settings{FactoryURL: "https://factory.talos.dev", DiscoverySubnets: []string{}, WatchIntervalSec: 15, PXEStatusURL: "http://127.0.0.1:8069/status.json", Alerts: Alerts{MinSeverity: "warn", SMTP: SMTP{Port: 587, StartTLS: true, TLS: "starttls", To: []string{}}, IgnoreNamespaces: []string{}, HeartbeatHours: 24}, Offsite: offsite.Target{KeepBackups: 14}, PXEEnrollment: "open", AMT: oob.Config{Type: "amt", User: "admin"}, BMC: oob.Config{Type: "redfish", User: "root"}, Auth: Auth{OIDC: OIDC{Name: "SSO", UsernameClaim: "preferred_username", GroupsClaim: "groups", AdminGroups: []string{}, OperatorGroups: []string{}, ViewerGroups: []string{}}}}
 }
 
+func (v Settings) clone() Settings {
+	v.DiscoverySubnets = slices.Clone(v.DiscoverySubnets)
+	v.Alerts.SMTP.To = slices.Clone(v.Alerts.SMTP.To)
+	v.Alerts.IgnoreNamespaces = slices.Clone(v.Alerts.IgnoreNamespaces)
+	v.Auth.OIDC.AdminGroups = slices.Clone(v.Auth.OIDC.AdminGroups)
+	v.Auth.OIDC.OperatorGroups = slices.Clone(v.Auth.OIDC.OperatorGroups)
+	v.Auth.OIDC.ViewerGroups = slices.Clone(v.Auth.OIDC.ViewerGroups)
+	return v
+}
+
+type settingsCache struct {
+	mu    sync.Mutex
+	gen   uint64
+	value *Settings
+}
+
+func (c *settingsCache) invalidate() {
+	c.mu.Lock()
+	c.gen++
+	c.value = nil
+	c.mu.Unlock()
+}
+
 func (s *Store) GetSettings(ctx context.Context) (Settings, error) {
+	s.settings.mu.Lock()
+	cached, gen := s.settings.value, s.settings.gen
+	s.settings.mu.Unlock()
+	if cached != nil {
+		return cached.clone(), nil
+	}
+	out, err := s.readSettings(ctx)
+	if err != nil {
+		return out, err
+	}
+	s.settings.mu.Lock()
+	if s.settings.gen == gen {
+		v := out.clone()
+		s.settings.value = &v
+	}
+	s.settings.mu.Unlock()
+	return out, nil
+}
+
+func (s *Store) readSettings(ctx context.Context) (Settings, error) {
 	out := DefaultSettings()
 	var raw string
 	err := s.db.QueryRowContext(ctx, `SELECT value FROM settings WHERE key = 'kubit'`).Scan(&raw)

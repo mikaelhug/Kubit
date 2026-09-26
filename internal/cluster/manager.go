@@ -2,8 +2,11 @@ package cluster
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"sync"
 	"time"
 
 	"github.com/mikael/kubit/internal/config"
@@ -48,10 +51,24 @@ type Manager struct {
 	Timeouts Timeouts
 	Home     string
 	Local    func() (labhost.Driver, error)
+
+	kubeMu sync.Mutex
+	kube   map[string]kubeEntry
+}
+
+type kubeEntry struct {
+	sum [sha256.Size]byte
+	kc  *k8s.Client
 }
 
 func NewManager(s *store.Store, home string) *Manager {
-	return &Manager{Store: s, Factory: factory.New(), Timeouts: defaultTimeouts, Home: home, Local: func() (labhost.Driver, error) { return vfkit.New(home) }}
+	m := &Manager{Store: s, Factory: factory.New(), Timeouts: defaultTimeouts, Home: home, Local: func() (labhost.Driver, error) { return vfkit.New(home) }}
+	s.OnChange(func(c store.Change) {
+		if c.Table == "clusters" && c.Op == "delete" {
+			m.dropKube(c.Cluster)
+		}
+	})
+	return m
 }
 
 func (m *Manager) EnsureSchematic(ctx context.Context, c *config.Cluster) error {
@@ -182,26 +199,46 @@ func (m *Manager) saveExisting(ctx context.Context, c *config.Cluster) error {
 }
 
 func (m *Manager) KubeClient(ctx context.Context, name string) (*k8s.Client, error) {
-	sec, err := m.Store.GetClusterSecrets(ctx, name)
-	if err != nil {
-		return nil, err
-	}
-	return kubeClientOf(name, sec)
+	_, kc, err := m.clusterClients(ctx, name)
+	return kc, err
 }
 
-func kubeClientOf(name string, sec *store.ClusterSecrets) (*k8s.Client, error) {
+func (m *Manager) KubeClientFor(name string, sec *store.ClusterSecrets) (*k8s.Client, error) {
 	if sec.Kubeconfig == nil {
 		return nil, fmt.Errorf("cluster %s has no kubeconfig yet", name)
 	}
-	return k8s.New(sec.Kubeconfig)
+	sum := sha256.Sum256(sec.Kubeconfig)
+	m.kubeMu.Lock()
+	defer m.kubeMu.Unlock()
+	if e, ok := m.kube[name]; ok && e.sum == sum {
+		return e.kc, nil
+	}
+	kc, err := k8s.New(sec.Kubeconfig)
+	if err != nil {
+		return nil, err
+	}
+	if m.kube == nil {
+		m.kube = map[string]kubeEntry{}
+	}
+	m.kube[name] = kubeEntry{sum: sum, kc: kc}
+	return kc, nil
+}
+
+func (m *Manager) dropKube(name string) {
+	m.kubeMu.Lock()
+	defer m.kubeMu.Unlock()
+	delete(m.kube, name)
 }
 
 func (m *Manager) clusterClients(ctx context.Context, name string) (*store.ClusterSecrets, *k8s.Client, error) {
 	sec, err := m.Store.GetClusterSecrets(ctx, name)
+	if errors.Is(err, store.ErrNotFound) {
+		m.dropKube(name)
+	}
 	if err != nil {
 		return nil, nil, err
 	}
-	kc, err := kubeClientOf(name, sec)
+	kc, err := m.KubeClientFor(name, sec)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -232,12 +269,12 @@ func marshalJSON(v any) string {
 func (m *Manager) installedLayout(ctx context.Context, c *config.Cluster) (installed, split map[string]bool) {
 	installed, split = map[string]bool{}, map[string]bool{}
 	for _, n := range c.Spec.Nodes {
-		cfg, err := m.Store.GetNodeMachineConfig(ctx, n.IP)
+		cfg, systemSplit, err := m.Store.NodeMachineConfigSplit(ctx, n.IP)
 		if err != nil {
 			continue
 		}
 		installed[n.IP] = true
-		split[n.IP] = m.Store.NodeSystemSplit(ctx, n.IP) || config.HasSystemVolume(cfg)
+		split[n.IP] = systemSplit || config.HasSystemVolume(cfg)
 	}
 	return installed, split
 }

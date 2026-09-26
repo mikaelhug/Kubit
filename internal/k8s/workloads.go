@@ -28,39 +28,39 @@ type Workload struct {
 
 func (c *Client) Workloads(ctx context.Context) ([]Workload, error) {
 	var out []Workload
-	deps, err := c.AppsV1().Deployments("").List(ctx, metav1.ListOptions{})
+	deps, err := c.deployments(ctx, "")
 	if err != nil {
 		return nil, err
 	}
-	for _, d := range deps.Items {
+	for _, d := range deps {
 		out = append(out, aged(Workload{Kind: "Deployment", Namespace: d.Namespace, Name: d.Name, Ready: d.Status.ReadyReplicas, Desired: *d.Spec.Replicas, Available: d.Status.AvailableReplicas == *d.Spec.Replicas, Images: images(d.Spec.Template.Spec), Selector: metav1.FormatLabelSelector(d.Spec.Selector)}, d.CreationTimestamp))
 	}
-	dss, err := c.AppsV1().DaemonSets("").List(ctx, metav1.ListOptions{})
+	dss, err := c.daemonSets(ctx, "")
 	if err != nil {
 		return nil, err
 	}
-	for _, d := range dss.Items {
+	for _, d := range dss {
 		out = append(out, aged(Workload{Kind: "DaemonSet", Namespace: d.Namespace, Name: d.Name, Ready: d.Status.NumberReady, Desired: d.Status.DesiredNumberScheduled, Available: d.Status.NumberReady == d.Status.DesiredNumberScheduled, Images: images(d.Spec.Template.Spec), Selector: metav1.FormatLabelSelector(d.Spec.Selector)}, d.CreationTimestamp))
 	}
-	sts, err := c.AppsV1().StatefulSets("").List(ctx, metav1.ListOptions{})
+	sts, err := c.statefulSets(ctx, "")
 	if err != nil {
 		return nil, err
 	}
-	for _, d := range sts.Items {
+	for _, d := range sts {
 		out = append(out, aged(Workload{Kind: "StatefulSet", Namespace: d.Namespace, Name: d.Name, Ready: d.Status.ReadyReplicas, Desired: *d.Spec.Replicas, Available: d.Status.ReadyReplicas == *d.Spec.Replicas, Images: images(d.Spec.Template.Spec), Selector: metav1.FormatLabelSelector(d.Spec.Selector)}, d.CreationTimestamp))
 	}
-	jobs, err := c.BatchV1().Jobs("").List(ctx, metav1.ListOptions{})
+	jobs, err := c.jobs(ctx, "")
 	if err != nil {
 		return nil, err
 	}
-	for _, j := range jobs.Items {
+	for _, j := range jobs {
 		out = append(out, aged(Workload{Kind: "Job", Namespace: j.Namespace, Name: j.Name, Ready: j.Status.Succeeded, Desired: 1, Available: j.Status.Succeeded > 0, Images: images(j.Spec.Template.Spec)}, j.CreationTimestamp))
 	}
-	crons, err := c.BatchV1().CronJobs("").List(ctx, metav1.ListOptions{})
+	crons, err := c.cronJobs(ctx)
 	if err != nil {
 		return nil, err
 	}
-	for _, j := range crons.Items {
+	for _, j := range crons {
 		out = append(out, cronWorkload(j))
 	}
 	sort.Slice(out, func(i, j int) bool {
@@ -94,12 +94,12 @@ type Namespace struct {
 }
 
 func (c *Client) Namespaces(ctx context.Context) ([]Namespace, error) {
-	list, err := c.CoreV1().Namespaces().List(ctx, metav1.ListOptions{})
+	list, err := c.namespaces(ctx)
 	if err != nil {
 		return nil, err
 	}
-	out := make([]Namespace, 0, len(list.Items))
-	for _, n := range list.Items {
+	out := make([]Namespace, 0, len(list))
+	for _, n := range list {
 		out = append(out, namespaceOf(n))
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
@@ -121,18 +121,27 @@ func images(spec corev1.PodSpec) string {
 }
 
 func (c *Client) Pods(ctx context.Context, namespace, selector string) ([]PodSummary, error) {
-	pods, err := c.CoreV1().Pods(namespace).List(ctx, metav1.ListOptions{LabelSelector: selector})
+	out, err := c.PodSummaries(ctx, namespace, selector)
 	if err != nil {
 		return nil, err
 	}
 	usage, _ := c.podUsages(ctx)
-	out := make([]PodSummary, 0, len(pods.Items))
-	for _, p := range pods.Items {
-		ps := podSummary(&p)
-		if u, ok := usage[p.Namespace+"/"+p.Name]; ok {
-			ps.UsageCPU, ps.UsageMem = u.CPUMilli, u.MemoryBytes
+	for i, ps := range out {
+		if u, ok := usage[ps.Namespace+"/"+ps.Name]; ok {
+			out[i].UsageCPU, out[i].UsageMem = u.CPUMilli, u.MemoryBytes
 		}
-		out = append(out, ps)
+	}
+	return out, nil
+}
+
+func (c *Client) PodSummaries(ctx context.Context, namespace, selector string) ([]PodSummary, error) {
+	pods, err := c.pods(ctx, namespace, metav1.ListOptions{LabelSelector: selector})
+	if err != nil {
+		return nil, err
+	}
+	out := make([]PodSummary, 0, len(pods))
+	for _, p := range pods {
+		out = append(out, podSummary(&p))
 	}
 	return out, nil
 }

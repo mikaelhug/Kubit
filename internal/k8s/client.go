@@ -3,18 +3,37 @@ package k8s
 import (
 	"context"
 	"fmt"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/client-go/discovery/cached/memory"
+	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
+	"k8s.io/client-go/restmapper"
 	"k8s.io/client-go/tools/clientcmd"
+	metricsclient "k8s.io/metrics/pkg/client/clientset/versioned"
 )
 
 type Client struct {
-	*kubernetes.Clientset
+	kubernetes.Interface
 	rest *rest.Config
+
+	dynOnce sync.Once
+	dyn     dynamic.Interface
+	dynErr  error
+
+	metricsOnce sync.Once
+	metrics     metricsclient.Interface
+	metricsErr  error
+
+	mapperOnce sync.Once
+	mapper     *restmapper.DeferredDiscoveryRESTMapper
+
+	cache atomic.Pointer[Cache]
 }
 
 func New(kubeconfig []byte) (*Client, error) {
@@ -27,7 +46,24 @@ func New(kubeconfig []byte) (*Client, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Client{Clientset: cs, rest: cfg}, nil
+	return &Client{Interface: cs, rest: cfg}, nil
+}
+
+func (c *Client) dynClient() (dynamic.Interface, error) {
+	c.dynOnce.Do(func() { c.dyn, c.dynErr = dynamic.NewForConfig(c.rest) })
+	return c.dyn, c.dynErr
+}
+
+func (c *Client) metricsClient() (metricsclient.Interface, error) {
+	c.metricsOnce.Do(func() { c.metrics, c.metricsErr = metricsclient.NewForConfig(c.rest) })
+	return c.metrics, c.metricsErr
+}
+
+func (c *Client) restMapper() *restmapper.DeferredDiscoveryRESTMapper {
+	c.mapperOnce.Do(func() {
+		c.mapper = restmapper.NewDeferredDiscoveryRESTMapper(memory.NewMemCacheClient(c.Discovery()))
+	})
+	return c.mapper
 }
 
 func (c *Client) streamConfig() *rest.Config {

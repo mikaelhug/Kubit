@@ -8,28 +8,23 @@ import (
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/dynamic"
-	"k8s.io/client-go/restmapper"
 )
 
 const FieldManager = "kubit"
 
 func (c *Client) ServerSideApply(ctx context.Context, objects []map[string]any) error {
-	dyn, err := dynamic.NewForConfig(c.rest)
+	dyn, err := c.dynClient()
 	if err != nil {
 		return err
 	}
-	groups, err := restmapper.GetAPIGroupResources(c.Discovery())
-	if err != nil {
-		return err
-	}
-	mapper := restmapper.NewDiscoveryRESTMapper(groups)
 	force := true
 	for _, obj := range objects {
 		u := &unstructured.Unstructured{Object: obj}
 		gvk := u.GroupVersionKind()
-		mapping, err := mapper.RESTMapping(gvk.GroupKind(), gvk.Version)
+		mapping, err := c.restMapping(gvk)
 		if err != nil {
 			return fmt.Errorf("%s %s: %w", gvk.Kind, u.GetName(), err)
 		}
@@ -50,4 +45,14 @@ func (c *Client) ServerSideApply(ctx context.Context, objects []map[string]any) 
 		}
 	}
 	return nil
+}
+
+func (c *Client) restMapping(gvk schema.GroupVersionKind) (*meta.RESTMapping, error) {
+	mapper := c.restMapper()
+	mapping, err := mapper.RESTMapping(gvk.GroupKind(), gvk.Version)
+	if meta.IsNoMatchError(err) {
+		mapper.Reset()
+		mapping, err = mapper.RESTMapping(gvk.GroupKind(), gvk.Version)
+	}
+	return mapping, err
 }

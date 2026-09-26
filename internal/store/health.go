@@ -94,6 +94,14 @@ func (s *Store) Events(ctx context.Context, cluster string, limit int, unackedOn
 	if unackedOnly {
 		q += ` AND acked = 0`
 	}
+	return s.queryEvents(ctx, q, cluster, limit)
+}
+
+func (s *Store) OpenWorkloadEvents(ctx context.Context, cluster string, limit int) ([]EventRow, error) {
+	return s.queryEvents(ctx, `SELECT id, ts, cluster, node, severity, kind, message, acked FROM events WHERE cluster = ? AND acked = 0 AND instr(node, '/') > 0`, cluster, limit)
+}
+
+func (s *Store) queryEvents(ctx context.Context, q, cluster string, limit int) ([]EventRow, error) {
 	rows, err := s.db.QueryContext(ctx, q+` ORDER BY id DESC LIMIT ?`, cluster, limit)
 	if err != nil {
 		return nil, err

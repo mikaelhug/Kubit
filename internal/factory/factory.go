@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"sort"
+	"strings"
 	"sync"
 
 	"github.com/mikael/kubit/internal/httpx"
@@ -17,9 +18,10 @@ import (
 const DefaultBaseURL = "https://factory.talos.dev"
 
 type Client struct {
-	HTTP *http.Client
-	mu   sync.RWMutex
-	base string
+	HTTP       *http.Client
+	mu         sync.RWMutex
+	base       string
+	schematics sync.Map
 }
 
 func New() *Client { return &Client{base: DefaultBaseURL, HTTP: httpx.Client} }
@@ -48,12 +50,17 @@ func (c *Client) CreateSchematic(ctx context.Context, extensions []string) (stri
 	var s schematic
 	exts := append([]string(nil), extensions...)
 	sort.Strings(exts)
+	base := c.BaseURL()
+	key := base + "\n" + strings.Join(exts, "\n")
+	if id, ok := c.schematics.Load(key); ok {
+		return id.(string), nil
+	}
 	s.Customization.SystemExtensions.OfficialExtensions = exts
 	body, err := yaml.Marshal(s)
 	if err != nil {
 		return "", err
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.BaseURL()+"/schematics", bytes.NewReader(body))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, base+"/schematics", bytes.NewReader(body))
 	if err != nil {
 		return "", err
 	}
@@ -76,6 +83,7 @@ func (c *Client) CreateSchematic(ctx context.Context, extensions []string) (stri
 	if out.ID == "" {
 		return "", fmt.Errorf("image factory: empty schematic id")
 	}
+	c.schematics.Store(key, out.ID)
 	return out.ID, nil
 }
 

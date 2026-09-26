@@ -3,11 +3,11 @@ package cluster
 import (
 	"context"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
 	"github.com/mikael/kubit/internal/config"
-	"github.com/mikael/kubit/internal/k8s"
 	"github.com/mikael/kubit/internal/store"
 	"github.com/mikael/kubit/internal/talos"
 	"github.com/mikael/kubit/internal/tofu"
@@ -117,25 +117,36 @@ func (m *Manager) Status(ctx context.Context, name string) (*Status, error) {
 	ordered := orderedNodes(c)
 	st.Nodes = make([]NodeStatus, len(ordered))
 	byHost := map[string]*NodeStatus{}
+	var macs []string
+	for _, n := range ordered {
+		if n.MAC != "" {
+			macs = append(macs, n.MAC)
+		}
+	}
+	seen, _ := m.Store.MachineIPs(ctx, macs)
 	for i, n := range ordered {
 		st.Nodes[i] = NodeStatus{Hostname: n.Hostname, IP: n.IP, Role: string(n.Role), Pool: n.Pool, Arch: string(n.Arch), KVM: n.KVM}
-		if n.MAC != "" {
-			if mach, err := m.Store.GetMachine(ctx, n.MAC); err == nil && mach.IP != "" && mach.IP != n.IP {
-				st.Nodes[i].SeenAt = mach.IP
-			}
+		if ip := seen[strings.ToLower(n.MAC)]; n.MAC != "" && ip != "" && ip != n.IP {
+			st.Nodes[i].SeenAt = ip
 		}
 		byHost[n.Hostname] = &st.Nodes[i]
 	}
 
+	probes := make([]*talosProbe, len(c.Spec.Nodes))
+	probeOf := map[string]*talosProbe{}
+	for i, n := range c.Spec.Nodes {
+		probes[i] = &talosProbe{dialed: make(chan struct{})}
+		probeOf[n.Hostname] = probes[i]
+	}
 	var wg sync.WaitGroup
 	var mu sync.Mutex
-	for _, n := range c.Spec.Nodes {
+	for i, n := range c.Spec.Nodes {
 		wg.Add(1)
-		go func(n config.Node) {
+		go func(n config.Node, p *talosProbe) {
 			defer wg.Done()
 			nctx, cancel := context.WithTimeout(ctx, 6*time.Second)
 			defer cancel()
-			ver, stage, err := probeNode(nctx, n.IP, sec.Talosconfig)
+			ver, stage, err := p.probe(nctx, n.IP, sec.Talosconfig)
 			mu.Lock()
 			defer mu.Unlock()
 			ns := byHost[n.Hostname]
@@ -150,13 +161,24 @@ func (m *Manager) Status(ctx context.Context, name string) (*Status, error) {
 			ns.TalosReachable = true
 			ns.Stage = stage
 			ns.TalosVersion = ver
-		}(n)
+		}(n, probes[i])
 	}
 	if cps := c.ControlPlanes(); len(cps) > 0 && sec.Kubeconfig != nil {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			e := m.etcdStatus(ctx, cps, sec.Talosconfig)
+			e := m.etcdStatus(ctx, cps, func(n config.Node) *talos.Client {
+				p := probeOf[n.Hostname]
+				if p == nil {
+					return nil
+				}
+				select {
+				case <-p.dialed:
+					return p.tc
+				case <-ctx.Done():
+					return nil
+				}
+			})
 			mu.Lock()
 			st.Etcd = e
 			mu.Unlock()
@@ -166,7 +188,7 @@ func (m *Manager) Status(ctx context.Context, name string) (*Status, error) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			kc, err := k8s.New(sec.Kubeconfig)
+			kc, err := m.KubeClientFor(name, sec)
 			if err != nil {
 				mu.Lock()
 				st.APIError = err.Error()
@@ -209,6 +231,11 @@ func (m *Manager) Status(ctx context.Context, name string) (*Status, error) {
 		}()
 	}
 	wg.Wait()
+	for _, p := range probes {
+		if p.tc != nil {
+			p.tc.Close()
+		}
+	}
 	st.Observer, st.ObserverError = observe(ctx, st)
 
 	st.Etcd.Expected = len(c.ControlPlanes())
@@ -266,18 +293,32 @@ func observe(ctx context.Context, st *Status) (string, string) {
 	return ObserverOffline, reason
 }
 
-func probeNode(ctx context.Context, ip string, talosconfig []byte) (version, stage string, err error) {
+type talosProbe struct {
+	dialed chan struct{}
+	tc     *talos.Client
+}
+
+func (p *talosProbe) dial(ctx context.Context, ip string, talosconfig []byte) error {
+	defer close(p.dialed)
 	if err := talos.PortErr(ctx, ip, 2*time.Second); err != nil {
 		if Classify(err) == ReachNoNetwork {
-			return "", "", err
+			return err
 		}
-		return "", "", fmt.Errorf("port 50000 closed or host down")
+		return fmt.Errorf("port 50000 closed or host down")
 	}
 	tc, err := talos.Dial(ctx, ip, talosconfig)
 	if err != nil {
-		return "", "", fmt.Errorf("dial: %w", err)
+		return fmt.Errorf("dial: %w", err)
 	}
-	defer tc.Close()
+	p.tc = tc
+	return nil
+}
+
+func (p *talosProbe) probe(ctx context.Context, ip string, talosconfig []byte) (version, stage string, err error) {
+	if err := p.dial(ctx, ip, talosconfig); err != nil {
+		return "", "", err
+	}
+	tc := p.tc
 	v, err := tc.Version(tc.Context(ctx))
 	if err != nil {
 		return "", "", fmt.Errorf("version: %w", talos.ShortGRPC(err))
@@ -292,16 +333,15 @@ func probeNode(ctx context.Context, ip string, talosconfig []byte) (version, sta
 	return version, stage, nil
 }
 
-func (m *Manager) etcdStatus(ctx context.Context, cps []config.Node, talosconfig []byte) EtcdStatus {
+func (m *Manager) etcdStatus(ctx context.Context, cps []config.Node, dialed func(config.Node) *talos.Client) EtcdStatus {
 	var e EtcdStatus
 	for _, cp := range cps {
-		tc, err := talos.Dial(ctx, cp.IP, talosconfig)
-		if err != nil {
+		tc := dialed(cp)
+		if tc == nil {
 			continue
 		}
 		members, err := tc.EtcdMemberList(tc.Context(ctx), &machineapi.EtcdMemberListRequest{})
 		if err != nil {
-			tc.Close()
 			continue
 		}
 		for _, msg := range members.Messages {
@@ -325,7 +365,6 @@ func (m *Manager) etcdStatus(ctx context.Context, cps []config.Node, talosconfig
 			}
 		}
 		healthy, _ := tc.ServiceHealthy(ctx, "etcd")
-		tc.Close()
 		e.Healthy = healthy && len(e.Alarms) == 0
 		break
 	}

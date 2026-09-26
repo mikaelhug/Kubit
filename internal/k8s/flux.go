@@ -40,7 +40,7 @@ var fluxKinds = []struct {
 var crdResource = schema.GroupVersionResource{Group: "apiextensions.k8s.io", Version: "v1", Resource: "customresourcedefinitions"}
 
 func (c *Client) FluxObjects(ctx context.Context) ([]FluxObject, error) {
-	dyn, err := dynamic.NewForConfig(c.rest)
+	dyn, err := c.dynClient()
 	if err != nil {
 		return nil, err
 	}

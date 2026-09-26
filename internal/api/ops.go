@@ -340,8 +340,7 @@ func (s *Server) cancelOperation(id int64) bool {
 }
 
 func (s *Server) publishOperation(ctx context.Context, id int64) {
-	if op, err := s.store.GetOperation(ctx, id); err == nil {
-		op.Log = ""
+	if op, err := s.store.GetOperationWithoutLog(ctx, id); err == nil {
 		s.hub.publish(Message{Kind: "operation", OperationID: id, Operation: op})
 	}
 }

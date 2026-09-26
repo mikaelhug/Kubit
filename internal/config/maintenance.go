@@ -3,6 +3,7 @@ package config
 import (
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -25,7 +26,7 @@ func (m Maintenance) parse() (*window, error) {
 	}
 	loc := time.Local
 	if m.Timezone != "" {
-		l, err := time.LoadLocation(m.Timezone)
+		l, err := loadLocation(m.Timezone)
 		if err != nil {
 			return nil, fmt.Errorf("maintenance.timezone %q: %w", m.Timezone, err)
 		}
@@ -64,6 +65,20 @@ func (m Maintenance) parse() (*window, error) {
 		return nil, fmt.Errorf("maintenance.window: empty range %q", fields[1])
 	}
 	return w, nil
+}
+
+var locations sync.Map
+
+func loadLocation(name string) (*time.Location, error) {
+	if l, ok := locations.Load(name); ok {
+		return l.(*time.Location), nil
+	}
+	l, err := time.LoadLocation(name)
+	if err != nil {
+		return nil, err
+	}
+	locations.Store(name, l)
+	return l, nil
 }
 
 func hhmm(s string) (int, error) {

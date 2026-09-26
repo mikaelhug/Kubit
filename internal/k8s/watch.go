@@ -50,9 +50,12 @@ func (c *Client) WatchScopes(ctx context.Context, changed func(scope, namespace 
 	_, _ = f.Storage().V1().StorageClasses().Informer().AddEventHandler(hook(ScopeStorage))
 	_, _ = f.Core().V1().Nodes().Informer().AddEventHandler(hook(ScopeNodes))
 	go c.watchFlux(ctx, hook(ScopeFlux))
+	k := NewCache(f)
+	c.UseCache(k)
 	f.Start(ctx.Done())
 	f.WaitForCacheSync(ctx.Done())
 	<-ctx.Done()
+	c.dropCache(k)
 	f.Shutdown()
 }
 

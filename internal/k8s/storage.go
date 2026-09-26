@@ -3,8 +3,6 @@ package k8s
 import (
 	"context"
 	"sort"
-
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
 type StorageClass struct {
@@ -47,11 +45,11 @@ type Storage struct {
 
 func (c *Client) Storage(ctx context.Context) (*Storage, error) {
 	out := &Storage{Classes: []StorageClass{}, Volumes: []Volume{}, Claims: []Claim{}}
-	scs, err := c.StorageV1().StorageClasses().List(ctx, metav1.ListOptions{})
+	scs, err := c.storageClasses(ctx)
 	if err != nil {
 		return nil, err
 	}
-	for _, sc := range scs.Items {
+	for _, sc := range scs {
 		s := StorageClass{Name: sc.Name, Provisioner: sc.Provisioner, Default: sc.Annotations["storageclass.kubernetes.io/is-default-class"] == "true"}
 		if sc.ReclaimPolicy != nil {
 			s.Reclaim = string(*sc.ReclaimPolicy)
@@ -64,11 +62,11 @@ func (c *Client) Storage(ctx context.Context) (*Storage, error) {
 		}
 		out.Classes = append(out.Classes, s)
 	}
-	pvs, err := c.CoreV1().PersistentVolumes().List(ctx, metav1.ListOptions{})
+	pvs, err := c.volumes(ctx)
 	if err != nil {
 		return nil, err
 	}
-	for _, pv := range pvs.Items {
+	for _, pv := range pvs {
 		v := Volume{Name: pv.Name, Capacity: pv.Spec.Capacity.Storage().Value(), Phase: string(pv.Status.Phase), Class: pv.Spec.StorageClassName, Reclaim: string(pv.Spec.PersistentVolumeReclaimPolicy)}
 		v.Age, _ = age(pv.CreationTimestamp)
 		if pv.Spec.ClaimRef != nil {
@@ -79,20 +77,28 @@ func (c *Client) Storage(ctx context.Context) (*Storage, error) {
 		}
 		out.Volumes = append(out.Volumes, v)
 	}
-	pvcs, err := c.CoreV1().PersistentVolumeClaims("").List(ctx, metav1.ListOptions{})
+	if out.Claims, err = c.Claims(ctx); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *Client) Claims(ctx context.Context) ([]Claim, error) {
+	pvcs, err := c.claims(ctx)
 	if err != nil {
 		return nil, err
 	}
-	for _, pvc := range pvcs.Items {
+	out := []Claim{}
+	for _, pvc := range pvcs {
 		cl := Claim{Namespace: pvc.Namespace, Name: pvc.Name, Phase: string(pvc.Status.Phase), Requested: pvc.Spec.Resources.Requests.Storage().Value(), Capacity: pvc.Status.Capacity.Storage().Value(), Volume: pvc.Spec.VolumeName}
 		cl.Age, cl.AgeSec = age(pvc.CreationTimestamp)
 		if pvc.Spec.StorageClassName != nil {
 			cl.Class = *pvc.Spec.StorageClassName
 		}
-		out.Claims = append(out.Claims, cl)
+		out = append(out, cl)
 	}
-	sort.Slice(out.Claims, func(i, j int) bool {
-		return out.Claims[i].Namespace+"/"+out.Claims[i].Name < out.Claims[j].Namespace+"/"+out.Claims[j].Name
+	sort.Slice(out, func(i, j int) bool {
+		return out[i].Namespace+"/"+out[i].Name < out[j].Namespace+"/"+out[j].Name
 	})
 	return out, nil
 }

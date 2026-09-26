@@ -4,7 +4,6 @@ import (
 	"context"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	metricsclient "k8s.io/metrics/pkg/client/clientset/versioned"
 )
 
 type NodeUsage struct {
@@ -13,7 +12,7 @@ type NodeUsage struct {
 }
 
 func (c *Client) NodeUsages(ctx context.Context) (map[string]NodeUsage, error) {
-	mc, err := metricsclient.NewForConfig(c.rest)
+	mc, err := c.metricsClient()
 	if err != nil {
 		return nil, err
 	}
@@ -29,7 +28,7 @@ func (c *Client) NodeUsages(ctx context.Context) (map[string]NodeUsage, error) {
 }
 
 func (c *Client) podUsages(ctx context.Context) (map[string]NodeUsage, error) {
-	mc, err := metricsclient.NewForConfig(c.rest)
+	mc, err := c.metricsClient()
 	if err != nil {
 		return nil, err
 	}
@@ -50,12 +49,12 @@ func (c *Client) podUsages(ctx context.Context) (map[string]NodeUsage, error) {
 }
 
 func (c *Client) PodCount(ctx context.Context) (map[string]int, error) {
-	pods, err := c.CoreV1().Pods("").List(ctx, metav1.ListOptions{FieldSelector: "status.phase=Running"})
+	pods, err := c.pods(ctx, "", metav1.ListOptions{FieldSelector: "status.phase=Running"})
 	if err != nil {
 		return nil, err
 	}
 	out := map[string]int{}
-	for _, p := range pods.Items {
+	for _, p := range pods {
 		out[p.Spec.NodeName]++
 	}
 	return out, nil

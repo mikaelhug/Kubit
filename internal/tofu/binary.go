@@ -29,7 +29,24 @@ var checksums = map[string]string{
 	"linux_arm64":  "e573979ba68a17fe7b881752051a694a7efcd970e39521f6a25775197861ed4d",
 }
 
+var resolved sync.Map
+
 func Binary(ctx context.Context, binDir string) (string, error) {
+	key := binDir + "\x00" + Version
+	if p, ok := resolved.Load(key); ok {
+		if _, err := os.Stat(p.(string)); err == nil {
+			return p.(string), nil
+		}
+		resolved.Delete(key)
+	}
+	p, err := binary(ctx, binDir)
+	if err == nil {
+		resolved.Store(key, p)
+	}
+	return p, err
+}
+
+func binary(ctx context.Context, binDir string) (string, error) {
 	if p, err := exec.LookPath("tofu"); err == nil && sameMinor(ctx, p) {
 		return p, nil
 	}

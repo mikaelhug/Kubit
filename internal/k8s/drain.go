@@ -18,7 +18,7 @@ func (c *Client) Drain(ctx context.Context, name string, timeout time.Duration, 
 	}
 	h := &drain.Helper{
 		Ctx:                 ctx,
-		Client:              c.Clientset,
+		Client:              c.Interface,
 		IgnoreAllDaemonSets: true,
 		DeleteEmptyDirData:  true,
 		GracePeriodSeconds:  -1,
@@ -40,7 +40,7 @@ func (c *Client) Uncordon(ctx context.Context, name string) error {
 	if err != nil {
 		return err
 	}
-	return drain.RunCordonOrUncordon(&drain.Helper{Ctx: ctx, Client: c.Clientset}, node, false)
+	return drain.RunCordonOrUncordon(&drain.Helper{Ctx: ctx, Client: c.Interface}, node, false)
 }
 
 func (c *Client) DeleteNode(ctx context.Context, name string) error {

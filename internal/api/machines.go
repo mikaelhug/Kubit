@@ -151,7 +151,7 @@ func (s *Server) handleDesign(w http.ResponseWriter, r *http.Request) {
 	if warnings == nil {
 		warnings = []config.Warning{}
 	}
-	writeJSON(w, http.StatusOK, designResponse{YAML: mustYAML(c), Cluster: c, Warnings: warnings, Topology: config.Recommend(len(machines)), Overlaps: s.rangeOverlaps(r, c)})
+	writeJSON(w, http.StatusOK, designResponse{YAML: mustYAML(c), Cluster: c, Warnings: warnings, Topology: config.Recommend(len(machines)), Overlaps: s.rangeOverlapsFor(r, c)})
 }
 
 func (s *Server) handleLint(w http.ResponseWriter, r *http.Request) {
@@ -174,10 +174,14 @@ func (s *Server) handleLint(w http.ResponseWriter, r *http.Request) {
 	}
 	machines, _ := s.designMachines(r.Context(), macs, false)
 	warnings := config.Lint(c, machines)
-	for _, o := range s.rangeOverlaps(r, c) {
+	var peers []peerCluster
+	if c.Spec.Platform.MetalLB.Enabled || c.Spec.ControlPlane.VIP != "" {
+		peers = s.peerClusters(r, c)
+	}
+	for _, o := range rangeOverlaps(c, peers) {
 		warnings = append(warnings, config.Warning{Level: "warn", Code: "metallb-overlap", Message: fmt.Sprintf("MetalLB range overlaps cluster %s's range on the same LAN.", o)})
 	}
-	for _, o := range s.vipConflicts(r, c) {
+	for _, o := range vipConflicts(c, peers) {
 		warnings = append(warnings, config.Warning{Level: "warn", Code: "vip-taken", Message: fmt.Sprintf("VIP %s is already cluster %s's VIP.", c.Spec.ControlPlane.VIP, o)})
 	}
 	if warnings == nil {
@@ -242,41 +246,56 @@ func reparse(c *config.Cluster) (*config.Cluster, error) {
 	return config.Parse(b)
 }
 
-func (s *Server) rangeOverlaps(r *http.Request, c *config.Cluster) []string {
-	if !c.Spec.Platform.MetalLB.Enabled {
-		return nil
-	}
+type peerCluster struct {
+	name string
+	spec *config.Cluster
+}
+
+func (s *Server) peerClusters(r *http.Request, c *config.Cluster) []peerCluster {
 	rows, err := s.store.ListClusters(r.Context())
 	if err != nil {
 		return nil
 	}
-	others := map[string]string{}
+	var out []peerCluster
 	for _, row := range rows {
 		if row.Name == c.Metadata.Name {
 			continue
 		}
-		if oc, err := config.Parse(row.Spec); err == nil && oc.Spec.Platform.MetalLB.Enabled {
-			others[row.Name] = oc.Spec.Platform.MetalLB.Range
+		if oc, err := config.Parse(row.Spec); err == nil {
+			out = append(out, peerCluster{name: row.Name, spec: oc})
+		}
+	}
+	return out
+}
+
+func (s *Server) rangeOverlapsFor(r *http.Request, c *config.Cluster) []string {
+	if !c.Spec.Platform.MetalLB.Enabled {
+		return nil
+	}
+	return rangeOverlaps(c, s.peerClusters(r, c))
+}
+
+func rangeOverlaps(c *config.Cluster, peers []peerCluster) []string {
+	if !c.Spec.Platform.MetalLB.Enabled {
+		return nil
+	}
+	others := map[string]string{}
+	for _, p := range peers {
+		if p.spec.Spec.Platform.MetalLB.Enabled {
+			others[p.name] = p.spec.Spec.Platform.MetalLB.Range
 		}
 	}
 	return config.Overlaps(c.Spec.Platform.MetalLB.Range, others)
 }
 
-func (s *Server) vipConflicts(r *http.Request, c *config.Cluster) []string {
+func vipConflicts(c *config.Cluster, peers []peerCluster) []string {
 	if c.Spec.ControlPlane.VIP == "" {
 		return nil
 	}
-	rows, err := s.store.ListClusters(r.Context())
-	if err != nil {
-		return nil
-	}
 	var out []string
-	for _, row := range rows {
-		if row.Name == c.Metadata.Name {
-			continue
-		}
-		if oc, err := config.Parse(row.Spec); err == nil && oc.Spec.ControlPlane.VIP == c.Spec.ControlPlane.VIP {
-			out = append(out, row.Name)
+	for _, p := range peers {
+		if p.spec.Spec.ControlPlane.VIP == c.Spec.ControlPlane.VIP {
+			out = append(out, p.name)
 		}
 	}
 	return out
