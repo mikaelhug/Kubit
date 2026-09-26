@@ -498,7 +498,8 @@ downloads them once. iPXE's own DHCP round is recognised (user class / option 17
 pointed at the script instead of the binary. BIOS firmware and iPXE get the option 43
 discovery bypass; UEFI firmware gets a plain proxy offer and comes back to the boot
 server on :4011 (the variant every firmware supports). Needs root for UDP 67/69/4011
-and a host on the machines' L2 segment.
+and a host on the machines' L2 segment; over Wi-Fi only when the access point forwards
+DHCP both ways.
 
 ## Console (web UI)
 
@@ -643,7 +644,8 @@ machine config, so they come back as members rather than in maintenance mode), t
 snapshot is uploaded to the first control plane (`EtcdRecover`), etcd is bootstrapped
 with `RecoverEtcd`, the other members rejoin, and Kubit waits for every node to be
 Ready. Verified on `lab` (3 control planes): a ConfigMap created after the snapshot was
-gone, LB addresses and workloads intact, ~3 minutes end to end.
+gone, LB addresses and workloads intact, ~3 minutes end to end. Take a fresh snapshot
+first while the cluster is still healthy.
 
 ## Lifecycle safety
 
@@ -730,14 +732,26 @@ heartbeat that stops arriving means the daemon is down — the dead-man's switch
   `healthResolved` — alongside `status` (watcher tick), `health`, `operation`/`event`
   and `refresh {cluster, scope}` from Kubernetes informers (pods, workloads, services,
   endpoint slices, ingresses, claims, volumes, classes, nodes; debounced 1 s; running
-  from `bootstrapped` on), the daemon-side PXE watch and the hourly `versions` check.
-  The console keeps normalized live state (`web/src/store.ts`) that every view derives
-  from, and refetches only large derived views when their scope fires. Messages carry
+  from `bootstrapped` on), the daemon-side PXE watch, the watcher's service-health
+  collection (`services`, per cluster), off-site status changes (`offsite`, Kubit-wide)
+  and the hourly `versions` check (the console then refetches `/versions` once into the
+  store). The console keeps normalized live state (`web/src/store.ts`) that every view
+  derives from, and refetches only large derived views when their scope fires: views
+  fetch through `useLive` (`web/src/useLive.ts`), which names the scopes it follows, and
+  each scope is its own signal, so a `refresh` re-renders only its subscribers. Messages carry
   sequence numbers: a reconnect replays from `?since=` out of a 2000-message ring, or
   gets `resync` and reloads base state once. Writes by another process (the CLI while
   the daemon runs) are detected daemon-side via SQLite's `data_version` and trigger
   `resync`. While disconnected the console shows a banner and the status dot pulses;
-  the only timer in the UI is the "n min ago" clock.
+  the only timer in the UI is the shared clock (`web/src/clock.ts`), read only by leaf
+  components (`Ago`, `Elapsed`, `SeenAgo`) so a tick never re-renders a page.
+- **Copy is short**: a section help is one sentence, a hint a fragment, and background
+  lives here. Examples the forms no longer carry: a maintenance window reads
+  `Sat,Sun 22:00-04:00` or `daily 01:00-05:00`; alert webhooks accept Slack, Discord,
+  Teams or generic JSON; an off-site directory can be a mounted share, a USB disk or a
+  synced folder, and the master key belongs outside this machine too; a heartbeat that
+  stops arriving means the daemon is down. Lab host readings are kept at full
+  resolution for 24 h, then hourly for 30 d.
 
 ## End-to-end script
 

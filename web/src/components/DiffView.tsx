@@ -1,11 +1,11 @@
 import { useState } from 'preact/hooks'
-import type { PlanChange, PlanDiff } from '../api'
-import { Pill, type Tone } from './ui'
+import { fmt, type PlanChange, type PlanDiff } from '../api'
+import type { Tone } from '../tone'
+import { Pill } from './ui'
 
 const actionTone: Record<PlanChange['action'], Tone> = { create: 'good', update: 'warn', replace: 'warn', delete: 'bad' }
 const typeLabel: Record<string, string> = { helm_release: 'Helm release', kubectl_manifest: 'Manifest', kubernetes_namespace_v1: 'Namespace' }
 
-/** Reviewable rendering of an OpenTofu plan: per add-on, per resource, per attribute. */
 export function DiffView({ diff }: { diff: PlanDiff }) {
   const total = diff.summary.Add + diff.summary.Change + diff.summary.Remove
   return (
@@ -15,9 +15,9 @@ export function DiffView({ diff }: { diff: PlanDiff }) {
         {diff.summary.Add > 0 && <Pill tone="good">+{diff.summary.Add} create</Pill>}
         {diff.summary.Change > 0 && <Pill tone="warn">~{diff.summary.Change} update</Pill>}
         {diff.summary.Remove > 0 && <Pill tone="bad">−{diff.summary.Remove} destroy</Pill>}
-        <span class="text-muted ml-auto">planned {new Date(diff.timestamp).toLocaleString()}</span>
+        <span class="text-muted ml-auto">planned {fmt.datetime(diff.timestamp)}</span>
       </div>
-      {total === 0 && <p class="text-[13px] text-muted">The cluster already matches cluster.yaml's platform section; applying would do nothing.</p>}
+      {total === 0 && <p class="text-[13px] text-muted">The cluster matches cluster.yaml.</p>}
       {(diff.groups ?? []).map((g) => (
         <div key={g.addon} class="panel overflow-hidden">
           <div class="px-4 py-2.5 border-b border-border flex items-center gap-2">
@@ -92,7 +92,7 @@ function Warnings({ items }: { items: string[] }) {
   const [open, setOpen] = useState(false)
   return (
     <div class="rounded-[var(--r)] border border-warn/40 bg-warn/10 text-[13px]">
-      <button class="w-full text-left px-3 py-2 text-warn" onClick={() => setOpen(!open)}>{items.length} provider warning{items.length === 1 ? '' : 's'} (deprecations; harmless) {open ? '▾' : '▸'}</button>
+      <button class="w-full text-left px-3 py-2 text-warn" onClick={() => setOpen(!open)}>{items.length} provider warning{items.length === 1 ? '' : 's'} {open ? '▾' : '▸'}</button>
       {open && <ul class="px-3 pb-2 text-muted list-disc pl-7">{items.map((w, i) => <li key={i}>{w}</li>)}</ul>}
     </div>
   )

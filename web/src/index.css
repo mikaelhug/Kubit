@@ -1,6 +1,16 @@
 @import "tailwindcss";
 
-/* Kubit console tokens: graphite greys, one steel-blue accent, 3px corners, no shadows. */
+@custom-variant theme-dark {
+  @media (prefers-color-scheme: dark) {
+    &:not([data-theme="light"]) {
+      @slot;
+    }
+  }
+  &[data-theme="dark"] {
+    @slot;
+  }
+}
+
 :root {
   --bg: #f4f4f3;
   --panel: #ffffff;
@@ -17,9 +27,7 @@
   --r: 3px;
   --r-sm: 2px;
   color-scheme: light;
-}
-@media (prefers-color-scheme: dark) {
-  :root:not([data-theme="light"]) {
+  @variant theme-dark {
     --bg: #0e0f11;
     --panel: #141618;
     --panel-2: #1b1e22;
@@ -34,21 +42,6 @@
     --info: #5b8fd1;
     color-scheme: dark;
   }
-}
-:root[data-theme="dark"] {
-  --bg: #0e0f11;
-  --panel: #141618;
-  --panel-2: #1b1e22;
-  --border: #262a30;
-  --text: #d9dcdf;
-  --muted: #8b9299;
-  --accent: #5b8fd1;
-  --accent-ink: #0b1420;
-  --good: #4caf6d;
-  --warn: #c9973a;
-  --bad: #d9534f;
-  --info: #5b8fd1;
-  color-scheme: dark;
 }
 
 @theme inline {
@@ -70,23 +63,27 @@
 
 html, body, #app { height: 100%; }
 body { background: var(--bg); color: var(--text); font-family: var(--font-sans); font-size: 13px; letter-spacing: -0.01em; font-variant-numeric: tabular-nums; margin: 0; }
-.num { font-variant-numeric: tabular-nums; }
-.mono { font-family: var(--font-mono); font-size: 12px; letter-spacing: 0; }
-.label { font-size: 10.5px; letter-spacing: 0.06em; text-transform: uppercase; color: var(--muted); }
-.btn { @apply inline-flex items-center gap-1.5 rounded-[var(--r)] border border-border bg-panel px-2.5 py-1 text-[12.5px] font-medium text-text hover:border-muted disabled:opacity-50 disabled:cursor-not-allowed; }
-.btn-primary { @apply border-accent bg-accent text-accent-ink hover:brightness-110; }
-.btn-danger { @apply border-bad/60 text-bad hover:bg-bad/10; }
-.input { @apply w-full rounded-[var(--r)] border border-border bg-bg px-2 py-1 text-[12.5px] text-text outline-none focus:border-accent; }
-.panel { @apply rounded-[var(--r)] border border-border bg-panel; }
-.pill { @apply inline-flex items-center gap-1 rounded-[var(--r-sm)] px-1.5 py-px text-[10.5px] font-medium uppercase tracking-[0.04em] whitespace-nowrap; }
-.scroll-x { overflow-x: auto; overflow-y: hidden; }
-table.data { @apply w-full text-[12.5px]; }
-table.data th { @apply py-1 px-2 whitespace-nowrap text-left font-medium border-b border-border text-[10.5px] uppercase tracking-[0.06em] text-muted; }
-table.data td { @apply py-1 px-2 whitespace-nowrap border-b border-border/60 align-middle; }
-table.data tbody tr:hover td { @apply bg-panel-2/50; }
-table.data tr:last-child td { @apply border-b-0; }
-table.data thead th { @apply sticky top-0 bg-panel z-10; }
-.log { @apply break-words rounded-[var(--r)] border border-border bg-bg p-3 max-h-[420px] overflow-auto leading-5; font-family: var(--font-mono); font-size: 12px; }
-pre.log { white-space: pre-wrap; }
 :focus-visible { outline: 1px solid var(--accent); outline-offset: 1px; }
 @media (prefers-reduced-motion: reduce) { * { transition: none !important; animation: none !important; } }
+
+@layer components {
+  .mono { font-family: var(--font-mono); font-size: 12px; letter-spacing: 0; }
+  .label { font-size: 10.5px; letter-spacing: 0.06em; text-transform: uppercase; color: var(--muted); }
+  .btn { @apply inline-flex items-center gap-1.5 rounded-[var(--r)] border border-border bg-panel px-2.5 py-1 text-[12.5px] font-medium text-text hover:border-muted disabled:opacity-50 disabled:cursor-not-allowed; }
+  .btn-sm { @apply px-2 py-0.5 text-[12px]; }
+  .btn-xs { @apply px-2 py-0.5 text-[11px]; }
+  .btn-primary { @apply border-accent bg-accent text-accent-ink hover:brightness-110; }
+  .btn-danger { @apply border-bad/60 text-bad hover:bg-bad/10; }
+  .input { @apply w-full rounded-[var(--r)] border border-border bg-bg px-2 py-1 text-[12.5px] text-text outline-none focus:border-accent; }
+  .panel { @apply rounded-[var(--r)] border border-border bg-panel; }
+  .pill { @apply inline-flex items-center gap-1 rounded-[var(--r-sm)] px-1.5 py-px text-[10.5px] font-medium uppercase tracking-[0.04em] whitespace-nowrap; }
+  .scroll-x { overflow-x: auto; overflow-y: hidden; }
+  table.data { @apply w-full text-[12.5px]; }
+  table.data th { @apply py-1 px-2 whitespace-nowrap text-left font-medium border-b border-border text-[10.5px] uppercase tracking-[0.06em] text-muted; }
+  table.data td { @apply py-1 px-2 whitespace-nowrap border-b border-border/60 align-middle; }
+  table.data tbody tr:hover td { @apply bg-panel-2/50; }
+  table.data tr:last-child td { @apply border-b-0; }
+  table.data thead th { @apply sticky top-0 bg-panel z-10; }
+  .log { @apply break-words rounded-[var(--r)] border border-border bg-bg p-3 max-h-[420px] overflow-auto leading-5; font-family: var(--font-mono); font-size: 12px; }
+  pre.log { white-space: pre-wrap; }
+}

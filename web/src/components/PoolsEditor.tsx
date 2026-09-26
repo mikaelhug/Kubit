@@ -1,8 +1,7 @@
 import { useState } from 'preact/hooks'
-import type { Pool } from '../api'
+import { splitList, type Pool } from '../api'
 import { Field, Pill } from './ui'
 
-/** Edits a string map as "key=value" lines; taints use "key=value:Effect". */
 export function KVEditor({ value, onChange, placeholder, mono = true }: { value?: Record<string, string>; onChange: (v: Record<string, string> | undefined) => void; placeholder?: string; mono?: boolean }) {
   const [text, setText] = useState(toLines(value))
   const commit = (t: string) => {
@@ -22,12 +21,8 @@ export function KVEditor({ value, onChange, placeholder, mono = true }: { value?
 
 function toLines(m?: Record<string, string>) { return Object.entries(m ?? {}).map(([k, v]) => v === '' ? k : `${k}=${v}`).join('\n') }
 
-export const knownExtensions = ['siderolabs/gvisor', 'siderolabs/iscsi-tools', 'siderolabs/util-linux-tools', 'siderolabs/intel-ucode', 'siderolabs/amd-ucode', 'siderolabs/i915', 'siderolabs/nvidia-open-gpu-kernel-modules-lts', 'siderolabs/nvidia-container-toolkit-lts', 'siderolabs/qemu-guest-agent', 'siderolabs/zfs', 'siderolabs/tailscale']
+const knownExtensions = ['siderolabs/gvisor', 'siderolabs/iscsi-tools', 'siderolabs/util-linux-tools', 'siderolabs/intel-ucode', 'siderolabs/amd-ucode', 'siderolabs/i915', 'siderolabs/nvidia-open-gpu-kernel-modules-lts', 'siderolabs/nvidia-container-toolkit-lts', 'siderolabs/qemu-guest-agent', 'siderolabs/zfs', 'siderolabs/tailscale']
 
-/**
- * Pools own role, labels, taints, extensions and the default install-disk policy. One
- * pool must have role controlplane; a pool in use cannot be removed.
- */
 export function PoolsEditor({ pools, onChange, inUse, defaultExtensions }: { pools: Pool[]; onChange: (p: Pool[]) => void; inUse: (name: string) => number; defaultExtensions?: string[] }) {
   const [open, setOpen] = useState<string | null>(null)
   const update = (i: number, patch: Partial<Pool>) => onChange(pools.map((p, j) => j === i ? { ...p, ...patch } : p))
@@ -55,32 +50,32 @@ export function PoolsEditor({ pools, onChange, inUse, defaultExtensions }: { poo
             </div>
             {expanded && (
               <div class="px-4 pb-4 pt-1 border-t border-border grid grid-cols-1 md:grid-cols-2 gap-3">
-                <Field label="Name" hint="DNS label; becomes the kubit.dev/pool node label and the hostname prefix.">
+                <Field label="Name" hint="DNS label; also the node label and hostname prefix">
                   <input class="input mono" value={p.name} disabled={count > 0} onInput={(e) => { const v = (e.target as HTMLInputElement).value; update(i, { name: v }); setOpen(v) }} />
                 </Field>
-                <Field label="Role" hint={p.role === 'controlplane' ? 'Exactly one pool may hold the control planes.' : 'Workers join without etcd.'}>
+                <Field label="Role" hint={p.role === 'controlplane' ? 'Only one control-plane pool' : 'No etcd member'}>
                   <select class="input" value={p.role} disabled={count > 0} onChange={(e) => update(i, { role: (e.target as HTMLSelectElement).value as Pool['role'] })}>
                     <option value="worker">Worker</option>
                     <option value="controlplane">Control plane</option>
                   </select>
                 </Field>
-                <Field label="Labels" hint="One per line, key=value. Applied to every node in the pool.">
-                  <KVEditor value={p.labels} onChange={(v) => update(i, { labels: v })} placeholder={'workload=gpu\ntopology.kubernetes.io/zone=rack-a'} />
+                <Field label="Labels" hint="key=value per line">
+                  <KVEditor value={p.labels} onChange={(v) => update(i, { labels: v })} placeholder="key=value" />
                 </Field>
-                <Field label="Taints" hint="One per line, key=value:Effect (NoSchedule, PreferNoSchedule, NoExecute).">
-                  <KVEditor value={p.taints} onChange={(v) => update(i, { taints: v })} placeholder="nvidia.com/gpu=true:NoSchedule" />
+                <Field label="Taints" hint="key=value:Effect per line">
+                  <KVEditor value={p.taints} onChange={(v) => update(i, { taints: v })} placeholder="key=value:NoSchedule" />
                 </Field>
-                <Field label="System extensions" hint={`Comma-separated Image Factory extensions. Empty inherits the cluster default${defaultExtensions?.length ? ` (${defaultExtensions.join(', ')})` : ''}; a different set gets its own installer image.`}>
-                  <input class="input mono" list="known-extensions" value={(p.extensions ?? []).join(', ')} onInput={(e) => { const v = (e.target as HTMLInputElement).value.split(/[,\s]+/).filter(Boolean); update(i, { extensions: v.length ? v : undefined }) }} />
+                <Field label="System extensions" hint={`Comma-separated; empty inherits ${defaultExtensions?.length ? defaultExtensions.join(', ') : 'the cluster default'}`}>
+                  <input class="input mono" list="known-extensions" value={(p.extensions ?? []).join(', ')} onInput={(e) => { const v = splitList((e.target as HTMLInputElement).value); update(i, { extensions: v.length ? v : undefined }) }} />
                   <datalist id="known-extensions">{knownExtensions.map((x) => <option key={x} value={x} />)}</datalist>
                 </Field>
-                <Field label="Install disk policy" hint="Pool default; a node's own disk wins. Selector: minimum size and/or transport.">
+                <Field label="Install disk policy" hint="Minimum size and/or transport; a node's own disk wins">
                   <div class="flex gap-2">
-                    <input class="input mono" placeholder="min size, e.g. 100GB" value={p.installDisk?.selector?.minSize ?? ''} onInput={(e) => update(i, { installDisk: sel(p, { minSize: (e.target as HTMLInputElement).value }) })} />
-                    <input class="input mono" placeholder="type, e.g. nvme" value={p.installDisk?.selector?.type ?? ''} onInput={(e) => update(i, { installDisk: sel(p, { type: (e.target as HTMLInputElement).value }) })} />
+                    <input class="input mono" placeholder="min size" value={p.installDisk?.selector?.minSize ?? ''} onInput={(e) => update(i, { installDisk: sel(p, { minSize: (e.target as HTMLInputElement).value }) })} />
+                    <input class="input mono" placeholder="transport" value={p.installDisk?.selector?.type ?? ''} onInput={(e) => update(i, { installDisk: sel(p, { type: (e.target as HTMLInputElement).value }) })} />
                   </div>
                 </Field>
-                <Field label="Annotations" hint="Optional, key=value per line.">
+                <Field label="Annotations" hint="key=value per line">
                   <KVEditor value={p.annotations} onChange={(v) => update(i, { annotations: v })} />
                 </Field>
                 <div class="flex items-end justify-end">

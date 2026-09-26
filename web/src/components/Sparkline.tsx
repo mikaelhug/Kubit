@@ -1,6 +1,7 @@
 import { useEffect, useRef } from 'preact/hooks'
+import { fmt } from '../api'
 
-export interface Point { t: number; v: number | null }
+interface Point { t: number; v: number | null }
 
 const spans: Record<string, number> = { '1h': 3600e3, '6h': 6 * 3600e3, '24h': 86400e3, '7d': 7 * 86400e3 }
 export const spanOf = (range: string) => spans[range] ?? spans['24h']
@@ -8,7 +9,6 @@ export const spanOf = (range: string) => spans[range] ?? spans['24h']
 const tickSteps = [5, 10, 15, 30, 60, 120, 180, 360, 720, 1440, 2880].map((m) => m * 60e3)
 const shareSteps = [0.05, 0.1, 0.2, 0.25, 0.5, 1]
 
-/** The smallest round ceiling above v: a share of `max` from shareSteps, or 1-2-5 × 10ⁿ. */
 function ceilingFor(v: number, max?: number): number {
   if (max) return (shareSteps.find((s) => s * max >= v * 1.02) ?? 1) * max
   if (v <= 0) return 1
@@ -16,14 +16,6 @@ function ceilingFor(v: number, max?: number): number {
   return ([1, 2, 5, 10].find((m) => m * p >= v) ?? 10) * p
 }
 
-/**
- * Utilisation over time on canvas: faded area under a solid line. The y axis runs
- * from zero to a round ceiling just above the busiest moment in view, so small
- * swings stay visible; with `span` the x axis covers exactly that window ending at the
- * newest sample and carries time ticks, without it the axis stretches over the
- * samples given (a compact sparkline). A null value (observed but unreachable) or a
- * silence longer than 3× the median interval breaks the line rather than being bridged.
- */
 export function Sparkline({ points, max, height = 56, format, label, span, tone = 'accent' }: { points: Point[]; max?: number; height?: number; format: (v: number) => string; label: string; span?: number; tone?: 'accent' | 'bad' }) {
   const ref = useRef<HTMLCanvasElement>(null)
   useEffect(() => {
@@ -84,15 +76,14 @@ export function Sparkline({ points, max, height = 56, format, label, span, tone 
       ctx.textBaseline = 'top'
       ctx.textAlign = 'center'
       for (let t = Math.ceil((t0 - off) / step) * step + off; t <= t1; t += step) {
-        const d = new Date(t)
-        const text = step >= 86400e3 ? d.toLocaleDateString(undefined, { weekday: 'short' }) : d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+        const text = step >= 86400e3 ? fmt.weekday(t) : fmt.hm(t)
         ctx.fillText(text, Math.min(Math.max(x(t), px0 + 16), px1 - 16), py1 + 4)
       }
     }
     if (known.length < 2) {
       ctx.textBaseline = 'middle'
       ctx.textAlign = 'left'
-      ctx.fillText('collecting…', px0 + 4, (py0 + py1) / 2)
+      ctx.fillText('collecting', px0 + 4, (py0 + py1) / 2)
       return
     }
     ctx.lineWidth = 1.5
@@ -126,7 +117,7 @@ export function Sparkline({ points, max, height = 56, format, label, span, tone 
     <div class="flex flex-col gap-1">
       {label && <div class="flex items-baseline justify-between">
         <span class="label">{label}</span>
-        <span class="num text-[13px]">{last ? <><strong>{format(last.v!)}</strong>{max ? <span class="text-muted"> / {format(max)} · {Math.round((last.v! / max) * 100)}%</span> : null}</> : '—'}</span>
+        <span class="text-[13px]">{last ? <><strong>{format(last.v!)}</strong>{max ? <span class="text-muted"> / {format(max)} · {Math.round((last.v! / max) * 100)}%</span> : null}</> : '—'}</span>
       </div>}
       <canvas ref={ref} class="w-full" style={{ height }} />
     </div>

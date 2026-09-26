@@ -1,86 +1,49 @@
-import { useEffect, useState } from 'preact/hooks'
-import { api, fmt, type HealthEvent, type Sample, type ServiceHealth, type Status, type Versions } from '../../api'
-import { ack, clusters, health, latestTalos as latestTalosSignal, loadSnapshots, operations, refreshKey, snapshots } from '../../store'
-import { runbookFor } from '../../runbooks'
-import { ageSec } from '../../clock'
-import { Sparkline, spanOf } from '../../components/Sparkline'
-import { Notice, Pill, Section, SeenAgo, StatusDot } from '../../components/ui'
-import type { ClusterCtx } from './ClusterPage'
+import { useEffect, useMemo, useState } from 'preact/hooks'
+import { api, fmt, type Sample, type ServiceHealth, type Status } from '../../api'
+import { nowEvery } from '../../clock'
+import { AlertGroup, EventRow } from '../../components/Alerts'
 import { useNamespaces } from '../../components/NamespaceScope'
+import { Sparkline, spanOf } from '../../components/Sparkline'
+import { Ago } from '../../components/Time'
+import { Notice, Pill, Section, SeenAgo, StatusDot, Tile } from '../../components/ui'
+import { health, loadSnapshots, openAlerts, opsFor, snapshots, versions } from '../../store'
+import { stateTone, type Tone } from '../../tone'
+import { useLive } from '../../useLive'
+import { updatesFor } from '../../versions'
+import type { ClusterCtx } from './ClusterPage'
 
 const recoveryKinds = new Set(['talos.back', 'node.ready', 'api.back', 'etcd.healthy', 'lb.assigned', 'workload.available', 'pod.recovered', 'pvc.bound', 'service.endpoints', 'ingress.address', 'lb.pool-free'])
+const ranges = ['1h', '6h', '24h', '7d']
 
 export function Overview({ ctx }: { ctx: ClusterCtx }) {
   const { status, cluster, name } = ctx
   const t = status?.totals
   const spec = cluster.spec.spec
-  const recent = [...operations.value.values()].filter((o) => o.cluster === name).sort((a, b) => b.id - a.id).slice(0, 5)
-  const cpDown = status ? status.nodes.filter((n) => n.role === 'controlplane' && (!n.talosReachable || !n.ready)).length : 0
+  const cps = status ? status.nodes.filter((n) => n.role === 'controlplane') : []
+  const cpDown = cps.filter((n) => !n.talosReachable || !n.ready).length
   const events = health.value.get(name) ?? []
-  const alerts = events.filter((e) => !e.acked && e.severity !== 'info')
-  // Info events earn a place only when they close an alert.
   const notable = events.filter((e) => e.severity !== 'info' || recoveryKinds.has(e.kind))
-  const [range, setRange] = useState('24h')
-  const [samples, setSamples] = useState<Sample[]>([])
-  const [versions, setVersions] = useState<Versions | null>(null)
-  useEffect(() => { api.versions().then(setVersions).catch(() => {}) }, [name, latestTalosSignal.value])
-  const latestTalos = versions?.talos.find((v) => !v.includes('-'))
-  const updates = [
-    latestTalos && verLess(spec.talosVersion, latestTalos) ? `Talos ${latestTalos} (running ${spec.talosVersion})` : '',
-    versions && verLess(spec.kubernetesVersion, versions.kubernetesLatest) ? `Kubernetes ${versions.kubernetesLatest} (running ${spec.kubernetesVersion})` : '',
-  ].filter(Boolean)
-  useEffect(() => { api.samples(name, range).then(setSamples).catch(() => {}) }, [name, range])
-  const [service, setService] = useState<ServiceHealth | null>(null)
-  useEffect(() => { api.serviceHealth(name).then((r) => setService(r.latest)).catch(() => {}) }, [name, status?.observedAt, refreshKey(name, 'workloads')]) // eslint-disable-line
-  // Every pushed status is also the newest sample: append it so the graphs move
-  // without refetching.
-  useEffect(() => {
-    if (!status?.observedAt || !t) return
-    setSamples((prev) => {
-      const last = prev[prev.length - 1]
-      if (last && last.ts >= status.observedAt!) return prev
-      const point: Sample = { ts: status.observedAt!, cpuMilli: t.cpuMilli, cpuCap: t.cpuCapMilli, memBytes: t.memBytes, memCap: t.memCapBytes, pods: t.pods, ready: t.nodesReady === t.nodes, reachable: status.apiReachable }
-      return [...prev, point]
-    })
-  }, [status?.observedAt]) // eslint-disable-line
-  const pts = (f: (s: Sample) => number, metered = false) => samples.map((s) => ({ t: new Date(s.ts).getTime(), v: s.reachable && (!metered || s.memBytes > 0) ? f(s) : null }))
-  const capOf = (f: (s: Sample) => number) => f(samples.filter((s) => s.reachable).pop() ?? { cpuCap: 0, memCap: 0 } as Sample)
+  const u = updatesFor(spec.talosVersion, spec.kubernetesVersion, versions.value)
+  const updates = [u.talos ? `Talos ${u.talos} (running ${spec.talosVersion})` : '', u.kubernetes ? `Kubernetes ${u.kubernetes} (running ${spec.kubernetesVersion})` : ''].filter(Boolean)
+  const { data: service } = useLive(() => api.serviceHealth(name).then((r) => r.latest), [name], [[name, 'services']], { onError: 'silent' })
   const down = !!status && !status.apiReachable
-  const graph = down ? 'bad' : 'accent'
+  const workers = spec.nodes.filter((n) => n.role === 'worker').length
 
   return (
     <>
       {updates.length > 0 && <Notice tone="info"><span class="flex items-center gap-2">Update available: {updates.join(' · ')}<a href={`/clusters/${name}/lifecycle`} class="ml-auto text-accent hover:underline text-[12px]">Lifecycle</a></span></Notice>}
       <Reachability status={status} />
-      {alerts.length > 0 && (
-        <div class="panel border-warn/50">
-          <div class="flex items-center gap-2 px-4 py-2 border-b border-border">
-            <span class="font-semibold">{alerts.length} active alert{alerts.length === 1 ? '' : 's'}</span>
-            <button class="btn !py-0.5 !px-2 text-[12px] ml-auto" onClick={() => ack(name)}>Acknowledge all</button>
-          </div>
-          {alerts.map((e) => <EventRow key={e.id} e={e} onAck={() => ack(name, e.id)} />)}
-        </div>
-      )}
+      <AlertGroup id={name} alerts={openAlerts(name)} />
       <div class="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-6 gap-3">
-        <Card label="Control plane" tone={!status ? 'muted' : cpDown === 0 ? 'good' : 'bad'} value={status ? `${status.nodes.filter((n) => n.role === 'controlplane').length - cpDown}/${status.nodes.filter((n) => n.role === 'controlplane').length}` : '—'} sub={spec.controlPlane.vip ? `VIP ${spec.controlPlane.vip}` : 'no VIP: endpoint is the first control plane'} />
-        <Card label="etcd quorum" tone={!status ? 'muted' : status.etcd.healthy ? 'good' : 'bad'} value={status ? `${status.etcd.members}/${status.etcd.expected}` : '—'} sub={status?.etcd.leader ? `leader ${status.etcd.leader}` : status?.etcd.alarms?.join(', ') || 'no leader reported'} />
-        <Card label="Nodes Ready" tone={!t ? 'muted' : t.nodesReady === t.nodes ? 'good' : t.nodesReady === 0 ? 'bad' : 'warn'} value={t ? `${t.nodesReady}/${t.nodes}` : '—'} sub={`${spec.nodes.filter((n) => n.role === 'worker').length} worker${spec.nodes.filter((n) => n.role === 'worker').length === 1 ? '' : 's'}`} />
+        <Tile compact size="lg" label="Control plane" tone={!status ? 'muted' : cpDown === 0 ? 'good' : 'bad'} value={status ? `${cps.length - cpDown}/${cps.length}` : '—'} sub={spec.controlPlane.vip ? `VIP ${spec.controlPlane.vip}` : 'no VIP: endpoint is the first control plane'} />
+        <Tile compact size="lg" label="etcd quorum" tone={!status ? 'muted' : status.etcd.healthy ? 'good' : 'bad'} value={status ? `${status.etcd.members}/${status.etcd.expected}` : '—'} sub={status?.etcd.leader ? `leader ${status.etcd.leader}` : status?.etcd.alarms?.join(', ') || 'no leader reported'} />
+        <Tile compact size="lg" label="Nodes Ready" tone={!t ? 'muted' : t.nodesReady === t.nodes ? 'good' : t.nodesReady === 0 ? 'bad' : 'warn'} value={t ? `${t.nodesReady}/${t.nodes}` : '—'} sub={`${workers} worker${workers === 1 ? '' : 's'}`} />
         <WorkloadsCard cluster={name} pods={t?.pods} service={service} unreachable={down} />
-        <Card label="Load balancer" tone={down ? 'muted' : status?.platform?.outputs?.ingress_ip ? 'good' : spec.platform.metallb.enabled ? 'warn' : 'muted'} value={status?.platform?.outputs?.ingress_ip ?? (spec.platform.metallb.enabled ? 'pending' : 'off')} sub={spec.platform.metallb.enabled ? `pool ${spec.platform.metallb.range}` : 'MetalLB disabled'} href={`/clusters/${name}/network`} />
+        <Tile compact size="lg" label="Load balancer" tone={down ? 'muted' : status?.platform?.outputs?.ingress_ip ? 'good' : spec.platform.metallb.enabled ? 'warn' : 'muted'} value={status?.platform?.outputs?.ingress_ip ?? (spec.platform.metallb.enabled ? 'pending' : 'off')} sub={spec.platform.metallb.enabled ? `pool ${spec.platform.metallb.range}` : 'MetalLB disabled'} href={`/clusters/${name}/network`} />
         <BackupsCard cluster={name} status={status} interval={spec.backup?.etcd.interval ?? '6h'} />
       </div>
       <div class="grid grid-cols-1 lg:grid-cols-2 gap-4">
-        <div class="panel p-3 flex flex-col gap-4">
-          <div class="flex items-center gap-2">
-            <span class="label">Capacity trend</span>
-            <div class="ml-auto flex gap-1">
-              {['1h', '6h', '24h', '7d'].map((r) => <button key={r} class={`btn !py-0.5 !px-2 text-[11px] ${r === range ? 'border-accent text-accent' : ''}`} onClick={() => setRange(r)}>{r}</button>)}
-            </div>
-          </div>
-          <Sparkline label="CPU used" points={pts((s) => s.cpuMilli, true)} max={t?.cpuCapMilli || capOf((s) => s.cpuCap)} format={fmt.cores} height={84} span={spanOf(range)} tone={graph} />
-          <Sparkline label="Memory used" points={pts((s) => s.memBytes, true)} max={t?.memCapBytes || capOf((s) => s.memCap)} format={fmt.bytes} height={84} span={spanOf(range)} tone={graph} />
-          <Sparkline label="Pods" points={pts((s) => s.pods)} max={t?.podCap || undefined} format={String} height={84} span={spanOf(range)} tone={graph} />
-        </div>
+        <CapacityTrend name={name} status={status} />
         <div class="flex flex-col gap-4">
           <Section title="Recent events">
             <div class="panel divide-y divide-border/60 max-h-[260px] overflow-auto">
@@ -89,18 +52,7 @@ export function Overview({ ctx }: { ctx: ClusterCtx }) {
             </div>
           </Section>
           <Section title="Recent operations" actions={<a href={`/operations?cluster=${name}`} class="text-[12px] text-accent hover:underline">All activity →</a>}>
-            <div class="panel divide-y divide-border/60">
-              {recent.length === 0 && <div class="p-4 text-[13px] text-muted">Nothing yet.</div>}
-              {recent.map((o) => (
-                <a key={o.id} href={`/operations/${o.id}`} class="flex items-center gap-3 px-4 py-2 text-[13px] hover:bg-panel-2">
-                  <StatusDot tone={o.status === 'done' ? 'good' : o.status === 'running' ? 'warn' : o.status === 'failed' ? 'bad' : 'muted'} pulse={o.status === 'running'} />
-                  <span class="font-medium">{fmt.kind(o.kind)}</span>
-                  <span class="text-muted">#{o.id}</span>
-                  <span class="ml-auto text-muted num">{fmt.datetime(o.startedAt)}</span>
-                  <Pill tone={o.status === 'done' ? 'good' : o.status === 'running' ? 'warn' : o.status === 'failed' ? 'bad' : 'muted'}>{o.status}</Pill>
-                </a>
-              ))}
-            </div>
+            <RecentOperations name={name} />
           </Section>
         </div>
       </div>
@@ -108,7 +60,55 @@ export function Overview({ ctx }: { ctx: ClusterCtx }) {
   )
 }
 
-/** What Kubit could reach on its last observation, and whether it could observe at all. */
+function CapacityTrend({ name, status }: { name: string; status: Status | null }) {
+  const [range, setRange] = useState('24h')
+  const { data: samples, set } = useLive(() => api.samples(name, range), [name, range], [], { onError: 'silent' })
+  const t = status?.totals
+  useEffect(() => {
+    if (!status?.observedAt || !t) return
+    const point: Sample = { ts: status.observedAt, cpuMilli: t.cpuMilli, cpuCap: t.cpuCapMilli, memBytes: t.memBytes, memCap: t.memCapBytes, pods: t.pods, ready: t.nodesReady === t.nodes, reachable: status.apiReachable }
+    set((prev) => { const last = prev?.[prev.length - 1]; return last && last.ts >= point.ts ? prev : [...(prev ?? []), point] })
+  }, [status?.observedAt])
+  const series = useMemo(() => {
+    const list = samples ?? []
+    const pts = (f: (s: Sample) => number, metered = false) => list.map((s) => ({ t: Date.parse(s.ts), v: s.reachable && (!metered || s.memBytes > 0) ? f(s) : null }))
+    const lastReachable = list.filter((s) => s.reachable).pop()
+    return { cpu: pts((s) => s.cpuMilli, true), mem: pts((s) => s.memBytes, true), pods: pts((s) => s.pods), cpuCap: lastReachable?.cpuCap ?? 0, memCap: lastReachable?.memCap ?? 0 }
+  }, [samples])
+  const graph = status && !status.apiReachable ? 'bad' : 'accent'
+  return (
+    <div class="panel p-3 flex flex-col gap-4">
+      <div class="flex items-center gap-2">
+        <span class="label">Capacity trend</span>
+        <div class="ml-auto flex gap-1">
+          {ranges.map((r) => <button key={r} class={`btn btn-xs ${r === range ? 'border-accent text-accent' : ''}`} onClick={() => setRange(r)}>{r}</button>)}
+        </div>
+      </div>
+      <Sparkline label="CPU used" points={series.cpu} max={t?.cpuCapMilli || series.cpuCap} format={fmt.cores} height={84} span={spanOf(range)} tone={graph} />
+      <Sparkline label="Memory used" points={series.mem} max={t?.memCapBytes || series.memCap} format={fmt.bytes} height={84} span={spanOf(range)} tone={graph} />
+      <Sparkline label="Pods" points={series.pods} max={t?.podCap || undefined} format={String} height={84} span={spanOf(range)} tone={graph} />
+    </div>
+  )
+}
+
+function RecentOperations({ name }: { name: string }) {
+  const recent = [...opsFor(name)].sort((a, b) => b.id - a.id).slice(0, 5)
+  return (
+    <div class="panel divide-y divide-border/60">
+      {recent.length === 0 && <div class="p-4 text-[13px] text-muted">Nothing yet.</div>}
+      {recent.map((o) => (
+        <a key={o.id} href={`/operations/${o.id}`} class="flex items-center gap-3 px-4 py-2 text-[13px] hover:bg-panel-2">
+          <StatusDot tone={stateTone(o.status)} pulse={o.status === 'running'} />
+          <span class="font-medium">{fmt.kind(o.kind)}</span>
+          <span class="text-muted">#{o.id}</span>
+          <span class="ml-auto text-muted">{fmt.datetime(o.startedAt)}</span>
+          <Pill tone={stateTone(o.status)}>{o.status}</Pill>
+        </a>
+      ))}
+    </div>
+  )
+}
+
 function Reachability({ status }: { status: Status | null }) {
   if (!status) return null
   const blind = status.observer === 'offline'
@@ -124,11 +124,11 @@ function Reachability({ status }: { status: Status | null }) {
   return (
     <div class={`panel px-3 py-2 text-[12.5px] flex flex-wrap items-center gap-x-5 gap-y-1 ${blind ? 'border-warn/50' : ''}`}>
       {blind
-        ? <span class="text-warn">Kubit cannot reach the network{status.observerError ? ` (${status.observerError})` : ''}. What is shown is the last known state.</span>
+        ? <span class="text-warn">Kubit cannot reach the network{status.observerError ? ` (${status.observerError})` : ''}; showing the last known state.</span>
         : <>
           {item('Talos API', up === nodes.length, `${up}/${nodes.length} nodes`)}
           {item('Kubernetes API', status.apiReachable, status.apiReachable ? 'reachable' : shortErr(status.apiError))}
-          {item('etcd', status.etcd.healthy, status.etcd.healthy ? `${status.etcd.members}/${status.etcd.expected} members` : `${status.etcd.members}/${status.etcd.expected} members`)}
+          {item('etcd', status.etcd.healthy, `${status.etcd.members}/${status.etcd.expected} members`)}
         </>}
       <span class="ml-auto"><SeenAgo contact={status.lastContactAt} observed={status.observedAt} blind={blind} /></span>
     </div>
@@ -141,97 +141,35 @@ function shortErr(e?: string) {
   return i >= 0 ? e.slice(i + 2) : e
 }
 
-export function EventRow({ e, onAck }: { e: HealthEvent; onAck?: () => void }) {
-  const tone = e.severity === 'critical' ? 'bad' : e.severity === 'warn' ? 'warn' : 'good'
-  const [open, setOpen] = useState(false)
-  const mac = e.node ? clusters.value.find((c) => c.name === e.cluster)?.spec.spec.nodes.find((n) => n.hostname === e.node)?.mac : undefined
-  const rb = onAck ? runbookFor(e.kind, { cluster: e.cluster, node: e.node, nodeHref: mac ? `/machines/${mac}` : undefined }) : null
-  return (
-    <div class="flex flex-col">
-      <div class="flex items-center gap-3 px-4 py-2 text-[13px]">
-        <StatusDot tone={tone} />
-        <span class="num text-muted text-[12px] whitespace-nowrap shrink-0">{fmt.when(e.ts)}</span>
-        <span class={`min-w-0 truncate ${e.acked ? 'text-muted' : ''}`} title={e.message}>{e.message}</span>
-        {objectLink(e) && <a href={objectLink(e)!} class="text-[11px] text-accent hover:underline shrink-0">open</a>}
-        <span class="ml-auto mono text-[11px] text-muted">{e.kind}</span>
-        {rb && <button class={`btn !py-0.5 !px-2 text-[11px] ${open ? 'border-accent' : ''}`} onClick={() => setOpen(!open)}>{open ? 'Hide' : 'What to do'}</button>}
-        {onAck && <button class="btn !py-0.5 !px-2 text-[11px]" onClick={onAck}>Ack</button>}
-      </div>
-      {open && rb && (
-        <div class="mx-4 mb-3 rounded-[var(--r)] border border-border bg-panel-2/60 px-4 py-3 text-[13px] flex flex-col gap-2">
-          <div><span class="font-medium">{rb.title}</span> <span class="text-muted">— {rb.why}</span></div>
-          <ol class="list-decimal pl-5 flex flex-col gap-1">
-            {rb.steps.map((s, i) => <li key={i}>{s.text} {s.link && <a href={s.link.href} class="text-accent hover:underline whitespace-nowrap">{s.link.label} →</a>}</li>)}
-          </ol>
-        </div>
-      )}
-    </div>
-  )
-}
-
-/** How current the watcher's view is, and whether scheduled snapshots are keeping up. */
 function WorkloadsCard({ cluster, pods, service, unreachable }: { cluster: string; pods?: number; service: ServiceHealth | null; unreachable: boolean }) {
   const namespaces = useNamespaces(cluster)
-  if (unreachable) return <Card label="Workloads" tone="bad" value="—" sub="API unreachable" href={`/clusters/${cluster}/workloads?view=pods`} />
+  if (unreachable) return <Tile compact size="lg" label="Workloads" tone="bad" value="—" sub="API unreachable" href={`/clusters/${cluster}/workloads?view=pods`} />
   const platform = new Set((namespaces ?? []).filter((n) => n.platform).map((n) => n.name))
   const controllers = (service?.workloads ?? []).filter((w) => w.kind !== 'Job' && w.kind !== 'CronJob')
   const down = controllers.filter((w) => !w.available)
   const failing = (service?.pods ?? []).filter((p) => p.phase !== 'Running' && p.phase !== 'Succeeded' && p.phase !== 'Pending')
-  const bad = down.length + failing.length
   const first = down[0]?.namespace ?? failing[0]?.namespace
   const scope = first !== undefined && platform.has(first) ? 'platform' : 'apps'
   const all = service?.pods ?? []
   const apps = all.filter((p) => !platform.has(p.namespace)).length
   const value = service && namespaces ? `${apps} app pod${apps === 1 ? '' : 's'}` : pods === undefined ? '—' : `${pods} pods`
-  const sub = !service ? 'no service health yet' : bad === 0 ? `${all.length - apps} platform pods · all ${controllers.length} controllers available` : [down.length ? `${down.length} controller${down.length === 1 ? '' : 's'} unavailable` : '', failing.length ? `${failing.length} pod${failing.length === 1 ? '' : 's'} failing` : ''].filter(Boolean).join(', ')
-  return <Card label="Workloads" tone={!service ? 'muted' : down.length > 0 ? 'bad' : failing.length > 0 ? 'warn' : 'good'} value={value} sub={sub} href={`/clusters/${cluster}/workloads?view=pods&scope=${scope}`} />
+  const sub = !service ? 'no service health yet' : down.length + failing.length === 0 ? `${all.length - apps} platform pods · all ${controllers.length} controllers available` : [down.length ? `${down.length} controller${down.length === 1 ? '' : 's'} unavailable` : '', failing.length ? `${failing.length} pod${failing.length === 1 ? '' : 's'} failing` : ''].filter(Boolean).join(', ')
+  const tone: Tone = !service ? 'muted' : down.length > 0 ? 'bad' : failing.length > 0 ? 'warn' : 'good'
+  return <Tile compact size="lg" label="Workloads" tone={tone} value={value} sub={sub} href={`/clusters/${cluster}/workloads?view=pods&scope=${scope}`} />
 }
 
-/** Last etcd snapshot, whether it has an off-site copy, and whether the schedule is keeping up. */
 function BackupsCard({ cluster, status, interval: spec }: { cluster: string; status?: { lastSnapshotAt?: string; snapshotInterval?: string } | null; interval: string }) {
   useEffect(() => { if (!snapshots.value.has(cluster)) loadSnapshots(cluster) }, [cluster])
   const latest = (snapshots.value.get(cluster) ?? []).find((s) => s.status === 'ok')
   const interval = parseDuration(status?.snapshotInterval ?? spec)
   const at = latest?.ts ?? status?.lastSnapshotAt
-  const ago = at ? ageSec(at) : null
-  const late = interval > 0 && (ago === null || ago > 2 * interval)
+  const late = interval > 0 && (!at || (nowEvery(60_000) - Date.parse(at)) / 1000 > 2 * interval)
   const sub = interval === 0 ? 'schedule off' : `every ${status?.snapshotInterval ?? spec}${latest ? latest.offsite ? ' · off-site copy' : ' · no off-site copy' : ''}`
-  const value = ago === null ? 'none' : ago < 60 ? 'just now' : ago < 3600 ? `${Math.round(ago / 60)} min ago` : ago < 86400 ? `${Math.round(ago / 3600)} h ago` : `${Math.round(ago / 86400)} d ago`
-  return <Card label="Backups" tone={!at ? 'warn' : late ? 'warn' : 'good'} value={value} title={at ? fmt.datetime(at) : undefined} sub={late && at ? `behind schedule · ${sub}` : sub} href={`/clusters/${cluster}/backups`} />
-}
-
-/** Semver-ish compare on the numeric part; prereleases never count as newer. */
-export function verLess(a: string, b: string): boolean {
-  if (b.includes('-')) return false
-  const pa = a.replace(/^v/, '').split('-')[0].split('.').map(Number), pb = b.replace(/^v/, '').split('.').map(Number)
-  for (let i = 0; i < 3; i++) { if ((pa[i] ?? 0) !== (pb[i] ?? 0)) return (pa[i] ?? 0) < (pb[i] ?? 0) }
-  return false
+  return <Tile compact size="lg" label="Backups" tone={!at || late ? 'warn' : 'good'} value={at ? <Ago iso={at} fresh="just now" /> : 'none'} title={at ? fmt.datetime(at) : undefined} sub={late && at ? `behind schedule · ${sub}` : sub} href={`/clusters/${cluster}/backups`} />
 }
 
 function parseDuration(s: string): number {
   const m = /^(\d+(?:\.\d+)?)(h|m|s)$/.exec(s.trim())
   if (!m) return s === '0' ? 0 : 6 * 3600
   return Number(m[1]) * ({ h: 3600, m: 60, s: 1 }[m[2]] ?? 1)
-}
-
-/** Workload alerts carry the object as kind/namespace/name; link to the page that shows it. */
-function objectLink(e: HealthEvent): string | null {
-  const m = /^(\w+)\/([^/]+)\/(.+)$/.exec(e.node ?? '')
-  if (!m) return null
-  const [, kind, ns] = m
-  const page = kind === 'PersistentVolumeClaim' ? 'storage' : kind === 'Service' || kind === 'Ingress' || kind === 'MetalLB' ? 'network' : 'workloads'
-  return `/clusters/${e.cluster}/${page}?ns=${encodeURIComponent(ns)}`
-}
-
-export function Card({ label, value, tone, sub, href, title }: { label: string; value: string; tone: 'good' | 'warn' | 'bad' | 'muted'; sub?: string; href?: string; title?: string }) {
-  const color = { good: 'text-good', warn: 'text-warn', bad: 'text-bad', muted: 'text-muted' }[tone]
-  const body = (
-    <>
-      <span class="label">{label}</span>
-      <span class={`text-lg font-semibold num truncate ${color}`} title={title ?? value}>{value}</span>
-      {sub && <span class="text-[12px] text-muted truncate" title={sub}>{sub}</span>}
-    </>
-  )
-  if (href) return <a href={href} class="panel px-3 py-2 flex flex-col gap-0.5 min-w-0 hover:border-accent">{body}</a>
-  return <div class="panel px-3 py-2 flex flex-col gap-0.5 min-w-0">{body}</div>
 }

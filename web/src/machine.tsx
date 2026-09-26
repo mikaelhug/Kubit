@@ -1,6 +1,7 @@
-import type { LabHost, MachineKind, NodeRow } from './api'
-import { machines, statuses } from './store'
-import { Pill, stateTone, type Tone } from './components/ui'
+import { api, fmt, type Inventory, type LabHost, type LabUpdates, type LabVM, type MachineKind, type NodeRow } from './api'
+import { clusters, machines, statuses, toast } from './store'
+import { ConfirmDialog, Pill } from './components/ui'
+import { stateTone, type Tone } from './tone'
 
 export const kindLabel: Record<MachineKind, string> = {
   member: 'cluster member',
@@ -11,7 +12,7 @@ export const kindLabel: Record<MachineKind, string> = {
   unbooted: 'not running Talos',
 }
 
-export function kindTone(m: NodeRow): Tone {
+function kindTone(m: NodeRow): Tone {
   switch (m.kind) {
     case 'member': case 'maintenance': return 'good'
     case 'labhost': return stateTone(labState(m.labhost) || 'labhost')
@@ -20,6 +21,11 @@ export function kindTone(m: NodeRow): Tone {
     default: return stateTone(m.state)
   }
 }
+
+export function vmsOf(lh?: LabHost | null): LabVM[] { return lh?.vms ?? [] }
+export function labHostKey(mac: string) { return `labhost:${mac.toLowerCase()}` }
+export function labNeedsReboot(u?: LabUpdates) { return !!u && (u.rebootRequired || (!!u.kernelInstalled && !!u.kernelRunning && u.kernelInstalled !== u.kernelRunning)) }
+export const oobLabel = (t?: string) => t === 'amt' ? 'Intel AMT' : t === 'redfish' ? 'BMC (Redfish)' : 'remote management'
 
 export function isLabVM(m?: NodeRow | null) { return !!m?.host }
 export function lastSeenOf(m: NodeRow) {
@@ -46,14 +52,14 @@ export function canAdopt(m: NodeRow) { return m.kind === 'maintenance' }
 export function canMakeLabHost(m: NodeRow) { return !m.host && !m.cluster && (!m.labhost || (m.labhost.state === 'error' && !onMac(m.labhost))) }
 export function canRetire(m: NodeRow) { return m.kind !== 'labhost' && !(m.host && hostOf(m)) }
 export function bootTalosBlocked(m: NodeRow): string {
-  if (m.cluster) return 'Members are removed from the cluster first; that resets them to maintenance mode from disk'
-  if (m.kind === 'labhost') return 'A lab host boots its own disk; release it first'
-  if (m.host) return 'Lab VMs are re-provisioned from their host'
+  if (m.cluster) return 'Remove it from the cluster first'
+  if (m.kind === 'labhost') return 'Release the lab host first'
+  if (m.host) return 'Re-provision lab VMs from their host'
   return ''
 }
 export function provisionLabel(m: NodeRow) { return m.provisionKind === 'labhost' ? 'boot→Debian' : 'boot→Talos' }
 
-export function isVirtual(m?: NodeRow | null) {
+function isVirtual(m?: NodeRow | null) {
   const inv = m?.inventory
   if (inv?.virtual) return true
   return /qemu|kvm|vmware|virtualbox|innotek|xen|virtual machine|apple virtualization|parallels|bochs|proxmox/i.test(`${inv?.manufacturer ?? ''} ${inv?.product ?? ''}`)
@@ -74,11 +80,30 @@ export function installCandidates(m?: NodeRow | null) {
   return m?.host ? disks.sort((a, b) => (a.devPath === '/dev/vda' ? -1 : b.devPath === '/dev/vda' ? 1 : 0)) : disks
 }
 export function dataCandidates(m: NodeRow | undefined | null, install?: string) { return installCandidates(m).filter((d) => d.devPath !== install) }
+export function diskLabel(d: Inventory['disks'][number]) { return `${d.devPath} · ${fmt.bytes(d.sizeBytes)}${d.model ? ` · ${d.model}` : ''}${d.transport ? ` · ${d.transport}` : ''}` }
 
 export function labState(lh?: LabHost | null) { return lh ? lh.state === 'ready' && (lh.failures ?? 0) >= 3 ? 'offline' : lh.state : '' }
 export function labOffline(lh?: LabHost | null) { return labState(lh) === 'offline' }
 
 export function kindDetail(m: NodeRow) { return m.kind === 'labhost' ? labState(m.labhost) : m.kind === 'unbooted' && m.state !== 'unknown' ? m.state : '' }
+
+export function readyClusters() { return clusters.value.filter((c) => c.state === 'ready' || c.state === 'bootstrapped') }
+
+export function adopt(m: NodeRow, route: (url: string) => void) {
+  const ready = readyClusters()
+  if (ready.length === 0) { route('/clusters/new'); return }
+  const target = ready.length === 1 ? ready[0].name : prompt(`Adopt ${m.ip} into which cluster? (${ready.map((c) => c.name).join(', ')})`, ready[0].name)
+  if (target && ready.some((c) => c.name === target)) route(`/clusters/${target}/nodes?adopt=${m.ip}`)
+}
+
+export function wake(mac: string) {
+  return api.wake(mac).then(() => toast('Magic packet sent', 'good')).catch((e) => toast(e.message, 'error'))
+}
+
+export function RetireDialog({ m, onClose, onDone }: { m: NodeRow; onClose: () => void; onDone: () => void }) {
+  return <ConfirmDialog title={`Retire ${m.hostname || m.mac}`} action="Retire" tone="danger" onClose={onClose} onConfirm={() => api.retireMachine(m.mac).then(onDone).catch((e) => toast(e.message, 'error'))}
+    impact={<p>Deletes the record for <span class="mono">{m.mac}</span>; a scan finds it again while it is online.</p>} />
+}
 
 export function KindPill({ m }: { m: NodeRow }) {
   const detail = kindDetail(m)
@@ -87,6 +112,6 @@ export function KindPill({ m }: { m: NodeRow }) {
 
 export function TypePill({ m }: { m?: NodeRow | null }) {
   const form = formOf(m)
-  const title = { 'lab host': onMac(m?.labhost) ? 'This Mac, running Talos VMs' : 'KVM host Kubit installed', 'lab VM': `Talos VM on lab host ${hostName(hostOf(m)) || m?.host}`, VM: "Virtual machine: shares its host's failure domain", metal: 'Bare metal' }[form]
+  const title = { 'lab host': onMac(m?.labhost) ? 'This Mac, running Talos VMs' : 'KVM host Kubit installed', 'lab VM': `Talos VM on lab host ${hostName(hostOf(m)) || m?.host}`, VM: 'Virtual machine', metal: 'Bare metal' }[form]
   return <Pill tone={form === 'metal' ? 'muted' : 'info'} title={title}>{form}</Pill>
 }

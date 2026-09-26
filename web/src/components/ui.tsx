@@ -1,51 +1,34 @@
-import type { ComponentChildren } from 'preact'
-import { useEffect, useState } from 'preact/hooks'
-import { api, type MaintenanceState } from '../api'
-import { ageSec } from '../clock'
-import type { Event, Level } from '../api'
-
-export type Tone = 'good' | 'warn' | 'bad' | 'info' | 'muted'
+import { Fragment, type ComponentChildren } from 'preact'
+import { memo } from 'preact/compat'
+import { useState } from 'preact/hooks'
+import { api, fmt, type Event, type Level } from '../api'
+import { now } from '../clock'
+import { toast } from '../store'
+import { severityTone, stateTone, toneBg, toneBorder, tonePill, toneText, type Tone } from '../tone'
+import { useLive } from '../useLive'
 
 export function Pill({ tone, children, title }: { tone: Tone; children: ComponentChildren; title?: string }) {
-  const cls = {
-    good: 'bg-good/15 text-good', warn: 'bg-warn/15 text-warn', bad: 'bg-bad/15 text-bad',
-    info: 'bg-info/15 text-info', muted: 'bg-panel-2 text-muted',
-  }[tone]
-  return <span class={`pill ${cls}`} title={title}>{children}</span>
+  return <span class={`pill ${tonePill[tone]}`} title={title}>{children}</span>
 }
 
-export function stateTone(state: string): Tone {
-  switch (state) {
-    case 'ready': case 'done': case 'running': case 'maintenance': case 'joined': return 'good'
-    case 'failed': case 'error': case 'down': case 'offline': return 'bad'
-    case 'cancelled': case 'unknown': return 'muted'
-    case 'provisioning': case 'installing': case 'bootstrapped': case 'booting': case 'pending': case 'discovered': case 'setup': case 'updating': case 'degraded': return 'warn'
-    case 'amt': case 'off': case 'labhost': case 'configured': return 'info'
-    default: return 'muted'
-  }
-}
-
-/** The cluster pill: the lifecycle state, overridden by the watcher's verdict once ready. */
 export function ClusterPill({ state, status }: { state: string; status?: { health?: string; openAlerts?: number; observerError?: string } | null }) {
   const h = state === 'ready' && status?.health && status.health !== 'healthy' ? status.health : ''
   const label = h || state
-  const title = h === 'degraded' ? `${status?.openAlerts ?? 0} open alert${status?.openAlerts === 1 ? '' : 's'}` : h === 'down' ? 'A confirmed outage: API, etcd or a node' : h === 'unknown' ? `Kubit cannot reach the network${status?.observerError ? ` (${status.observerError})` : ''}` : undefined
+  const title = h === 'degraded' ? `${status?.openAlerts ?? 0} open alert${status?.openAlerts === 1 ? '' : 's'}` : h === 'down' ? 'Confirmed outage: API, etcd or a node' : h === 'unknown' ? `Kubit cannot reach the network${status?.observerError ? ` (${status.observerError})` : ''}` : undefined
   return <Pill tone={state === 'ready' && !status ? 'muted' : stateTone(label)} title={state === 'ready' && !status ? 'not observed yet' : title}>{label}</Pill>
 }
 
-/** How long ago the observer last saw anything of this object, ticking from the clock. */
 export function SeenAgo({ contact, observed, blind }: { contact?: string; observed?: string; blind?: boolean }) {
   const at = contact || observed
   if (!at) return <span class="text-[12px] text-muted">not observed yet</span>
-  const s = Math.floor(ageSec(at))
-  const text = s < 60 ? `${s} s` : s < 3600 ? `${Math.round(s / 60)} min` : `${Math.round(s / 3600)} h`
-  const stale = blind || s > 120
-  return <span class={`text-[12px] num ${stale ? 'text-warn' : 'text-muted'}`} title={`Last contact ${new Date(at).toLocaleString()}`}>{stale && blind ? `not seen for ${text}` : `seen ${text} ago`}</span>
+  const sec = (now.value - Date.parse(at)) / 1000
+  const text = fmt.age(sec)
+  const stale = blind || sec > 120
+  return <span class={`text-[12px] ${stale ? 'text-warn' : 'text-muted'}`} title={`Last contact ${fmt.datetime(at)}`}>{stale && blind ? `not seen for ${text}` : `seen ${text} ago`}</span>
 }
 
 export function StatusDot({ tone, pulse }: { tone: Tone; pulse?: boolean }) {
-  const bg = { good: 'bg-good', warn: 'bg-warn', bad: 'bg-bad', info: 'bg-info', muted: 'bg-border' }[tone]
-  return <span class={`inline-block h-2 w-2 rounded-full ${bg} ${pulse ? 'animate-pulse' : ''}`} />
+  return <span class={`inline-block h-2 w-2 rounded-full ${toneBg[tone]} ${pulse ? 'animate-pulse' : ''}`} />
 }
 
 export function Meter({ label, used, cap, format }: { label: string; used: number; cap: number; format: (n: number) => string }) {
@@ -55,7 +38,7 @@ export function Meter({ label, used, cap, format }: { label: string; used: numbe
     <div class="flex flex-col gap-1.5">
       <div class="flex items-baseline justify-between">
         <span class="label">{label}</span>
-        <span class="num text-[13px]"><strong>{format(used)}</strong> <span class="text-muted">/ {format(cap)} · {pct}%</span></span>
+        <span class="text-[13px]"><strong>{format(used)}</strong> <span class="text-muted">/ {format(cap)} · {pct}%</span></span>
       </div>
       <div class="h-1 w-full bg-panel-2 overflow-hidden">
         <div class="h-full transition-[width]" style={{ width: pct + '%', background: tone }} />
@@ -64,25 +47,18 @@ export function Meter({ label, used, cap, format }: { label: string; used: numbe
   )
 }
 
-export function EventLine({ e, showStep = true }: { e: Event; showStep?: boolean }) {
-  const color: Record<Level, string> = { info: 'text-text', warn: 'text-warn', error: 'text-bad', done: 'text-good' }
+const levelColor: Record<Level, string> = { info: 'text-text', warn: 'text-warn', error: 'text-bad', done: 'text-good' }
+
+export const EventLine = memo(function EventLine({ e, showStep = true }: { e: Event; showStep?: boolean }) {
   return (
-    <div class={`flex gap-2 leading-5 ${color[e.level] ?? 'text-text'}`}>
-      {(e.time || e.clock) && <span class="text-muted shrink-0 select-none">{e.clock ?? new Date(e.time).toLocaleTimeString()}</span>}
+    <div class={`flex gap-2 leading-5 ${levelColor[e.level] ?? 'text-text'}`}>
+      {(e.time || e.clock) && <span class="text-muted shrink-0 select-none">{e.clock ?? fmt.when(e.time)}</span>}
       {showStep && e.step && <span class="text-muted shrink-0">[{e.step}]</span>}
       {e.node && <span class="shrink-0 text-accent">{e.node}</span>}
       <span class="min-w-0 break-words whitespace-pre-wrap">{e.message}</span>
     </div>
   )
-}
-
-export function EventLog({ events, empty = 'No output yet.', className = '' }: { events: Event[]; empty?: string; className?: string }) {
-  return (
-    <div class={`log ${className}`} ref={(el) => { if (el) el.scrollTop = el.scrollHeight }}>
-      {events.length === 0 ? <span class="text-muted">{empty}</span> : events.map((e, i) => <EventLine key={i} e={e} />)}
-    </div>
-  )
-}
+})
 
 export function Dialog({ title, onClose, children, width = 'max-w-lg', footer }: { title: string; onClose: () => void; children: ComponentChildren; width?: string; footer?: ComponentChildren }) {
   return (
@@ -99,11 +75,9 @@ export function Dialog({ title, onClose, children, width = 'max-w-lg', footer }:
   )
 }
 
-/** Confirm with an explicit impact list; the primary action names what happens. */
 export function ConfirmDialog({ title, impact, action, tone = 'primary', onConfirm, onClose, typed, cluster }: { title: string; impact: ComponentChildren; action: string; tone?: 'primary' | 'danger'; onConfirm: () => void | Promise<unknown>; onClose: () => void; typed?: string; cluster?: string }) {
-  let value = ''
-  // One click only: the button stays disabled until a returned promise settles.
   const [busy, setBusy] = useState(false)
+  const [value, setValue] = useState('')
   const confirm = () => {
     if (busy) return
     const r = onConfirm()
@@ -112,56 +86,52 @@ export function ConfirmDialog({ title, impact, action, tone = 'primary', onConfi
       ;(r as Promise<unknown>).finally(() => setBusy(false))
     }
   }
+  const blocked = !!typed && value.trim().toLowerCase() !== typed.toLowerCase()
   return (
     <Dialog title={title} onClose={onClose} footer={
       <>
         <button class="btn" onClick={onClose}>Cancel</button>
-        <button class={`btn ${tone === 'danger' ? 'btn-danger' : 'btn-primary'}`} id="confirm-action" disabled={!!typed || busy} onClick={confirm}>{busy ? 'Working' : action}</button>
+        <button class={`btn ${tone === 'danger' ? 'btn-danger' : 'btn-primary'}`} disabled={blocked || busy} onClick={confirm}>{busy ? 'Working' : action}</button>
       </>
     }>
       {cluster && <MaintenanceNotice cluster={cluster} />}
       <div class="text-[13px] flex flex-col gap-2">{impact}</div>
-      {typed && (
-        <Field label="To confirm, type">
-          <input class="input mono" placeholder={typed} onInput={(e) => {
-            value = (e.target as HTMLInputElement).value
-            const btn = document.getElementById('confirm-action') as HTMLButtonElement | null
-            // The label style uppercases text, so the comparison must not care about case.
-            if (btn) btn.disabled = busy || value.trim().toLowerCase() !== typed.toLowerCase()
-          }} />
-        </Field>
-      )}
+      {typed && <Field label="To confirm, type"><input class="input mono" placeholder={typed} value={value} onInput={(e) => setValue((e.target as HTMLInputElement).value)} /></Field>}
     </Dialog>
   )
 }
 
-/** Warns when a disruptive action is about to start outside the cluster's maintenance window. */
 export function MaintenanceNotice({ cluster }: { cluster: string }) {
-  const [state, setState] = useState<MaintenanceState | null>(null)
-  useEffect(() => { api.maintenance(cluster).then(setState).catch(() => {}) }, [cluster])
+  const { data: state } = useLive(() => api.maintenance(cluster), [cluster], [], { onError: 'silent' })
   if (!state || !state.window || state.open) return null
-  return <Notice tone="warn">Outside the maintenance window <span class="mono">{state.window}{state.timezone ? ` ${state.timezone}` : ''}</span>{state.next ? `; it next opens ${new Date(state.next).toLocaleString()}` : ''}. Confirming runs it anyway.</Notice>
+  return <Notice tone="warn">Outside the maintenance window <span class="mono">{state.window}{state.timezone ? ` ${state.timezone}` : ''}</span>{state.next ? `; next opens ${fmt.datetime(state.next)}` : ''}. Confirming runs it anyway.</Notice>
 }
 
-/** Small warning marker for a table row that has an open watcher alert. */
 export function AlertPill({ e }: { e?: { severity: string; message: string; kind: string } }) {
   if (!e) return null
-  return <Pill tone={e.severity === 'critical' ? 'bad' : 'warn'} title={e.message}>{e.kind.split('.')[1]}</Pill>
+  return <Pill tone={severityTone(e.severity)} title={e.message}>{e.kind.split('.')[1]}</Pill>
 }
 
-/** One-line command with a copy button. */
-export function Code({ text }: { text: string }) {
+export function copy(text: string) {
+  return navigator.clipboard ? navigator.clipboard.writeText(text) : Promise.reject(new Error('Clipboard unavailable'))
+}
+
+export function CopyButton({ text, className = 'btn', label = 'Copy' }: { text: string | (() => string); className?: string; label?: string }) {
   const [done, setDone] = useState(false)
-  const copy = () => { navigator.clipboard?.writeText(text).then(() => { setDone(true); setTimeout(() => setDone(false), 1500) }) }
+  const click = () => copy(typeof text === 'function' ? text() : text).then(() => { setDone(true); setTimeout(() => setDone(false), 1500) }).catch((e) => toast(e.message, 'error'))
+  return <button class={className} onClick={click}>{done ? 'Copied' : label}</button>
+}
+
+export function Code({ text }: { text: string }) {
   return (
     <div class="flex items-stretch gap-1">
       <code class="mono flex-1 min-w-0 rounded bg-bg border border-border px-3 py-2 select-all break-all">{text}</code>
-      <button class="btn shrink-0" onClick={copy} title="Copy">{done ? 'Copied' : 'Copy'}</button>
+      <CopyButton text={text} className="btn shrink-0" />
     </div>
   )
 }
 
-export function Field({ label, children, hint }: { label: string; children: ComponentChildren; hint?: string }) {
+export function Field({ label, children, hint }: { label: string; children: ComponentChildren; hint?: ComponentChildren }) {
   return (
     <label class="flex flex-col gap-1">
       <span class="label">{label}</span>
@@ -177,28 +147,17 @@ export function ErrorBox({ error }: { error: string | null | undefined }) {
 }
 
 export function Notice({ tone = 'info', children }: { tone?: Tone; children: ComponentChildren }) {
-  const cls = { good: 'border-good/40 bg-good/10 text-good', warn: 'border-warn/40 bg-warn/10 text-warn', bad: 'border-bad/40 bg-bad/10 text-bad', info: 'border-info/40 bg-info/10 text-info', muted: 'border-border bg-panel-2 text-muted' }[tone]
-  return <div class={`rounded-[var(--r)] border px-3 py-2 text-[13px] ${cls}`}>{children}</div>
-}
-
-export function EmptyState({ title, children, action }: { title: string; children?: ComponentChildren; action?: ComponentChildren }) {
-  return (
-    <div class="panel p-8 flex flex-col items-start gap-2">
-      <h3 class="font-semibold">{title}</h3>
-      {children && <div class="text-[13px] text-muted max-w-prose">{children}</div>}
-      {action && <div class="mt-2">{action}</div>}
-    </div>
-  )
+  return <div class={`rounded-[var(--r)] border px-3 py-2 text-[13px] ${toneBorder[tone]}`}>{children}</div>
 }
 
 export function KeyValue({ rows }: { rows: [string, ComponentChildren][] }) {
   return (
     <dl class="grid grid-cols-[max-content_1fr] gap-x-6 gap-y-1.5 text-[13px]">
       {rows.map(([k, v]) => (
-        <>
+        <Fragment key={k}>
           <dt class="text-muted">{k}</dt>
           <dd class="min-w-0 break-words">{v ?? <span class="text-muted">—</span>}</dd>
-        </>
+        </Fragment>
       ))}
     </dl>
   )
@@ -208,10 +167,10 @@ export function Breadcrumbs({ items }: { items: { label: string; href?: string }
   return (
     <nav class="flex items-center gap-1.5 text-[13px] text-muted">
       {items.map((it, i) => (
-        <>
+        <Fragment key={`${i}:${it.label}`}>
           {i > 0 && <span class="text-border">/</span>}
           {it.href ? <a href={it.href} class="hover:text-text hover:underline">{it.label}</a> : <span class="text-text">{it.label}</span>}
-        </>
+        </Fragment>
       ))}
     </nav>
   )
@@ -230,4 +189,39 @@ export function Section({ title, children, actions, help }: { title: string; chi
       {children}
     </section>
   )
+}
+
+const tileSize = { lg: 'text-lg', xl: 'text-xl', '2xl': 'text-2xl' }
+
+export function Tile({ label, value, sub, tone, href, title, size = '2xl', compact, plain, children }: { label: string; value: ComponentChildren; sub?: string; tone?: Tone; href?: string; title?: string; size?: keyof typeof tileSize; compact?: boolean; plain?: boolean; children?: ComponentChildren }) {
+  const box = plain ? '' : compact ? 'panel px-3 py-2 gap-0.5' : 'panel p-3 gap-1'
+  const cls = `${box} flex flex-col min-w-0 ${plain ? 'gap-1' : ''} ${href ? 'hover:border-accent' : ''}`
+  const body = (
+    <>
+      <span class="label">{label}</span>
+      <span class={`${tileSize[size]} font-semibold truncate ${tone ? toneText[tone] : ''}`} title={title ?? (typeof value === 'string' ? value : undefined)}>{value}</span>
+      {sub && <span class="text-[12px] text-muted truncate" title={sub}>{sub}</span>}
+      {children}
+    </>
+  )
+  return href ? <a href={href} class={cls}>{body}</a> : <div class={cls}>{body}</div>
+}
+
+export function Action({ title, what, button, disabled, onClick, href, secondary }: { title: string; what: string; button: string; disabled?: boolean; onClick?: () => void; href?: string; secondary?: { label: string; onClick: () => void } }) {
+  return (
+    <div class="panel p-3 flex items-center gap-4">
+      <div class="flex-1 min-w-0">
+        <div class="font-medium">{title}</div>
+        <p class="text-[12.5px] text-muted">{what}</p>
+      </div>
+      <div class="flex gap-2 shrink-0">
+        {secondary && <button class="btn" disabled={disabled} onClick={secondary.onClick}>{secondary.label}</button>}
+        {href ? <a href={href} class="btn">{button}</a> : <button class="btn btn-primary" disabled={disabled} onClick={onClick}>{button}</button>}
+      </div>
+    </div>
+  )
+}
+
+export function GroupHeading({ title, help }: { title: string; help: string }) {
+  return <div class="mt-2"><span class="label">{title}</span><p class="text-[12px] text-muted">{help}</p></div>
 }

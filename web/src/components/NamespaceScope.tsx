@@ -1,33 +1,34 @@
-import { useEffect, useState } from 'preact/hooks'
+import { useCallback, useMemo } from 'preact/hooks'
 import { useLocation } from 'preact-iso'
 import { api, type Namespace } from '../api'
-import { refreshKey } from '../store'
+import { useLive } from '../useLive'
 
-export type Scope = 'apps' | 'platform' | 'all'
+type Scope = 'apps' | 'platform' | 'all'
 const scopes: { id: Scope; label: string }[] = [{ id: 'apps', label: 'Apps' }, { id: 'platform', label: 'Platform' }, { id: 'all', label: 'All' }]
+const none: Namespace[] = []
 
 export function useNamespaces(cluster: string) {
-  const [namespaces, setNamespaces] = useState<Namespace[] | null>(null)
-  useEffect(() => { api.namespaces(cluster).then(setNamespaces).catch(() => setNamespaces([])) }, [cluster, refreshKey(cluster, 'workloads')])
-  return namespaces
+  const { data, loading } = useLive(() => api.namespaces(cluster), [cluster], [[cluster, 'workloads']], { onError: 'silent' })
+  return data ?? (loading ? null : none)
 }
 
 export function useNamespaceScope(cluster: string) {
   const { path, query, route } = useLocation()
   const namespaces = useNamespaces(cluster)
-  const platform = new Set((namespaces ?? []).filter((n) => n.platform).map((n) => n.name))
-  const isPlatform = (ns: string) => platform.has(ns)
+  const platform = useMemo(() => new Set((namespaces ?? []).filter((n) => n.platform).map((n) => n.name)), [namespaces])
   const ns = query.ns ?? ''
-  const scope: Scope = scopes.some((s) => s.id === query.scope) ? (query.scope as Scope) : ns && isPlatform(ns) ? 'platform' : 'apps'
-  const inScope = (n: string, s: Scope = scope) => s === 'all' || (s === 'platform') === isPlatform(n)
-  const keep = (n: string) => (ns ? n === ns : inScope(n))
-  const set = (next: { scope?: Scope; ns?: string }) => {
+  const scope: Scope = scopes.some((s) => s.id === query.scope) ? (query.scope as Scope) : ns && platform.has(ns) ? 'platform' : 'apps'
+  const { inScope, keep } = useMemo(() => {
+    const inScope = (n: string, s: Scope = scope) => s === 'all' || (s === 'platform') === platform.has(n)
+    return { inScope, keep: (n: string) => (ns ? n === ns : inScope(n)) }
+  }, [platform, scope, ns])
+  const set = useCallback((next: { scope?: Scope; ns?: string }) => {
     const q = new URLSearchParams(typeof location !== 'undefined' ? location.search : '')
     if (next.scope !== undefined) { q.set('scope', next.scope); q.delete('ns') }
     if (next.ns !== undefined) { if (next.ns) q.set('ns', next.ns); else q.delete('ns') }
     const s = q.toString()
     route(s ? `${path}?${s}` : path, true)
-  }
+  }, [path, route])
   return { scope, ns, keep, inScope, set, namespaces, loading: namespaces === null }
 }
 

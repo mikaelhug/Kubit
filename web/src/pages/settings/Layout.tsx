@@ -2,12 +2,11 @@ import type { ComponentChildren } from 'preact'
 import { useEffect, useState } from 'preact/hooks'
 import { api, type Settings } from '../../api'
 import { can, loadSettings, settings, toast } from '../../store'
-import { settingsPages, type SettingsPage } from '../../app'
+import { settingsPages, type SettingsPage } from '../../routes'
 import { Notice } from '../../components/ui'
 
 const adminOnly: SettingsPage[] = ['accounts', 'sso']
 
-/** Settings frame: sub-nav on the left, one page on the right. */
 export function SettingsLayout({ page, children }: { page: SettingsPage; children: ComponentChildren }) {
   const pages = settingsPages.filter(([id]) => !adminOnly.includes(id) || can('admin'))
   return (
@@ -21,10 +20,6 @@ export function SettingsLayout({ page, children }: { page: SettingsPage; childre
   )
 }
 
-/**
- * A page's slice of the settings row. Edits stay local until Save, which merges the slice over
- * the latest pushed settings so a page never overwrites another page's fields.
- */
 const kept = new Map<string, { draft: unknown; base: unknown }>()
 
 export function useSettingsSlice<T>(key: string, pick: (s: Settings) => T, put: (s: Settings, v: T) => Settings) {
@@ -40,7 +35,7 @@ export function useSettingsSlice<T>(key: string, pick: (s: Settings) => T, put: 
     if (!dirtyNow) setDraftRaw(v)
     setBase(v)
     if (dirtyNow) kept.set(key, { draft, base: v }); else kept.delete(key)
-  }, [pushed]) // eslint-disable-line
+  }, [pushed])
   const dirty = !!draft && !!base && JSON.stringify(draft) !== JSON.stringify(base)
   const movedUnderneath = dirty && !!pushed && JSON.stringify(pick(pushed)) !== JSON.stringify(base)
   const save = () => {

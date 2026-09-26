@@ -1,7 +1,7 @@
 import { useLocation } from 'preact-iso'
 import { useEffect } from 'preact/hooks'
 import { can } from '../store'
-import { settingsPages, type SettingsPage } from '../app'
+import { settingsPages, type SettingsPage } from '../routes'
 import { UsersSection } from '../components/Users'
 import { SettingsLayout } from './settings/Layout'
 import { General } from './settings/General'
@@ -11,7 +11,6 @@ import { Offsite } from './settings/Offsite'
 import { Sso } from './settings/Sso'
 import { Backup } from './settings/Backup'
 
-/** /settings/:page — one page of this installation's settings. */
 export function KubitSettings({ page }: { page?: string }) {
   const { route } = useLocation()
   const known = settingsPages.some(([id]) => id === page)

@@ -1,5 +1,3 @@
-// Small IPv4 helpers for the wizard's live checks; the daemon's lint is authoritative.
-
 export function ip4(s: string): number | null {
   const m = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(s.trim())
   if (!m) return null
@@ -8,9 +6,8 @@ export function ip4(s: string): number | null {
   return ((p[0] << 24) | (p[1] << 16) | (p[2] << 8) | p[3]) >>> 0
 }
 
-export function fromInt(n: number) { return [n >>> 24, (n >>> 16) & 255, (n >>> 8) & 255, n & 255].join('.') }
+function fromInt(n: number) { return [n >>> 24, (n >>> 16) & 255, (n >>> 8) & 255, n & 255].join('.') }
 
-/** Address part of "a.b.c.d/nn" or a bare address. */
 export function addrOf(cidr: string) { return cidr.split('/')[0].trim() }
 
 export function prefixOf(cidr: string, dflt = 24) { const p = cidr.split('/')[1]; const n = p ? Number(p) : dflt; return Number.isFinite(n) && n >= 0 && n <= 32 ? n : dflt }
@@ -34,10 +31,20 @@ export function inRange(ip: string, r: string) {
   return x !== null && rr !== null && x >= rr[0] && x <= rr[1]
 }
 
-/** Guess the gateway (.1) for a lease; the operator can overwrite it. */
 export function guessGateway(ip: string, prefix: number) {
   const x = ip4(addrOf(ip))
   if (x === null) return ''
   const mask = prefix === 0 ? 0 : (~0 << (32 - prefix)) >>> 0
   return fromInt(((x & mask) >>> 0) + 1)
 }
+
+export function ipAt(range: string, i: number) {
+  const start = ip4(range.split('-')[0] ?? '')
+  return start === null ? '' : fromInt(start + i)
+}
+
+export const isDnsLabel = (s: string) => /^[a-z0-9]([-a-z0-9]*[a-z0-9])?$/.test(s)
+
+export const subnet24 = (ip: string) => ip.replace(/\.\d+$/, '.0/24')
+
+export const staticNetwork = (ip: string) => ({ addresses: [`${ip}/24`], gateway: guessGateway(ip, 24) })
