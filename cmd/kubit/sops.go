@@ -51,6 +51,10 @@ func sopsCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
+			if err := f.Chmod(0o600); err != nil {
+				f.Close()
+				return err
+			}
 			if _, err := f.Write(k.Identity); err != nil {
 				f.Close()
 				return err

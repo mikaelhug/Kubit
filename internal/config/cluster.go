@@ -876,13 +876,20 @@ func containsString(list []string, s string) bool {
 	return false
 }
 
-func CheckChange(old, next *Cluster, installed bool) error {
+func CheckChange(old, next *Cluster) error {
 	o, n := old.Spec.Platform, next.Spec.Platform
 	if o.Builds.Enabled && n.Builds.Enabled && o.MetalLB.Range != n.MetalLB.Range {
-		return fmt.Errorf("the MetalLB range must stay while Builds is on (the registry holds its last address); disable Builds first")
+		return fmt.Errorf("the MetalLB range must stay while Builds is on; disable Builds first")
 	}
-	if installed && old.Spec.Storage != next.Spec.Storage {
-		return fmt.Errorf("storage must stay as installed: Talos sizes the system disk only when a node is installed")
+	if old.Spec.Storage != next.Spec.Storage {
+		return fmt.Errorf("storage must stay as installed")
+	}
+	for _, nn := range next.Spec.Nodes {
+		for _, on := range old.Spec.Nodes {
+			if on.Hostname == nn.Hostname && !old.SharesSystemDisk(on) && next.SharesSystemDisk(nn) {
+				return fmt.Errorf("%s must keep its system disk to Talos: it was installed without Longhorn storage", nn.Hostname)
+			}
+		}
 	}
 	return nil
 }

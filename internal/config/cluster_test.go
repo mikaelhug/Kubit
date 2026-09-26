@@ -175,18 +175,24 @@ func TestCheckChange(t *testing.T) {
 	moved := load("  storage: { systemDisk: true }\n")
 	moved.Spec.Platform.Builds.Enabled = true
 	moved.Spec.Platform.MetalLB.Range = "192.168.64.200-192.168.64.230"
-	if err := config.CheckChange(old, moved, true); err == nil {
+	if err := config.CheckChange(old, moved); err == nil {
 		t.Error("a range change under Builds must be refused")
 	}
 	moved.Spec.Platform.Builds.Enabled = false
-	if err := config.CheckChange(old, moved, true); err != nil {
+	if err := config.CheckChange(old, moved); err != nil {
 		t.Errorf("turning Builds off with the change is fine: %v", err)
 	}
 	bigger := load("  storage: { systemDisk: true, ephemeralSize: 80GiB }\n")
-	if err := config.CheckChange(old, bigger, true); err == nil {
-		t.Error("storage must not change on an installed cluster")
+	if err := config.CheckChange(old, bigger); err == nil {
+		t.Error("storage must not change once stored")
 	}
-	if err := config.CheckChange(old, bigger, false); err != nil {
-		t.Errorf("before install storage may change: %v", err)
+	withoutLonghorn := load("  storage: { systemDisk: true }\n")
+	withLonghorn := load("  storage: { systemDisk: true }\n")
+	withLonghorn.Spec.Platform.Longhorn.Enabled = true
+	if err := config.CheckChange(withoutLonghorn, withLonghorn); err == nil || !strings.Contains(err.Error(), "cp-01") {
+		t.Errorf("Longhorn on the system disk of a node installed without it must be refused: %v", err)
+	}
+	if err := config.CheckChange(withLonghorn, withoutLonghorn); err != nil {
+		t.Errorf("turning Longhorn off keeps the partition and is fine: %v", err)
 	}
 }

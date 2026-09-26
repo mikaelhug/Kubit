@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"net"
 	"os"
 	"path/filepath"
 	"strings"
@@ -252,7 +253,7 @@ func tofuLogger(sink Sink) func(tofu.Line) {
 }
 
 func (m *Manager) registryMirrorMissing(ctx context.Context, c *config.Cluster) string {
-	want := []byte(fmt.Sprintf("http://%s:%d", c.RegistryIP(), config.RegistryPort))
+	want := []byte("http://" + net.JoinHostPort(c.RegistryIP(), fmt.Sprint(config.RegistryPort)))
 	for _, n := range c.Spec.Nodes {
 		if cfg, err := m.Store.GetNodeMachineConfig(ctx, n.IP); err != nil || !bytes.Contains(cfg, want) {
 			return n.Hostname

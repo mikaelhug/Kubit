@@ -114,7 +114,6 @@ export function topologyText(n: number) {
 
 const hasData = (c: ClusterSpec) => !!c.spec.storage?.systemDisk || c.spec.nodes.some((n) => n.dataDisks?.length)
 
-
 export function DesignStep({ draft, setCluster, reset, busy }: { draft: Draft; setCluster: SetCluster; reset: () => Promise<void>; busy: boolean }) {
   const c = draft.cluster!
   const pools = c.spec.pools ?? []
