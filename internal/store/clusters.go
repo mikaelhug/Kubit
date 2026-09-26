@@ -108,7 +108,7 @@ func (s *Store) SetClusterState(ctx context.Context, name, state string) error {
 // Talos ("configured") but belong to nobody Kubit knows, so a later scan that finds
 // them in maintenance mode can offer them again.
 func (s *Store) DeleteCluster(ctx context.Context, name string) error {
-	if _, err := s.db.ExecContext(ctx, `UPDATE machines SET cluster = NULL, hostname = '', pool = '', role = '', machine_config = NULL, state = 'configured', updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE cluster = ?`, name); err != nil {
+	if _, err := s.db.ExecContext(ctx, `UPDATE machines SET cluster = NULL, hostname = '', pool = '', role = '', machine_config = NULL, system_split = 0, state = 'configured', updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE cluster = ?`, name); err != nil {
 		return err
 	}
 	if res, err := s.db.ExecContext(ctx, `UPDATE events SET acked = 1 WHERE cluster = ? AND acked = 0`, name); err != nil {

@@ -15,6 +15,7 @@ import (
 	"time"
 
 	talosconfig "github.com/siderolabs/talos/pkg/machinery/config"
+	"github.com/siderolabs/talos/pkg/machinery/config/configloader"
 	"github.com/siderolabs/talos/pkg/machinery/config/types/block"
 	"github.com/siderolabs/talos/pkg/machinery/constants"
 	"github.com/siderolabs/talos/pkg/machinery/gendata"
@@ -304,29 +305,16 @@ const (
 	RegistryPort = 5000
 )
 
-func (c *Cluster) RegistryRangeOK() bool {
-	start, end, err := ParseIPRange(c.Spec.Platform.MetalLB.Range)
-	return err == nil && start.Is4() && end.Is4() && start != end
-}
+const registryIPOffset = 50
 
 func (c *Cluster) RegistryIP() string {
-	_, end, err := ParseIPRange(c.Spec.Platform.MetalLB.Range)
-	if err != nil {
+	p, err := netip.ParsePrefix(c.Spec.Network.ServiceCIDR)
+	if err != nil || !p.Addr().Is4() || p.Bits() > 24 {
 		return ""
 	}
-	return end.String()
-}
-
-func (c *Cluster) MetalLBPool() string {
-	r := c.Spec.Platform.MetalLB.Range
-	if !c.Spec.Platform.Builds.Enabled {
-		return r
-	}
-	start, end, err := ParseIPRange(r)
-	if err != nil || start == end {
-		return r
-	}
-	return start.String() + "-" + end.Prev().String()
+	b := p.Masked().Addr().As4()
+	b[3] += registryIPOffset
+	return netip.AddrFrom4(b).String()
 }
 
 // LonghornExtensions are the Talos system extensions Longhorn's engine needs.
@@ -622,8 +610,8 @@ func (c *Cluster) Validate() error {
 		errs = append(errs, fmt.Errorf("platform.longhorn needs storage.systemDisk or dataDisks on at least one node to hold replicas"))
 	}
 	if b := c.Spec.Platform; b.Builds.Enabled {
-		if !b.MetalLB.Enabled || !c.RegistryRangeOK() {
-			errs = append(errs, fmt.Errorf("platform.builds needs MetalLB with an IPv4 range of at least 2 addresses; the last one serves the registry"))
+		if c.RegistryIP() == "" {
+			errs = append(errs, fmt.Errorf("platform.builds needs an IPv4 network.serviceCIDR of /24 or larger for the registry address"))
 		}
 		if !b.Longhorn.Enabled {
 			errs = append(errs, fmt.Errorf("platform.builds needs Longhorn for the registry's volume"))
@@ -876,19 +864,30 @@ func containsString(list []string, s string) bool {
 	return false
 }
 
-func CheckChange(old, next *Cluster) error {
-	o, n := old.Spec.Platform, next.Spec.Platform
-	if o.Builds.Enabled && n.Builds.Enabled && o.MetalLB.Range != n.MetalLB.Range {
-		return fmt.Errorf("the MetalLB range must stay while Builds is on; disable Builds first")
+func HasSystemVolume(machineConfig []byte) bool {
+	cfg, err := configloader.NewFromBytes(machineConfig)
+	if err != nil {
+		return false
 	}
-	if old.Spec.Storage != next.Spec.Storage {
-		return fmt.Errorf("storage must stay as installed")
+	for _, d := range cfg.Documents() {
+		if v, ok := d.(*block.UserVolumeConfigV1Alpha1); ok && v.MetaName == SystemDataVolume {
+			return true
+		}
+	}
+	return false
+}
+
+func CheckChange(old, next *Cluster, installed, split map[string]bool) error {
+	anySplit := false
+	for _, s := range split {
+		anySplit = anySplit || s
+	}
+	if anySplit && old.Spec.Storage != next.Spec.Storage {
+		return fmt.Errorf("storage must stay: nodes hold a system-disk volume")
 	}
 	for _, nn := range next.Spec.Nodes {
-		for _, on := range old.Spec.Nodes {
-			if on.Hostname == nn.Hostname && !old.SharesSystemDisk(on) && next.SharesSystemDisk(nn) {
-				return fmt.Errorf("%s must keep its system disk to Talos: it was installed without Longhorn storage", nn.Hostname)
-			}
+		if installed[nn.IP] && !split[nn.IP] && next.SharesSystemDisk(nn) {
+			return fmt.Errorf("%s must keep its system disk to Talos: it was installed without a storage volume", nn.Hostname)
 		}
 	}
 	return nil

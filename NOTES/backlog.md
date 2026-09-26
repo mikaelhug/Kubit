@@ -278,8 +278,7 @@
   - The Flux card shows the recipient Kubit holds, not whether the cluster's
     `flux-system/sops-age` still matches it; a drift check could compare the two.
 - Builds follow-ups: rootless BuildKit (needs `user.max_user_namespaces` > 0 on the
-  nodes), TLS and auth for buildkitd and the registry (the registry answers on a LAN
-  address), registry garbage collection of old tags, private Git repositories (a deploy
+  nodes), TLS and auth for buildkitd and the registry (any pod can push), registry garbage collection of old tags, private Git repositories (a deploy
   key), build logs streamed in the UI instead of the raw log link, rebuilds on source
   changes without a version bump.
 - Platform apply: a Deployment that never rolls out (the registry on the first M25

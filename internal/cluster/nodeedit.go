@@ -77,7 +77,7 @@ func (m *Manager) RenameNode(ctx context.Context, name, hostname, newName string
 		if err := tc.Apply(ctx, gen.Nodes[newName]); err != nil {
 			return err
 		}
-		if err := m.Store.PutNodeMachineConfig(ctx, n.IP, gen.Nodes[newName]); err != nil {
+		if err := m.Store.PutNodeMachineConfig(ctx, n.IP, gen.Nodes[newName], config.HasSystemVolume(gen.Nodes[newName])); err != nil {
 			return err
 		}
 		sink.emit(Info, "apply", newName, "hostname applied without reboot; kubelet re-registers")
@@ -311,7 +311,7 @@ func (m *Manager) ReaddressNode(ctx context.Context, name, hostname string, netw
 	for _, x := range c.Spec.Nodes {
 		if x.Hostname == hostname {
 			_ = m.Store.UpsertNode(ctx, storeRow(c, x))
-			_ = m.Store.PutNodeMachineConfig(ctx, x.IP, gen.Nodes[hostname])
+			_ = m.Store.PutNodeMachineConfig(ctx, x.IP, gen.Nodes[hostname], config.HasSystemVolume(gen.Nodes[hostname]))
 		}
 	}
 	_ = m.Store.Audit(ctx, name, "node.readdress", hostname+" → "+target)

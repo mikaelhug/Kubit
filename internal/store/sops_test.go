@@ -35,12 +35,6 @@ func TestSOPSKeySealedAndOutlivesCluster(t *testing.T) {
 	if k, _ := s.GetSOPSKey(ctx, "lab"); k.Recipient != "age1new" {
 		t.Fatalf("replace: %+v", k)
 	}
-	if err := s.DeleteSOPSKey(ctx, "lab"); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := s.GetSOPSKey(ctx, "lab"); !errors.Is(err, store.ErrNotFound) {
-		t.Fatalf("deleted: %v", err)
-	}
 }
 
 func TestCreateSOPSKeyKeepsTheFirst(t *testing.T) {

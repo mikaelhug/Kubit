@@ -57,8 +57,3 @@ func (s *Store) CreateSOPSKey(ctx context.Context, cluster string, identity []by
 	}
 	return nil
 }
-
-func (s *Store) DeleteSOPSKey(ctx context.Context, cluster string) error {
-	_, err := s.db.ExecContext(ctx, `DELETE FROM sops_keys WHERE cluster = ?`, cluster)
-	return s.done(err, Change{Table: "sops", Cluster: cluster, Key: cluster, Op: "delete"})
-}

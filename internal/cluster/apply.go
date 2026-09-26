@@ -73,7 +73,7 @@ func (m *Manager) applyNodeConfig(ctx context.Context, n config.Node, cfg []byte
 	if err != nil {
 		return fmt.Errorf("apply: %w", err)
 	}
-	if err := m.Store.PutNodeMachineConfig(ctx, n.IP, cfg); err != nil {
+	if err := m.Store.PutNodeMachineConfig(ctx, n.IP, cfg, config.HasSystemVolume(cfg)); err != nil {
 		return err
 	}
 	sink.emit(Info, step, n.Hostname, "applied: %s", summarizeDryRun(details))

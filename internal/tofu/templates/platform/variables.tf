@@ -9,7 +9,6 @@ variable "metallb" {
   type = object({
     enabled = bool
     range   = optional(string, "")
-    pool    = optional(string, "")
     values  = optional(any, {})
   })
 }

@@ -102,11 +102,17 @@ func TestNodes(t *testing.T) {
 	if n.Cluster != "dev" || n.Hostname != "cp-01" || n.Role != "controlplane" || n.MAC != "aa:bb" || string(n.Hardware) != `{"cpus":2}` || n.State != "configured" {
 		t.Errorf("rescan clobbered fields: %+v", n)
 	}
-	if err := s.PutNodeMachineConfig(ctx, "10.0.0.1", []byte("cfg")); err != nil {
+	if err := s.PutNodeMachineConfig(ctx, "10.0.0.1", []byte("cfg"), true); err != nil {
 		t.Fatal(err)
 	}
 	if cfg, err := s.GetNodeMachineConfig(ctx, "10.0.0.1"); err != nil || string(cfg) != "cfg" {
 		t.Errorf("machine config: %q %v", cfg, err)
+	}
+	if err := s.PutNodeMachineConfig(ctx, "10.0.0.1", []byte("cfg2"), false); err != nil {
+		t.Fatal(err)
+	}
+	if !s.NodeSystemSplit(ctx, "10.0.0.1") {
+		t.Error("a node once installed with a system volume keeps the mark")
 	}
 	if _, err := s.GetNodeMachineConfig(ctx, "10.0.0.2"); !errors.Is(err, store.ErrNotFound) {
 		t.Errorf("missing config: %v", err)

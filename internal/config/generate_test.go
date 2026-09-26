@@ -500,6 +500,9 @@ func TestGenerateSystemDiskStorage(t *testing.T) {
 			t.Errorf("system_disk=%v: matched=%v err=%v", system, ok, err)
 		}
 	}
+	if !config.HasSystemVolume(g.Nodes["cp-01"]) || config.HasSystemVolume(g.Nodes["worker-01"]) {
+		t.Error("HasSystemVolume must spot the data-system document")
+	}
 	n := doc[*k8s.KubeNodeConfigV1Alpha1](t, cp)
 	if n.LabelsConfig["node.longhorn.io/create-default-disk"] != "config" || !strings.Contains(n.AnnotationsConfig["node.longhorn.io/default-disks-config"], `"path":"/var/mnt/data-system"`) {
 		t.Errorf("system disk must be a Longhorn disk: %v %v", n.LabelsConfig, n.AnnotationsConfig)
@@ -532,19 +535,15 @@ func TestGenerateBuildsRegistryMirror(t *testing.T) {
 	if err := c.Validate(); err != nil {
 		t.Fatal(err)
 	}
-	start, _, _ := config.ParseIPRange(c.Spec.Platform.MetalLB.Range)
-	if ip := c.RegistryIP(); !strings.HasSuffix(c.Spec.Platform.MetalLB.Range, "-"+ip) {
-		t.Errorf("registry IP %s is not the end of %s", ip, c.Spec.Platform.MetalLB.Range)
-	}
-	if pool := c.MetalLBPool(); pool != start.String()+"-192.168.64.219" {
-		t.Errorf("pool = %s", pool)
+	if ip := c.RegistryIP(); ip != "10.96.0.50" {
+		t.Errorf("registry IP %s, want a fixed address in the service CIDR", ip)
 	}
 	g, err := config.Generate(c, nil, func(config.Pool) string { return installer })
 	if err != nil {
 		t.Fatal(err)
 	}
 	m := doc[*cri.RegistryMirrorConfigV1Alpha1](t, load(t, g.Nodes["worker-01"]))
-	if m.MetaName != "registry.kubit" || len(m.RegistryEndpoints) != 1 || m.RegistryEndpoints[0].EndpointURL.String() != "http://192.168.64.220:5000" || m.RegistrySkipFallback == nil || !*m.RegistrySkipFallback {
+	if m.MetaName != "registry.kubit" || len(m.RegistryEndpoints) != 1 || m.RegistryEndpoints[0].EndpointURL.String() != "http://10.96.0.50:5000" || m.RegistrySkipFallback == nil || !*m.RegistrySkipFallback {
 		t.Errorf("mirror = %+v", m)
 	}
 	c.Spec.Platform.Longhorn.Enabled = false
@@ -552,9 +551,9 @@ func TestGenerateBuildsRegistryMirror(t *testing.T) {
 		t.Errorf("builds without Longhorn: %v", err)
 	}
 	c.Spec.Platform.Longhorn.Enabled = true
-	c.Spec.Platform.MetalLB.Enabled = false
-	if err := c.Validate(); err == nil || !strings.Contains(err.Error(), "platform.builds needs MetalLB") {
-		t.Errorf("builds without MetalLB: %v", err)
+	c.Spec.Network.ServiceCIDR = "fd00:96::/108"
+	if err := c.Validate(); err == nil || !strings.Contains(err.Error(), "serviceCIDR") {
+		t.Errorf("builds without an IPv4 service CIDR: %v", err)
 	}
 }
 

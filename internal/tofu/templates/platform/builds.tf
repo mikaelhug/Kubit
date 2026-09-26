@@ -15,18 +15,6 @@ resource "kubectl_manifest" "builds_namespace" {
   })
 }
 
-resource "kubectl_manifest" "builds_pool" {
-  count = var.builds.enabled ? 1 : 0
-
-  yaml_body = yamlencode({
-    apiVersion = "metallb.io/v1beta1"
-    kind       = "IPAddressPool"
-    metadata   = { name = "builds", namespace = "metallb-system" }
-    spec       = { addresses = ["${var.builds.ip}/32"], autoAssign = false }
-  })
-  depends_on = [kubectl_manifest.metallb_l2]
-}
-
 resource "kubectl_manifest" "builds_registry_volume" {
   count = var.builds.enabled ? 1 : 0
 
@@ -83,21 +71,31 @@ resource "kubectl_manifest" "builds_registry_service" {
   yaml_body = yamlencode({
     apiVersion = "v1"
     kind       = "Service"
-    metadata = {
-      name      = "registry"
-      namespace = "kubit-builds"
-      annotations = {
-        "metallb.io/address-pool"     = "builds"
-        "metallb.io/loadBalancerIPs" = var.builds.ip
-      }
-    }
+    metadata   = { name = "registry", namespace = "kubit-builds" }
     spec = {
-      type     = "LoadBalancer"
+      type     = "ClusterIP"
       selector = { "app.kubernetes.io/name" = "registry" }
       ports    = [{ name = "registry", port = 5000, targetPort = "registry" }]
     }
   })
-  depends_on = [kubectl_manifest.builds_pool, kubectl_manifest.builds_namespace]
+  depends_on = [kubectl_manifest.builds_namespace]
+}
+
+resource "kubectl_manifest" "builds_registry_node_service" {
+  count = var.builds.enabled ? 1 : 0
+
+  yaml_body = yamlencode({
+    apiVersion = "v1"
+    kind       = "Service"
+    metadata   = { name = "registry-nodes", namespace = "kubit-builds" }
+    spec = {
+      type      = "ClusterIP"
+      clusterIP = var.builds.ip
+      selector  = { "app.kubernetes.io/name" = "registry" }
+      ports     = [{ name = "registry", port = 5000, targetPort = "registry" }]
+    }
+  })
+  depends_on = [kubectl_manifest.builds_namespace]
 }
 
 resource "kubectl_manifest" "builds_buildkitd_config" {

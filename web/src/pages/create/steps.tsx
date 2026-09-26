@@ -300,7 +300,7 @@ export function PlatformStep({ draft, setCluster, patch }: { draft: Draft; setCl
   const setRepo = (r: FluxRepository) => setCluster((c) => ({ ...c, spec: { ...c.spec, platform: { ...c.spec.platform, flux: { ...c.spec.platform.flux, repository: r.url.trim() || r.path?.trim() ? { url: r.url.trim(), path: r.path?.trim() || undefined } : undefined } } } }))
   const toggle = (key: keyof ClusterSpec['spec']['platform'], enabled: boolean) => setCluster((c) => {
     const platform = { ...c.spec.platform, [key]: { ...c.spec.platform[key], enabled } }
-    if (!enabled && (key === 'metallb' || key === 'longhorn')) platform.builds = { ...platform.builds, enabled: false }
+    if (!enabled && key === 'longhorn') platform.builds = { ...platform.builds, enabled: false }
     return { ...c, spec: { ...c.spec, platform } }
   })
   return (
@@ -309,7 +309,7 @@ export function PlatformStep({ draft, setCluster, patch }: { draft: Draft; setCl
       <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
         {addons.map((a) => {
           const on = c.spec.platform[a.key].enabled
-          const blocked = a.key === 'longhorn' && !hasData(c) ? 'No node has storage.' : a.key === 'builds' && (!c.spec.platform.metallb.enabled || !c.spec.platform.longhorn?.enabled) ? 'Needs MetalLB and Longhorn.' : ''
+          const blocked = a.key === 'longhorn' && !hasData(c) ? 'No node has storage.' : a.key === 'builds' && !c.spec.platform.longhorn?.enabled ? 'Needs Longhorn.' : ''
           return (
             <label key={a.key} class={`panel p-4 flex gap-3 cursor-pointer ${on ? 'border-accent/60' : ''} ${draft.skipPlatform || blocked ? 'opacity-50' : ''}`}>
               <input type="checkbox" class="mt-1" checked={on && !blocked} disabled={draft.skipPlatform || !!blocked} onChange={(e) => toggle(a.key, (e.target as HTMLInputElement).checked)} />

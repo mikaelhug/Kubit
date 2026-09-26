@@ -152,12 +152,12 @@ func TestLegacyArgoCDStillParses(t *testing.T) {
 	}
 }
 
-func TestRegistryRange(t *testing.T) {
-	for r, ok := range map[string]bool{"10.0.0.200-10.0.0.220": true, "10.0.0.200-10.0.0.200": false, "fd00::1-fd00::9": false, "nope": false} {
+func TestRegistryIP(t *testing.T) {
+	for cidr, want := range map[string]string{"10.96.0.0/12": "10.96.0.50", "172.20.8.0/24": "172.20.8.50", "10.0.0.0/25": "", "fd00::/108": "", "nope": ""} {
 		c, _ := config.Parse([]byte(sampleCluster))
-		c.Spec.Platform.MetalLB.Range = r
-		if c.RegistryRangeOK() != ok {
-			t.Errorf("%s: RegistryRangeOK = %v", r, !ok)
+		c.Spec.Network.ServiceCIDR = cidr
+		if got := c.RegistryIP(); got != want {
+			t.Errorf("%s: RegistryIP = %q, want %q", cidr, got, want)
 		}
 	}
 }
@@ -170,29 +170,33 @@ func TestCheckChange(t *testing.T) {
 		}
 		return c
 	}
-	old := load("  storage: { systemDisk: true }\n")
-	old.Spec.Platform.Builds.Enabled = true
-	moved := load("  storage: { systemDisk: true }\n")
-	moved.Spec.Platform.Builds.Enabled = true
-	moved.Spec.Platform.MetalLB.Range = "192.168.64.200-192.168.64.230"
-	if err := config.CheckChange(old, moved); err == nil {
-		t.Error("a range change under Builds must be refused")
-	}
-	moved.Spec.Platform.Builds.Enabled = false
-	if err := config.CheckChange(old, moved); err != nil {
-		t.Errorf("turning Builds off with the change is fine: %v", err)
-	}
-	bigger := load("  storage: { systemDisk: true, ephemeralSize: 80GiB }\n")
-	if err := config.CheckChange(old, bigger); err == nil {
-		t.Error("storage must not change once stored")
+	all := func(c *config.Cluster, v bool) map[string]bool {
+		m := map[string]bool{}
+		for _, n := range c.Spec.Nodes {
+			m[n.IP] = v
+		}
+		return m
 	}
 	withoutLonghorn := load("  storage: { systemDisk: true }\n")
 	withLonghorn := load("  storage: { systemDisk: true }\n")
 	withLonghorn.Spec.Platform.Longhorn.Enabled = true
-	if err := config.CheckChange(withoutLonghorn, withLonghorn); err == nil || !strings.Contains(err.Error(), "cp-01") {
-		t.Errorf("Longhorn on the system disk of a node installed without it must be refused: %v", err)
+	if err := config.CheckChange(withoutLonghorn, withLonghorn, all(withLonghorn, true), all(withLonghorn, false)); err == nil || !strings.Contains(err.Error(), "cp-01") {
+		t.Errorf("Longhorn onto the system disk of nodes installed without the volume must be refused: %v", err)
 	}
-	if err := config.CheckChange(withLonghorn, withoutLonghorn); err != nil {
-		t.Errorf("turning Longhorn off keeps the partition and is fine: %v", err)
+	if err := config.CheckChange(withoutLonghorn, withLonghorn, all(withLonghorn, true), all(withLonghorn, true)); err != nil {
+		t.Errorf("nodes that kept their volume may get Longhorn back: %v", err)
+	}
+	if err := config.CheckChange(withoutLonghorn, withLonghorn, nil, nil); err != nil {
+		t.Errorf("before install Longhorn may be turned on: %v", err)
+	}
+	noSplit := load("")
+	noSplit.Spec.Platform.Longhorn.Enabled = false
+	if err := config.CheckChange(withoutLonghorn, noSplit, all(noSplit, true), all(noSplit, false)); err != nil {
+		t.Errorf("storage may change while no node holds a volume: %v", err)
+	}
+	bigger := load("  storage: { systemDisk: true, ephemeralSize: 80GiB }\n")
+	bigger.Spec.Platform.Longhorn.Enabled = true
+	if err := config.CheckChange(withLonghorn, bigger, all(bigger, true), all(bigger, true)); err == nil {
+		t.Error("storage must stay once nodes hold a volume")
 	}
 }

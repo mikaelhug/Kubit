@@ -10,6 +10,7 @@ import (
 	"github.com/mikael/kubit/internal/k8s"
 	"github.com/mikael/kubit/internal/store"
 	"github.com/mikael/kubit/internal/talos"
+	"github.com/mikael/kubit/internal/tofu"
 	machineapi "github.com/siderolabs/talos/pkg/machinery/api/machine"
 )
 
@@ -119,6 +120,11 @@ func (m *Manager) Status(ctx context.Context, name string) (*Status, error) {
 		KubernetesVersion: c.Spec.KubernetesVersion, Endpoint: c.Spec.ControlPlane.Endpoint,
 	}
 	if p, err := m.Store.GetPlatformStatus(ctx, name); err == nil && (p.AppliedAt != "" || p.Error != "") {
+		for k := range p.Outputs {
+			if !tofu.Outputs[k] {
+				delete(p.Outputs, k)
+			}
+		}
 		st.Platform = p
 	}
 	sec, err := m.Store.GetClusterSecrets(ctx, name)

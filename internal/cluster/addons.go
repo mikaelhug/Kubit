@@ -91,7 +91,7 @@ func (m *Manager) Addons(ctx context.Context, name string) ([]AddonStatus, error
 	for _, meta := range addonMeta {
 		enabled, values := addonSpec(c.Spec.Platform, meta.key)
 		st := AddonStatus{Key: meta.key, Enabled: enabled, Values: values, Pinned: meta.pin}
-		if meta.key == "builds" && c.RegistryRangeOK() {
+		if meta.key == "builds" && c.RegistryIP() != "" {
 			st.Address = net.JoinHostPort(c.RegistryIP(), fmt.Sprint(config.RegistryPort))
 		}
 		for i := range releases {

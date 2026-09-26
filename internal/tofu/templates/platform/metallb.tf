@@ -36,7 +36,7 @@ resource "kubectl_manifest" "metallb_pool" {
     apiVersion = "metallb.io/v1beta1"
     kind       = "IPAddressPool"
     metadata   = { name = "default", namespace = "metallb-system" }
-    spec       = { addresses = [var.metallb.pool != "" ? var.metallb.pool : var.metallb.range] }
+    spec       = { addresses = [var.metallb.range] }
   })
   depends_on = [helm_release.metallb]
 }

@@ -93,7 +93,7 @@ func Design(name string, machines []Machine, opts DesignOptions) (*Cluster, []Wa
 			c.Spec.Platform.MetalLB.Range = fmt.Sprintf("%d.%d.%d.200-%d.%d.%d.220", b[0], b[1], b[2], b[0], b[1], b[2])
 		}
 	}
-	c.Spec.Platform.Builds.Enabled = c.Spec.Platform.Longhorn.Enabled && c.RegistryRangeOK()
+	c.Spec.Platform.Builds.Enabled = c.Spec.Platform.Longhorn.Enabled && c.RegistryIP() != ""
 	if topo.HA && len(machines) > 0 {
 		if a, err := netip.ParseAddr(machines[0].IP); err == nil && a.Is4() {
 			b := a.As4()

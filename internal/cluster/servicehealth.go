@@ -130,10 +130,12 @@ func (m *Manager) ServiceHealth(ctx context.Context, name string) (*ServiceHealt
 		out.Ingresses = append(out.Ingresses, IngressHealth{Namespace: i.Namespace, Name: i.Name, HasAddress: len(i.Addresses) > 0, AgeSec: i.AgeSec})
 	}
 	if c.Spec.Platform.Flux.Enabled {
-		if objs, err := kc.FluxObjects(ctx); err == nil {
-			for _, o := range objs {
-				out.Flux = append(out.Flux, FluxHealth{Kind: o.Kind, Namespace: o.Namespace, Name: o.Name, Ready: o.Ready, Reason: o.Reason, Message: o.Message, Suspended: o.Suspended})
-			}
+		objs, err := kc.FluxObjects(ctx)
+		if err != nil {
+			return nil, err
+		}
+		for _, o := range objs {
+			out.Flux = append(out.Flux, FluxHealth{Kind: o.Kind, Namespace: o.Namespace, Name: o.Name, Ready: o.Ready, Reason: o.Reason, Message: o.Message, Suspended: o.Suspended})
 		}
 	}
 	if out.MetalLB && c.Spec.Platform.MetalLB.Range != "" {

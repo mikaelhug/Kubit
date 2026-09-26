@@ -166,7 +166,8 @@ func (m *Manager) LoadCluster(ctx context.Context, name string) (*config.Cluster
 
 func (m *Manager) SaveCluster(ctx context.Context, c *config.Cluster, state string) error {
 	if old, _, err := m.LoadCluster(ctx, c.Metadata.Name); err == nil {
-		if err := config.CheckChange(old, c); err != nil {
+		installed, split := m.installedLayout(ctx, old)
+		if err := config.CheckChange(old, c, installed, split); err != nil {
 			return err
 		}
 	}
@@ -201,7 +202,7 @@ func (m *Manager) recordNode(ctx context.Context, c *config.Cluster, n config.No
 		return err
 	}
 	if cfg != nil {
-		return m.Store.PutNodeMachineConfig(ctx, n.IP, cfg)
+		return m.Store.PutNodeMachineConfig(ctx, n.IP, cfg, config.HasSystemVolume(cfg))
 	}
 	return nil
 }
@@ -209,4 +210,17 @@ func (m *Manager) recordNode(ctx context.Context, c *config.Cluster, n config.No
 func marshalJSON(v any) string {
 	b, _ := json.Marshal(v)
 	return string(b)
+}
+
+func (m *Manager) installedLayout(ctx context.Context, c *config.Cluster) (installed, split map[string]bool) {
+	installed, split = map[string]bool{}, map[string]bool{}
+	for _, n := range c.Spec.Nodes {
+		cfg, err := m.Store.GetNodeMachineConfig(ctx, n.IP)
+		if err != nil {
+			continue
+		}
+		installed[n.IP] = true
+		split[n.IP] = m.Store.NodeSystemSplit(ctx, n.IP) || config.HasSystemVolume(cfg)
+	}
+	return installed, split
 }

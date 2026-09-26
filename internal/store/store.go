@@ -233,6 +233,8 @@ var migrations = []string{
 		recipient  TEXT NOT NULL,
 		created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
 	);`,
+	`UPDATE clusters SET platform = json_remove(platform, '$.outputs.argocd_admin_password', '$.outputs.argocd_ip') WHERE json_valid(platform);`,
+	`ALTER TABLE machines ADD COLUMN system_split INTEGER NOT NULL DEFAULT 0;`,
 }
 
 // alreadyApplied probes, by version, for schema a migration would create twice; a
@@ -241,6 +243,7 @@ var migrations = []string{
 var alreadyApplied = map[int]string{
 	13: `SELECT actor FROM audit_log LIMIT 0`,
 	14: `SELECT cluster FROM sops_keys LIMIT 0`,
+	16: `SELECT system_split FROM machines LIMIT 0`,
 }
 
 func (s *Store) migrate(ctx context.Context) error {

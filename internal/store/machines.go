@@ -246,17 +246,23 @@ func (s *Store) AssignNode(ctx context.Context, ip, cluster, hostname, role stri
 
 // UnassignNode detaches a machine from its cluster after a reset, keeping the inventory.
 func (s *Store) UnassignNode(ctx context.Context, ip, state string) error {
-	_, err := s.db.ExecContext(ctx, `UPDATE machines SET cluster = NULL, hostname = '', pool = '', role = '', state = ?, machine_config = NULL, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE ip = ? OR mac = ?`, state, ip, "ip:"+ip)
+	_, err := s.db.ExecContext(ctx, `UPDATE machines SET cluster = NULL, hostname = '', pool = '', role = '', state = ?, machine_config = NULL, system_split = 0, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE ip = ? OR mac = ?`, state, ip, "ip:"+ip)
 	return s.done(err, Change{Table: "machines", Key: ip, Op: "put"})
 }
 
-func (s *Store) PutNodeMachineConfig(ctx context.Context, ip string, cfg []byte) error {
+func (s *Store) PutNodeMachineConfig(ctx context.Context, ip string, cfg []byte, systemSplit bool) error {
 	sealed, err := s.crypto.Seal(cfg)
 	if err != nil {
 		return err
 	}
-	_, err = s.db.ExecContext(ctx, `UPDATE machines SET machine_config = ? WHERE ip = ? OR mac = ?`, sealed, ip, "ip:"+ip)
+	_, err = s.db.ExecContext(ctx, `UPDATE machines SET machine_config = ?, system_split = MAX(system_split, ?) WHERE ip = ? OR mac = ?`, sealed, systemSplit, ip, "ip:"+ip)
 	return err
+}
+
+func (s *Store) NodeSystemSplit(ctx context.Context, ip string) bool {
+	var split bool
+	_ = s.db.QueryRowContext(ctx, `SELECT system_split FROM machines WHERE ip = ? OR mac = ?`, ip, "ip:"+ip).Scan(&split)
+	return split
 }
 
 func (s *Store) GetNodeMachineConfig(ctx context.Context, ip string) ([]byte, error) {
