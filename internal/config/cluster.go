@@ -309,7 +309,7 @@ const registryIPOffset = 50
 
 func (c *Cluster) RegistryIP() string {
 	p, err := netip.ParsePrefix(c.Spec.Network.ServiceCIDR)
-	if err != nil || !p.Addr().Is4() || p.Bits() > 24 {
+	if err != nil || !p.Addr().Is4() || p.Bits() > 22 {
 		return ""
 	}
 	b := p.Masked().Addr().As4()
@@ -611,7 +611,7 @@ func (c *Cluster) Validate() error {
 	}
 	if b := c.Spec.Platform; b.Builds.Enabled {
 		if c.RegistryIP() == "" {
-			errs = append(errs, fmt.Errorf("platform.builds needs an IPv4 network.serviceCIDR of /24 or larger for the registry address"))
+			errs = append(errs, fmt.Errorf("platform.builds needs an IPv4 network.serviceCIDR of /22 or larger for the registry address"))
 		}
 		if !b.Longhorn.Enabled {
 			errs = append(errs, fmt.Errorf("platform.builds needs Longhorn for the registry's volume"))

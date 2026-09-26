@@ -164,6 +164,9 @@ func TestDesignEnablesOnlyWhatAClusterNeeds(t *testing.T) {
 		{IP: "10.0.0.32", MAC: "aa:aa:aa:aa:aa:32", Arch: "arm64", CPUs: 2, MemBytes: 5 << 30, Virtual: true, Disks: d},
 	}
 	c, _ = config.Design("lab", ms, config.DesignOptions{DataDisks: true})
+	if !c.Spec.Platform.Builds.Enabled {
+		t.Error("Builds must be on for a new cluster with Longhorn")
+	}
 	if !c.Spec.Platform.Longhorn.Enabled || !slices.Contains(c.Spec.Extensions, "siderolabs/iscsi-tools") || slices.Contains(c.Spec.Extensions, "siderolabs/gvisor") {
 		t.Errorf("data disks: longhorn %v, extensions %v", c.Spec.Platform.Longhorn.Enabled, c.Spec.Extensions)
 	}

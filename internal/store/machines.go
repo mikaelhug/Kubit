@@ -180,6 +180,7 @@ func (s *Store) UpsertNode(ctx context.Context, n Machine) error {
 			talos_version = CASE WHEN excluded.talos_version = '' THEN machines.talos_version ELSE excluded.talos_version END,
 			last_seen     = excluded.last_seen,
 			provision     = CASE WHEN excluded.state = 'maintenance' THEN 0 ELSE machines.provision END,
+			system_split  = CASE WHEN excluded.state = 'maintenance' AND excluded.cluster IS NULL THEN 0 ELSE machines.system_split END,
 			updated_at    = strftime('%Y-%m-%dT%H:%M:%fZ','now')`,
 		key, n.UUID, n.Serial, n.IP, string(seenJSON), cluster, n.Hostname, n.Pool, n.Role, n.Arch, n.Source, n.State, hw, n.TalosVersion)
 	return s.done(err, Change{Table: "machines", Cluster: n.Cluster, Key: key, Op: "put"})

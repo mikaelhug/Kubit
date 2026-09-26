@@ -153,7 +153,7 @@ func TestLegacyArgoCDStillParses(t *testing.T) {
 }
 
 func TestRegistryIP(t *testing.T) {
-	for cidr, want := range map[string]string{"10.96.0.0/12": "10.96.0.50", "172.20.8.0/24": "172.20.8.50", "10.0.0.0/25": "", "fd00::/108": "", "nope": ""} {
+	for cidr, want := range map[string]string{"10.96.0.0/12": "10.96.0.50", "172.20.8.0/22": "172.20.8.50", "172.20.8.0/24": "", "fd00::/108": "", "nope": ""} {
 		c, _ := config.Parse([]byte(sampleCluster))
 		c.Spec.Network.ServiceCIDR = cidr
 		if got := c.RegistryIP(); got != want {
