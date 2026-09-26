@@ -96,6 +96,10 @@ func pxeDecider(url, token string, logger *log.Logger) func(string) string {
 			return ""
 		}
 		defer resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			logger.Printf("pxe: daemon answered %s; no boot offer for %s, it boots its own disk", resp.Status, mac)
+			return ""
+		}
 		var d struct{ Boot, Reason string }
 		if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<16)).Decode(&d); err != nil {
 			cache.put(mac, "", time.Now(), decideErrorTTL)

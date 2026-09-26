@@ -274,6 +274,7 @@ func (s *Store) IssueToken(ctx context.Context, user string, kind, name string, 
 	if n, _ := res.RowsAffected(); n == 0 {
 		return "", fmt.Errorf("user %s: %w", user, ErrNotFound)
 	}
+	s.notify(Change{Table: "users", Key: strings.ToLower(user), Op: "token"})
 	return token, nil
 }
 
@@ -299,7 +300,9 @@ func (s *Store) ResolveToken(ctx context.Context, token string) (*User, string, 
 		}
 	}
 	if s.tokenUse.due(hashToken(token), time.Now()) {
-		_, _ = s.db.ExecContext(ctx, `UPDATE sessions SET last_used = `+sqlNow+` WHERE token_hash = ?`, hashToken(token))
+		if _, err := s.db.ExecContext(ctx, `UPDATE sessions SET last_used = `+sqlNow+` WHERE token_hash = ?`, hashToken(token)); err == nil && kind == "api" {
+			s.notify(Change{Table: "users", Key: user.Name, Op: "token"})
+		}
 	}
 	return &user, kind, nil
 }
@@ -325,8 +328,14 @@ func (t *tokenUse) due(hash string, now time.Time) bool {
 }
 
 func (s *Store) RevokeToken(ctx context.Context, token string) error {
-	_, err := s.db.ExecContext(ctx, `DELETE FROM sessions WHERE token_hash = ?`, hashToken(token))
-	return err
+	res, err := s.db.ExecContext(ctx, `DELETE FROM sessions WHERE token_hash = ?`, hashToken(token))
+	if err != nil {
+		return err
+	}
+	if n, _ := res.RowsAffected(); n > 0 {
+		s.notify(Change{Table: "users", Op: "token"})
+	}
+	return nil
 }
 
 func (s *Store) ListTokens(ctx context.Context, user string) ([]Token, error) {
@@ -355,5 +364,6 @@ func (s *Store) DeleteAPIToken(ctx context.Context, user, name string) error {
 	if n, _ := res.RowsAffected(); n == 0 {
 		return fmt.Errorf("token %s: %w", name, ErrNotFound)
 	}
+	s.notify(Change{Table: "users", Key: strings.ToLower(user), Op: "token"})
 	return nil
 }

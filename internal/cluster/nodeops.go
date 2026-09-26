@@ -177,7 +177,7 @@ func (m *Manager) upgradeInPlace(ctx context.Context, kc *k8s.Client, n config.N
 		return false, err
 	}
 	sink.Emit(Info, step, n.Hostname, "upgrading to %s from %s (A/B slot install, then reboot)", version, image)
-	err = upgradeNode(ctx, tc, image)
+	err = upgradeNode(ctx, tc, image, m.Timeouts.Install)
 	tc.Close()
 	if err != nil {
 		return false, fmt.Errorf("upgrade: %w", err)

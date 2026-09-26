@@ -76,7 +76,7 @@ const sqlNow = `strftime('%Y-%m-%dT%H:%M:%fZ','now')`
 var migrations = []string{
 	`CREATE TABLE clusters (
 		name          TEXT PRIMARY KEY,
-		spec          TEXT NOT NULL,            -- cluster.yaml as stored
+		spec          TEXT NOT NULL,
 		schematic_id  TEXT NOT NULL DEFAULT '',
 		state         TEXT NOT NULL DEFAULT 'declared',
 		created_at    TEXT NOT NULL DEFAULT (` + sqlNow + `),
@@ -84,9 +84,9 @@ var migrations = []string{
 	);
 	CREATE TABLE cluster_secrets (
 		cluster        TEXT PRIMARY KEY REFERENCES clusters(name) ON DELETE CASCADE,
-		secrets_bundle BLOB NOT NULL,           -- sealed secrets.yaml
-		talosconfig    BLOB NOT NULL,           -- sealed
-		kubeconfig     BLOB                      -- sealed, set after bootstrap
+		secrets_bundle BLOB NOT NULL,
+		talosconfig    BLOB NOT NULL,
+		kubeconfig     BLOB
 	);
 	CREATE TABLE nodes (
 		ip           TEXT PRIMARY KEY,
@@ -95,11 +95,11 @@ var migrations = []string{
 		mac          TEXT NOT NULL DEFAULT '',
 		arch         TEXT NOT NULL DEFAULT '',
 		role         TEXT NOT NULL DEFAULT '',
-		source       TEXT NOT NULL DEFAULT 'scan', -- scan | manual | pxe
+		source       TEXT NOT NULL DEFAULT 'scan',
 		state        TEXT NOT NULL DEFAULT 'discovered',
-		hardware     TEXT NOT NULL DEFAULT '{}',  -- JSON inventory from discovery
+		hardware     TEXT NOT NULL DEFAULT '{}',
 		talos_version TEXT NOT NULL DEFAULT '',
-		machine_config BLOB,                     -- sealed, last applied
+		machine_config BLOB,
 		last_seen    TEXT,
 		updated_at   TEXT NOT NULL DEFAULT (` + sqlNow + `)
 	);
@@ -126,7 +126,7 @@ var migrations = []string{
 	`CREATE TABLE samples (
 		ts        TEXT NOT NULL,
 		cluster   TEXT NOT NULL,
-		node      TEXT NOT NULL DEFAULT '',   -- '' = cluster totals
+		node      TEXT NOT NULL DEFAULT '',
 		cpu_milli INTEGER NOT NULL DEFAULT 0,
 		cpu_cap   INTEGER NOT NULL DEFAULT 0,
 		mem       INTEGER NOT NULL DEFAULT 0,
@@ -141,7 +141,7 @@ var migrations = []string{
 		ts       TEXT NOT NULL DEFAULT (` + sqlNow + `),
 		cluster  TEXT NOT NULL,
 		node     TEXT NOT NULL DEFAULT '',
-		severity TEXT NOT NULL,              -- info | warn | critical
+		severity TEXT NOT NULL,
 		kind     TEXT NOT NULL,
 		message  TEXT NOT NULL,
 		acked    INTEGER NOT NULL DEFAULT 0
@@ -149,10 +149,10 @@ var migrations = []string{
 	CREATE INDEX events_cluster_ts ON events (cluster, ts);`,
 	`CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);`,
 	`CREATE TABLE machines (
-		mac            TEXT PRIMARY KEY,           -- uplink MAC, lower-case; "ip:<ip>" when unknown
-		uuid           TEXT NOT NULL DEFAULT '',   -- SMBIOS system UUID
+		mac            TEXT PRIMARY KEY,
+		uuid           TEXT NOT NULL DEFAULT '',
 		serial         TEXT NOT NULL DEFAULT '',
-		ip             TEXT UNIQUE,                -- where it is reachable now
+		ip             TEXT UNIQUE,
 		ips_seen       TEXT NOT NULL DEFAULT '[]',
 		cluster        TEXT REFERENCES clusters(name) ON DELETE SET NULL,
 		hostname       TEXT NOT NULL DEFAULT '',
@@ -177,15 +177,15 @@ var migrations = []string{
 		id            INTEGER PRIMARY KEY AUTOINCREMENT,
 		cluster       TEXT NOT NULL REFERENCES clusters(name) ON DELETE CASCADE,
 		ts            TEXT NOT NULL DEFAULT (` + sqlNow + `),
-		node          TEXT NOT NULL,               -- control plane the snapshot was taken from
-		path          TEXT NOT NULL,               -- sealed file under $KUBIT_HOME
-		size_bytes    INTEGER NOT NULL,            -- of the plain snapshot
-		sha256        TEXT NOT NULL,               -- of the plain snapshot
-		keys          INTEGER NOT NULL DEFAULT 0,  -- etcd keys counted while verifying
+		node          TEXT NOT NULL,
+		path          TEXT NOT NULL,
+		size_bytes    INTEGER NOT NULL,
+		sha256        TEXT NOT NULL,
+		keys          INTEGER NOT NULL DEFAULT 0,
 		talos_version TEXT NOT NULL DEFAULT '',
 		k8s_version   TEXT NOT NULL DEFAULT '',
-		source        TEXT NOT NULL DEFAULT 'manual', -- manual | schedule | pre-upgrade
-		status        TEXT NOT NULL DEFAULT 'ok'      -- ok | corrupt | missing
+		source        TEXT NOT NULL DEFAULT 'manual',
+		status        TEXT NOT NULL DEFAULT 'ok'
 	);
 	CREATE INDEX snapshots_cluster_ts ON snapshots (cluster, ts);`,
 	`ALTER TABLE snapshots ADD COLUMN offsite TEXT NOT NULL DEFAULT '';`,

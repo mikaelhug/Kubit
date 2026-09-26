@@ -66,7 +66,7 @@ func randomToken() string {
 func (s *Server) handleOIDCStart(w http.ResponseWriter, r *http.Request) {
 	_, conf, _, err := s.oidcConfig(r.Context(), r)
 	if err != nil {
-		writeJSON(w, http.StatusConflict, map[string]string{"error": err.Error()})
+		writeErr(w, &statusError{http.StatusConflict, err.Error()})
 		return
 	}
 	state, verifier := randomToken(), oauth2.GenerateVerifier()

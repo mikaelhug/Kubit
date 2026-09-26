@@ -2,6 +2,8 @@ package store
 
 import (
 	"context"
+	"database/sql"
+	"errors"
 	"strconv"
 	"strings"
 	"time"
@@ -121,8 +123,12 @@ func (s *Store) queryEvents(ctx context.Context, q, cluster string, limit int) (
 }
 
 func (s *Store) AckEvent(ctx context.Context, id int64) error {
-	_, err := s.db.ExecContext(ctx, `UPDATE events SET acked = 1 WHERE id = ?`, id)
-	return s.done(err, Change{Table: "events", Key: strconv.FormatInt(id, 10), Op: "ack"})
+	var cluster string
+	err := s.db.QueryRowContext(ctx, `UPDATE events SET acked = 1 WHERE id = ? RETURNING cluster`, id).Scan(&cluster)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil
+	}
+	return s.done(err, Change{Table: "events", Cluster: cluster, Key: strconv.FormatInt(id, 10), Op: "ack"})
 }
 
 func (s *Store) AckClusterEvents(ctx context.Context, cluster string) error {

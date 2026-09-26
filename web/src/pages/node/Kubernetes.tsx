@@ -23,7 +23,7 @@ export function KubernetesTab({ k8s, err }: { k8s: NodeDetail | null; err: strin
     <div class="flex flex-col gap-5">
       <Section title="Conditions">
         <div class="panel divide-y divide-border/60">
-          {k8s.conditions.map((c) => {
+          {(k8s.conditions ?? []).map((c) => {
             const bad = (c.type === 'Ready') !== (c.status === 'True')
             return (
               <div key={c.type} class="flex items-center gap-3 px-4 py-2 text-[13px]">
@@ -42,7 +42,7 @@ export function KubernetesTab({ k8s, err }: { k8s: NodeDetail | null; err: strin
       </Section>
       <Section title="Labels">
         <div class="panel p-3 flex flex-wrap gap-1.5">
-          {Object.entries(k8s.labels).sort().map(([k, v]) => <span key={k} class="mono text-[11.5px] rounded bg-panel-2 px-1.5 py-0.5">{k}{v ? `=${v}` : ''}</span>)}
+          {Object.entries(k8s.labels ?? {}).sort().map(([k, v]) => <span key={k} class="mono text-[11.5px] rounded bg-panel-2 px-1.5 py-0.5">{k}{v ? `=${v}` : ''}</span>)}
         </div>
       </Section>
     </div>

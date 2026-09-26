@@ -126,7 +126,7 @@ func (m *Manager) UpgradeTalos(ctx context.Context, name, version string, sink S
 			c.Spec.Pools[i].SchematicID = id
 		}
 	}
-	if err := m.SaveCluster(ctx, c, ""); err != nil {
+	if err := m.saveExisting(ctx, c); err != nil {
 		return err
 	}
 	sink.Emit(Done, nodeStep(nodes[len(nodes)-1]), "", "all nodes on Talos %s", version)
@@ -164,7 +164,7 @@ func (m *Manager) UpgradeKubernetes(ctx context.Context, name, version string, s
 	if err := sink.Run("manifests", func() error { return m.SyncManifests(ctx, c, sink) }); err != nil {
 		return err
 	}
-	if err := m.SaveCluster(ctx, c, ""); err != nil {
+	if err := m.saveExisting(ctx, c); err != nil {
 		return err
 	}
 	sink.Emit(Done, "manifests", "", "all nodes on Kubernetes %s", version)

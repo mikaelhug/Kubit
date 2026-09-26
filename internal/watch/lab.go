@@ -162,7 +162,7 @@ func (w *Watcher) labResourceEvents(ctx context.Context, host *store.Machine, m 
 	if m.DiskTotal > 0 {
 		pct := int(m.DiskUsed * 100 / m.DiskTotal)
 		open := w.Store.OpenEventSeverity(ctx, key, "", "labhost.disk-low")
-		msg := fmt.Sprintf("%s: VM disk %d%% full (%s of %s)", name, pct, humanGiB(m.DiskUsed), humanGiB(m.DiskTotal))
+		msg := fmt.Sprintf("%s: VM disk %d%% full (%s of %s)", name, pct, cluster.HumanBytes(uint64(m.DiskUsed)), cluster.HumanBytes(uint64(m.DiskTotal)))
 		switch {
 		case pct >= labDiskCritical && open != "critical":
 			_ = w.Store.ResolveEvents(ctx, key, "", "labhost.disk-low")
@@ -214,8 +214,6 @@ func updatesSummary(u labhost.Updates) string {
 	}
 	return strings.Join(parts, ", ")
 }
-
-func humanGiB(b int64) string { return fmt.Sprintf("%.0f GiB", float64(b)/(1<<30)) }
 
 func staleBy(ts string, d time.Duration) bool {
 	t, err := time.Parse(time.RFC3339, ts)

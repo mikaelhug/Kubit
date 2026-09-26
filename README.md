@@ -766,7 +766,7 @@ heartbeat that stops arriving means the daemon is down — the dead-man's switch
 
 ## End-to-end script
 
-`hack/e2e.sh <subnet> [--with-restore] [--teardown --vm-ids "1 2 3 4"]` drives a
+`hack/e2e.sh <subnet> [--name e2e] [--url http://127.0.0.1:8080] [--with-restore] [--teardown --vm-ids "1 2 3 4"]` drives a
 running daemon through discover → design → create (3 control planes) → add worker →
 rename → snapshot + verify → [restore drill] → crashloop alert → remove worker, every
 step as an API operation visible in Activity, asserting with `kubectl` after each.
@@ -899,7 +899,9 @@ offers a **manual** plan (`{"manual": true}`) — Kubit arms the row and prints 
 kernel, initrd and command line to boot with; you boot it (VM console, USB). For
 that, `kubit pxe --http-only [--ip ADDR]` serves just the HTTP side (assets, preseed,
 progress) without root; `POST /api/v1/machines {mac, ip, hostname, arch}` registers
-a machine Kubit has not seen. `hack/lab/lab.sh` is exactly this on a vfkit VM:
+a machine Kubit has not seen. `hack/lab/lab.sh` is exactly this on a vfkit VM (run
+it next to `kubit serve` on :8090 and `kubit pxe --http-only --ip 192.168.105.1
+--kubit-url http://127.0.0.1:8090`; 192.168.105.1 is vmnet's host side):
 `lab.sh create 1` registers the MAC, calls *Make lab host* (manual, default plan: 4
 VMs + cluster `lab`), builds a FAT boot volume with systemd-boot + the netboot
 installer + the preseed URL (the installer must run in UEFI mode for partman-efi and

@@ -3,10 +3,11 @@ package cluster
 import (
 	"context"
 	"errors"
-	"net"
 	"strings"
 	"syscall"
 	"time"
+
+	"github.com/mikael/kubit/internal/talos"
 )
 
 type Reach int
@@ -56,10 +57,8 @@ func ControlProbe(ctx context.Context, timeout time.Duration) Reach {
 	if gw == "" {
 		return ReachOK
 	}
-	d := net.Dialer{Timeout: timeout}
-	conn, err := d.DialContext(ctx, "tcp", net.JoinHostPort(gw, "443"))
+	err := talos.TCPErr(ctx, gw, "443", timeout)
 	if err == nil {
-		conn.Close()
 		return ReachOK
 	}
 	if Classify(err) == ReachNoNetwork {

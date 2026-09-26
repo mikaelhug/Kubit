@@ -64,7 +64,7 @@ function isVirtual(m?: NodeRow | null) {
   if (inv?.virtual) return true
   return /qemu|kvm|vmware|virtualbox|innotek|xen|virtual machine|apple virtualization|parallels|bochs|proxmox/i.test(`${inv?.manufacturer ?? ''} ${inv?.product ?? ''}`)
 }
-export function formOf(m?: NodeRow | null): 'lab host' | 'lab VM' | 'VM' | 'metal' {
+export function typeOf(m?: NodeRow | null): 'lab host' | 'lab VM' | 'VM' | 'metal' {
   if (m?.labhost) return 'lab host'
   if (m?.host) return 'lab VM'
   return isVirtual(m) ? 'VM' : 'metal'
@@ -111,7 +111,7 @@ export function KindPill({ m }: { m: NodeRow }) {
 }
 
 export function TypePill({ m }: { m?: NodeRow | null }) {
-  const form = formOf(m)
+  const form = typeOf(m)
   const title = { 'lab host': onMac(m?.labhost) ? 'This Mac, running Talos VMs' : 'KVM host Kubit installed', 'lab VM': `Talos VM on lab host ${hostName(hostOf(m)) || m?.host}`, VM: 'Virtual machine', metal: 'Bare metal' }[form]
   return <Pill tone={form === 'metal' ? 'muted' : 'info'} title={title}>{form}</Pill>
 }

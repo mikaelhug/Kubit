@@ -1,4 +1,4 @@
-import { api, type Service } from '../../api'
+import { api, type NodeRow, type Service } from '../../api'
 import { DataTable, type Column } from '../../components/DataTable'
 import { ErrorBox, Pill, Section } from '../../components/ui'
 import { stateTone } from '../../tone'
@@ -10,12 +10,17 @@ const columns: Column<Service>[] = [
   { id: 'last', header: 'Last event', cell: (s) => <span class="text-muted">{s.last}</span> },
 ]
 
-export function useServices(ip: string, cluster?: string) {
-  return useLive(() => api.services(ip), [ip], [[cluster ?? '', 'nodes']])
+export function talosLive(node: NodeRow | null) {
+  return { scopes: [[node?.cluster ?? '', 'nodes']] as const, refresh: [node?.cluster ? '' : node?.lastSeen] }
 }
 
-export function ServicesTab({ ip, cluster }: { ip: string; cluster?: string }) {
-  const { data: services, error } = useServices(ip, cluster)
+export function useServices(ip: string, node: NodeRow | null) {
+  const talos = talosLive(node)
+  return useLive(() => api.services(ip), [ip], talos.scopes, { refresh: talos.refresh })
+}
+
+export function ServicesTab({ ip, node }: { ip: string; node: NodeRow | null }) {
+  const { data: services, error } = useServices(ip, node)
   return (
     <Section title="Talos services" help="Talos system services and their health checks.">
       <ErrorBox error={error} />

@@ -138,7 +138,22 @@ func (s *Server) runOperation(cluster, kind string, request any, fn opFunc) (int
 	return s.runOperationLocking(cluster, []string{cluster}, kind, request, fn)
 }
 
+var specWritingKinds = map[string]bool{
+	"cluster.create":     true,
+	"cluster.apply":      true,
+	"node.add":           true,
+	"node.remove":        true,
+	"node.rename":        true,
+	"node.pool":          true,
+	"node.readdress":     true,
+	"upgrade.talos":      true,
+	"upgrade.kubernetes": true,
+}
+
 func (s *Server) runOperationLocking(clusterName string, locks []string, kind string, request any, fn opFunc) (int64, error) {
+	if specWritingKinds[kind] && clusterName != "" {
+		locks = append(slices.Clip(locks), specLock(clusterName))
+	}
 	ctx, cancel := context.WithCancel(context.Background())
 	reqJSON, _ := json.Marshal(request)
 	id, err := s.store.CreateOperation(ctx, clusterName, kind, reqJSON)
@@ -277,15 +292,24 @@ func (l *clusterLocks) lockContext(ctx context.Context, name string) error {
 }
 
 func (l *clusterLocks) lockAll(names []string) (unlock func()) {
+	unlock, _ = l.lockAllContext(context.Background(), names)
+	return unlock
+}
+
+func (l *clusterLocks) lockAllContext(ctx context.Context, names []string) (unlock func(), err error) {
 	names = slices.Compact(slices.Sorted(slices.Values(names)))
-	for _, n := range names {
-		l.lock(n)
-	}
-	return func() {
-		for i := len(names) - 1; i >= 0; i-- {
-			l.unlock(names[i])
+	release := func(held []string) {
+		for i := len(held) - 1; i >= 0; i-- {
+			l.unlock(held[i])
 		}
 	}
+	for i, n := range names {
+		if err := l.lockContext(ctx, n); err != nil {
+			release(names[:i])
+			return nil, err
+		}
+	}
+	return func() { release(names) }, nil
 }
 
 func (s *Server) handleOperations(w http.ResponseWriter, r *http.Request) {
@@ -313,7 +337,7 @@ func (s *Server) handleOperation(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleOperationCancel(w http.ResponseWriter, r *http.Request) {
 	id, _ := strconv.ParseInt(r.PathValue("id"), 10, 64)
 	if !s.cancelOperation(id) {
-		http.Error(w, "operation is not running", http.StatusConflict)
+		writeErr(w, &statusError{http.StatusConflict, "operation is not running"})
 		return
 	}
 	w.WriteHeader(http.StatusAccepted)
@@ -327,7 +351,7 @@ func (s *Server) handleOperationRetry(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if op.Status == "running" {
-		http.Error(w, "operation is still running", http.StatusConflict)
+		writeErr(w, &statusError{http.StatusConflict, "operation is still running"})
 		return
 	}
 	var newID int64
@@ -355,7 +379,7 @@ func (s *Server) handleOperationRetry(w http.ResponseWriter, r *http.Request) {
 		_ = json.Unmarshal(op.Request, &req)
 		newID, err = s.startDiscover(req.Targets)
 	default:
-		http.Error(w, "this kind of operation cannot be retried; start it again from its page", http.StatusBadRequest)
+		writeErr(w, &statusError{http.StatusBadRequest, "this kind of operation cannot be retried; start it again from its page"})
 		return
 	}
 	accepted(w, newID, err)

@@ -8,11 +8,10 @@ import (
 )
 
 const (
-	rpcTimeout     = 30 * time.Second
-	applyTimeout   = 2 * time.Minute
-	rebootTimeout  = time.Minute
-	resetTimeout   = 2 * time.Minute
-	upgradeTimeout = 5 * time.Minute
+	rpcTimeout    = 30 * time.Second
+	applyTimeout  = 2 * time.Minute
+	rebootTimeout = time.Minute
+	resetTimeout  = 2 * time.Minute
 )
 
 func readBootID(ctx context.Context, tc *talos.Client) (string, error) {
@@ -39,8 +38,8 @@ func rebootNode(ctx context.Context, tc *talos.Client) error {
 	return tc.Reboot(tc.Context(call))
 }
 
-func upgradeNode(ctx context.Context, tc *talos.Client, image string) error {
-	call, cancel := context.WithTimeout(ctx, upgradeTimeout)
+func upgradeNode(ctx context.Context, tc *talos.Client, image string, timeout time.Duration) error {
+	call, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	_, err := tc.Upgrade(tc.Context(call), image, false, false)
 	return err

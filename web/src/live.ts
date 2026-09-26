@@ -39,7 +39,7 @@ export function reconnectLive() {
   connectLive()
 }
 
-export async function resync() {
+async function resync() {
   resyncing.value = true
   try {
     await Promise.all([reloadClusters(), reloadOperations(), loadMachines(), loadSettings(), loadObserver(), loadVersions()])

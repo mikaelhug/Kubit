@@ -25,7 +25,7 @@ func (s *Server) handleMachineAdd(w http.ResponseWriter, r *http.Request) {
 	}
 	mac := strings.ToLower(strings.TrimSpace(req.MAC))
 	if _, err := net.ParseMAC(mac); err != nil {
-		http.Error(w, "mac: a MAC address is required", http.StatusBadRequest)
+		writeErr(w, &statusError{http.StatusBadRequest, "mac: a MAC address is required"})
 		return
 	}
 	row := store.NodeRow{MAC: mac, IP: req.IP, Hostname: req.Hostname, Arch: req.Arch, Source: "manual", State: "unknown"}
@@ -42,7 +42,7 @@ func (s *Server) handleMachineAdd(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleLabProgress(w http.ResponseWriter, r *http.Request) {
-	mac, stage := strings.ToLower(r.URL.Query().Get("mac")), r.URL.Query().Get("stage")
+	mac, stage := queryMAC(r), r.URL.Query().Get("stage")
 	m, err := s.store.GetMachine(r.Context(), mac)
 	if err != nil || m.LabHost == nil {
 		http.Error(w, "unknown lab host", http.StatusNotFound)

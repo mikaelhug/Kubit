@@ -62,14 +62,18 @@ func (s *Server) refresh(cluster string, scopes ...string) {
 	}
 }
 
+const scopeCertificates = "certificates"
+
 func scopesForKind(kind string) []string {
 	switch {
-	case strings.HasPrefix(kind, "etcd."), strings.HasPrefix(kind, "node."), strings.HasPrefix(kind, "cluster."), strings.HasPrefix(kind, "upgrade."):
-		return []string{"nodes"}
+	case kind == "cluster.create":
+		return []string{k8s.ScopeNodes, k8s.ScopeAddons, k8s.ScopeNetwork, k8s.ScopeFlux, scopeCertificates, "sops"}
 	case strings.HasPrefix(kind, "platform."):
-		return []string{"addons", "network"}
+		return []string{k8s.ScopeAddons, k8s.ScopeNetwork, k8s.ScopeFlux}
 	case kind == "cert.rotate":
-		return []string{"certificates"}
+		return []string{scopeCertificates}
+	case strings.HasPrefix(kind, "etcd."), strings.HasPrefix(kind, "node."), strings.HasPrefix(kind, "cluster."), strings.HasPrefix(kind, "upgrade."):
+		return []string{k8s.ScopeNodes}
 	}
 	return nil
 }
@@ -194,6 +198,8 @@ func (s *Server) onChange(ctx context.Context, c store.Change) {
 		}
 	case "users":
 		s.hub.publish(Message{Kind: "refresh", Scope: "users"})
+	case "secrets":
+		s.refresh(c.Cluster, scopeCertificates)
 	case "sops":
 		s.hub.publish(Message{Kind: "refresh", Cluster: c.Cluster, Scope: "sops"})
 	case "settings":

@@ -163,7 +163,7 @@ func (s *Server) handleAuthSetup(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if n > 0 {
-		http.Error(w, "users exist; an administrator adds accounts under Settings", http.StatusConflict)
+		writeErr(w, &statusError{http.StatusConflict, "users exist; an administrator adds accounts under Settings"})
 		return
 	}
 	var c credentials
@@ -190,10 +190,10 @@ func (s *Server) handleAuthLogin(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		_ = s.store.Audit(r.Context(), "", "auth.failed", strings.ToLower(c.Name))
 		if errors.Is(err, store.ErrBadCredentials) {
-			writeJSON(w, http.StatusUnauthorized, map[string]string{"error": err.Error()})
+			writeErr(w, &statusError{http.StatusUnauthorized, err.Error()})
 			return
 		}
-		writeJSON(w, http.StatusForbidden, map[string]string{"error": err.Error()})
+		writeErr(w, &statusError{http.StatusForbidden, err.Error()})
 		return
 	}
 	_ = s.store.Audit(store.WithActor(r.Context(), store.Actor{Name: u.Name}), "", "auth.login", u.Name)
@@ -233,11 +233,11 @@ func (s *Server) handleUserCreate(w http.ResponseWriter, r *http.Request) {
 	}
 	role, err := store.ParseRole(req.Role)
 	if err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		writeErr(w, &statusError{http.StatusBadRequest, err.Error()})
 		return
 	}
 	if req.Password == "" {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "password is required"})
+		writeErr(w, &statusError{http.StatusBadRequest, "password is required"})
 		return
 	}
 	u, err := s.store.CreateUser(r.Context(), req.Name, req.Password, role, "local")
@@ -259,13 +259,13 @@ func (s *Server) handleUserUpdate(w http.ResponseWriter, r *http.Request) {
 	if req.Role != "" {
 		rl, err := store.ParseRole(req.Role)
 		if err != nil {
-			writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+			writeErr(w, &statusError{http.StatusBadRequest, err.Error()})
 			return
 		}
 		role = &rl
 	}
 	if err := s.guardLastAdmin(r.Context(), name, role, req.Disabled); err != nil {
-		writeJSON(w, http.StatusConflict, map[string]string{"error": err.Error()})
+		writeErr(w, &statusError{http.StatusConflict, err.Error()})
 		return
 	}
 	if _, err := s.store.GetUser(r.Context(), name); err != nil {
@@ -319,7 +319,7 @@ func (s *Server) guardLastAdmin(ctx context.Context, name string, role *store.Ro
 func (s *Server) handleUserDelete(w http.ResponseWriter, r *http.Request) {
 	name := strings.ToLower(r.PathValue("name"))
 	if err := s.guardLastAdmin(r.Context(), name, nil, nil); err != nil {
-		writeJSON(w, http.StatusConflict, map[string]string{"error": err.Error()})
+		writeErr(w, &statusError{http.StatusConflict, err.Error()})
 		return
 	}
 	if err := s.store.DeleteUser(r.Context(), name); err != nil {
@@ -349,7 +349,7 @@ func (s *Server) handleTokenCreate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if req.Name == "" {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "name is required"})
+		writeErr(w, &statusError{http.StatusBadRequest, "name is required"})
 		return
 	}
 	if _, err := s.store.GetUser(r.Context(), name); err != nil {

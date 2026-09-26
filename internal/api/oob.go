@@ -103,11 +103,11 @@ func (s *Server) handleOOBAdd(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 	info, err := mgr.Probe(ctx)
 	if err != nil {
-		writeJSON(w, http.StatusBadGateway, map[string]string{"error": err.Error()})
+		writeErr(w, &statusError{http.StatusBadGateway, err.Error()})
 		return
 	}
 	if info.MAC == "" {
-		writeJSON(w, http.StatusBadGateway, map[string]string{"error": oob.Label(c.Type) + " did not report a wired MAC address"})
+		writeErr(w, &statusError{http.StatusBadGateway, oob.Label(c.Type) + " did not report a wired MAC address"})
 		return
 	}
 	row := store.NodeRow{MAC: info.MAC, UUID: info.UUID, Serial: info.Serial, Source: c.Type, State: "off"}
@@ -143,7 +143,7 @@ func (s *Server) handleOOBPower(w http.ResponseWriter, r *http.Request) {
 		Action oob.Action `json:"action"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Action == "" {
-		http.Error(w, `body must be {"action": "on|off|reset|cycle|pxe"}`, http.StatusBadRequest)
+		writeErr(w, &statusError{http.StatusBadRequest, `body must be {"action": "on|off|reset|cycle|pxe"}`})
 		return
 	}
 	m, err := s.store.GetMachine(r.Context(), mac)
@@ -153,19 +153,19 @@ func (s *Server) handleOOBPower(w http.ResponseWriter, r *http.Request) {
 	}
 	c, err := s.store.MachineOOB(r.Context(), mac)
 	if err != nil {
-		http.Error(w, "no remote management configured for this machine", http.StatusConflict)
+		writeErr(w, &statusError{http.StatusConflict, "no remote management configured for this machine"})
 		return
 	}
 	if req.Action == oob.BootPXE && m.Cluster != "" {
-		http.Error(w, fmt.Sprintf("%s is a member of %s; remove it from the cluster first (that resets it to maintenance mode without PXE)", m.Hostname, m.Cluster), http.StatusConflict)
+		writeErr(w, &statusError{http.StatusConflict, fmt.Sprintf("%s is a member of %s; remove it from the cluster first (that resets it to maintenance mode without PXE)", m.Hostname, m.Cluster)})
 		return
 	}
 	if req.Action == oob.BootPXE && m.Kind() == store.KindLabHost {
-		http.Error(w, "A lab host boots its own disk; release it first.", http.StatusConflict)
+		writeErr(w, &statusError{http.StatusConflict, "A lab host boots its own disk; release it first."})
 		return
 	}
 	if req.Action == oob.BootPXE && m.IsLabVM() {
-		http.Error(w, "Lab VMs are re-provisioned from their host.", http.StatusConflict)
+		writeErr(w, &statusError{http.StatusConflict, "Lab VMs are re-provisioned from their host."})
 		return
 	}
 	if req.Action == oob.BootPXE && !s.pxeRunning(r.Context()) {

@@ -1,6 +1,7 @@
 package cluster
 
 import (
+	"errors"
 	"testing"
 
 	"github.com/mikael/kubit/internal/k8s"
@@ -20,6 +21,28 @@ func TestChartlessAddonState(t *testing.T) {
 	} {
 		if got := addonState(c.st, false, true); got != c.want {
 			t.Errorf("%+v: %s, want %s", c.st, got, c.want)
+		}
+	}
+}
+
+func TestAddonErrorsLogOncePerChange(t *testing.T) {
+	m := &Manager{}
+	show := errors.New("tofu show: exit 1")
+	for i, c := range []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{"a", show, true},
+		{"a", show, false},
+		{"b", show, true},
+		{"a", errors.New("tofu show: exit 2"), true},
+		{"a", nil, false},
+		{"a", nil, false},
+		{"a", show, true},
+	} {
+		if got := m.addonErrorChanged(c.name, c.err); got != c.want {
+			t.Errorf("step %d (%s, %v): %v, want %v", i, c.name, c.err, got, c.want)
 		}
 	}
 }

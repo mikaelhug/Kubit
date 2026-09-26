@@ -3,6 +3,7 @@ package store_test
 import (
 	"bytes"
 	"context"
+	"slices"
 	"testing"
 	"time"
 
@@ -41,7 +42,7 @@ func TestNotifierPerTable(t *testing.T) {
 			t.Errorf("change %d = %s/%s, want %s", i, got[i].Table, got[i].Op, w)
 		}
 	}
-	if got[6].Cluster != "c" || got[7].Node != "n" || got[0].Key != "c" {
+	if got[6].Cluster != "c" || got[7].Node != "n" || got[0].Key != "c" || got[8].Cluster != "c" {
 		t.Errorf("keys/cluster/node not carried: %+v", got)
 	}
 }
@@ -121,4 +122,49 @@ func TestExternalSettingsWriteBesideALocalWriteRefreshesSettings(t *testing.T) {
 		time.Sleep(50 * time.Millisecond)
 	}
 	t.Fatal("cached settings survived an external write")
+}
+
+func TestTokenWritesNotifyUsers(t *testing.T) {
+	c, _ := store.NewCrypto(bytes.Repeat([]byte{5}, 32))
+	s, err := store.Open(t.TempDir(), c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	ctx := t.Context()
+	if _, err := s.CreateUser(ctx, "ann", "correct horse battery", store.RoleAdmin, "local"); err != nil {
+		t.Fatal(err)
+	}
+	var got []string
+	s.OnChange(func(ch store.Change) { got = append(got, ch.Table+"/"+ch.Op+"/"+ch.Key) })
+	token, err := s.IssueToken(ctx, "ann", "api", "ci", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	session, err := s.IssueToken(ctx, "ann", "session", "", time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := s.ResolveToken(ctx, token); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := s.ResolveToken(ctx, token); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := s.ResolveToken(ctx, session); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.RevokeToken(ctx, session); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.RevokeToken(ctx, session); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.DeleteAPIToken(ctx, "ann", "ci"); err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"users/token/ann", "users/token/ann", "users/token/ann", "users/token/", "users/token/ann"}
+	if !slices.Equal(got, want) {
+		t.Errorf("changes %v, want %v", got, want)
+	}
 }

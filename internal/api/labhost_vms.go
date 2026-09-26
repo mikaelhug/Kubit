@@ -23,7 +23,7 @@ func (s *Server) handleLabAddVMs(w http.ResponseWriter, r *http.Request) {
 	mac := pathMAC(r)
 	var req addVMsRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.validate() != nil {
-		http.Error(w, `body: {"count":4,"cpus":2,"memMiB":3072,"diskGiB":20}; at least 1 vCPU, 2048 MiB, 8 GiB`, http.StatusBadRequest)
+		writeErr(w, &statusError{http.StatusBadRequest, `body: {"count":4,"cpus":2,"memMiB":3072,"diskGiB":20}; at least 1 vCPU, 2048 MiB, 8 GiB`})
 		return
 	}
 	host, err := s.store.GetMachine(r.Context(), mac)
@@ -32,12 +32,12 @@ func (s *Server) handleLabAddVMs(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if host.LabHost == nil || host.LabHost.State != "ready" {
-		http.Error(w, "the lab host is not ready", http.StatusConflict)
+		writeErr(w, &statusError{http.StatusConflict, "the lab host is not ready"})
 		return
 	}
 	lh := host.LabHost
 	if need, free := req.totalMem(), freeMiB(lh.Capacity, lh.VMs); need > free {
-		http.Error(w, fmt.Sprintf("%d MiB requested, %d MiB free (host keeps %s)", need, free, mib(lh.Capacity.Reserve())), http.StatusUnprocessableEntity)
+		writeErr(w, &statusError{http.StatusUnprocessableEntity, fmt.Sprintf("%d MiB requested, %d MiB free (host keeps %s)", need, free, mib(lh.Capacity.Reserve()))})
 		return
 	}
 	s.startOp(w, "labhost:"+mac, "labhost.vms", req, func(ctx context.Context, sink cluster.Sink) (any, error) {
@@ -269,10 +269,10 @@ func (s *Server) handleLabVMResize(w http.ResponseWriter, r *http.Request) {
 	mac, name := pathMAC(r), r.PathValue("name")
 	var req struct{ CPUs, MemMiB int }
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.CPUs < 1 || req.MemMiB < minVMMiB {
-		http.Error(w, `body: {"cpus":2,"memMiB":3072}`, http.StatusBadRequest)
+		writeErr(w, &statusError{http.StatusBadRequest, `body: {"cpus":2,"memMiB":3072}`})
 		return
 	}
-	unlock, ok := s.holdLock(w, r, "labhost:"+mac, labBusy)
+	unlock, ok := s.holdLock(w, r, labBusy, "labhost:"+mac)
 	if !ok {
 		return
 	}
@@ -294,7 +294,7 @@ func (s *Server) handleLabVMResize(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if req.MemMiB-curMem > freeMiB(host.LabHost.Capacity, host.LabHost.VMs) {
-		http.Error(w, fmt.Sprintf("resizing %s to %d MiB would overcommit the host (%d MiB total, %s reserved)", name, req.MemMiB, host.LabHost.Capacity.MemMiB, mib(host.LabHost.Capacity.Reserve())), http.StatusUnprocessableEntity)
+		writeErr(w, &statusError{http.StatusUnprocessableEntity, fmt.Sprintf("resizing %s to %d MiB would overcommit the host (%d MiB total, %s reserved)", name, req.MemMiB, host.LabHost.Capacity.MemMiB, mib(host.LabHost.Capacity.Reserve()))})
 		return
 	}
 	if err := lc.Resize(r.Context(), name, req.CPUs, req.MemMiB); err != nil {
@@ -309,7 +309,7 @@ const labBusy = "An operation is running on this lab host; try again when it fin
 
 func (s *Server) handleLabVMDelete(w http.ResponseWriter, r *http.Request) {
 	mac, name := pathMAC(r), r.PathValue("name")
-	unlock, ok := s.holdLock(w, r, "labhost:"+mac, labBusy)
+	unlock, ok := s.holdLock(w, r, labBusy, "labhost:"+mac)
 	if !ok {
 		return
 	}
@@ -319,7 +319,7 @@ func (s *Server) handleLabVMDelete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if vm := s.vmRow(r.Context(), host, name); vm != nil && vm.Cluster != "" {
-		http.Error(w, fmt.Sprintf("%s is a member of %s; remove it from the cluster first", name, vm.Cluster), http.StatusConflict)
+		writeErr(w, &statusError{http.StatusConflict, fmt.Sprintf("%s is a member of %s; remove it from the cluster first", name, vm.Cluster)})
 		return
 	}
 	lc, err := s.manager.LabDial(r.Context(), host)

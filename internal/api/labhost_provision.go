@@ -39,7 +39,7 @@ func (s *Server) handleLabProvision(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if code, err := s.checkLabPlan(r.Context(), &plan); err != nil {
-		http.Error(w, err.Error(), code)
+		writeErr(w, &statusError{code, err.Error()})
 		return
 	}
 	m, err := s.store.GetMachine(r.Context(), mac)
@@ -48,20 +48,20 @@ func (s *Server) handleLabProvision(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if m.Cluster != "" {
-		http.Error(w, "this machine is a cluster member; remove it from the cluster first", http.StatusConflict)
+		writeErr(w, &statusError{http.StatusConflict, "this machine is a cluster member; remove it from the cluster first"})
 		return
 	}
 	if m.IsLabVM() {
-		http.Error(w, "A lab VM cannot host VMs.", http.StatusConflict)
+		writeErr(w, &statusError{http.StatusConflict, "A lab VM cannot host VMs."})
 		return
 	}
 	if m.LabHost != nil && (m.LabHost.State != "error" || m.LabHost.Driver != "") {
-		http.Error(w, "Already a lab host; release it first.", http.StatusConflict)
+		writeErr(w, &statusError{http.StatusConflict, "Already a lab host; release it first."})
 		return
 	}
 	c, err := s.store.MachineOOB(r.Context(), mac)
 	if err != nil && !plan.Manual {
-		http.Error(w, "a lab host is installed through its remote management: configure Intel AMT or a BMC on this machine, or choose to boot it yourself", http.StatusConflict)
+		writeErr(w, &statusError{http.StatusConflict, "a lab host is installed through its remote management: configure Intel AMT or a BMC on this machine, or choose to boot it yourself"})
 		return
 	}
 	if !s.pxeRunning(r.Context()) {
@@ -320,7 +320,7 @@ func (s *Server) labSetup(ctx context.Context, lc labhost.Driver, m *store.Machi
 
 func (s *Server) handleLabRelease(w http.ResponseWriter, r *http.Request) {
 	mac := pathMAC(r)
-	unlock, ok := s.holdLock(w, r, "labhost:"+mac, labBusy)
+	unlock, ok := s.holdLock(w, r, labBusy, "labhost:"+mac)
 	if !ok {
 		return
 	}
@@ -331,12 +331,12 @@ func (s *Server) handleLabRelease(w http.ResponseWriter, r *http.Request) {
 	}
 	switch host.LabHost.State {
 	case "installing", "setup", "updating":
-		http.Error(w, fmt.Sprintf("The host is %s; cancel or wait for that operation first.", host.LabHost.State), http.StatusConflict)
+		writeErr(w, &statusError{http.StatusConflict, fmt.Sprintf("The host is %s; cancel or wait for that operation first.", host.LabHost.State)})
 		return
 	}
 	for _, v := range host.LabHost.VMs {
 		if vm, err := s.store.GetMachine(r.Context(), v.MAC); err == nil && vm.Cluster != "" {
-			http.Error(w, fmt.Sprintf("%s is a member of %s; remove it first", v.Name, vm.Cluster), http.StatusConflict)
+			writeErr(w, &statusError{http.StatusConflict, fmt.Sprintf("%s is a member of %s; remove it first", v.Name, vm.Cluster)})
 			return
 		}
 	}

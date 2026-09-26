@@ -113,6 +113,25 @@ func (m Maintenance) Open(t time.Time) (open bool, next time.Time) {
 	return false, time.Time{}
 }
 
+func (m Maintenance) Closes(t time.Time) time.Time {
+	w, err := m.parse()
+	if err != nil || w == nil {
+		return time.Time{}
+	}
+	probe := t.In(w.loc)
+	if !w.contains(probe) {
+		return time.Time{}
+	}
+	probe = probe.Truncate(time.Minute)
+	for i := 0; i < 8*24*60; i++ {
+		probe = probe.Add(time.Minute)
+		if !w.contains(probe) {
+			return probe
+		}
+	}
+	return time.Time{}
+}
+
 func (w *window) contains(t time.Time) bool {
 	mins := t.Hour()*60 + t.Minute()
 	if w.end > w.start {

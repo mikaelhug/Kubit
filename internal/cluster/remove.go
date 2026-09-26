@@ -104,7 +104,7 @@ func (m *Manager) RemoveNode(ctx context.Context, name, hostname string, opts Re
 
 	return sink.Run("forget", func() error {
 		c.Spec.Nodes = append(c.Spec.Nodes[:idx], c.Spec.Nodes[idx+1:]...)
-		if err := m.SaveCluster(ctx, c, ""); err != nil {
+		if err := m.saveExisting(ctx, c); err != nil {
 			return err
 		}
 		if err := m.Store.UnassignNode(ctx, n.IP, string(talos.StateMaintenance)); err != nil {

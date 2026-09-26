@@ -166,8 +166,6 @@ func (s *Store) UpsertNode(ctx context.Context, n Machine) error {
 			serial        = CASE WHEN excluded.serial = '' THEN machines.serial ELSE excluded.serial END,
 			ip            = COALESCE(excluded.ip, machines.ip),
 			ips_seen      = excluded.ips_seen,
-			-- A member found back in maintenance mode was wiped outside Kubit: it is
-			-- no longer part of any cluster.
 			cluster       = CASE WHEN excluded.state = 'maintenance' AND excluded.cluster IS NULL THEN NULL ELSE COALESCE(excluded.cluster, machines.cluster) END,
 			hostname      = CASE WHEN excluded.state = 'maintenance' AND excluded.cluster IS NULL THEN '' WHEN excluded.hostname = '' THEN machines.hostname ELSE excluded.hostname END,
 			pool          = CASE WHEN excluded.state = 'maintenance' AND excluded.cluster IS NULL THEN '' WHEN excluded.pool = '' THEN machines.pool ELSE excluded.pool END,

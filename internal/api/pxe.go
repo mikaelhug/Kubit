@@ -8,7 +8,6 @@ import (
 	"io"
 	"net/http"
 	"os"
-	"strings"
 	"time"
 
 	"github.com/mikael/kubit/internal/httpx"
@@ -122,7 +121,7 @@ func (s *Server) handlePXEStatus(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handlePXEDecide(w http.ResponseWriter, r *http.Request) {
-	mac := strings.ToLower(r.URL.Query().Get("mac"))
+	mac := queryMAC(r)
 	boot, reason := s.pxeDecision(r.Context(), mac)
 	writeJSON(w, http.StatusOK, map[string]string{"boot": boot, "reason": reason})
 }

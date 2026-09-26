@@ -2,6 +2,7 @@ package labhost
 
 import (
 	"context"
+	"fmt"
 
 	"github.com/mikael/kubit/internal/factory"
 )
@@ -15,6 +16,13 @@ type Boot struct {
 	Kernel string
 	Initrd string
 	ISO    string
+}
+
+func BootCacheName(version, schematic string) (string, error) {
+	if len(schematic) < 12 {
+		return "", fmt.Errorf("bad schematic %q", schematic)
+	}
+	return version + "-" + schematic[:12], nil
 }
 
 type Driver interface {

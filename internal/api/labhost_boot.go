@@ -2,7 +2,6 @@ package api
 
 import (
 	"net/http"
-	"strings"
 
 	"github.com/mikael/kubit/internal/labhost/libvirt"
 	"github.com/mikael/kubit/internal/store"
@@ -14,7 +13,7 @@ func (s *Server) handleLabPostInstall(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleLabPreseed(w http.ResponseWriter, r *http.Request) {
-	mac := strings.ToLower(r.URL.Query().Get("mac"))
+	mac := queryMAC(r)
 	m, err := s.store.GetMachine(r.Context(), mac)
 	if err != nil {
 		http.Error(w, "unknown machine", http.StatusNotFound)

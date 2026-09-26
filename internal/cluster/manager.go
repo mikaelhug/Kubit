@@ -54,6 +54,9 @@ type Manager struct {
 
 	kubeMu sync.Mutex
 	kube   map[string]kubeEntry
+
+	addonErrMu sync.Mutex
+	addonErr   map[string]string
 }
 
 type kubeEntry struct {

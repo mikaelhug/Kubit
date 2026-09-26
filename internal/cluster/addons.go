@@ -47,6 +47,15 @@ func PlatformNamespace(ns string) (string, bool) {
 	return "", false
 }
 
+func AddonNamespace(ns string) bool {
+	for _, a := range addonMeta {
+		if a.namespace != "" && a.namespace == ns {
+			return true
+		}
+	}
+	return false
+}
+
 var addonTofuName = map[string]string{"metallb": "metallb", "ingressNginx": "ingress-nginx", "gvisor": "gvisor", "metricsServer": "metrics-server", "certManager": "cert-manager", "flux": "flux", "longhorn": "longhorn", "builds": "builds"}
 
 func addonSpec(p config.Platform, key string) (bool, map[string]any) {
@@ -78,7 +87,8 @@ func (m *Manager) Addons(ctx context.Context, name string) ([]AddonStatus, error
 	}
 	var releases []tofu.Release
 	if bin, err := m.tofuBin(ctx); err == nil {
-		if releases, err = (&tofu.Runner{Bin: bin, Dir: m.platformDir(name)}).Releases(ctx); err != nil {
+		releases, err = (&tofu.Runner{Bin: bin, Dir: m.platformDir(name)}).Releases(ctx)
+		if m.addonErrorChanged(name, err) {
 			log.Printf("add-ons %s: %v", name, err)
 		}
 	}
@@ -113,6 +123,27 @@ func (m *Manager) Addons(ctx context.Context, name string) ([]AddonStatus, error
 	}
 	wg.Wait()
 	return out, nil
+}
+
+func (m *Manager) addonErrorChanged(name string, err error) bool {
+	msg := ""
+	if err != nil {
+		msg = err.Error()
+	}
+	m.addonErrMu.Lock()
+	defer m.addonErrMu.Unlock()
+	if m.addonErr[name] == msg {
+		return false
+	}
+	if msg == "" {
+		delete(m.addonErr, name)
+		return false
+	}
+	if m.addonErr == nil {
+		m.addonErr = map[string]string{}
+	}
+	m.addonErr[name] = msg
+	return true
 }
 
 func addonState(st AddonStatus, manifestOnly, chartless bool) string {

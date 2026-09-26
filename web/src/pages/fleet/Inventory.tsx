@@ -7,7 +7,7 @@ import { PxeGate } from '../../components/PxeGate'
 import { AddAMTDialog } from '../../components/RemoteManagement'
 import { ScanBox } from '../../components/ScanBox'
 import { AlertPill, Pill, Section } from '../../components/ui'
-import { adopt, bootTalosBlocked, canAdopt, canMakeLabHost, canRetire, formOf, groupLabel, groupOf, hostName, hostOf, KindPill, labHostKey, lastSeenOf, modelOf, onMac, provisionLabel, RetireDialog, vmsOf, wake, type MachineGroup } from '../../machine'
+import { adopt, bootTalosBlocked, canAdopt, canMakeLabHost, canRetire, groupLabel, groupOf, hostName, hostOf, KindPill, labHostKey, lastSeenOf, modelOf, onMac, provisionLabel, RetireDialog, typeOf, vmsOf, wake, type MachineGroup } from '../../machine'
 import { connected, daemon, labHosts, loadHealth, machineList, openAlerts, resyncing, settings, toast, versions, watch } from '../../store'
 import { defaultTalos, talosIso } from '../../versions'
 
@@ -50,7 +50,7 @@ export function Inventory() {
   const columns = useMemo<Column<NodeRow>[]>(() => [
     { id: 'machine', header: 'Machine', sort: (n) => `${groupOrder[groupOf(n)]} ${n.ip}`, text: (n) => `${modelOf(n)} ${n.mac} ${n.uuid ?? ''} ${n.serial ?? ''} ${n.hostname}`, cell: (n) => (
       <a href={openHref(n)} class="flex flex-col min-w-0 hover:underline">
-        <span class="font-medium truncate">{n.hostname || n.labhost?.capacity.hostname || modelOf(n)}<span class="text-[10px] text-muted font-normal ml-1.5">{formOf(n)}</span></span>
+        <span class="font-medium truncate">{n.hostname || n.labhost?.capacity.hostname || modelOf(n)}<span class="text-[10px] text-muted font-normal ml-1.5">{typeOf(n)}</span></span>
         <span class="text-[10px] text-muted mono truncate">{[n.hostname || n.labhost?.capacity.hostname ? modelOf(n).replace('Unknown hardware', '') : '', n.serial, n.mac].filter(Boolean).join(' · ')}</span>
       </a>
     ) },

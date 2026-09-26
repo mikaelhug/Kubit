@@ -31,10 +31,9 @@ type Line struct {
 		ElapsedSeconds int    `json:"elapsed_seconds"`
 	} `json:"hook,omitempty"`
 	Changes *struct {
-		Add       int    `json:"add"`
-		Change    int    `json:"change"`
-		Remove    int    `json:"remove"`
-		Operation string `json:"operation"`
+		Add    int `json:"add"`
+		Change int `json:"change"`
+		Remove int `json:"remove"`
 	} `json:"changes,omitempty"`
 	Diagnostic *struct {
 		Severity string `json:"severity"`

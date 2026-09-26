@@ -127,7 +127,7 @@ func (s *Server) handleClusterKubeconfig(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	if sec.Kubeconfig == nil {
-		http.Error(w, "no kubeconfig yet", http.StatusNotFound)
+		writeErr(w, &statusError{http.StatusNotFound, "no kubeconfig yet"})
 		return
 	}
 	w.Header().Set("Content-Type", "application/yaml")
@@ -172,7 +172,7 @@ func (s *Server) startCreate(c *config.Cluster, skipPlatform bool, request any) 
 
 func (s *Server) handleClusterForget(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")
-	unlock, ok := s.holdLock(w, r, name, clusterBusy)
+	unlock, ok := s.holdLock(w, r, clusterBusy, name, specLock(name))
 	if !ok {
 		return
 	}
@@ -247,16 +247,16 @@ func (s *Server) handlePlatformApplyPlan(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	if planOp.Cluster != name || planOp.Kind != "platform.plan" || planOp.Status != "done" || planOp.Artifact == nil {
-		http.Error(w, "not a completed plan for this cluster", http.StatusBadRequest)
+		writeErr(w, &statusError{http.StatusBadRequest, "not a completed plan for this cluster"})
 		return
 	}
 	var diff tofu.PlanDiff
 	if err := json.Unmarshal(planOp.Artifact, &diff); err != nil {
-		http.Error(w, fmt.Sprintf("plan #%d cannot be read; plan again", planID), http.StatusConflict)
+		writeErr(w, &statusError{http.StatusConflict, fmt.Sprintf("plan #%d cannot be read; plan again", planID)})
 		return
 	}
 	if latest := s.latestPlan(r.Context(), name); latest != planID {
-		http.Error(w, fmt.Sprintf("plan #%d has been superseded by plan #%d; review the newer plan", planID, latest), http.StatusConflict)
+		writeErr(w, &statusError{http.StatusConflict, fmt.Sprintf("plan #%d has been superseded by plan #%d; review the newer plan", planID, latest)})
 		return
 	}
 	s.startOp(w, name, "platform.apply", map[string]any{"planId": planID}, func(ctx context.Context, sink cluster.Sink) (any, error) {
@@ -291,7 +291,7 @@ func (s *Server) upgrade(w http.ResponseWriter, r *http.Request, kind string, fn
 		To string `json:"to"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.To == "" {
-		http.Error(w, `body must be {"to": "<version>"}`, http.StatusBadRequest)
+		writeErr(w, &statusError{http.StatusBadRequest, `body must be {"to": "<version>"}`})
 		return
 	}
 	s.startOp(w, name, kind, req, func(ctx context.Context, sink cluster.Sink) (any, error) {

@@ -177,7 +177,7 @@ func (s *Server) handleSnapshotRestore(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if req.Confirm != sn.Cluster {
-		http.Error(w, `body must be {"confirm": "<cluster name>"}: restoring wipes etcd on every control plane`, http.StatusBadRequest)
+		writeErr(w, &statusError{http.StatusBadRequest, `body must be {"confirm": "<cluster name>"}: restoring wipes etcd on every control plane`})
 		return
 	}
 	s.startOp(w, sn.Cluster, "etcd.restore", map[string]any{"snapshot": sn.ID}, func(ctx context.Context, sink cluster.Sink) (any, error) {

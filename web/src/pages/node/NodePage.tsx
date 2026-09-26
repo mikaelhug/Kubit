@@ -11,7 +11,7 @@ import { HardwareTab } from './Hardware'
 import { KubernetesTab } from './Kubernetes'
 import { LogsTab } from './Logs'
 import { OverviewTab } from './Overview'
-import { ServicesTab } from './Services'
+import { ServicesTab, talosLive } from './Services'
 
 type TabId = 'overview' | 'hardware' | 'kubernetes' | 'services' | 'logs' | 'actions'
 
@@ -25,9 +25,9 @@ export function NodePage({ ip: ipParam, mac }: { ip?: string; mac?: string }) {
     if (node?.kind === 'labhost') route(`/labhosts/${node.mac}/overview`, true)
     else if (node && !mac) history.replaceState(null, '', `/machines/${node.mac}`)
   }, [node?.mac, node?.kind, mac])
-  const scope = [[node?.cluster ?? '', 'nodes']] as const
-  const { data: inv, error: invErr } = useLive(() => api.inventory(ip), [ip], scope, { enabled: !!node?.talos })
-  const { data: k8s, error: k8sErr } = useLive(() => api.nodeKubernetes(ip), [ip], scope, { enabled: node?.kind === 'member' })
+  const talos = talosLive(node)
+  const { data: inv, error: invErr } = useLive(() => api.inventory(ip), [ip], talos.scopes, { enabled: !!node?.talos, refresh: talos.refresh })
+  const { data: k8s, error: k8sErr } = useLive(() => api.nodeKubernetes(ip), [ip], [...talos.scopes, [node?.cluster ?? '', 'workloads']], { enabled: node?.kind === 'member' })
 
   const cluster = node?.cluster ? clusters.value.find((c) => c.name === node.cluster) : undefined
   const spec: NodeSpec | undefined = cluster?.spec.spec.nodes.find((n) => (node?.mac && n.mac === node.mac) || n.hostname === node?.hostname)
@@ -63,8 +63,8 @@ export function NodePage({ ip: ipParam, mac }: { ip?: string; mac?: string }) {
         {shown === 'overview' && <OverviewTab inv={inv} invErr={invErr} k8s={k8s} k8sErr={k8sErr} node={node} spec={spec} storage={cluster?.spec.spec.platform.longhorn?.enabled ? cluster.spec.spec.storage : undefined} />}
         {shown === 'hardware' && <HardwareTab inv={inv} invErr={invErr} node={node} />}
         {shown === 'kubernetes' && <KubernetesTab k8s={k8s} err={k8sErr} />}
-        {shown === 'services' && <ServicesTab ip={ip} cluster={node?.cluster} />}
-        {shown === 'logs' && <LogsTab ip={ip} cluster={node?.cluster} />}
+        {shown === 'services' && <ServicesTab ip={ip} node={node} />}
+        {shown === 'logs' && <LogsTab ip={ip} node={node} />}
         {shown === 'actions' && <ActionsTab node={node} k8s={k8s} inv={inv} cluster={cluster} spec={spec} />}
       </div>
     </div>

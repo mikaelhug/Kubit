@@ -148,13 +148,13 @@ func (c *Client) Capacity(ctx context.Context) (labhost.Capacity, error) {
 }
 
 func (c *Client) EnsureTalosBoot(ctx context.Context, f *factory.Client, schematic, version, arch string) (labhost.Boot, error) {
-	short := schematic
-	if len(short) > 12 {
-		short = short[:12]
+	name, err := labhost.BootCacheName(version, schematic)
+	if err != nil {
+		return labhost.Boot{}, err
 	}
-	dir := fmt.Sprintf("%s/%s-%s", bootDir, version, short)
+	dir := bootDir + "/" + name
 	kernel, initrd := dir+"/kernel-"+arch, dir+"/initramfs-"+arch+".xz"
-	_, err := c.Run(ctx, fmt.Sprintf(`set -e
+	_, err = c.Run(ctx, fmt.Sprintf(`set -e
 mkdir -p %[1]s && cd %[1]s
 get() { [ -s "$1" ] && return 0; curl -fSL --retry 3 -o "$1.part" "$2" && mv -f "$1.part" "$1" || { rm -f "$1.part"; echo "download failed: $2" >&2; return 1; }; [ -s "$1" ] || { echo "empty after download: $1" >&2; return 1; }; }
 get kernel-%[2]s %[3]s

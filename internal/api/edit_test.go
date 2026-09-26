@@ -2,6 +2,7 @@ package api
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"net/http"
 	"strconv"
@@ -44,7 +45,7 @@ func TestEditWaitsForTheOperationAndKeepsItsWork(t *testing.T) {
 	f.NTP = []string{"time.example"}
 	body, _ := json.Marshal(f)
 
-	s.locks.lock("c")
+	s.locks.lock(specLock("c"))
 	result := make(chan int)
 	go func() { result <- call(t, s, "PUT", "/api/v1/clusters/c/form", string(body)).Code }()
 	time.Sleep(100 * time.Millisecond)
@@ -64,7 +65,7 @@ func TestEditWaitsForTheOperationAndKeepsItsWork(t *testing.T) {
 		t.Fatalf("the edit ran while the operation held the cluster: %d", code)
 	default:
 	}
-	s.locks.unlock("c")
+	s.locks.unlock(specLock("c"))
 	if code := <-result; code != http.StatusOK {
 		t.Fatalf("edit: %d", code)
 	}
@@ -88,13 +89,52 @@ func TestEditRefusedWhileAnOperationKeepsTheCluster(t *testing.T) {
 	defer func(d time.Duration) { lockWait = d }(lockWait)
 	lockWait = 50 * time.Millisecond
 	body, _ := json.Marshal(formOf(t, s))
-	s.locks.lock("c")
-	defer s.locks.unlock("c")
+	s.locks.lock(specLock("c"))
+	defer s.locks.unlock(specLock("c"))
 	if rec := call(t, s, "PUT", "/api/v1/clusters/c/form", string(body)); rec.Code != http.StatusConflict {
 		t.Errorf("form: %d %s", rec.Code, rec.Body)
 	}
 	if rec := call(t, s, "DELETE", "/api/v1/clusters/c", ""); rec.Code != http.StatusConflict {
 		t.Errorf("forget: %d %s", rec.Code, rec.Body)
+	}
+}
+
+func TestEditLockFollowsWhetherTheOperationWritesTheSpec(t *testing.T) {
+	s, st := editServer(t)
+	defer func(d time.Duration) { lockWait = d }(lockWait)
+	lockWait = 200 * time.Millisecond
+	body, _ := json.Marshal(formOf(t, s))
+	for _, c := range []struct {
+		kind string
+		want int
+	}{
+		{"etcd.snapshot", http.StatusOK},
+		{"platform.plan", http.StatusOK},
+		{"node.reboot", http.StatusOK},
+		{"node.rename", http.StatusConflict},
+		{"upgrade.talos", http.StatusConflict},
+		{"cluster.apply", http.StatusConflict},
+	} {
+		t.Run(c.kind, func(t *testing.T) {
+			started, release := make(chan struct{}), make(chan struct{})
+			id, err := s.runOperation("c", c.kind, nil, func(context.Context, cluster.Sink) (any, error) {
+				close(started)
+				<-release
+				return nil, nil
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			<-started
+			if rec := call(t, s, "PUT", "/api/v1/clusters/c/form", string(body)); rec.Code != c.want {
+				t.Errorf("edit during %s: %d %s", c.kind, rec.Code, rec.Body)
+			}
+			if rec := call(t, s, "DELETE", "/api/v1/clusters/c", ""); rec.Code != http.StatusConflict {
+				t.Errorf("forget during %s: %d %s", c.kind, rec.Code, rec.Body)
+			}
+			close(release)
+			waitOp(t, st, id)
+		})
 	}
 }
 
@@ -136,5 +176,31 @@ func TestUnreadablePlanIsNotApplied(t *testing.T) {
 	rec := call(t, s, "POST", "/api/v1/clusters/c/platform/apply/"+strconv.FormatInt(id, 10), "")
 	if rec.Code != http.StatusConflict || !strings.Contains(rec.Body.String(), "plan again") {
 		t.Errorf("unreadable plan: %d %s", rec.Code, rec.Body)
+	}
+}
+
+func TestMaintenanceStatusTellsWhenTheWindowCloses(t *testing.T) {
+	s, _ := editServer(t)
+	now := time.Now().UTC()
+	window := "daily " + now.Add(-time.Hour).Format("15:04") + "-" + now.Add(time.Hour).Format("15:04")
+	c, _, err := s.manager.LoadCluster(t.Context(), "c")
+	if err != nil {
+		t.Fatal(err)
+	}
+	c.Spec.Maintenance = config.Maintenance{Window: window, Timezone: "UTC"}
+	if err := s.manager.SaveCluster(t.Context(), c, ""); err != nil {
+		t.Fatal(err)
+	}
+	rec := call(t, s, "GET", "/api/v1/clusters/c/maintenance", "")
+	var out struct {
+		Open   bool   `json:"open"`
+		Closes string `json:"closes"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil || rec.Code != http.StatusOK {
+		t.Fatalf("%d %s: %v", rec.Code, rec.Body, err)
+	}
+	closes, err := time.Parse(time.RFC3339, out.Closes)
+	if !out.Open || err != nil || closes.Sub(now) < 58*time.Minute || closes.Sub(now) > time.Hour {
+		t.Errorf("open window: %s", rec.Body)
 	}
 }

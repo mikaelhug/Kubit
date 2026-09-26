@@ -74,7 +74,7 @@ func Open(c Config, opts ...Option) (Manager, error) {
 		if c.Host == "" || c.User == "" || c.Password == "" {
 			return nil, errors.New("AMT needs host, user and password")
 		}
-		return &amt{c: c, trace: o.trace}, nil
+		return &amt{c: c, tracer: o.trace}, nil
 	case "redfish":
 		if c.Host == "" || c.User == "" || c.Password == "" {
 			return nil, errors.New("Redfish needs the BMC address, user and password")
@@ -94,15 +94,17 @@ func Label(typ string) string {
 	return "remote management"
 }
 
-type amt struct {
-	c     Config
-	trace func(string)
+type tracer func(string)
+
+func (t tracer) tracef(format string, args ...any) {
+	if t != nil {
+		t(fmt.Sprintf(format, args...))
+	}
 }
 
-func (a *amt) tracef(format string, args ...any) {
-	if a.trace != nil {
-		a.trace(fmt.Sprintf(format, args...))
-	}
+type amt struct {
+	c Config
+	tracer
 }
 
 func (a *amt) msgs(ctx context.Context) wsman.Messages {

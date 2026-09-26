@@ -82,7 +82,7 @@ func uniq(v ...string) []string {
 func (s *Server) labHostOf(w http.ResponseWriter, r *http.Request) (*store.Machine, bool) {
 	host, err := s.store.GetMachine(r.Context(), pathMAC(r))
 	if err != nil || host.LabHost == nil {
-		http.Error(w, "not a lab host", http.StatusNotFound)
+		writeErr(w, &statusError{http.StatusNotFound, "not a lab host"})
 		return nil, false
 	}
 	return host, true

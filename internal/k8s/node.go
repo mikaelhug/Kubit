@@ -69,8 +69,12 @@ func (c *Client) NodeDetail(ctx context.Context, name string) (*NodeDetail, erro
 		Name: n.Name, Ready: s.Ready, Unschedulable: s.Unschedulable, KubeletVersion: s.KubeletVersion,
 		Runtime: n.Status.NodeInfo.ContainerRuntimeVersion, Kernel: n.Status.NodeInfo.KernelVersion, OSImage: s.OSImage,
 		InternalIP: s.InternalIP, Labels: n.Labels,
+		Conditions: []Condition{}, Taints: []string{}, Pods: []PodSummary{},
 		Capacity:    Resources{CPUMilli: s.CapacityCPU, MemBytes: s.CapacityMem, Pods: s.CapacityPods},
 		Allocatable: Resources{CPUMilli: s.AllocatableCPU, MemBytes: s.AllocatableMem, Pods: s.CapacityPods},
+	}
+	if d.Labels == nil {
+		d.Labels = map[string]string{}
 	}
 	for _, cond := range n.Status.Conditions {
 		d.Conditions = append(d.Conditions, Condition{Type: string(cond.Type), Status: string(cond.Status), Reason: cond.Reason, Message: cond.Message, Since: cond.LastTransitionTime.UTC().Format("2006-01-02T15:04:05Z")})

@@ -65,29 +65,29 @@ func (s *Server) handleLabLocalCreate(w http.ResponseWriter, r *http.Request) {
 		labPlan
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, `body: {"driver":"vfkit","vms":{…},"cluster":{…}}`, http.StatusBadRequest)
+		writeErr(w, &statusError{http.StatusBadRequest, `body: {"driver":"vfkit","vms":{…},"cluster":{…}}`})
 		return
 	}
 	plan := req.labPlan
 	if req.Driver != labhost.DriverVFKit {
-		http.Error(w, "driver must be vfkit", http.StatusBadRequest)
+		writeErr(w, &statusError{http.StatusBadRequest, "driver must be vfkit"})
 		return
 	}
 	if plan.Manual || plan.Network != "" || plan.Disk != "" {
-		http.Error(w, "manual, network and disk do not apply to VMs on this Mac", http.StatusBadRequest)
+		writeErr(w, &statusError{http.StatusBadRequest, "manual, network and disk do not apply to VMs on this Mac"})
 		return
 	}
 	if code, err := s.checkLabPlan(r.Context(), &plan); err != nil {
-		http.Error(w, err.Error(), code)
+		writeErr(w, &statusError{code, err.Error()})
 		return
 	}
 	if h := s.localHost(r.Context()); h != nil {
-		http.Error(w, "This Mac is already a lab host.", http.StatusConflict)
+		writeErr(w, &statusError{http.StatusConflict, "This Mac is already a lab host."})
 		return
 	}
 	d, err := s.localDriver()
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusConflict)
+		writeErr(w, &statusError{http.StatusConflict, err.Error()})
 		return
 	}
 	defer d.Close()
@@ -102,13 +102,13 @@ func (s *Server) handleLabLocalCreate(w http.ResponseWriter, r *http.Request) {
 	}
 	if plan.VMs != nil {
 		if need, free := plan.VMs.totalMem(), freeMiB(capa, nil); need > free {
-			http.Error(w, fmt.Sprintf("%d MiB requested, %d MiB free (this Mac keeps %s)", need, free, mib(capa.Reserve())), http.StatusUnprocessableEntity)
+			writeErr(w, &statusError{http.StatusUnprocessableEntity, fmt.Sprintf("%d MiB requested, %d MiB free (this Mac keeps %s)", need, free, mib(capa.Reserve()))})
 			return
 		}
 	}
 	id, ok := d.(labhost.Identity)
 	if !ok {
-		http.Error(w, "this driver cannot name its host", http.StatusInternalServerError)
+		writeErr(w, &statusError{http.StatusInternalServerError, "this driver cannot name its host"})
 		return
 	}
 	mac, err := id.HostMAC(r.Context())
@@ -117,7 +117,7 @@ func (s *Server) handleLabLocalCreate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if m, err := s.store.GetMachine(r.Context(), mac); err == nil && (m.Cluster != "" || m.LabHost != nil) {
-		http.Error(w, "This Mac's machine record is in use; retire it first.", http.StatusConflict)
+		writeErr(w, &statusError{http.StatusConflict, "This Mac's machine record is in use; retire it first."})
 		return
 	}
 	hw := placeholderHardware(talos.Inventory{Manufacturer: "Apple", Product: capa.Model, CPUs: capa.CPUs, MemoryBytes: uint64(capa.MemMiB) << 20})

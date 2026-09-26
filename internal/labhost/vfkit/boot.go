@@ -2,7 +2,6 @@ package vfkit
 
 import (
 	"context"
-	"fmt"
 	"os"
 	"path/filepath"
 
@@ -12,10 +11,11 @@ import (
 )
 
 func (h *Host) EnsureTalosBoot(ctx context.Context, f *factory.Client, schematic, version, arch string) (labhost.Boot, error) {
-	if len(schematic) < 12 {
-		return labhost.Boot{}, fmt.Errorf("bad schematic %q", schematic)
+	name, err := labhost.BootCacheName(version, schematic)
+	if err != nil {
+		return labhost.Boot{}, err
 	}
-	dir := filepath.Join(h.Dir, bootDir, version+"-"+schematic[:12])
+	dir := filepath.Join(h.Dir, bootDir, name)
 	iso := filepath.Join(dir, "metal-"+arch+".iso")
 	if fi, err := os.Stat(iso); err == nil && fi.Size() > 0 {
 		return labhost.Boot{ISO: iso}, nil

@@ -14,8 +14,8 @@ import (
 )
 
 type redfish struct {
-	c      Config
-	trace  func(string)
+	c Config
+	tracer
 	client *http.Client
 	system string
 }
@@ -31,13 +31,7 @@ var redfishTransport = &http.Transport{
 }
 
 func newRedfish(c Config, trace func(string)) *redfish {
-	return &redfish{c: c, trace: trace, client: &http.Client{Timeout: 20 * time.Second, Transport: redfishTransport}}
-}
-
-func (r *redfish) tracef(format string, args ...any) {
-	if r.trace != nil {
-		r.trace(fmt.Sprintf(format, args...))
-	}
+	return &redfish{c: c, tracer: trace, client: &http.Client{Timeout: 20 * time.Second, Transport: redfishTransport}}
 }
 
 func (r *redfish) url(path string) string {
@@ -125,15 +119,12 @@ type redfishRef struct {
 }
 
 type redfishSystem struct {
-	ID           string `json:"Id"`
 	Manufacturer string `json:"Manufacturer"`
 	Model        string `json:"Model"`
 	SerialNumber string `json:"SerialNumber"`
 	UUID         string `json:"UUID"`
 	PowerState   string `json:"PowerState"`
 	Boot         struct {
-		Enabled string   `json:"BootSourceOverrideEnabled"`
-		Target  string   `json:"BootSourceOverrideTarget"`
 		Allowed []string `json:"BootSourceOverrideTarget@Redfish.AllowableValues"`
 	} `json:"Boot"`
 	Memory struct {
@@ -157,7 +148,6 @@ func (r *redfish) systemPath(ctx context.Context) (string, error) {
 		return r.system, nil
 	}
 	var root struct {
-		Version string     `json:"RedfishVersion"`
 		Systems redfishRef `json:"Systems"`
 	}
 	if err := r.do(ctx, http.MethodGet, redfishRoot, nil, &root); err != nil {

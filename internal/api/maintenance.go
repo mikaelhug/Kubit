@@ -19,7 +19,7 @@ func (s *Server) disruptive(h http.HandlerFunc) http.HandlerFunc {
 		name := r.PathValue("name")
 		if name != "" && r.URL.Query().Get("ignoreWindow") != "true" {
 			if msg, closed := s.windowClosed(r.Context(), name); closed {
-				writeJSON(w, http.StatusConflict, map[string]string{"error": msg})
+				writeErr(w, &statusError{http.StatusConflict, msg})
 				return
 			}
 		}
@@ -57,10 +57,14 @@ func (s *Server) handleMaintenance(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, err)
 		return
 	}
-	open, next := c.Spec.Maintenance.Open(time.Now())
+	now := time.Now()
+	open, next := c.Spec.Maintenance.Open(now)
 	out := map[string]any{"window": c.Spec.Maintenance.Window, "timezone": c.Spec.Maintenance.Timezone, "open": open}
 	if !next.IsZero() {
 		out["next"] = next.Format(time.RFC3339)
+	}
+	if closes := c.Spec.Maintenance.Closes(now); !closes.IsZero() {
+		out["closes"] = closes.Format(time.RFC3339)
 	}
 	writeJSON(w, http.StatusOK, out)
 }

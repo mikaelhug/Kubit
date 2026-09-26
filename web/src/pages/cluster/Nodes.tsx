@@ -4,7 +4,7 @@ import { DataTable, type Column } from '../../components/DataTable'
 import { KVEditor } from '../../components/PoolsEditor'
 import { ReaddressDialog } from '../../components/ReaddressDialog'
 import { ConfirmDialog, Dialog, ErrorBox, Field, Pill, Section } from '../../components/ui'
-import { dataCandidates, diskLabel, formOf, installCandidates, modelOf } from '../../machine'
+import { dataCandidates, diskLabel, installCandidates, modelOf, typeOf } from '../../machine'
 import { staticNetwork } from '../../net'
 import { machineList, toast, watch } from '../../store'
 import type { ClusterCtx } from './ClusterPage'
@@ -155,7 +155,7 @@ function AddNodeDialog({ cluster, onClose, preselect }: { cluster: ClusterRow; o
       <Field label="Discovered machine (maintenance mode)" hint={candidates.length === 0 ? 'None unassigned; scan in Inventory first' : undefined}>
         <select class="input" value={ip} onChange={(e) => setIp((e.target as HTMLSelectElement).value)}>
           <option value="">Select</option>
-          {candidates.map((c) => <option key={c.mac} value={c.ip}>{modelOf(c)} ({formOf(c)}) · {c.ip} · {c.arch} · {c.inventory?.cpus ?? '?'} CPU · {fmt.bytes(c.inventory?.memoryBytes ?? 0)}{c.inventory?.kvm ? ' · kvm' : ''} · {c.mac}</option>)}
+          {candidates.map((c) => <option key={c.mac} value={c.ip}>{modelOf(c)} ({typeOf(c)}) · {c.ip} · {c.arch} · {c.inventory?.cpus ?? '?'} CPU · {fmt.bytes(c.inventory?.memoryBytes ?? 0)}{c.inventory?.kvm ? ' · kvm' : ''} · {c.mac}</option>)}
         </select>
       </Field>
       <div class="grid grid-cols-2 gap-3">

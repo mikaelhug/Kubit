@@ -312,3 +312,18 @@
     seen on first contact and refuse a change.
   - JSON handlers accept any Content-Type (hack scripts post with `curl -d`); requiring
     `application/json` would close form-post CSRF from other origins.
+- Review follow-ups (phase 2):
+  - `MoveNodeToPool` reimages through `UpgradeNode` with `force=false`, so a node already
+    on the cluster's Talos version never gets the new pool's image; its steps also
+    replace the pool move's declared step list instead of nesting under it
+    (`internal/cluster/nodeedit.go`).
+  - `handleLive` subscribes before `since()`, so a message published in between is
+    sent twice; the web client only suppresses replayed toasts, not the message, so a
+    live operation log can show a line twice. Drop `seq <= lastSeq` on either side.
+  - The cached REST mapper resets only on NoMatch; after a Kubernetes upgrade it can
+    serve stale resource versions until one lookup misses.
+  - Locks held across remote I/O: the pools edit calls `EnsureSchematic` (Image
+    Factory) under the spec lock; lab VM resize/delete hold `labhost:<mac>` across SSH.
+  - `handleLabRelease` returns on a partial error before writing the audit entry.
+  - WebSocket `OriginPatterns` is same-origin plus the dev server; a reverse proxy that
+    rewrites `Host` fails the check. Accept `X-Forwarded-Host` or a configured origin.

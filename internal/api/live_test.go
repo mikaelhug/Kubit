@@ -177,3 +177,63 @@ func TestClusterMessageCarriesTheSpec(t *testing.T) {
 		}
 	}
 }
+
+func TestOperationRefreshesTheViewsItChanges(t *testing.T) {
+	for _, c := range []struct {
+		kind string
+		want []string
+	}{
+		{"cluster.create", []string{"nodes", "addons", "network", "flux", "certificates", "sops"}},
+		{"platform.apply", []string{"addons", "network", "flux"}},
+		{"cert.rotate", []string{"certificates"}},
+		{"node.add", []string{"nodes"}},
+		{"upgrade.talos", []string{"nodes"}},
+		{"etcd.snapshot", []string{"nodes"}},
+		{"discover", nil},
+	} {
+		if got := scopesForKind(c.kind); !slices.Equal(got, c.want) {
+			t.Errorf("%s: %v, want %v", c.kind, got, c.want)
+		}
+	}
+}
+
+func TestStoreChangesReachTheirViews(t *testing.T) {
+	s, st, _ := localServer(t)
+	ch, cancel := s.hub.subscribe()
+	defer cancel()
+	ctx := t.Context()
+	st.OnChange(func(c store.Change) { s.onChange(ctx, c) })
+	if err := st.PutCluster(ctx, store.ClusterRow{Name: "c", Spec: []byte("x"), State: "ready"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.PutClusterSecrets(ctx, "c", store.ClusterSecrets{SecretsBundle: []byte("b"), Talosconfig: []byte("t")}); err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Contains(drainScopes(ch), "c/certificates") {
+		t.Error("new cluster secrets must refresh its certificates")
+	}
+	id, err := st.AddEvent(ctx, store.EventRow{Cluster: "c", Node: "n", Kind: "node.notready", Severity: "warn"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for len(ch) > 0 {
+		<-ch
+	}
+	if err := st.AckEvent(ctx, id); err != nil {
+		t.Fatal(err)
+	}
+	for {
+		select {
+		case m := <-ch:
+			if m.Kind != "healthAck" {
+				continue
+			}
+			if m.Cluster != "c" || m.Key != strconv.FormatInt(id, 10) {
+				t.Errorf("ack message: %+v", m)
+			}
+			return
+		default:
+			t.Fatal("no healthAck message")
+		}
+	}
+}

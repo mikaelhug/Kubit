@@ -28,7 +28,7 @@ func (s *Server) handleLabCheck(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if host.LabHost.Driver != "" {
-		http.Error(w, "Not available on this lab host.", http.StatusConflict)
+		writeErr(w, &statusError{http.StatusConflict, "Not available on this lab host."})
 		return
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 3*time.Minute)
@@ -66,18 +66,18 @@ func (s *Server) handleLabMaintain(upgrade bool) http.HandlerFunc {
 			return
 		}
 		if host.LabHost.Driver != "" {
-			http.Error(w, "Not available on this lab host.", http.StatusConflict)
+			writeErr(w, &statusError{http.StatusConflict, "Not available on this lab host."})
 			return
 		}
 		if host.LabHost.State != "ready" {
-			http.Error(w, "the host is "+host.LabHost.State, http.StatusConflict)
+			writeErr(w, &statusError{http.StatusConflict, "the host is " + host.LabHost.State})
 			return
 		}
 		affected := s.labClusters(r.Context(), host)
 		if r.URL.Query().Get("ignoreWindow") != "true" {
 			for _, name := range affected {
 				if msg, closed := s.windowClosed(r.Context(), name); closed {
-					writeJSON(w, http.StatusConflict, map[string]string{"error": name + ": " + msg})
+					writeErr(w, &statusError{http.StatusConflict, name + ": " + msg})
 					return
 				}
 			}

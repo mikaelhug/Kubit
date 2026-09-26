@@ -139,7 +139,7 @@ func informable(st *cluster.Status) bool {
 
 func kubeScopes(scope, namespace string) []string {
 	if scope == k8s.ScopeWorkloads {
-		if key, ok := cluster.PlatformNamespace(namespace); ok && key != "kubernetes" {
+		if cluster.AddonNamespace(namespace) {
 			return []string{scope, k8s.ScopeAddons}
 		}
 	}
@@ -387,9 +387,40 @@ func (w *Watcher) tick(ctx context.Context, name string) {
 	if !st.APIReachable {
 		w.signalKube(name)
 	}
+	if talosChanged(prev, st) {
+		w.refresh(name, k8s.ScopeNodes)
+	}
 	if w.OnStatus != nil {
 		w.OnStatus(name, st)
 	}
+}
+
+type talosFacts struct {
+	version, stage, reach string
+	reachable             bool
+}
+
+func talosFactsOf(n cluster.NodeStatus) talosFacts {
+	return talosFacts{version: n.TalosVersion, stage: n.Stage, reach: n.TalosReach, reachable: n.TalosReachable}
+}
+
+func talosChanged(prev, cur *cluster.Status) bool {
+	if prev == nil || cur == nil {
+		return false
+	}
+	if len(prev.Nodes) != len(cur.Nodes) {
+		return true
+	}
+	before := make(map[string]talosFacts, len(prev.Nodes))
+	for _, n := range prev.Nodes {
+		before[n.Hostname] = talosFactsOf(n)
+	}
+	for _, n := range cur.Nodes {
+		if f, ok := before[n.Hostname]; !ok || f != talosFactsOf(n) {
+			return true
+		}
+	}
+	return false
 }
 
 func anyReachable(st *cluster.Status) bool {

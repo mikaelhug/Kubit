@@ -31,7 +31,7 @@ func (s *Server) handleCertRotate(w http.ResponseWriter, r *http.Request) {
 		Which string `json:"which"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || (req.Which != "talosconfig" && req.Which != "kubeconfig") {
-		http.Error(w, `body must be {"which": "talosconfig" | "kubeconfig"}`, http.StatusBadRequest)
+		writeErr(w, &statusError{http.StatusBadRequest, `body must be {"which": "talosconfig" | "kubeconfig"}`})
 		return
 	}
 	s.startOp(w, name, "cert.rotate", req, func(ctx context.Context, sink cluster.Sink) (any, error) {

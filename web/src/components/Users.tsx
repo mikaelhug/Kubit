@@ -63,7 +63,7 @@ function UserDialog({ user, onClose }: { user?: User; onClose: () => void }) {
 }
 
 function TokensDialog({ user, onClose }: { user: User; onClose: () => void }) {
-  const { data: tokens, error: loadError, reload } = useLive(() => api.tokens(user.name), [user.name])
+  const { data: tokens, error: loadError, reload } = useLive(() => api.tokens(user.name), [user.name], [['', 'users']])
   const [name, setName] = useState('')
   const [days, setDays] = useState(90)
   const [issued, setIssued] = useState<string | null>(null)

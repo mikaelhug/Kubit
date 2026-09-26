@@ -12,21 +12,24 @@ import (
 
 var lockWait = 5 * time.Second
 
-func (s *Server) holdLock(w http.ResponseWriter, r *http.Request, key, busy string) (unlock func(), ok bool) {
+func (s *Server) holdLock(w http.ResponseWriter, r *http.Request, busy string, keys ...string) (unlock func(), ok bool) {
 	ctx, cancel := context.WithTimeout(r.Context(), lockWait)
 	defer cancel()
-	if err := s.locks.lockContext(ctx, key); err != nil {
-		writeJSON(w, http.StatusConflict, map[string]string{"error": busy})
+	unlock, err := s.locks.lockAllContext(ctx, keys)
+	if err != nil {
+		writeErr(w, &statusError{http.StatusConflict, busy})
 		return nil, false
 	}
-	return func() { s.locks.unlock(key) }, true
+	return unlock, true
 }
+
+func specLock(name string) string { return "spec:" + name }
 
 const clusterBusy = "An operation is running on this cluster; try again when it finishes."
 
 func (s *Server) editCluster(w http.ResponseWriter, r *http.Request, action, detail string, mutate func(*config.Cluster) error) (*config.Cluster, bool) {
 	name := r.PathValue("name")
-	unlock, ok := s.holdLock(w, r, name, clusterBusy)
+	unlock, ok := s.holdLock(w, r, clusterBusy, specLock(name))
 	if !ok {
 		return nil, false
 	}
@@ -53,6 +56,8 @@ func (s *Server) editCluster(w http.ResponseWriter, r *http.Request, action, det
 }
 
 func pathMAC(r *http.Request) string { return strings.ToLower(r.PathValue("mac")) }
+
+func queryMAC(r *http.Request) string { return strings.ToLower(r.URL.Query().Get("mac")) }
 
 func adoptDeclaration(stored, updated *config.Cluster) error {
 	if updated.Metadata.Name != stored.Metadata.Name {

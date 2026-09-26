@@ -95,7 +95,7 @@ function ForgetSection({ ctx }: { ctx: ClusterCtx }) {
     <Section title="Forget cluster">
       <Notice tone="bad">
         <div class="flex items-center gap-3">
-          <span>Removes Kubit's records and secrets; the nodes keep running unmanaged. Export first.</span>
+          <span>Removes Kubit's records and secrets; export first, the nodes keep running unmanaged.</span>
           <button class="btn btn-danger ml-auto shrink-0" onClick={() => setForget(true)}>Forget cluster</button>
         </div>
       </Notice>

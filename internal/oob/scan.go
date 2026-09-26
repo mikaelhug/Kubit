@@ -2,7 +2,6 @@ package oob
 
 import (
 	"context"
-	"net"
 	"net/netip"
 	"os/exec"
 	"regexp"
@@ -10,6 +9,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/mikael/kubit/internal/talos"
 )
 
 const AMTPort = "16992"
@@ -38,12 +39,9 @@ func Scan(ctx context.Context, addrs []netip.Addr, amtCreds, bmcCreds Config, ti
 		go func(ip string) {
 			defer wg.Done()
 			defer func() { <-sem }()
-			d := net.Dialer{Timeout: timeout}
-			conn, err := d.DialContext(ctx, "tcp", net.JoinHostPort(ip, AMTPort))
 			var r ScanResult
 			var creds Config
-			if err == nil {
-				conn.Close()
+			if talos.TCPErr(ctx, ip, AMTPort, timeout) == nil {
 				r = ScanResult{IP: ip, Type: "amt", MAC: macFromARP(ctx, ip)}
 				creds = amtCreds
 			} else if ProbeRedfish(ctx, ip, timeout) {

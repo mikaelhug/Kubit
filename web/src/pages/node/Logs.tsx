@@ -1,11 +1,11 @@
 import { useState } from 'preact/hooks'
-import { logsUrl } from '../../api'
+import { logsUrl, type NodeRow } from '../../api'
 import { LogStream } from '../../components/LogStream'
 import { Section } from '../../components/ui'
 import { useServices } from './Services'
 
-export function LogsTab({ ip, cluster }: { ip: string; cluster?: string }) {
-  const { data: services } = useServices(ip, cluster)
+export function LogsTab({ ip, node }: { ip: string; node: NodeRow | null }) {
+  const { data: services } = useServices(ip, node)
   const [service, setService] = useState('')
   const [follow, setFollow] = useState(false)
   return (

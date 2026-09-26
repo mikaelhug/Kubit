@@ -1,27 +1,14 @@
 #!/usr/bin/env bash
-# Dev harness: Talos arm64 VMs on Apple Virtualization.framework via vfkit.
-# Usage:
-#   vm.sh iso                      download Talos ISO for $SCHEMATIC/$TALOS_VERSION
-#   vm.sh create <n> [cpus] [mem] [--no-iso]  create VM n (1..99); boots the ISO unless --no-iso (then EFI tries PXE)
-#   vm.sh start <n> [--no-iso]     (re)start VM; --no-iso boots from disk after Talos install
-#   vm.sh stop <n> | stop all
-#   vm.sh ip <n>                   IP leased to VM n (from vmnet's dhcpd leases)
-#   vm.sh list
-#   vm.sh destroy <n> | destroy all
 set -euo pipefail
 
 HERE=$(cd "$(dirname "$0")" && pwd)
 STATE=${STATE:-$HERE/state}
 TALOS_VERSION=${TALOS_VERSION:-v1.14.0}
-SCHEMATIC=${SCHEMATIC:-376567988ad370138ad8b2698212367b8edcb69b5fd68c80be1f2ec7d603b4ba} # vanilla, no extensions
+SCHEMATIC=${SCHEMATIC:-376567988ad370138ad8b2698212367b8edcb69b5fd68c80be1f2ec7d603b4ba}
 ARCH=arm64
 ISO=$STATE/talos-$TALOS_VERSION-$ARCH.iso
 DISK_GB=${DISK_GB:-20}
-MAC_PREFIX=52:54:00:4b:49  # "KI"
-# vfkit's built-in NAT isolates VMs from each other (peers get "no route to host"),
-# which breaks etcd joins and any L2 VIP. vmnet-helper (brew tap nirs/vmnet-helper;
-# no root needed on macOS 26) drives vmnet directly with isolation off, so VMs sharing
-# the subnet below reach each other and the host. NET=nat forces plain NAT.
+MAC_PREFIX=52:54:00:4b:49
 VMNET_RUN=${VMNET_RUN:-/opt/homebrew/opt/vmnet-helper/libexec/vmnet-run}
 VMNET_START=${VMNET_START:-192.168.105.1}
 VMNET_END=${VMNET_END:-192.168.105.100}
@@ -104,7 +91,7 @@ cmd_stop() {
 
 cmd_ip() {
   local mac
-  mac=$(mac_of "$1" | sed 's/:0\([0-9a-f]\)/:\1/g')  # dhcpd_leases strips leading zeros
+  mac=$(mac_of "$1" | sed 's/:0\([0-9a-f]\)/:\1/g')
   awk -v mac="$mac" '
     /^\{/ {ip=""; hw=""}
     /ip_address=/ {sub(/.*ip_address=/, ""); ip=$0}
@@ -139,5 +126,5 @@ case ${1:-} in
   ip)      cmd_ip "${2:?n}" ;;
   list)    cmd_list ;;
   destroy) cmd_destroy "${2:?n|all}" ;;
-  *)       sed -n '2,12p' "$0"; exit 1 ;;
+  *)       echo "usage: vm.sh iso | create <n> [cpus] [mem] [--no-iso] | start <n> [--no-iso] | stop <n>|all | ip <n> | list | destroy <n>|all" >&2; exit 1 ;;
 esac

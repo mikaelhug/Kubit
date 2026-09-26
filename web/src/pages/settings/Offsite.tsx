@@ -6,7 +6,7 @@ import { MovedNotice, SaveBar, useSettingsSlice } from './Layout'
 
 export function Offsite() {
   const f = useSettingsSlice('offsite', (s) => s.offsite, (s, v) => ({ ...s, offsite: v }))
-  const { data: off } = useLive(() => api.offsiteStatus(), [], [['', 'offsite']], { onError: 'silent', refresh: [f.pushed] })
+  const { data: off } = useLive(() => api.offsiteStatus(), [], [['', 'offsite']], { onError: 'silent' })
   if (!f.draft) return <div class="text-muted">{f.error ?? 'Loading'}</div>
   const o = f.draft
   const set = (patch: Partial<OffsiteTarget>) => f.setDraft({ ...o, ...patch })

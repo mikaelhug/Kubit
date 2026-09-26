@@ -37,3 +37,22 @@ func TestMaintenanceWindow(t *testing.T) {
 		t.Error("daily window closed")
 	}
 }
+
+func TestMaintenanceWindowCloses(t *testing.T) {
+	m := Maintenance{Window: "Sat,Sun 22:00-04:00", Timezone: "UTC"}
+	for _, tc := range []struct {
+		t    time.Time
+		want time.Time
+	}{
+		{time.Date(2026, 9, 19, 23, 0, 0, 0, time.UTC), time.Date(2026, 9, 20, 4, 0, 0, 0, time.UTC)},
+		{time.Date(2026, 9, 20, 23, 30, 15, 0, time.UTC), time.Date(2026, 9, 21, 4, 0, 0, 0, time.UTC)},
+		{time.Date(2026, 9, 16, 12, 0, 0, 0, time.UTC), time.Time{}},
+	} {
+		if got := m.Closes(tc.t); !got.Equal(tc.want) {
+			t.Errorf("Closes(%s) = %s, want %s", tc.t, got, tc.want)
+		}
+	}
+	if got := (Maintenance{}).Closes(time.Now()); !got.IsZero() {
+		t.Errorf("no window never closes, got %s", got)
+	}
+}

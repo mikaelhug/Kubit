@@ -41,8 +41,7 @@ func packages(arch string) string {
 	return "qemu-system-x86 ovmf " + common
 }
 
-var preseedTmpl = template.Must(template.New("preseed").Parse(`# Kubit lab host — generated, unattended
-d-i debian-installer/locale string en_US.UTF-8
+var preseedTmpl = template.Must(template.New("preseed").Parse(`d-i debian-installer/locale string en_US.UTF-8
 d-i keyboard-configuration/xkb-keymap select us
 d-i netcfg/choose_interface select auto
 d-i netcfg/get_hostname string {{.Hostname}}
@@ -60,13 +59,11 @@ d-i user-setup/allow-password-weak boolean true
 d-i clock-setup/utc boolean true
 d-i time/zone string {{.Timezone}}
 d-i clock-setup/ntp boolean true
-# The installer reports where it is so Kubit can tell a stuck install from a slow one.
 d-i preseed/early_command string wget -q -O /dev/null "{{.ProgressURL}}?stage=installer" || true
 {{if .Disk}}d-i partman-auto/disk string {{.Disk}}
 d-i partman/early_command string \
   wget -q -O /dev/null "{{.ProgressURL}}?stage=partitioning" || true
-{{else}}# pick the largest non-removable disk
-d-i partman/early_command string \
+{{else}}d-i partman/early_command string \
   DISK=$(list-devices disk | while read d; do echo "$(blockdev --getsize64 $d) $d"; done | sort -n | tail -1 | cut -d' ' -f2); \
   debconf-set partman-auto/disk "$DISK"; \
   wget -q -O /dev/null "{{.ProgressURL}}?stage=partitioning" || true
@@ -89,8 +86,6 @@ popularity-contest popularity-contest/participate boolean false
 d-i grub-installer/only_debian boolean true
 d-i grub-installer/with_other_os boolean false
 d-i grub-installer/bootdev string default
-# Also install to the removable EFI path so firmware that loses its NVRAM entries
-# (and any VM firmware) still finds the new system.
 d-i grub-installer/force-efi-extra-removable boolean true
 d-i finish-install/reboot_in_progress note
 d-i preseed/late_command string \

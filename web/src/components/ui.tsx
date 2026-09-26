@@ -1,9 +1,9 @@
 import { Fragment, type ComponentChildren } from 'preact'
 import { memo } from 'preact/compat'
-import { useState } from 'preact/hooks'
+import { useEffect, useState } from 'preact/hooks'
 import { api, fmt, type Event, type Level } from '../api'
 import { now } from '../clock'
-import { toast } from '../store'
+import { clusters, toast } from '../store'
 import { severityTone, stateTone, toneBg, toneBorder, tonePill, toneText, type Tone } from '../tone'
 import { useLive } from '../useLive'
 
@@ -102,7 +102,11 @@ export function ConfirmDialog({ title, impact, action, tone = 'primary', onConfi
 }
 
 export function MaintenanceNotice({ cluster }: { cluster: string }) {
-  const { data: state } = useLive(() => api.maintenance(cluster), [cluster], [], { onError: 'silent' })
+  const updatedAt = clusters.value.find((c) => c.name === cluster)?.updatedAt
+  const { data: state, reload } = useLive(() => api.maintenance(cluster), [cluster], [], { onError: 'silent', refresh: [updatedAt] })
+  const edge = state?.open ? state.closes : state?.next
+  const due = !!edge && now.value >= Date.parse(edge)
+  useEffect(() => { if (due) reload() }, [due])
   if (!state || !state.window || state.open) return null
   return <Notice tone="warn">Outside the maintenance window <span class="mono">{state.window}{state.timezone ? ` ${state.timezone}` : ''}</span>{state.next ? `; next opens ${fmt.datetime(state.next)}` : ''}. Confirming runs it anyway.</Notice>
 }
@@ -112,7 +116,7 @@ export function AlertPill({ e }: { e?: { severity: string; message: string; kind
   return <Pill tone={severityTone(e.severity)} title={e.message}>{e.kind.split('.')[1]}</Pill>
 }
 
-export function copy(text: string) {
+function copy(text: string) {
   return navigator.clipboard ? navigator.clipboard.writeText(text) : Promise.reject(new Error('Clipboard unavailable'))
 }
 

@@ -1,14 +1,4 @@
 #!/usr/bin/env bash
-# End-to-end run against a live daemon and real machines in maintenance mode:
-#   discover → design → create (3 CPs) → add worker → rename → snapshot → verify
-#   → [restore] → remove worker → [teardown]
-# Every step goes through the API so it shows up in Activity like a user's click.
-#
-#   hack/e2e.sh 192.168.105.0/24 [--name e2e] [--url http://127.0.0.1:8080]
-#               [--with-restore] [--teardown] [--vm-ids "5 6 7 8"]
-#
-# --teardown removes the worker and forgets the cluster; with --vm-ids it also destroys
-# and recreates those hack/vm VMs so the run is repeatable. Needs curl, jq, kubectl.
 set -euo pipefail
 
 subnet=${1:?subnet to scan}; shift
@@ -29,12 +19,12 @@ work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
 
 log() { printf '\033[1m[%s] %s\033[0m\n' "$(date +%H:%M:%S)" "$*"; }
-api() { # method path [json]
+api() {
   local m=$1 p=$2 body=${3:-}
   if [ -n "$body" ]; then curl -sS ${auth[@]+"${auth[@]}"} -X "$m" -H 'Content-Type: application/json' -d "$body" "$url/api/v1$p"
   else curl -sS ${auth[@]+"${auth[@]}"} -X "$m" "$url/api/v1$p"; fi
 }
-wait_op() { # id [timeout-seconds]
+wait_op() {
   local id=$1 t=${2:-1800} st
   for ((i=0; i<t; i+=5)); do
     st=$(api GET "/operations/$id" | jq -r .status)

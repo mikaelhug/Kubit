@@ -27,7 +27,7 @@ type discoverRequest struct {
 func (s *Server) handleDiscover(w http.ResponseWriter, r *http.Request) {
 	var req discoverRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || len(req.Targets) == 0 {
-		http.Error(w, `body must be {"targets": ["cidr or ip", ...]}`, http.StatusBadRequest)
+		writeErr(w, &statusError{http.StatusBadRequest, `body must be {"targets": ["cidr or ip", ...]}`})
 		return
 	}
 	id, err := s.startDiscover(req.Targets)

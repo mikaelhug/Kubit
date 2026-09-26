@@ -1,16 +1,4 @@
 #!/usr/bin/env bash
-# Linux lab: Talos amd64 VMs on QEMU/KVM behind one bridge, for CI and any Linux box.
-# The bridge carries DHCP (dnsmasq) and NAT to the outside so Talos can pull images;
-# VMs see each other and the host, which is what etcd, the VIP and PXE need.
-#   lab.sh net up|down             bridge $BRIDGE $SUBNET.1/24, dnsmasq, masquerade
-#   lab.sh iso                     download the Talos ISO for $SCHEMATIC/$TALOS_VERSION
-#   lab.sh create <n> [cpus] [mem_mib] [disk_gb]
-#   lab.sh start <n> [--no-iso]    --no-iso boots the disk (after Talos is installed)
-#   lab.sh stop <n>|all
-#   lab.sh destroy <n>|all
-#   lab.sh ip <n>                  address dnsmasq leased to VM n
-#   lab.sh wait <n> [seconds]      until the Talos API answers on VM n
-#   lab.sh list
 set -euo pipefail
 
 HERE=$(cd "$(dirname "$0")" && pwd)
@@ -149,5 +137,5 @@ case $cmd in
   ip) cmd_ip "$@";;
   wait) cmd_wait "$@";;
   list) cmd_list;;
-  *) sed -n '2,14p' "$0"; exit 2;;
+  *) echo "usage: lab.sh net up|down | iso | create <n> [cpus] [mem_mib] [disk_gb] | start <n> [--no-iso] | stop <n>|all | destroy <n>|all | ip <n> | wait <n> [seconds] | list" >&2; exit 2;;
 esac

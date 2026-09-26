@@ -2,7 +2,7 @@ import { authedUrl, req, reqRaw } from './api/http'
 import type { AddonStatus, ApiToken, AuditEntry, Build, CertInfo, ClusterForm, ClusterRow, ClusterSpec, FluxObject, FluxRepository, HealthEvent, ImageStatus, Inventory, LabLocal, LabUpdates, MaintenanceState, Me, Namespace, NetworkView, NodeDetail, NodeNetwork, NodeRow, NodeSpec, OOBConfig, OOBInfo, ObserverState, OffsiteStatus, OffsiteTarget, OpRef, Operation, PodEvent, PodSummary, Pool, PxeStatus, Role, SOPSKey, Sample, Service, ServiceHealth, Settings, Snapshot, Status, StorageView, User, VMPlan, Versions, Warning, Workload } from './api/types'
 
 export type * from './api/types'
-export { ApiError, getToken, setUnauthorizedHandler } from './api/http'
+export { getToken, setUnauthorizedHandler } from './api/http'
 export { fmt, splitList } from './api/format'
 
 export const api = {

@@ -62,7 +62,7 @@ export interface ClusterOIDC { issuer: string; clientID: string; usernameClaim?:
 export interface ClusterForm { oidc?: ClusterOIDC | null; talosVersion: string; kubernetesVersion: string; endpoint: string; vip: string; allowScheduling: boolean | null; podCIDR: string; serviceCIDR: string; extensions: string[]; nameservers: string[]; ntp: string[]; etcdSnapshotInterval: string; etcdSnapshotKeep: number; maintenanceWindow: string; maintenanceTimezone: string }
 export interface CertInfo { name: string; subject: string; issuer?: string; notBefore: string; notAfter: string; daysLeft: number; rotatable: boolean; error?: string }
 export interface AuditEntry { id: number; at: string; cluster: string; action: string; detail: string; actor?: string }
-export interface MaintenanceState { window: string; timezone: string; open: boolean; next?: string }
+export interface MaintenanceState { window: string; timezone: string; open: boolean; next?: string; closes?: string }
 export interface ClusterRow { name: string; state: string; schematicId: string; createdAt: string; updatedAt: string; spec: ClusterSpec }
 
 export interface Inventory {
@@ -76,8 +76,8 @@ export interface Resources { cpuMilli: number; memBytes: number; pods: number }
 export interface PodSummary { namespace: string; name: string; node?: string; containers?: string[]; phase: string; ready: string; restarts: number; owner?: string; cpuMilli: number; memBytes: number; age: string; usageCpuMilli?: number; usageMemBytes?: number }
 export interface NodeDetail {
   name: string; ready: boolean; unschedulable: boolean; kubeletVersion: string; containerRuntime: string; kernel: string; osImage: string; internalIP: string
-  conditions: { type: string; status: string; reason?: string; message?: string; since?: string }[]
-  taints: string[] | null; labels: Record<string, string>; capacity: Resources; allocatable: Resources; requests: Resources; pods: PodSummary[] | null
+  conditions: { type: string; status: string; reason?: string; message?: string; since?: string }[] | null
+  taints: string[] | null; labels: Record<string, string> | null; capacity: Resources; allocatable: Resources; requests: Resources; pods: PodSummary[] | null
 }
 export interface OOBConfig { type: '' | 'amt' | 'redfish'; host: string; user: string; password: string; tls: boolean }
 export interface OOBInfo { version: string; mac: string; uuid?: string; manufacturer?: string; model?: string; serial?: string; power: string; cpus?: number; memoryBytes?: number; disks?: { model?: string; sizeBytes: number; transport?: string; media?: string }[] }
