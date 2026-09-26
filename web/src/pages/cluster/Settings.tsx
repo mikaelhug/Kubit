@@ -18,7 +18,7 @@ export function Settings({ ctx }: { ctx: ClusterCtx }) {
   const [dirty, setDirty] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [form, setForm] = useState(() => editableForm(spec))
-  const { data: saved, error: loadError } = useLive(() => api.clusterYaml(name), [name, cluster.updatedAt])
+  const { data: saved, error: loadError } = useLive(() => api.clusterYaml(name), [name], [], { refresh: [cluster.updatedAt] })
   useEffect(() => { if (saved !== null) { setYaml(saved); setDirty(false) } }, [saved])
   useEffect(() => { setForm(editableForm(spec)) }, [name, cluster.updatedAt])
   const formDirty = JSON.stringify(form) !== JSON.stringify(editableForm(spec))
@@ -104,7 +104,7 @@ function PoolsSection({ ctx }: { ctx: ClusterCtx }) {
   const [pools, setPools] = useState<Pool[]>(spec.pools ?? [])
   const [error, setError] = useState<string | null>(null)
   useEffect(() => { setPools(spec.pools ?? []) }, [cluster.updatedAt])
-  const { data: warnings } = useLive(() => api.lint(JSON.stringify(cluster.spec)).then((r) => r.warnings), [cluster.updatedAt], [], { onError: 'silent' })
+  const { data: warnings } = useLive(() => api.lint(JSON.stringify(cluster.spec)).then((r) => r.warnings), [name], [], { onError: 'silent', refresh: [cluster.updatedAt] })
   const dirty = JSON.stringify(pools) !== JSON.stringify(spec.pools ?? [])
   const save = () => api.savePools(name, pools).then(() => { setError(null); toast('Pools saved; apply node configs to push labels and taints', 'good') }).catch((e) => setError(e.message))
   return (

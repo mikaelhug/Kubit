@@ -44,16 +44,20 @@ type clusterSummary struct {
 	Spec *config.Cluster `json:"spec"`
 }
 
+func summarize(row store.ClusterRow) *clusterSummary {
+	c, _ := config.Parse(row.Spec)
+	return &clusterSummary{ClusterRow: row, Spec: c}
+}
+
 func (s *Server) handleClusters(w http.ResponseWriter, r *http.Request) {
 	rows, err := s.store.ListClusters(r.Context())
 	if err != nil {
 		writeErr(w, err)
 		return
 	}
-	out := []clusterSummary{}
+	out := []*clusterSummary{}
 	for _, row := range rows {
-		c, _ := config.Parse(row.Spec)
-		out = append(out, clusterSummary{ClusterRow: row, Spec: c})
+		out = append(out, summarize(row))
 	}
 	writeJSON(w, http.StatusOK, out)
 }
@@ -64,8 +68,7 @@ func (s *Server) handleCluster(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, err)
 		return
 	}
-	c, _ := config.Parse(row.Spec)
-	writeJSON(w, http.StatusOK, clusterSummary{ClusterRow: *row, Spec: c})
+	writeJSON(w, http.StatusOK, summarize(*row))
 }
 
 func (s *Server) handleClusterStatus(w http.ResponseWriter, r *http.Request) {

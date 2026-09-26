@@ -135,13 +135,11 @@ func (w *Watcher) startLoop(ctx context.Context, name string) {
 	go func() {
 		defer close(l.done)
 		if prev != nil {
-			select {
-			case <-prev:
-			case <-cctx.Done():
-				return
-			}
+			<-prev
 		}
-		w.loop(cctx, name)
+		if cctx.Err() == nil {
+			w.loop(cctx, name)
+		}
 		w.forget(name, l.done)
 	}()
 }

@@ -27,7 +27,7 @@ machine needs that key: run 'kubit key export' here and set KUBIT_MASTER_KEY the
 			if err := m.Store.Checkpoint(cmd.Context()); err != nil {
 				return err
 			}
-			if err := fsx.WriteStream(out, 0o600, func(w io.Writer) error { return store.Backup(m.Home, crypto, w) }); err != nil {
+			if err := writeBackup(out, func(w io.Writer) error { return store.Backup(m.Home, crypto, w) }); err != nil {
 				return err
 			}
 			_ = m.Store.Audit(cmd.Context(), "", "backup", out)
@@ -37,6 +37,21 @@ machine needs that key: run 'kubit key export' here and set KUBIT_MASTER_KEY the
 	}
 	cmd.Flags().StringVarP(&out, "out", "o", "kubit-backup.kubitbak", "output file")
 	return cmd
+}
+
+func writeBackup(path string, write func(io.Writer) error) error {
+	if fi, err := os.Stat(path); err != nil || fi.Mode().IsRegular() {
+		return fsx.WriteStream(path, 0o600, write)
+	}
+	f, err := os.OpenFile(path, os.O_WRONLY, 0)
+	if err != nil {
+		return err
+	}
+	if err := write(f); err != nil {
+		f.Close()
+		return err
+	}
+	return f.Close()
 }
 
 func restoreCmd() *cobra.Command {

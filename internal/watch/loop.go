@@ -5,6 +5,8 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"reflect"
+	"slices"
 	"time"
 
 	"github.com/mikael/kubit/internal/cluster"
@@ -54,8 +56,7 @@ func (w *Watcher) watchKubernetes(ctx context.Context, name string) {
 	defer w.dropKubeSignal(name, changed)
 	backoff := 5 * time.Second
 	for ctx.Err() == nil {
-		st := w.Latest(name)
-		if st == nil || !st.APIReachable || !cluster.Observable(st.State) {
+		if !informable(w.Latest(name)) {
 			select {
 			case <-ctx.Done():
 				return
@@ -114,6 +115,12 @@ func (w *Watcher) runInformers(ctx context.Context, name string, kc *k8s.Client,
 		case <-done:
 			return false
 		case <-changed:
+			if !informable(w.Latest(name)) {
+				log.Printf("watch %s: Kubernetes API unreachable; dropping informer cache", name)
+				cancel()
+				<-done
+				return false
+			}
 			sec, err := w.Store.GetClusterSecrets(ctx, name)
 			if err != nil || bytes.Equal(sec.Kubeconfig, kubeconfig) {
 				continue
@@ -124,6 +131,10 @@ func (w *Watcher) runInformers(ctx context.Context, name string, kc *k8s.Client,
 			return true
 		}
 	}
+}
+
+func informable(st *cluster.Status) bool {
+	return st != nil && st.APIReachable && cluster.Observable(st.State)
 }
 
 func kubeScopes(scope, namespace string) []string {
@@ -165,11 +176,23 @@ func (w *Watcher) onStoreChange(c store.Change) {
 	defer w.sigMu.Unlock()
 	for name, ch := range w.kubeSignals {
 		if c.Table == "*" || c.Cluster == name {
-			select {
-			case ch <- struct{}{}:
-			default:
-			}
+			nudge(ch)
 		}
+	}
+}
+
+func (w *Watcher) signalKube(name string) {
+	w.sigMu.Lock()
+	defer w.sigMu.Unlock()
+	if ch := w.kubeSignals[name]; ch != nil {
+		nudge(ch)
+	}
+}
+
+func nudge(ch chan struct{}) {
+	select {
+	case ch <- struct{}{}:
+	default:
 	}
 }
 
@@ -204,9 +227,12 @@ func (w *Watcher) serviceTick(ctx context.Context, name string) {
 		return
 	}
 	w.mu.Lock()
+	changed := !sameServices(w.lastServices[name], sh)
 	w.lastServices[name] = sh
 	w.mu.Unlock()
-	w.refresh(name, k8s.ScopeServices)
+	if changed {
+		w.refresh(name, k8s.ScopeServices)
+	}
 	if last := w.Store.LastFinished(ctx, name, disruptive); time.Since(last) < quietAfterOperation {
 		return
 	}
@@ -230,6 +256,32 @@ func (w *Watcher) serviceTick(ctx context.Context, name string) {
 		ignore = set.Alerts.IgnoreNamespaces
 	}
 	w.emit(ctx, name, tr.Derive(name, sh, time.Now(), ignore))
+}
+
+func sameServices(a, b *cluster.ServiceHealth) bool {
+	if a == nil || b == nil {
+		return a == b
+	}
+	return reflect.DeepEqual(ageless(a), ageless(b))
+}
+
+func ageless(sh *cluster.ServiceHealth) cluster.ServiceHealth {
+	out := *sh
+	out.CollectedAt = time.Time{}
+	out.Workloads = zeroed(sh.Workloads, func(w *cluster.WorkloadHealth) { w.AgeSec = 0 })
+	out.Pods = zeroed(sh.Pods, func(p *cluster.PodHealth) { p.AgeSec = 0 })
+	out.Claims = zeroed(sh.Claims, func(c *cluster.ClaimHealth) { c.AgeSec = 0 })
+	out.Services = zeroed(sh.Services, func(s *cluster.ServiceRow) { s.AgeSec = 0 })
+	out.Ingresses = zeroed(sh.Ingresses, func(i *cluster.IngressHealth) { i.AgeSec = 0 })
+	return out
+}
+
+func zeroed[T any](in []T, zero func(*T)) []T {
+	out := slices.Clone(in)
+	for i := range out {
+		zero(&out[i])
+	}
+	return out
 }
 
 func (w *Watcher) emit(ctx context.Context, name string, events []store.EventRow) {
@@ -332,6 +384,9 @@ func (w *Watcher) tick(ctx context.Context, name string) {
 	}
 	w.lastTick[name] = time.Now()
 	w.mu.Unlock()
+	if !st.APIReachable {
+		w.signalKube(name)
+	}
 	if w.OnStatus != nil {
 		w.OnStatus(name, st)
 	}

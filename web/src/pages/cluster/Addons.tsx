@@ -29,7 +29,7 @@ const stateText: Record<AddonStatus['state'], string> = { disabled: 'disabled', 
 export function Addons({ ctx }: { ctx: ClusterCtx }) {
   const { route } = useLocation()
   const { name, status, cluster } = ctx
-  const { data: addons, error, set: setAddons } = useLive(() => api.addons(name), [name, cluster.updatedAt], [[name, 'addons']])
+  const { data: addons, error, set: setAddons } = useLive(() => api.addons(name), [name], [[name, 'addons']], { refresh: [cluster.updatedAt] })
   const [edit, setEdit] = useState<AddonStatus | null>(null)
   const ops = opsFor(name)
   const lastPlan = ops.filter((o) => o.kind === 'platform.plan' && o.status === 'done').sort((a, b) => b.id - a.id)[0]

@@ -35,7 +35,7 @@ type Message struct {
 	Status      *cluster.Status      `json:"status,omitempty"`
 	Health      *store.EventRow      `json:"health,omitempty"`
 	Scope       string               `json:"scope,omitempty"`
-	ClusterRow  *store.ClusterRow    `json:"clusterRow,omitempty"`
+	ClusterRow  *clusterSummary      `json:"clusterRow,omitempty"`
 	Machine     *nodeView            `json:"machine,omitempty"`
 	Snapshot    *store.Snapshot      `json:"snapshot,omitempty"`
 	Audit       *store.AuditEntry    `json:"audit,omitempty"`
@@ -151,7 +151,7 @@ func (s *Server) onChange(ctx context.Context, c store.Change) {
 			return
 		}
 		if row, err := s.store.GetCluster(ctx, c.Key); err == nil {
-			s.hub.publish(Message{Kind: "cluster", Cluster: row.Name, ClusterRow: row})
+			s.hub.publish(Message{Kind: "cluster", Cluster: row.Name, ClusterRow: summarize(*row)})
 		}
 	case "machines":
 		if c.Op == "delete" {

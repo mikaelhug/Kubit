@@ -25,7 +25,13 @@ var transport = &http.Transport{
 
 var Client = &http.Client{Transport: transport, Timeout: time.Minute}
 
-var Download = &http.Client{Transport: transport}
+var Download = &http.Client{Transport: downloads()}
+
+func downloads() *http.Transport {
+	t := transport.Clone()
+	t.ResponseHeaderTimeout = 0
+	return t
+}
 
 func Get(ctx context.Context, url string, within time.Duration) (*http.Response, error) {
 	ctx, cancel := context.WithTimeout(ctx, within)

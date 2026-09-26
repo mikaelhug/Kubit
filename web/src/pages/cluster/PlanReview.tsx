@@ -9,7 +9,7 @@ import type { ClusterCtx } from './ClusterPage'
 export function PlanReview({ ctx, planId }: { ctx: ClusterCtx; planId: number }) {
   const { name, cluster } = ctx
   const liveStatus = operations.value.get(planId)?.status
-  const { data: op, error } = useLive(() => api.operation(planId), [planId, liveStatus === 'running'])
+  const { data: op, error } = useLive(() => api.operation(planId), [planId], [], { refresh: [liveStatus === 'running'] })
   const ops = opsFor(name)
   const diff = op?.artifact as PlanDiff | undefined
   const newer = ops.filter((o) => o.kind === 'platform.plan' && o.status === 'done' && o.id > planId).sort((a, b) => b.id - a.id)[0]

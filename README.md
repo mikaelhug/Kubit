@@ -738,7 +738,8 @@ heartbeat that stops arriving means the daemon is down — the dead-man's switch
   and the hourly `versions` check (the console then refetches `/versions` once into the
   store). The console keeps normalized live state (`web/src/store.ts`) that every view
   derives from, and refetches only large derived views when their scope fires: views
-  fetch through `useLive` (`web/src/useLive.ts`), which names the scopes it follows, and
+  fetch through `useLive` (`web/src/useLive.ts`), which names the scopes it follows,
+  clears its data when its identity deps change and reloads in place on `refresh` values, and
   each scope is its own signal, so a `refresh` re-renders only its subscribers. Messages carry
   sequence numbers: a reconnect replays from `?since=` out of a 2000-message ring, or
   gets `resync` and reloads base state once. Writes by another process (the CLI while
@@ -750,7 +751,9 @@ heartbeat that stops arriving means the daemon is down — the dead-man's switch
   the kubeconfig changes, dropped on forget) and serves workloads, pods, network,
   storage, namespaces, builds, add-on readiness, service health and pod counts from the
   watcher's synced informer caches (`k8s.Cache`), falling back to live lists until they
-  sync. Add-on releases come from `tofu show -json` cached by the state file's mtime and
+  sync; the watcher stops the informers and drops the cache as soon as its probe finds
+  the API unreachable (sleep, stopped VMs), and starts them again once it is back. The
+  service-health collection fires `services` only when its content changed. Add-on releases come from `tofu show -json` cached by the state file's mtime and
   size; schematic IDs, the Factory version list (1 h) and settings are cached in memory.
   Operation logs are append-only rows (`operation_log`).
 - **Copy is short**: a section help is one sentence, a hint a fragment, and background

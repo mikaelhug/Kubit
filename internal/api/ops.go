@@ -335,12 +335,10 @@ func (s *Server) handleOperationRetry(w http.ResponseWriter, r *http.Request) {
 	case "cluster.create":
 		var req createRequest
 		_ = json.Unmarshal(op.Request, &req)
-		c, err := config.Parse([]byte(req.YAML))
-		if err != nil {
-			writeErr(w, err)
-			return
+		var c *config.Cluster
+		if c, err = config.Parse([]byte(req.YAML)); err == nil {
+			newID, err = s.startCreate(c, req.SkipPlatform, req)
 		}
-		newID, err = s.startCreate(c, req.SkipPlatform, req)
 	case "node.add":
 		var n config.Node
 		_ = json.Unmarshal(op.Request, &n)

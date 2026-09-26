@@ -2,17 +2,20 @@ package watch
 
 import (
 	"fmt"
+	"maps"
 
 	"github.com/mikael/kubit/internal/cluster"
 	"github.com/mikael/kubit/internal/store"
 )
 
-var resolves = map[string]string{
-	"talos.back": "talos.unreachable", "node.ready": "node.notready", "node.memory-ok": "node.memory-small", "api.back": "api.unreachable", "etcd.healthy": "etcd.unhealthy", "lb.assigned": "lb.lost",
-	"labhost.back": "labhost.unreachable", "labhost.disk-ok": "labhost.disk-low", "labhost.memory-ok": "labhost.memory-pressure",
-	"workload.available": "workload.unavailable", "pod.recovered": "pod.crashloop", "pvc.bound": "pvc.pending", "service.endpoints": "service.no-endpoints",
-	"ingress.address": "ingress.no-address", "lb.pool-free": "lb.pool-exhausted", "flux.ready": "flux.not-ready",
-}
+var resolves = func() map[string]string {
+	m := map[string]string{
+		"talos.back": "talos.unreachable", "node.ready": "node.notready", "node.memory-ok": "node.memory-small", "api.back": "api.unreachable", "etcd.healthy": "etcd.unhealthy", "lb.assigned": "lb.lost",
+		"labhost.back": "labhost.unreachable", "labhost.disk-ok": "labhost.disk-low", "labhost.memory-ok": "labhost.memory-pressure",
+	}
+	maps.Copy(m, serviceResolves)
+	return m
+}()
 
 const minAllocatableBytes = 768 << 20
 

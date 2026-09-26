@@ -78,3 +78,12 @@ func TestFetchChecksTheResponse(t *testing.T) {
 		t.Errorf("a failed download leaves nothing behind: %v", left)
 	}
 }
+
+func TestDownloadWaitsForSlowHeaders(t *testing.T) {
+	if Download.Transport.(*http.Transport).ResponseHeaderTimeout != 0 {
+		t.Fatal("downloads must wait for an image build before headers arrive")
+	}
+	if transport.ResponseHeaderTimeout == 0 {
+		t.Fatal("API calls keep their header timeout")
+	}
+}

@@ -29,8 +29,11 @@ func (s *Store) WatchExternal(ctx context.Context, interval time.Duration) {
 			continue
 		}
 		writes := s.n.writes.Load()
-		if v != last && writes == lastWrites {
-			s.notify(Change{Table: "*", Op: "put"})
+		if v != last {
+			s.settings.invalidate()
+			if writes == lastWrites {
+				s.notify(Change{Table: "*", Op: "put"})
+			}
 		}
 		last, lastWrites = v, writes
 	}

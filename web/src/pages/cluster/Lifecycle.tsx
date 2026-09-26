@@ -28,7 +28,7 @@ export function Lifecycle({ ctx }: { ctx: ClusterCtx }) {
 }
 
 export function useImageStatus(name: string, updatedAt: string) {
-  return useLive(() => api.imageStatus(name), [name, updatedAt], [], { onError: 'null' }).data
+  return useLive(() => api.imageStatus(name), [name], [], { onError: 'null', refresh: [updatedAt] }).data
 }
 
 function UpgradesSection({ name, talos, k8s, updatedAt }: { name: string; talos: string; k8s: string; updatedAt: string }) {

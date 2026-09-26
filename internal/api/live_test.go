@@ -1,6 +1,7 @@
 package api
 
 import (
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"slices"
@@ -144,5 +145,35 @@ func TestOffsiteRefreshFollowsTheStore(t *testing.T) {
 	s.onChange(ctx, store.Change{Table: "snapshots", Key: key, Op: "put"})
 	if !slices.Contains(drainScopes(ch), "/offsite") {
 		t.Error("an off-site copy must refresh off-site status")
+	}
+}
+
+func TestClusterMessageCarriesTheSpec(t *testing.T) {
+	s, st, _ := localServer(t)
+	ch, cancel := s.hub.subscribe()
+	defer cancel()
+	ctx := t.Context()
+	spec := []byte("apiVersion: kubit.dev/v1\nkind: Cluster\nmetadata: { name: c }\nspec:\n  talosVersion: v1.14.1\n  controlPlane: { endpoint: \"https://192.168.64.2:6443\" }\n  nodes:\n    - { hostname: cp-01, ip: 192.168.64.2, role: controlplane, arch: arm64, installDisk: { path: /dev/vda } }\n")
+	if err := st.PutCluster(ctx, store.ClusterRow{Name: "c", Spec: spec, State: "ready"}); err != nil {
+		t.Fatal(err)
+	}
+	s.onChange(ctx, store.Change{Table: "clusters", Key: "c", Op: "put"})
+	for {
+		select {
+		case m := <-ch:
+			if m.Kind != "cluster" {
+				continue
+			}
+			b, err := json.Marshal(m)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !strings.Contains(string(b), `"talosVersion":"v1.14.1"`) {
+				t.Fatalf("cluster message without spec: %s", b)
+			}
+			return
+		default:
+			t.Fatal("no cluster message")
+		}
 	}
 }

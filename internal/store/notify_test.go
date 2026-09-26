@@ -84,3 +84,41 @@ func TestWatchExternalSeesOtherProcessWrites(t *testing.T) {
 	case <-time.After(200 * time.Millisecond):
 	}
 }
+
+func TestExternalSettingsWriteBesideALocalWriteRefreshesSettings(t *testing.T) {
+	c, _ := store.NewCrypto(bytes.Repeat([]byte{7}, 32))
+	dir := t.TempDir()
+	a, err := store.Open(dir, c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer a.Close()
+	b, err := store.Open(dir, c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer b.Close()
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	if _, err := a.GetSettings(ctx); err != nil {
+		t.Fatal(err)
+	}
+	go a.WatchExternal(ctx, 300*time.Millisecond)
+	time.Sleep(100 * time.Millisecond)
+	set, _ := b.GetSettings(ctx)
+	set.WatchIntervalSec = 42
+	if err := b.PutSettings(ctx, set); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.PutCluster(ctx, store.ClusterRow{Name: "c", Spec: []byte("x"), State: "ready"}); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if got, _ := a.GetSettings(ctx); got.WatchIntervalSec == 42 {
+			return
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	t.Fatal("cached settings survived an external write")
+}

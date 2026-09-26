@@ -1,12 +1,20 @@
 package api
 
 import (
+	"bytes"
 	"context"
+	"database/sql"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/mikael/kubit/internal/cluster"
+	"github.com/mikael/kubit/internal/store"
 )
 
 func TestStepTrackerDeclaredSteps(t *testing.T) {
@@ -89,5 +97,51 @@ func TestLockAllOrdersAndReleases(t *testing.T) {
 		if l.busy(n) {
 			t.Errorf("%s still held", n)
 		}
+	}
+}
+
+func TestRetryCreateReportsAFailedStart(t *testing.T) {
+	c, _ := store.NewCrypto(bytes.Repeat([]byte{12}, 32))
+	dir := t.TempDir()
+	st, err := store.Open(dir, c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { st.Close() })
+	s := New("test", cluster.NewManager(st, dir), "", c)
+	ctx := t.Context()
+	failed := func(yaml string) int64 {
+		body, _ := json.Marshal(createRequest{YAML: yaml})
+		id, err := st.CreateOperation(ctx, "c", "cluster.create", body)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := st.FinishOperation(ctx, id, "failed"); err != nil {
+			t.Fatal(err)
+		}
+		return id
+	}
+	retry := func(id int64) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/operations/"+strconv.FormatInt(id, 10)+"/retry", nil)
+		req.SetPathValue("id", strconv.FormatInt(id, 10))
+		rec := httptest.NewRecorder()
+		s.handleOperationRetry(rec, req)
+		return rec
+	}
+	if rec := retry(failed("kind: [")); rec.Code == http.StatusAccepted {
+		t.Errorf("an unreadable declaration was accepted: %s", rec.Body)
+	}
+	id := failed("apiVersion: kubit.dev/v1\nkind: Cluster\nmetadata: {name: c}\nspec:\n  nodes:\n    - {hostname: a, ip: 10.0.0.1, role: controlplane, installDisk: {path: /dev/sda}}\n")
+	db, err := sql.Open("sqlite", filepath.Join(dir, "kubit.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if _, err := db.ExecContext(ctx, `CREATE TRIGGER refuse BEFORE INSERT ON operations BEGIN SELECT RAISE(ABORT, 'refused'); END`); err != nil {
+		t.Fatal(err)
+	}
+	rec := retry(id)
+	if rec.Code == http.StatusAccepted || !strings.Contains(rec.Body.String(), "refused") {
+		t.Errorf("a failed start must not answer accepted: %d %s", rec.Code, rec.Body)
 	}
 }

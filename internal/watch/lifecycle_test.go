@@ -4,6 +4,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/mikael/kubit/internal/cluster"
+	"github.com/mikael/kubit/internal/k8s"
 	"github.com/mikael/kubit/internal/store"
 )
 
@@ -88,4 +90,100 @@ func TestKubeconfigWriteSignalsInformers(t *testing.T) {
 	}
 	w.dropKubeSignal("c", ch)
 	w.dropKubeSignal("d", other)
+}
+
+func TestLoopWaitsForItsPredecessorEvenWhenCancelled(t *testing.T) {
+	w, _ := labWatcher(t)
+	w.SetInterval(time.Hour)
+	prev := make(chan struct{})
+	w.mu.Lock()
+	w.stopping["c"] = prev
+	w.startLoop(t.Context(), "c")
+	l := w.running["c"]
+	w.mu.Unlock()
+	l.cancel()
+	select {
+	case <-l.done:
+		t.Fatal("a cancelled loop finished before the loop it waits for")
+	case <-time.After(100 * time.Millisecond):
+	}
+	close(prev)
+	select {
+	case <-l.done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the cancelled loop did not end after its predecessor")
+	}
+}
+
+const unreachableKubeconfig = `apiVersion: v1
+kind: Config
+clusters:
+- name: c
+  cluster: {server: "https://127.0.0.1:1", insecure-skip-tls-verify: true}
+users:
+- name: u
+  user: {token: t}
+contexts:
+- name: c
+  context: {cluster: c, user: u}
+current-context: c
+`
+
+func TestUnreachableAPIStopsTheInformers(t *testing.T) {
+	w, _ := labWatcher(t)
+	kc, err := k8s.New([]byte(unreachableKubeconfig))
+	if err != nil {
+		t.Fatal(err)
+	}
+	w.mu.Lock()
+	w.last["c"] = &cluster.Status{State: cluster.StateReady, APIReachable: true}
+	w.mu.Unlock()
+	changed := w.kubeSignal("c")
+	defer w.dropKubeSignal("c", changed)
+	result := make(chan bool, 1)
+	go func() { result <- w.runInformers(t.Context(), "c", kc, nil, changed, func(string) {}) }()
+	w.signalKube("c")
+	select {
+	case <-result:
+		t.Fatal("informers stopped while the API was reachable")
+	case <-time.After(200 * time.Millisecond):
+	}
+	w.mu.Lock()
+	w.last["c"] = &cluster.Status{State: cluster.StateReady}
+	w.mu.Unlock()
+	w.signalKube("c")
+	select {
+	case rotated := <-result:
+		if rotated {
+			t.Error("an unreachable API is not a kubeconfig rotation")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("informers kept serving after the API became unreachable")
+	}
+}
+
+func TestServiceRefreshOnlyOnChange(t *testing.T) {
+	a := &cluster.ServiceHealth{CollectedAt: time.Now(), Pods: []cluster.PodHealth{{Namespace: "n", Name: "p", Phase: "Running", AgeSec: 10}}}
+	b := &cluster.ServiceHealth{CollectedAt: time.Now().Add(time.Minute), Pods: []cluster.PodHealth{{Namespace: "n", Name: "p", Phase: "Running", AgeSec: 70}}}
+	if !sameServices(a, b) {
+		t.Error("ages and collection time alone must not count as a change")
+	}
+	c := &cluster.ServiceHealth{Pods: []cluster.PodHealth{{Namespace: "n", Name: "p", Phase: "Pending"}}}
+	if sameServices(a, c) || sameServices(nil, a) {
+		t.Error("a changed phase or a first collection must count as a change")
+	}
+	if a.Pods[0].AgeSec != 10 {
+		t.Error("comparison modified the collected health")
+	}
+}
+
+func TestResolvesCoverServiceRecoveries(t *testing.T) {
+	for rec, alert := range serviceResolves {
+		if resolves[rec] != alert {
+			t.Errorf("%s resolves %q, want %q", rec, resolves[rec], alert)
+		}
+	}
+	if resolves["api.back"] != "api.unreachable" {
+		t.Error("cluster recoveries missing")
+	}
 }
