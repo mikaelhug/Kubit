@@ -28,7 +28,7 @@ export function Network({ ctx }: { ctx: ClusterCtx }) {
     { id: 'ext', header: 'External IP', mono: true, sort: (s) => (s.externalIPs ?? []).join(','), cell: (s) => (s.externalIPs ?? []).join(', ') || <span class="text-muted">—</span> },
     { id: 'ports', header: 'Ports', mono: true, text: (s) => s.ports.join(' '), cell: (s) => s.ports.join(', ') },
     { id: 'eps', header: 'Endpoints', align: 'right', sort: (s) => s.endpoints, cell: (s) => <span class={s.endpoints === 0 && s.selector ? 'text-warn' : ''}>{s.endpoints}</span> },
-    { id: 'age', header: 'Age', cell: (s) => <span class="num text-muted">{s.age}</span> },
+    { id: 'age', header: 'Age', cell: (s) => <span class="text-muted">{s.age}</span> },
   ]
   const icols: Column<KIngress>[] = [
     { id: 'ns', header: 'Namespace', sort: (i) => i.namespace, cell: (i) => i.namespace },
@@ -40,7 +40,7 @@ export function Network({ ctx }: { ctx: ClusterCtx }) {
       </div>
     ) },
     { id: 'addr', header: 'Address', mono: true, cell: (i) => (i.addresses ?? []).join(', ') || <span class="text-muted">pending</span> },
-    { id: 'age', header: 'Age', cell: (i) => <span class="num text-muted">{i.age}</span> },
+    { id: 'age', header: 'Age', cell: (i) => <span class="text-muted">{i.age}</span> },
   ]
 
   return (
@@ -64,7 +64,7 @@ export function Network({ ctx }: { ctx: ClusterCtx }) {
           {view?.poolError && <Notice tone="bad">{view.poolError}</Notice>}
           {pool && (
             <div class="panel p-3 flex flex-col gap-3">
-              <div class="flex items-baseline justify-between"><span class="mono">{pool.range}</span><span class="num text-[13px]"><strong>{pool.allocated.length}</strong> <span class="text-muted">/ {pool.total} in use</span></span></div>
+              <div class="flex items-baseline justify-between"><span class="mono">{pool.range}</span><span class="text-[13px]"><strong>{pool.allocated.length}</strong> <span class="text-muted">/ {pool.total} in use</span></span></div>
               <div class="flex flex-wrap gap-1">
                 {Array.from({ length: pool.total }, (_, i) => {
                   const ip = ipAt(pool.range, i)

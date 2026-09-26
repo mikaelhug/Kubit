@@ -11,7 +11,6 @@ import { Offsite } from './settings/Offsite'
 import { Sso } from './settings/Sso'
 import { Backup } from './settings/Backup'
 
-/** /settings/:page — one page of this installation's settings. */
 export function KubitSettings({ page }: { page?: string }) {
   const { route } = useLocation()
   const known = settingsPages.some(([id]) => id === page)

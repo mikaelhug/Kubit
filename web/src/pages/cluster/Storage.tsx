@@ -32,7 +32,7 @@ export function Storage({ ctx }: { ctx: ClusterCtx }) {
     { id: 'claim', header: 'Claim', mono: true, cell: (v) => v.claim || <span class="text-muted">—</span> },
     { id: 'modes', header: 'Access', cell: (v) => v.accessModes },
     { id: 'reclaim', header: 'Reclaim', cell: (v) => v.reclaim },
-    { id: 'age', header: 'Age', cell: (v) => <span class="num text-muted">{v.age}</span> },
+    { id: 'age', header: 'Age', cell: (v) => <span class="text-muted">{v.age}</span> },
   ]
   const ccols: Column<PVC>[] = [
     { id: 'ns', header: 'Namespace', sort: (c) => c.namespace, cell: (c) => c.namespace },
@@ -42,7 +42,7 @@ export function Storage({ ctx }: { ctx: ClusterCtx }) {
     { id: 'cap', header: 'Capacity', align: 'right', cell: (c) => c.capacityBytes ? fmt.bytes(c.capacityBytes) : '—' },
     { id: 'class', header: 'Class', cell: (c) => c.class || '—' },
     { id: 'vol', header: 'Volume', mono: true, cell: (c) => c.volume || <span class="text-muted">unbound</span> },
-    { id: 'age', header: 'Age', cell: (c) => <span class="num text-muted">{c.age}</span> },
+    { id: 'age', header: 'Age', cell: (c) => <span class="text-muted">{c.age}</span> },
   ]
   return (
     <div class="flex flex-col gap-5">

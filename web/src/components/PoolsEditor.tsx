@@ -2,7 +2,6 @@ import { useState } from 'preact/hooks'
 import type { Pool } from '../api'
 import { Field, Pill } from './ui'
 
-/** Edits a string map as "key=value" lines; taints use "key=value:Effect". */
 export function KVEditor({ value, onChange, placeholder, mono = true }: { value?: Record<string, string>; onChange: (v: Record<string, string> | undefined) => void; placeholder?: string; mono?: boolean }) {
   const [text, setText] = useState(toLines(value))
   const commit = (t: string) => {
@@ -24,10 +23,6 @@ function toLines(m?: Record<string, string>) { return Object.entries(m ?? {}).ma
 
 export const knownExtensions = ['siderolabs/gvisor', 'siderolabs/iscsi-tools', 'siderolabs/util-linux-tools', 'siderolabs/intel-ucode', 'siderolabs/amd-ucode', 'siderolabs/i915', 'siderolabs/nvidia-open-gpu-kernel-modules-lts', 'siderolabs/nvidia-container-toolkit-lts', 'siderolabs/qemu-guest-agent', 'siderolabs/zfs', 'siderolabs/tailscale']
 
-/**
- * Pools own role, labels, taints, extensions and the default install-disk policy. One
- * pool must have role controlplane; a pool in use cannot be removed.
- */
 export function PoolsEditor({ pools, onChange, inUse, defaultExtensions }: { pools: Pool[]; onChange: (p: Pool[]) => void; inUse: (name: string) => number; defaultExtensions?: string[] }) {
   const [open, setOpen] = useState<string | null>(null)
   const update = (i: number, patch: Partial<Pool>) => onChange(pools.map((p, j) => j === i ? { ...p, ...patch } : p))

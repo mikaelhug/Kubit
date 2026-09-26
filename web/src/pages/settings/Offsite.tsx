@@ -23,7 +23,7 @@ export function Offsite() {
             <option value="">Off</option><option value="dir">Directory (mounted share, USB disk, synced folder)</option><option value="s3">S3-compatible bucket</option>
           </select>
         </Field>
-        <Field label="Keep daily Kubit backups" hint="Older ones are deleted remotely; snapshots follow each cluster's own retention."><input class="input num" type="number" min={1} value={o.keepBackups} onInput={(e) => set({ keepBackups: Number((e.target as HTMLInputElement).value) })} /></Field>
+        <Field label="Keep daily Kubit backups" hint="Older ones are deleted remotely; snapshots follow each cluster's own retention."><input class="input" type="number" min={1} value={o.keepBackups} onInput={(e) => set({ keepBackups: Number((e.target as HTMLInputElement).value) })} /></Field>
         {o.type === 'dir' && <Field label="Directory" hint="Reachable from the daemon's host."><input class="input mono" value={o.dir} placeholder="/Volumes/backup/kubit" onInput={text('dir')} /></Field>}
         {o.type === 's3' && (<>
           <Field label="Endpoint" hint="Host[:port]; https unless marked insecure."><input class="input mono" value={o.endpoint} placeholder="s3.eu-central-1.amazonaws.com" onInput={text('endpoint')} /></Field>

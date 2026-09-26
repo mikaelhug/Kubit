@@ -7,7 +7,6 @@ import type { ClusterCtx } from './ClusterPage'
 import { verLess } from './Overview'
 import { DataTable, type Column } from '../../components/DataTable'
 
-/** Operations on the cluster as a whole: upgrades, credentials, hand-over, forgetting it. */
 export function Lifecycle({ ctx }: { ctx: ClusterCtx }) {
   const { name, cluster } = ctx
   const spec = cluster.spec.spec
@@ -69,7 +68,6 @@ function UpgradesSection({ name, talos, k8s, updatedAt }: { name: string; talos:
   )
 }
 
-/** What Kubit holds to talk to the cluster, and when each stops working. */
 function CredentialsSection({ name }: { name: string }) {
   const [certs, setCerts] = useState<CertInfo[]>([])
   const [error, setError] = useState<string | null>(null)
@@ -79,8 +77,8 @@ function CredentialsSection({ name }: { name: string }) {
   const tone = (d: number) => d <= 7 ? 'bad' : d <= 30 ? 'warn' : 'good'
   const columns: Column<CertInfo>[] = [
     { id: 'name', header: 'Credential', cell: (c) => <span class="font-medium">{label[c.name] ?? c.name}</span> },
-    { id: 'expires', header: 'Expires', cell: (c) => c.error ? <span class="text-bad">{c.error}</span> : <span class="flex items-center gap-2"><Pill tone={tone(c.daysLeft)}>{c.daysLeft} days</Pill><span class="num text-muted">{fmt.datetime(c.notAfter)}</span></span> },
-    { id: 'issued', header: 'Issued', cell: (c) => <span class="num text-muted">{c.notBefore ? fmt.datetime(c.notBefore) : '—'}</span> },
+    { id: 'expires', header: 'Expires', cell: (c) => c.error ? <span class="text-bad">{c.error}</span> : <span class="flex items-center gap-2"><Pill tone={tone(c.daysLeft)}>{c.daysLeft} days</Pill><span class="text-muted">{fmt.datetime(c.notAfter)}</span></span> },
+    { id: 'issued', header: 'Issued', cell: (c) => <span class="text-muted">{c.notBefore ? fmt.datetime(c.notBefore) : '—'}</span> },
     { id: 'subject', header: 'Subject', cell: (c) => <span class="block mono text-[11px] text-muted truncate max-w-[260px]" title={c.subject}>{c.subject}</span> },
     { id: 'actions', header: '', align: 'right', cell: (c) => c.rotatable && <button class="btn !py-1" onClick={() => api.rotateCredential(name, c.name as 'talosconfig' | 'kubeconfig').then((r) => watch(r)).catch((e) => toast(e.message, 'error'))}>Rotate</button> },
   ]

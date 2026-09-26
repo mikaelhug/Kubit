@@ -3,12 +3,11 @@ import { fmt, type AuditEntry } from '../api'
 import { audit, loadAudit, refreshKey } from '../store'
 import { DataTable, type Column } from './DataTable'
 
-/** Who did what, when: every administrative action Kubit recorded. */
 export function AuditLog({ cluster }: { cluster?: string }) {
   const rows = cluster ? audit.value.filter((a) => a.cluster === cluster) : audit.value
   useEffect(() => { loadAudit(cluster) }, [cluster, refreshKey('*', 'resync')])
   const columns: Column<AuditEntry>[] = [
-    { id: 'at', header: 'When', sort: (a) => a.at, cell: (a) => <span class="num text-muted">{fmt.datetime(a.at)}</span> },
+    { id: 'at', header: 'When', sort: (a) => a.at, cell: (a) => <span class="text-muted">{fmt.datetime(a.at)}</span> },
     ...(cluster ? [] : [{ id: 'cluster', header: 'Cluster', sort: (a: AuditEntry) => a.cluster, cell: (a: AuditEntry) => a.cluster ? <a href={`/clusters/${a.cluster}/overview`} class="text-accent hover:underline">{a.cluster}</a> : <span class="text-muted">kubit</span> } as Column<AuditEntry>]),
     { id: 'actor', header: 'Who', sort: (a) => a.actor ?? '', cell: (a) => a.actor || <span class="text-muted">—</span> },
     { id: 'action', header: 'Action', sort: (a) => a.action, mono: true, cell: (a) => a.action },

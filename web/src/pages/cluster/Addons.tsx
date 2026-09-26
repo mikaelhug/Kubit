@@ -52,13 +52,12 @@ export function Addons({ ctx }: { ctx: ClusterCtx }) {
   useEffect(() => { if (builds) api.builds(name).then(setBuildList).catch(() => setBuildList(null)); else setBuildList(null) }, [name, builds, refreshKey(name, 'workloads')])
   const [pendingPlan, setPendingPlan] = useState<number | null>(null)
   const plan = () => api.platformPlan(name).then((r) => { watch(r, false); toast('Planning… the review opens when it finishes'); setPendingPlan(r.operationId) }).catch((e) => toast(e.message, 'error'))
-  // The plan's completion arrives over SSE; open the review then.
   const pending = pendingPlan !== null ? operations.value.get(pendingPlan) : undefined
   useEffect(() => {
     if (!pending || pending.status === 'running') return
     setPendingPlan(null)
     if (pending.status === 'done') route(`/clusters/${name}/addons/${pending.id}`); else watch(pending.id)
-  }, [pending?.status]) // eslint-disable-line
+  }, [pending?.status])
 
   return (
     <>
@@ -137,7 +136,7 @@ function FluxSync({ objects }: { objects: FluxObject[] }) {
             <span class="inline-flex shrink-0"><StatusDot tone={readyTone(o)} pulse={o.ready === 'Unknown' && !o.suspended} /></span>
             <span class="text-muted shrink-0">{o.kind}</span>
             <span class="mono truncate min-w-0" title={`${o.namespace}/${o.name}`}>{o.namespace === 'flux-system' ? o.name : `${o.namespace}/${o.name}`}</span>
-            <span class="ml-auto text-muted num shrink-0" title={o.reason}>{o.suspended ? 'suspended' : ago(o.since)}</span>
+            <span class="ml-auto text-muted shrink-0" title={o.reason}>{o.suspended ? 'suspended' : ago(o.since)}</span>
           </div>
           <span class={`mono truncate pl-4 ${o.ready === 'False' ? 'text-bad' : 'text-muted'}`} title={o.message || o.revision}>{o.ready === 'False' ? o.message : shortRevision(o.revision)}</span>
         </div>
@@ -156,7 +155,7 @@ function BuildList({ cluster, builds }: { cluster: string; builds: Build[] }) {
           <div class="flex items-center gap-2 min-w-0">
             <span class="inline-flex shrink-0"><StatusDot tone={buildTone[b.state]} pulse={b.state === 'running'} /></span>
             <span class="mono truncate min-w-0">{b.name}</span>
-            <span class="ml-auto text-muted num shrink-0">{b.state === 'running' ? `building, ${ago(b.startedAt).replace(' ago', '')}` : `${b.state} ${ago(b.finishedAt ?? b.startedAt)}`}</span>
+            <span class="ml-auto text-muted shrink-0">{b.state === 'running' ? `building, ${ago(b.startedAt).replace(' ago', '')}` : `${b.state} ${ago(b.finishedAt ?? b.startedAt)}`}</span>
             {b.pod && <a class="text-accent hover:underline shrink-0" href={podLogsUrl(cluster, 'kubit-builds', b.pod, '', false)} target="_blank" rel="noreferrer">Logs</a>}
           </div>
           {b.image && <span class="mono truncate pl-4 text-muted" title={b.image}>{b.image.replace(/^[^/]+\//, 'registry.kubit/')}</span>}
@@ -230,7 +229,6 @@ function ConfigureDialog({ ctx, addon, def, onClose, onSaved }: { ctx: ClusterCt
   )
 }
 
-/** Small YAML emitter for the values editor (objects, arrays, scalars); the server re-parses it. */
 function toYaml(v: unknown, indent = 0): string {
   const pad = '  '.repeat(indent)
   if (Array.isArray(v)) return v.map((x) => typeof x === 'object' && x !== null ? `${pad}-\n${toYaml(x, indent + 1)}` : `${pad}- ${scalar(x)}`).join('\n')

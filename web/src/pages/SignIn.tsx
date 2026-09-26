@@ -4,7 +4,6 @@ import { authState, loadMe } from '../store'
 import { reconnectLive } from '../live'
 import { ErrorBox, Field } from '../components/ui'
 
-/** Full-screen sign-in; on a fresh install it creates the first administrator instead. */
 export function SignIn() {
   const setup = authState.value.setup
   const sso = authState.value.sso

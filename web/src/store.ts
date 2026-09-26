@@ -1,19 +1,12 @@
-// Global live state as signals, fed by one WebSocket (see live.ts). Pages derive from
-// these and only fetch large derived views, which the daemon tells them to refresh.
 import { signal, computed } from '@preact/signals'
 import { api, setUnauthorizedHandler, type Me, type AuditEntry, type ClusterRow, type Event, type HealthEvent, type NodeRow, type ObserverState, type Operation, type Sample, type Settings, type Snapshot, type Status, type Step } from './api'
 
 export const clusters = signal<ClusterRow[]>([])
-/** Every machine Kubit knows, keyed by MAC; pushed on each store write. */
 export const machines = signal<Map<string, NodeRow>>(new Map())
 export const machineList = computed(() => [...machines.value.values()].sort((a, b) => a.ip.localeCompare(b.ip, undefined, { numeric: true })))
-/** etcd snapshots per cluster, newest first. */
 export const snapshots = signal<Map<string, Snapshot[]>>(new Map())
-/** Audit entries, newest first (all clusters; filter per view). */
 export const audit = signal<AuditEntry[]>([])
-/** Kubit settings as the daemon last pushed them (secrets redacted). */
 export const settings = signal<Settings | null>(null)
-/** Who is signed in: undefined until asked, null when sign-in is required. */
 export const me = signal<Me | null | undefined>(undefined)
 export const authState = signal<{ setup: boolean; users: number; sso?: string }>({ setup: false, users: 0 })
 export async function loadMe() {
@@ -29,44 +22,30 @@ export async function loadMe() {
 }
 setUnauthorizedHandler(() => { if (me.value !== null) me.value = null })
 export const can = (role: 'viewer' | 'operator' | 'admin') => { const r = me.value?.role; return !!r && ({ viewer: 1, operator: 2, admin: 3 })[r] >= ({ viewer: 1, operator: 2, admin: 3 })[role] }
-/** Newest stable Talos the factory publishes; bumps when the daemon's hourly check changes. */
 export const latestTalos = signal<string>('')
-/** Daemon facts from the hello message. */
 export const daemon = signal<{ version: string; startedAt: string; service: boolean; os?: string } | null>(null)
 export const operations = signal<Map<number, Operation>>(new Map())
 export const opEvents = signal<Map<number, Event[]>>(new Map())
 export const connected = signal(false)
-/** True while base state is being reloaded after a reconnect or an external write. */
 export const resyncing = signal(false)
 export const reconnectAttempt = signal(0)
 export const drawerOpen = signal<boolean>(read('kubit.drawer', false))
 export const drawerHeight = signal<number>(read('kubit.drawerHeight', 260))
 export const drawerTab = signal<number | null>(null)
 export const toasts = signal<{ id: number; text: string; tone: 'info' | 'error' | 'good' }[]>([])
-/** Latest Status per cluster, pushed by the daemon's watcher. */
 export const statuses = signal<Map<string, Status>>(new Map())
-/** Per (cluster, scope) change counters pushed by the daemon; views refetch when theirs moves. */
 export const refreshes = signal<Map<string, number>>(new Map())
 export function refreshKey(cluster: string, scope: string) { return refreshes.value.get(`${cluster}/${scope}`) ?? 0 }
-/** Newest reading per lab host (by MAC); the Lab host tab appends it to its history. */
 export const hostSamples = signal<Map<string, Sample>>(new Map())
-/** Whether Kubit's own host can reach the network, and how often observation paused. */
 export const observer = signal<ObserverState>({ online: true, gaps24h: 0 })
 export async function loadObserver() {
   try { observer.value = await api.observer() } catch {}
 }
-/** Health events per cluster (newest first), seeded from the API and appended live. */
 export const health = signal<Map<string, HealthEvent[]>>(new Map())
 
-/** Open (unacked, unresolved) workload alert for one object, keyed as kind/namespace/name. */
 export function openAlert(cluster: string, kind: string, ns: string, name: string): HealthEvent | undefined {
   const key = `${kind}/${ns}/${name}`
   return (health.value.get(cluster) ?? []).find((e) => !e.acked && e.node === key && e.severity !== 'info')
-}
-
-/** `?ns=` from the URL, used by the object links on alert rows. */
-export function nsFromQuery(): string {
-  return typeof location !== 'undefined' ? new URLSearchParams(location.search).get('ns') ?? '' : ''
 }
 
 export async function loadAllHealth(keys: string[]) {
@@ -85,7 +64,6 @@ export async function loadHealth(name: string) {
   } catch {}
 }
 
-/** Acks go to the daemon; the healthAck message that comes back updates every tab. */
 export async function ack(name: string, id?: number) {
   if (id === undefined) await api.ackAll(name); else await api.ackEvent(id)
 }
@@ -126,7 +104,6 @@ export async function loadSettings() {
 }
 
 export const running = computed(() => [...operations.value.values()].filter((o) => o.status === 'running').sort((a, b) => a.id - b.id))
-export const recent = computed(() => [...operations.value.values()].sort((a, b) => b.id - a.id).slice(0, 100))
 
 function read<T>(key: string, fallback: T): T {
   try { const v = localStorage.getItem(key); return v === null ? fallback : JSON.parse(v) } catch { return fallback }
@@ -159,7 +136,6 @@ export async function reloadOperations() {
   } catch {}
 }
 
-/** Open the activity drawer on an operation and make it the focused tab. */
 export function watch(op: { operationId: number } | number, open = true) {
   const id = typeof op === 'number' ? op : op.operationId
   drawerTab.value = id
@@ -192,7 +168,6 @@ export function applyStepEvent(id: number, e: Event) {
   upsertOp({ ...op, steps })
 }
 
-/** Load the persisted log of an operation that finished before this page opened. */
 export async function loadOperationLog(id: number) {
   const o = await api.operation(id)
   upsertOp(o)

@@ -13,7 +13,6 @@ const vanillaSchematic = '376567988ad370138ad8b2698212367b8edcb69b5fd68c80be1f2e
 const groupOrder: Record<MachineGroup, number> = { available: 0, boot: 1, 'in-use': 2 }
 const filters: (MachineGroup | 'all')[] = ['all', 'available', 'boot', 'in-use']
 
-/** The hardware ledger: every physical machine Kubit has seen, what it does now, what it can do next. */
 export function Inventory() {
   const { route, query } = useLocation()
   const all = machineList.value
@@ -36,7 +35,7 @@ export function Inventory() {
   const [gate, setGate] = useState<string[] | null>(null)
   const [busy, setBusy] = useState<Record<string, boolean>>({})
   const subnets = settings.value?.discoverySubnets ?? []
-  useEffect(() => { if (!typed) setTargetsRaw(subnets.length ? subnets.join(', ') : physical[0] ? physical[0].ip.replace(/\.\d+$/, '.0/24') : '') }, [subnets.join(','), physical.length]) // eslint-disable-line
+  useEffect(() => { if (!typed) setTargetsRaw(subnets.length ? subnets.join(', ') : physical[0] ? physical[0].ip.replace(/\.\d+$/, '.0/24') : '') }, [subnets.join(','), physical.length])
   const scanning = [...operations.value.values()].some((o) => o.kind === 'discover' && o.status === 'running')
   const [versions, setVersions] = useState<Versions | null>(null)
   useEffect(() => { api.versions().then(setVersions).catch(() => {}) }, [latestTalos.value])
@@ -81,8 +80,8 @@ export function Inventory() {
       if (host) return <a href={`/labhosts/${host.mac}/vms`} class="text-accent hover:underline">on {hostName(host)}</a>
       return <span class="text-muted">—</span>
     } },
-    { id: 'resources', header: 'CPU · RAM · Disk', align: 'right', sort: (n) => n.inventory?.memoryBytes ?? 0, text: (n) => (n.inventory?.disks ?? []).map((d) => d.devPath).join(' '), cell: (n) => { const disks = (n.inventory?.disks ?? []).filter((d) => !d.readonly && !d.cdrom && d.transport !== 'usb'); return n.inventory ? <span class="num whitespace-nowrap" title={disks.map((d) => `${d.devPath} ${fmt.bytes(d.sizeBytes)}`).join(', ')}>{n.inventory.cpus} · {fmt.bytes(n.inventory.memoryBytes)} · {disks.length ? `${fmt.bytes(disks[0].sizeBytes)}${disks.length > 1 ? ` +${disks.length - 1}` : ''}` : '—'}<span class="block text-[10px] text-muted">{n.arch}{n.inventory.kvm ? ' · kvm' : ''}</span></span> : <span class="text-muted">—</span> } },
-    { id: 'seen', header: 'Last seen', sort: (n) => lastSeenOf(n), cell: (n) => <span class="num text-muted">{fmt.when(lastSeenOf(n))}</span> },
+    { id: 'resources', header: 'CPU · RAM · Disk', align: 'right', sort: (n) => n.inventory?.memoryBytes ?? 0, text: (n) => (n.inventory?.disks ?? []).map((d) => d.devPath).join(' '), cell: (n) => { const disks = (n.inventory?.disks ?? []).filter((d) => !d.readonly && !d.cdrom && d.transport !== 'usb'); return n.inventory ? <span class="whitespace-nowrap" title={disks.map((d) => `${d.devPath} ${fmt.bytes(d.sizeBytes)}`).join(', ')}>{n.inventory.cpus} · {fmt.bytes(n.inventory.memoryBytes)} · {disks.length ? `${fmt.bytes(disks[0].sizeBytes)}${disks.length > 1 ? ` +${disks.length - 1}` : ''}` : '—'}<span class="block text-[10px] text-muted">{n.arch}{n.inventory.kvm ? ' · kvm' : ''}</span></span> : <span class="text-muted">—</span> } },
+    { id: 'seen', header: 'Last seen', sort: (n) => lastSeenOf(n), cell: (n) => <span class="text-muted">{fmt.when(lastSeenOf(n))}</span> },
     { id: 'actions', header: '', align: 'right', cell: (n) => (
       <span class="whitespace-nowrap flex gap-1 justify-end">
         {canAdopt(n) && <button class="btn btn-primary !py-1" onClick={() => adopt(n)}>Adopt</button>}

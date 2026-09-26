@@ -9,14 +9,13 @@ import { ThisMacDialog } from '../components/LabHost'
 
 const vanillaSchematic = '376567988ad370138ad8b2698212367b8edcb69b5fd68c80be1f2ec7d603b4ba'
 
-/** The fleet: what needs attention, every cluster and lab host, machines by next step, activity. */
 export function Home() {
   const list = clusters.value
   const machines = machineList.value
   const hosts = machines.filter((m) => m.labhost)
   const physical = machines.filter((m) => !m.host)
   const keys = [kubitKey, ...list.map((c) => c.name), ...hosts.map((h) => labHostKey(h.mac))]
-  useEffect(() => { loadAllHealth(keys) }, [keys.join(',')]) // eslint-disable-line
+  useEffect(() => { loadAllHealth(keys) }, [keys.join(',')])
   const [versions, setVersions] = useState<Versions | null>(null)
   useEffect(() => { api.versions().then(setVersions).catch(() => {}) }, [latestTalos.value])
   const armed = machines.some((m) => m.provision)
@@ -102,7 +101,7 @@ export function Home() {
                 <span class="font-medium">{fmt.kind(o.kind)}</span>
                 {o.cluster && <span class="text-muted">{o.cluster.startsWith('labhost:') ? hostName(machines.find((m) => labHostKey(m.mac) === o.cluster)) : o.cluster}</span>}
                 {step && <span class="text-muted truncate">{step.title}</span>}
-                <span class="ml-auto text-muted num">{o.status === 'running' ? elapsed(o.startedAt) : fmt.when(o.startedAt)}</span>
+                <span class="ml-auto text-muted">{o.status === 'running' ? elapsed(o.startedAt) : fmt.when(o.startedAt)}</span>
                 <Pill tone={stateTone(o.status)}>{o.status}</Pill>
               </a>
             )
@@ -119,7 +118,7 @@ function ClusterCard({ name, state, talos, k8s, update, alerts }: { name: string
   return (
     <a href={`/clusters/${name}/overview`} class="panel p-3 flex flex-col gap-2 hover:border-accent min-w-0">
       <div class="flex items-center gap-2"><span class="font-semibold truncate">{name}</span><ClusterPill state={state} status={st} />{alerts > 0 && <Pill tone="warn">{alerts} alert{alerts === 1 ? '' : 's'}</Pill>}</div>
-      <div class="text-[13px] num flex gap-3">
+      <div class="text-[13px] flex gap-3">
         <span class={t && t.nodesReady < t.nodes ? 'text-warn' : ''}>{t ? `${t.nodesReady}/${t.nodes}` : '—'} <span class="text-muted">nodes</span></span>
         <span class={st && !st.etcd.healthy ? 'text-bad' : ''}>{st ? `${st.etcd.members}/${st.etcd.expected}` : '—'} <span class="text-muted">etcd</span></span>
         <span>{st?.apiReachable ? t?.pods ?? '—' : '—'} <span class="text-muted">pods</span></span>
@@ -140,7 +139,7 @@ function LabHostCard({ h, alerts }: { h: NodeRow; alerts: number }) {
   return (
     <a href={`/labhosts/${h.mac}/overview`} class="panel p-3 flex flex-col gap-2 hover:border-accent min-w-0">
       <div class="flex items-center gap-2"><span class="font-semibold truncate">{hostName(h)}</span><Pill tone={stateTone(labState(lh))}>{labState(lh)}</Pill>{alerts > 0 && <Pill tone="warn">{alerts} alert{alerts === 1 ? '' : 's'}</Pill>}</div>
-      <div class={`text-[13px] num flex gap-3 ${offline ? 'text-muted' : ''}`}>
+      <div class={`text-[13px] flex gap-3 ${offline ? 'text-muted' : ''}`}>
         <span>{m ? `${Math.round(m.cpuPct)}%` : '—'} <span class="text-muted">cpu</span></span>
         <span>{m ? pct(m.memUsed, m.memTotal) : '—'} <span class="text-muted">memory</span></span>
         <span>{m ? pct(m.diskUsed, m.diskTotal) : '—'} <span class="text-muted">vm disk</span></span>
@@ -155,13 +154,12 @@ function Counter({ label, value, href, sub, tone }: { label: string; value: numb
   return (
     <a href={href} class="panel p-3 flex flex-col gap-1 hover:border-accent">
       <span class="label">{label}</span>
-      <span class={`text-2xl font-semibold num ${color}`}>{value}</span>
+      <span class={`text-2xl font-semibold ${color}`}>{value}</span>
       <span class="text-[12px] text-muted">{sub}</span>
     </a>
   )
 }
 
-/** Nothing known yet: the three steps to a cluster. */
 function Welcome({ versions }: { versions: Versions | null }) {
   const factory = settings.value?.factoryUrl ?? 'https://factory.talos.dev'
   const talos = versions?.talos.find((v) => !v.includes('-')) ?? versions?.minTalos ?? 'v1.14.0'

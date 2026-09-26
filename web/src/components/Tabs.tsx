@@ -1,6 +1,5 @@
 export interface Tab { id: string; label: string; href?: string; badge?: string | number }
 
-/** Horizontal tab strip. With hrefs it is a navigation (cluster sections); otherwise local. */
 export function Tabs({ tabs, active, onSelect }: { tabs: Tab[]; active: string; onSelect?: (id: string) => void }) {
   return (
     <div class="flex flex-wrap gap-1 border-b border-border" role="tablist">

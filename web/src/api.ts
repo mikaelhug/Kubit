@@ -1,6 +1,3 @@
-// Thin client for /api/v1. Every mutating call returns an operation id; progress arrives
-// over the SSE stream (see store.ts).
-
 export type Level = 'info' | 'warn' | 'error' | 'done'
 export type StepStatus = 'pending' | 'running' | 'done' | 'failed' | 'skipped' | 'cancelled'
 
@@ -9,7 +6,6 @@ export interface Event { time: string; clock?: string; kind?: 'log' | 'steps' | 
 export type OpStatus = 'running' | 'done' | 'failed' | 'cancelled'
 export interface Operation { id: number; cluster: string; kind: string; status: OpStatus; log?: string; startedAt: string; finishedAt?: string; steps: Step[]; artifact?: unknown; request?: unknown }
 export interface Message { seq?: number; kind: 'hello' | 'resync' | 'event' | 'operation' | 'status' | 'health' | 'refresh' | 'cluster' | 'clusterRemoved' | 'machine' | 'machineRemoved' | 'snapshot' | 'snapshotRemoved' | 'audit' | 'settings' | 'healthAck' | 'healthResolved' | 'versions' | 'hostSample' | 'observer'; observer?: ObserverState; operationId?: number; event?: Event; operation?: Operation; cluster?: string; status?: Status; health?: HealthEvent; scope?: string; clusterRow?: ClusterRow; machine?: NodeRow; snapshot?: Snapshot; audit?: AuditEntry; settings?: Settings; sample?: Sample; key?: string; node?: string; hello?: { seq: number; version: string; startedAt: string; service: boolean; pid: number; os?: string } }
-/** Kubit's own ability to observe: network reach and observation gaps (host asleep). */
 export interface ObserverState { online: boolean; since?: string; error?: string; gaps24h: number; lastGapAt?: string }
 export const kubitKey = 'kubit'
 export interface HealthEvent { id: number; ts: string; cluster: string; node?: string; severity: 'info' | 'warn' | 'critical'; kind: string; message: string; acked: boolean }
@@ -65,7 +61,6 @@ export interface ClusterSpec {
 }
 export interface ClusterOIDC { issuer: string; clientID: string; usernameClaim?: string; usernamePrefix?: string; groupsClaim?: string; groupsPrefix?: string; adminGroup?: string }
 export interface ClusterForm { oidc?: ClusterOIDC | null; talosVersion: string; kubernetesVersion: string; endpoint: string; vip: string; allowScheduling: boolean | null; podCIDR: string; serviceCIDR: string; extensions: string[]; nameservers: string[]; ntp: string[]; etcdSnapshotInterval: string; etcdSnapshotKeep: number; maintenanceWindow: string; maintenanceTimezone: string }
-/** The structured-settings form as the daemon currently stores it. */
 export function formOf(spec: ClusterSpec['spec']): ClusterForm {
   return {
     talosVersion: spec.talosVersion, kubernetesVersion: spec.kubernetesVersion, endpoint: spec.controlPlane.endpoint, vip: spec.controlPlane.vip ?? '', allowScheduling: spec.controlPlane.allowScheduling ?? null,
@@ -104,12 +99,10 @@ export interface VMSize { name?: string; role: 'controlplane' | 'worker'; cpus: 
 export interface VMPlan { each: VMSize[]; prefix?: string }
 export interface LabBootLine { kernel: string; initrd: string; cmdline: string }
 export interface LabInstall { stage: 'installer' | 'partitioning' | 'packages' | 'late-done' | 'booted' | string; at: string }
-export interface LabHost { state: 'installing' | 'setup' | 'ready' | 'updating' | 'error'; error?: string; capacity: LabCapacity; talos?: string; /** null from the daemon while installing; readers use vmsOf */ vms: LabVM[] | null; metrics?: LabMetrics; updates?: LabUpdates; install?: LabInstall; network?: 'bridge' | 'routed'; disk?: string; boot?: LabBootLine; failures?: number; driver?: 'libvirt' | 'vfkit'; iso?: string; updatedAt: string }
+export interface LabHost { state: 'installing' | 'setup' | 'ready' | 'updating' | 'error'; error?: string; capacity: LabCapacity; talos?: string; vms: LabVM[] | null; metrics?: LabMetrics; updates?: LabUpdates; install?: LabInstall; network?: 'bridge' | 'routed'; disk?: string; boot?: LabBootLine; failures?: number; driver?: 'libvirt' | 'vfkit'; iso?: string; updatedAt: string }
 export function vmsOf(lh?: LabHost | null): LabVM[] { return lh?.vms ?? [] }
-/** Samples and events of a lab host are filed under this pseudo-cluster. */
 export function labHostKey(mac: string) { return `labhost:${mac.toLowerCase()}` }
 
-/** A newer installed kernel or the reboot-required flag: the next Update host will reboot. */
 export function labNeedsReboot(u?: LabUpdates) { return !!u && (u.rebootRequired || (!!u.kernelInstalled && !!u.kernelRunning && u.kernelInstalled !== u.kernelRunning)) }
 export type MachineKind = 'member' | 'maintenance' | 'configured' | 'labhost' | 'booting' | 'unbooted'
 export interface NodeRow { ip: string; mac: string; uuid?: string; serial?: string; ipsSeen?: string[]; cluster: string; hostname: string; pool: string; arch: string; role: string; source: string; state: string; kind: MachineKind; talos: boolean; talosVersion: string; wol: boolean; oob?: OOBConfig; oobType?: string; provision?: boolean; provisionKind?: string; labhost?: LabHost; host?: string; firstSeen: string; lastSeen: string; inventory?: Inventory }
@@ -139,11 +132,9 @@ export class ApiError extends Error {
 }
 
 let token = ''
-export function setToken(t: string) { token = t; try { localStorage.setItem('kubit.token', t) } catch {} }
 try { token = localStorage.getItem('kubit.token') || '' } catch {}
 export function getToken() { return token }
 
-/** Called once per 401 so the shell can switch to the sign-in screen. */
 export let onUnauthorized: () => void = () => {}
 export function setUnauthorizedHandler(fn: () => void) { onUnauthorized = fn }
 
@@ -166,7 +157,6 @@ export interface Me { user: string; role: Role; via: string; setup: boolean; use
 export interface OIDCSettings { enabled: boolean; name: string; issuer: string; clientId: string; clientSecret: string; usernameClaim: string; groupsClaim: string; adminGroups: string[]; operatorGroups: string[]; viewerGroups: string[]; defaultRole: '' | Role }
 export interface User { id: number; name: string; role: Role; disabled: boolean; source: string; createdAt: string; lastLogin?: string; hasPassword: boolean }
 export interface ApiToken { name: string; kind: string; createdAt: string; expiresAt?: string; lastUsed?: string; prefix: string }
-export const roleRank: Record<Role, number> = { viewer: 1, operator: 2, admin: 3 }
 
 type OpRef = { operationId: number }
 
@@ -182,10 +172,8 @@ export const api = {
   tokens: (user: string) => req<ApiToken[]>('GET', `/users/${user}/tokens`),
   createToken: (user: string, name: string, days: number) => req<{ token: string }>('POST', `/users/${user}/tokens`, { name, days }),
   deleteToken: (user: string, name: string) => req<void>('DELETE', `/users/${user}/tokens/${encodeURIComponent(name)}`),
-  version: () => req<{ kubit: string; startedAt?: string; service?: boolean; pid?: number }>('GET', '/version'),
   observer: () => req<ObserverState>('GET', '/observer'),
   clusters: () => req<ClusterRow[]>('GET', '/clusters'),
-  cluster: (name: string) => req<ClusterRow>('GET', `/clusters/${name}`),
   status: (name: string, fresh = false) => req<Status>('GET', `/clusters/${name}/status${fresh ? '?fresh=true' : ''}`),
   samples: (name: string, range = '24h', node = '') => req<Sample[]>('GET', `/clusters/${name}/samples?range=${range}&node=${encodeURIComponent(node)}`),
   events: (name: string, unacked = false) => req<HealthEvent[]>('GET', `/clusters/${name}/events?limit=200&unacked=${unacked}`),
@@ -195,7 +183,6 @@ export const api = {
   saveClusterForm: (name: string, form: ClusterForm) => req<{ yaml: string }>('PUT', `/clusters/${name}/form`, form),
   settings: () => req<Settings>('GET', '/settings'),
   serviceHealth: (name: string) => req<{ latest: ServiceHealth | null; alerts: HealthEvent[] }>('GET', `/clusters/${name}/service-health`),
-  machine: (mac: string) => req<NodeRow>('GET', `/machines/${mac}`),
   retireMachine: (mac: string) => req<void>('DELETE', `/machines/${mac}`),
   setWOL: (mac: string, enabled: boolean) => req<void>('PUT', `/machines/${mac}/wol`, { enabled }),
   wake: (mac: string) => req<void>('POST', `/machines/${mac}/wake`),
@@ -207,7 +194,6 @@ export const api = {
   labRelease: (mac: string) => req<void>('DELETE', `/machines/${mac}/labhost`),
   labLocal: () => req<LabLocal>('GET', '/labhosts/local'),
   labLocalCreate: (plan: { vms?: VMPlan; cluster?: { name: string; controlPlanes: 1 | 3; skipPlatform?: boolean; repository?: FluxRepository } }) => req<OpRef & { mac: string }>('POST', '/labhosts', { driver: 'vfkit', ...plan }),
-  addMachine: (r: { mac: string; ip?: string; hostname?: string; arch?: string }) => req<NodeRow>('POST', '/machines', r),
   labSamples: (mac: string, range: string) => req<Sample[]>('GET', `/machines/${mac}/labhost/samples?range=${range}`),
   labCheck: (mac: string) => req<LabUpdates>('POST', `/machines/${mac}/labhost/check`),
   labUpdate: (mac: string) => req<OpRef>('POST', `/machines/${mac}/labhost/update?ignoreWindow=true`),
@@ -263,7 +249,6 @@ export const api = {
   forgetCluster: (name: string) => req<void>('DELETE', `/clusters/${name}`),
   applyCluster: (name: string, yaml?: string) => req<OpRef>('POST', `/clusters/${name}/apply?ignoreWindow=true`, { yaml: yaml || '' }),
   platformPlan: (name: string) => req<OpRef>('POST', `/clusters/${name}/platform/plan`),
-  platformApply: (name: string) => req<OpRef>('POST', `/clusters/${name}/platform/apply`),
   platformApplyPlan: (name: string, planId: number) => req<OpRef>('POST', `/clusters/${name}/platform/apply/${planId}`),
   upgradeTalos: (name: string, to: string) => req<OpRef>('POST', `/clusters/${name}/upgrade/talos?ignoreWindow=true`, { to }),
   upgradeKubernetes: (name: string, to: string) => req<OpRef>('POST', `/clusters/${name}/upgrade/kubernetes?ignoreWindow=true`, { to }),
@@ -280,13 +265,11 @@ export const api = {
   drain: (cluster: string, hostname: string) => req<OpRef>('POST', `/clusters/${cluster}/nodes/${hostname}/drain?ignoreWindow=true`),
   rebootNode: (cluster: string, hostname: string, drain: boolean) => req<OpRef>('POST', `/clusters/${cluster}/nodes/${hostname}/reboot?ignoreWindow=true`, { drain }),
   upgradeNode: (cluster: string, hostname: string, to: string) => req<OpRef>('POST', `/clusters/${cluster}/nodes/${hostname}/upgrade?ignoreWindow=true`, { to }),
-  reboot: (ip: string) => req<void>('POST', `/nodes/${ip}/reboot`),
   operations: () => req<Operation[]>('GET', '/operations'),
   operation: (id: number) => req<Operation>('GET', `/operations/${id}`),
   cancelOperation: (id: number) => req<void>('DELETE', `/operations/${id}`),
   retryOperation: (id: number) => req<OpRef>('POST', `/operations/${id}/retry`),
   validate: async (yaml: string): Promise<{ yaml: string; cluster: ClusterSpec }> => {
-    // Posts raw YAML, not JSON.
     const headers: Record<string, string> = { 'Content-Type': 'application/yaml' }
     if (token) headers.Authorization = 'Bearer ' + token
     const res = await fetch('/api/v1/config/validate', { method: 'POST', headers, body: yaml })
@@ -294,7 +277,6 @@ export const api = {
     if (!res.ok) throw new ApiError(res.status, data.error || res.statusText)
     return data
   },
-  draft: (name: string, ips: string[]) => req<{ yaml: string; topology: { ControlPlanes: number; Workers: number; AllowScheduling: boolean; HA: boolean } }>('POST', '/config/draft', { name, ips }),
 }
 
 export function podLogsUrl(cluster: string, ns: string, pod: string, container: string, follow: boolean, tail = 500) {
@@ -327,9 +309,7 @@ export const fmt = {
     return d ? `${d}d ${h}h` : h ? `${h}h ${m}m` : `${m}m`
   },
   pct(a: number, b: number) { return b ? Math.round((a / b) * 100) : 0 },
-  time(iso: string) { return iso ? new Date(iso).toLocaleTimeString() : '' },
   datetime(iso: string) { return iso ? new Date(iso).toLocaleString() : '' },
-  /** Time of day when today, otherwise date and time. */
   when(iso: string) {
     if (!iso) return ''
     const d = new Date(iso)

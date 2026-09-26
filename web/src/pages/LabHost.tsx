@@ -11,7 +11,6 @@ import { hostName, labOffline, labState, lastSeenOf, modelOf, onMac } from '../m
 type TabId = 'overview' | 'vms' | 'actions'
 const tabs: { id: TabId; label: string }[] = [{ id: 'overview', label: 'Overview' }, { id: 'vms', label: 'VMs' }, { id: 'actions', label: 'Actions' }]
 
-/** One lab host: is it healthy, what VMs does it carry, how is it maintained. */
 export function LabHostPage({ mac, tab = 'overview' }: { mac: string; tab?: string }) {
   const { route } = useLocation()
   const host = machines.value.get(mac.toLowerCase()) ?? null

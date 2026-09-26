@@ -8,14 +8,12 @@ import { DataTable, type Column } from '../../components/DataTable'
 import type { Draft } from './NewCluster'
 import { addrOf, guessGateway, inRange, ip4, parseRange, prefixOf, sameSubnet } from './net'
 import { ageSec } from '../../clock'
-import { dataCandidates, installCandidates, isVirtual, modelOf, TypePill } from '../../machine'
+import { dataCandidates, installCandidates, modelOf, TypePill } from '../../machine'
 
 type SetCluster = (fn: (c: ClusterSpec) => ClusterSpec) => void
 const GiB = 1024 ** 3
 
 export function machineOf(draft: Draft, n: NodeSpec) { return draft.machines.find((m) => m.mac === n.mac) }
-
-export { modelOf, isVirtual, TypePill, installCandidates, dataCandidates }
 
 export function machineWarnings(m: NodeRow, all: NodeRow[]): string[] {
   const out: string[] = []
@@ -29,8 +27,6 @@ export function machineWarnings(m: NodeRow, all: NodeRow[]): string[] {
   return out
 }
 
-// ─── 1 · Machines ────────────────────────────────────────────────────────────
-
 export function MachinesStep({ draft, patch, setError }: { draft: Draft; patch: (p: Partial<Draft>) => void; setError: (_e: string | null) => void }) {
   const [targets, setTargetsRaw] = useState('')
   const [typed, setTyped] = useState(false)
@@ -40,9 +36,9 @@ export function MachinesStep({ draft, patch, setError }: { draft: Draft; patch: 
   const free = all.filter(fresh)
   const stale = all.filter((n) => !fresh(n))
   const freeKey = free.map((m) => m.mac + m.ip + m.lastSeen).join('|')
-  useEffect(() => { patch({ machines: free, selected: draft.selected.filter((mac) => free.some((m) => m.mac === mac)) }) }, [freeKey]) // eslint-disable-line
+  useEffect(() => { patch({ machines: free, selected: draft.selected.filter((mac) => free.some((m) => m.mac === mac)) }) }, [freeKey])
   const subnets = settings.value?.discoverySubnets ?? []
-  useEffect(() => { if (!typed) setTargetsRaw(subnets.length ? subnets.join(', ') : free[0] ? free[0].ip.replace(/\.\d+$/, '.0/24') : '') }, [subnets.join(','), free.length]) // eslint-disable-line
+  useEffect(() => { if (!typed) setTargetsRaw(subnets.length ? subnets.join(', ') : free[0] ? free[0].ip.replace(/\.\d+$/, '.0/24') : '') }, [subnets.join(','), free.length])
   const scanning = [...operations.value.values()].some((o) => o.kind === 'discover' && o.status === 'running')
   const toggle = (mac: string) => patch({ selected: draft.selected.includes(mac) ? draft.selected.filter((x) => x !== mac) : [...draft.selected, mac] })
   const chosen = draft.machines.filter((m) => draft.selected.includes(m.mac))
@@ -56,7 +52,7 @@ export function MachinesStep({ draft, patch, setError }: { draft: Draft; patch: 
     ) },
     { id: 'ip', header: 'Address', mono: true, cell: ({ m }) => m.ip },
     { id: 'resources', header: 'Resources', cell: ({ m, stale }) => stale ? null : (
-      <span class="flex flex-col num">
+      <span class="flex flex-col">
         <span>{m.arch} · {m.inventory?.cpus ?? '?'} CPU · {fmt.bytes(m.inventory?.memoryBytes ?? 0)}{m.inventory?.kvm && <span class="text-[10px] text-muted"> · kvm</span>}</span>
         <span class="text-[10px] text-muted">{m.inventory?.links?.length ?? 0} NIC{(m.inventory?.links?.length ?? 0) === 1 ? '' : 's'}, {m.inventory?.links?.filter((l) => l.up).length ?? 0} up</span>
       </span>
@@ -92,7 +88,6 @@ export function MachinesStep({ draft, patch, setError }: { draft: Draft; patch: 
   )
 }
 
-/** Machines that are known but not pickable, and where to act on them. */
 function HiddenMachinesNote() {
   const all = machineList.value.filter((m) => !m.host)
   const members = all.filter((m) => m.kind === 'member').length
@@ -110,8 +105,6 @@ export function topologyText(n: number) {
   return '3 dedicated control planes, ' + (n - 3) + ' workers'
 }
 
-// ─── 2 · Design ──────────────────────────────────────────────────────────────
-
 const registryCIDROK = (cidr: string) => { const [ip, bits] = cidr.split('/'); return /^\d+\.\d+\.\d+\.\d+$/.test(ip ?? '') && Number(bits) >= 1 && Number(bits) <= 22 }
 
 const hasData = (c: ClusterSpec) => !!c.spec.storage?.systemDisk || c.spec.nodes.some((n) => n.dataDisks?.length)
@@ -122,7 +115,6 @@ export function DesignStep({ draft, setCluster, reset, busy }: { draft: Draft; s
   const poolOf = (name?: string) => pools.find((p) => p.name === name)
   const updateNode = (i: number, patch: Partial<NodeSpec>) => setCluster((c) => ({ ...c, spec: { ...c.spec, nodes: c.spec.nodes.map((n, j) => j === i ? { ...n, ...patch } : n) } }))
   const setPools = (ps: Pool[]) => setCluster((c) => {
-    // Renaming a pool with nodes is blocked in the editor, so only role changes matter.
     const nodes = c.spec.nodes.map((n) => { const p = ps.find((x) => x.name === n.pool); return p ? { ...n, role: p.role } : n })
     return { ...c, spec: { ...c.spec, pools: ps, nodes } }
   })
@@ -192,8 +184,6 @@ export function DesignStep({ draft, setCluster, reset, busy }: { draft: Draft; s
     </>
   )
 }
-
-// ─── 3 · Network ─────────────────────────────────────────────────────────────
 
 export function NetworkStep({ draft, setCluster }: { draft: Draft; setCluster: SetCluster }) {
   const c = draft.cluster!
@@ -287,8 +277,6 @@ export function NetworkStep({ draft, setCluster }: { draft: Draft; setCluster: S
   )
 }
 
-// ─── 4 · Platform ────────────────────────────────────────────────────────────
-
 const addons: { key: keyof ClusterSpec['spec']['platform']; title: string; what: string; size: string }[] = [
   { key: 'metallb', title: 'MetalLB', what: 'LoadBalancer services on bare metal: announces addresses from the range over ARP.', size: '~120 MiB, 1 controller + 1 speaker per node' },
   { key: 'ingressNginx', title: 'ingress-nginx', what: 'HTTP(S) ingress controller behind a LoadBalancer address; the default IngressClass.', size: '~250 MiB, 1 pod' },
@@ -339,8 +327,6 @@ export function PlatformStep({ draft, setCluster, patch }: { draft: Draft; setCl
   )
 }
 
-// ─── 5 · Review ──────────────────────────────────────────────────────────────
-
 export function ReviewStep({ draft, setCluster, patch, onCreate, busy }: { draft: Draft; setCluster: SetCluster; patch: (p: Partial<Draft>) => void; onCreate: (yaml: string) => void; busy: boolean }) {
   const c = draft.cluster!
   const [tab, setTab] = useState<'summary' | 'yaml'>('summary')
@@ -353,10 +339,9 @@ export function ReviewStep({ draft, setCluster, patch, onCreate, busy }: { draft
     setLinting(true)
     api.lint(key).then((r) => { patch({ warnings: r.warnings ?? [] }); setYaml(r.yaml); setDirty(false); setLintErr(null) })
       .catch((e) => setLintErr(e.message)).finally(() => setLinting(false))
-  }, [key]) // eslint-disable-line
+  }, [key])
   const applyYaml = () => api.validate(yaml).then((v) => { setCluster(() => v.cluster); toast('Declaration updated from YAML', 'good') }).catch((e) => setLintErr(e.message))
   const errors = draft.warnings.filter((w) => w.level !== 'info')
-  // Findings that guarantee an unusable or failing cluster block Create; the rest stay advisory.
   const blocking = ['no-disk', 'no-schedulable-nodes', 'control-plane-undersized', 'worker-undersized']
   const blockers = draft.warnings.filter((w) => blocking.includes(w.code))
   const poolFor = (n: NodeSpec) => (c.spec.pools ?? []).find((x) => x.name === n.pool)
@@ -403,8 +388,6 @@ export function ReviewStep({ draft, setCluster, patch, onCreate, busy }: { draft
 export function WarningLine({ w }: { w: Warning }) {
   return <Notice tone={w.level === 'warn' ? 'warn' : 'info'}><span class="mono text-[11px] opacity-70 mr-2">{w.code}</span>{w.node && <span class="mono mr-1">{w.node}:</span>}{w.message}</Notice>
 }
-
-// ─── Right-hand summary ──────────────────────────────────────────────────────
 
 export function Summary({ draft }: { draft: Draft }) {
   const c = draft.cluster

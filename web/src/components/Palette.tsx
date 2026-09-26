@@ -7,7 +7,6 @@ import { Pill } from './ui'
 
 interface Item { label: string; hint?: string; href: string; group: string }
 
-/** ⌘K / Ctrl+K: jump to any cluster page, node, or Kubit page by typing. */
 export function Palette() {
   const [open, setOpen] = useState(false)
   const [q, setQ] = useState('')
@@ -75,7 +74,6 @@ export function Palette() {
   )
 }
 
-/** '?' opens the shortcut sheet. */
 export function Shortcuts() {
   const [open, setOpen] = useState(false)
   useEffect(() => {
@@ -102,7 +100,6 @@ export function Shortcuts() {
   )
 }
 
-/** Theme follows the OS until the user picks one; the choice is remembered. */
 export function ThemeToggle() {
   const [theme, setTheme] = useState<string>(() => { try { return localStorage.getItem('kubit.theme') ?? 'system' } catch { return 'system' } })
   useEffect(() => {

@@ -5,7 +5,6 @@ import { Pill, type Tone } from './ui'
 const actionTone: Record<PlanChange['action'], Tone> = { create: 'good', update: 'warn', replace: 'warn', delete: 'bad' }
 const typeLabel: Record<string, string> = { helm_release: 'Helm release', kubectl_manifest: 'Manifest', kubernetes_namespace_v1: 'Namespace' }
 
-/** Reviewable rendering of an OpenTofu plan: per add-on, per resource, per attribute. */
 export function DiffView({ diff }: { diff: PlanDiff }) {
   const total = diff.summary.Add + diff.summary.Change + diff.summary.Remove
   return (

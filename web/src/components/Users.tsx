@@ -8,7 +8,6 @@ import { ConfirmDialog, Dialog, ErrorBox, Field, Notice, Pill, Section } from '.
 const roles: Role[] = ['viewer', 'operator', 'admin']
 const roleHelp: Record<Role, string> = { viewer: 'Read everything except credentials.', operator: 'Run operations: create, add, upgrade, power.', admin: 'Everything, including accounts and settings.' }
 
-/** Accounts, roles and API tokens; administrators only. */
 export function UsersSection() {
   const [users, setUsers] = useState<User[]>([])
   const [error, setError] = useState<string | null>(null)
@@ -17,12 +16,12 @@ export function UsersSection() {
   const [tokensFor, setTokensFor] = useState<User | null>(null)
   const [remove, setRemove] = useState<User | null>(null)
   const load = () => api.users().then((u) => { setUsers(u); setError(null) }).catch((e) => setError(e.message))
-  useEffect(() => { load() }, [refreshKey('', 'users')]) // eslint-disable-line
+  useEffect(() => { load() }, [refreshKey('', 'users')])
   const columns: Column<User>[] = [
     { id: 'name', header: 'User', sort: (u) => u.name, mono: true, cell: (u) => <span class="flex items-center gap-2">{u.name}{u.name === me.value?.user && <Pill tone="info">you</Pill>}{u.disabled && <Pill tone="muted">disabled</Pill>}</span> },
     { id: 'role', header: 'Role', sort: (u) => u.role, cell: (u) => u.role },
     { id: 'source', header: 'Source', sort: (u) => u.source, cell: (u) => u.source },
-    { id: 'login', header: 'Last sign-in', sort: (u) => u.lastLogin ?? '', cell: (u) => <span class="num text-muted">{u.lastLogin ? fmt.when(u.lastLogin) : 'never'}</span> },
+    { id: 'login', header: 'Last sign-in', sort: (u) => u.lastLogin ?? '', cell: (u) => <span class="text-muted">{u.lastLogin ? fmt.when(u.lastLogin) : 'never'}</span> },
     { id: 'actions', header: '', align: 'right', cell: (u) => <span class="flex gap-1 justify-end"><button class="btn !py-0.5 !px-2 text-[12px]" onClick={() => setTokensFor(u)}>Tokens</button><button class="btn !py-0.5 !px-2 text-[12px]" onClick={() => setEdit(u)}>Edit</button><button class="btn !py-0.5 !px-2 text-[12px]" onClick={() => setRemove(u)}>Delete</button></span> },
   ]
   return (
@@ -71,7 +70,7 @@ function TokensDialog({ user, onClose }: { user: User; onClose: () => void }) {
   const [issued, setIssued] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
   const load = () => api.tokens(user.name).then(setTokens).catch((e) => setError(e.message))
-  useEffect(() => { load() }, [user.name]) // eslint-disable-line
+  useEffect(() => { load() }, [user.name])
   const create = () => api.createToken(user.name, name, days).then((r) => { setIssued(r.token); setName(''); load() }).catch((e) => setError(e.message))
   return (
     <Dialog title={`API tokens for ${user.name}`} onClose={onClose} footer={<button class="btn" onClick={onClose}>Close</button>}>
@@ -84,7 +83,7 @@ function TokensDialog({ user, onClose }: { user: User; onClose: () => void }) {
       </div>
       <div class="grid grid-cols-[1fr_auto_auto] gap-2 items-end">
         <Field label="Name"><input class="input mono" value={name} onInput={(e) => setName((e.target as HTMLInputElement).value)} /></Field>
-        <Field label="Days"><input class="input num w-20" type="number" min={0} value={days} onInput={(e) => setDays(Number((e.target as HTMLInputElement).value))} /></Field>
+        <Field label="Days"><input class="input w-20" type="number" min={0} value={days} onInput={(e) => setDays(Number((e.target as HTMLInputElement).value))} /></Field>
         <button class="btn btn-primary" disabled={!name} onClick={create}>Issue</button>
       </div>
     </Dialog>

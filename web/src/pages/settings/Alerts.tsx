@@ -19,14 +19,14 @@ export function Alerts() {
             <option value="info">info (everything)</option><option value="warn">warn</option><option value="critical">critical only</option>
           </select>
         </Field>
-        <Field label="Heartbeat (hours)" hint="A summary this often regardless of severity; 0 = off. Silence means the daemon is down."><input class="input num" type="number" min={0} value={a.heartbeatHours ?? 0} onInput={(e) => set({ heartbeatHours: Number((e.target as HTMLInputElement).value) })} /></Field>
+        <Field label="Heartbeat (hours)" hint="A summary this often regardless of severity; 0 = off. Silence means the daemon is down."><input class="input" type="number" min={0} value={a.heartbeatHours ?? 0} onInput={(e) => set({ heartbeatHours: Number((e.target as HTMLInputElement).value) })} /></Field>
         <Field label="Ignore namespaces" hint="No workload alerts for these; comma-separated."><input class="input mono" value={(a.ignoreNamespaces ?? []).join(', ')} placeholder="dev, ci" onInput={(e) => set({ ignoreNamespaces: (e.target as HTMLInputElement).value.split(/[,\s]+/).filter(Boolean) })} /></Field>
         <Field label="Webhook URL" hint="Slack, Discord, Teams or generic JSON. Empty = off."><input class="input mono" value={a.webhookUrl} placeholder="https://hooks.slack.com/services/…" onInput={(e) => set({ webhookUrl: (e.target as HTMLInputElement).value.trim() })} /></Field>
       </div>
       <div class="panel p-3 grid grid-cols-1 md:grid-cols-2 gap-4">
         <Field label="SMTP host" hint="Empty = off."><input class="input mono" value={a.smtp.host} placeholder="smtp.example.com" onInput={(e) => smtp({ host: (e.target as HTMLInputElement).value.trim() })} /></Field>
         <div class="grid grid-cols-2 gap-3">
-          <Field label="SMTP port"><input class="input num" type="number" value={a.smtp.port} onInput={(e) => smtp({ port: Number((e.target as HTMLInputElement).value) })} /></Field>
+          <Field label="SMTP port"><input class="input" type="number" value={a.smtp.port} onInput={(e) => smtp({ port: Number((e.target as HTMLInputElement).value) })} /></Field>
           <Field label="Encryption">
             <select class="input" value={a.smtp.tls ?? (a.smtp.startTLS ? 'starttls' : 'none')} onChange={(e) => { const tls = (e.target as HTMLSelectElement).value as any; smtp({ tls, port: tls === 'tls' && a.smtp.port === 587 ? 465 : tls === 'starttls' && a.smtp.port === 465 ? 587 : a.smtp.port }) }}>
               <option value="starttls">STARTTLS (587)</option><option value="tls">Implicit TLS (465)</option><option value="none">None (local relay)</option>

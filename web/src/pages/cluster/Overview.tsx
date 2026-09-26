@@ -18,7 +18,6 @@ export function Overview({ ctx }: { ctx: ClusterCtx }) {
   const cpDown = status ? status.nodes.filter((n) => n.role === 'controlplane' && (!n.talosReachable || !n.ready)).length : 0
   const events = health.value.get(name) ?? []
   const alerts = events.filter((e) => !e.acked && e.severity !== 'info')
-  // Info events earn a place only when they close an alert.
   const notable = events.filter((e) => e.severity !== 'info' || recoveryKinds.has(e.kind))
   const [range, setRange] = useState('24h')
   const [samples, setSamples] = useState<Sample[]>([])
@@ -31,9 +30,7 @@ export function Overview({ ctx }: { ctx: ClusterCtx }) {
   ].filter(Boolean)
   useEffect(() => { api.samples(name, range).then(setSamples).catch(() => {}) }, [name, range])
   const [service, setService] = useState<ServiceHealth | null>(null)
-  useEffect(() => { api.serviceHealth(name).then((r) => setService(r.latest)).catch(() => {}) }, [name, status?.observedAt, refreshKey(name, 'workloads')]) // eslint-disable-line
-  // Every pushed status is also the newest sample: append it so the graphs move
-  // without refetching.
+  useEffect(() => { api.serviceHealth(name).then((r) => setService(r.latest)).catch(() => {}) }, [name, status?.observedAt, refreshKey(name, 'workloads')])
   useEffect(() => {
     if (!status?.observedAt || !t) return
     setSamples((prev) => {
@@ -42,7 +39,7 @@ export function Overview({ ctx }: { ctx: ClusterCtx }) {
       const point: Sample = { ts: status.observedAt!, cpuMilli: t.cpuMilli, cpuCap: t.cpuCapMilli, memBytes: t.memBytes, memCap: t.memCapBytes, pods: t.pods, ready: t.nodesReady === t.nodes, reachable: status.apiReachable }
       return [...prev, point]
     })
-  }, [status?.observedAt]) // eslint-disable-line
+  }, [status?.observedAt])
   const pts = (f: (s: Sample) => number, metered = false) => samples.map((s) => ({ t: new Date(s.ts).getTime(), v: s.reachable && (!metered || s.memBytes > 0) ? f(s) : null }))
   const capOf = (f: (s: Sample) => number) => f(samples.filter((s) => s.reachable).pop() ?? { cpuCap: 0, memCap: 0 } as Sample)
   const down = !!status && !status.apiReachable
@@ -96,7 +93,7 @@ export function Overview({ ctx }: { ctx: ClusterCtx }) {
                   <StatusDot tone={o.status === 'done' ? 'good' : o.status === 'running' ? 'warn' : o.status === 'failed' ? 'bad' : 'muted'} pulse={o.status === 'running'} />
                   <span class="font-medium">{fmt.kind(o.kind)}</span>
                   <span class="text-muted">#{o.id}</span>
-                  <span class="ml-auto text-muted num">{fmt.datetime(o.startedAt)}</span>
+                  <span class="ml-auto text-muted">{fmt.datetime(o.startedAt)}</span>
                   <Pill tone={o.status === 'done' ? 'good' : o.status === 'running' ? 'warn' : o.status === 'failed' ? 'bad' : 'muted'}>{o.status}</Pill>
                 </a>
               ))}
@@ -108,7 +105,6 @@ export function Overview({ ctx }: { ctx: ClusterCtx }) {
   )
 }
 
-/** What Kubit could reach on its last observation, and whether it could observe at all. */
 function Reachability({ status }: { status: Status | null }) {
   if (!status) return null
   const blind = status.observer === 'offline'
@@ -150,7 +146,7 @@ export function EventRow({ e, onAck }: { e: HealthEvent; onAck?: () => void }) {
     <div class="flex flex-col">
       <div class="flex items-center gap-3 px-4 py-2 text-[13px]">
         <StatusDot tone={tone} />
-        <span class="num text-muted text-[12px] whitespace-nowrap shrink-0">{fmt.when(e.ts)}</span>
+        <span class="text-muted text-[12px] whitespace-nowrap shrink-0">{fmt.when(e.ts)}</span>
         <span class={`min-w-0 truncate ${e.acked ? 'text-muted' : ''}`} title={e.message}>{e.message}</span>
         {objectLink(e) && <a href={objectLink(e)!} class="text-[11px] text-accent hover:underline shrink-0">open</a>}
         <span class="ml-auto mono text-[11px] text-muted">{e.kind}</span>
@@ -169,7 +165,6 @@ export function EventRow({ e, onAck }: { e: HealthEvent; onAck?: () => void }) {
   )
 }
 
-/** How current the watcher's view is, and whether scheduled snapshots are keeping up. */
 function WorkloadsCard({ cluster, pods, service, unreachable }: { cluster: string; pods?: number; service: ServiceHealth | null; unreachable: boolean }) {
   const namespaces = useNamespaces(cluster)
   if (unreachable) return <Card label="Workloads" tone="bad" value="—" sub="API unreachable" href={`/clusters/${cluster}/workloads?view=pods`} />
@@ -187,7 +182,6 @@ function WorkloadsCard({ cluster, pods, service, unreachable }: { cluster: strin
   return <Card label="Workloads" tone={!service ? 'muted' : down.length > 0 ? 'bad' : failing.length > 0 ? 'warn' : 'good'} value={value} sub={sub} href={`/clusters/${cluster}/workloads?view=pods&scope=${scope}`} />
 }
 
-/** Last etcd snapshot, whether it has an off-site copy, and whether the schedule is keeping up. */
 function BackupsCard({ cluster, status, interval: spec }: { cluster: string; status?: { lastSnapshotAt?: string; snapshotInterval?: string } | null; interval: string }) {
   useEffect(() => { if (!snapshots.value.has(cluster)) loadSnapshots(cluster) }, [cluster])
   const latest = (snapshots.value.get(cluster) ?? []).find((s) => s.status === 'ok')
@@ -200,7 +194,6 @@ function BackupsCard({ cluster, status, interval: spec }: { cluster: string; sta
   return <Card label="Backups" tone={!at ? 'warn' : late ? 'warn' : 'good'} value={value} title={at ? fmt.datetime(at) : undefined} sub={late && at ? `behind schedule · ${sub}` : sub} href={`/clusters/${cluster}/backups`} />
 }
 
-/** Semver-ish compare on the numeric part; prereleases never count as newer. */
 export function verLess(a: string, b: string): boolean {
   if (b.includes('-')) return false
   const pa = a.replace(/^v/, '').split('-')[0].split('.').map(Number), pb = b.replace(/^v/, '').split('.').map(Number)
@@ -214,7 +207,6 @@ function parseDuration(s: string): number {
   return Number(m[1]) * ({ h: 3600, m: 60, s: 1 }[m[2]] ?? 1)
 }
 
-/** Workload alerts carry the object as kind/namespace/name; link to the page that shows it. */
 function objectLink(e: HealthEvent): string | null {
   const m = /^(\w+)\/([^/]+)\/(.+)$/.exec(e.node ?? '')
   if (!m) return null
@@ -228,7 +220,7 @@ export function Card({ label, value, tone, sub, href, title }: { label: string; 
   const body = (
     <>
       <span class="label">{label}</span>
-      <span class={`text-lg font-semibold num truncate ${color}`} title={title ?? value}>{value}</span>
+      <span class={`text-lg font-semibold truncate ${color}`} title={title ?? value}>{value}</span>
       {sub && <span class="text-[12px] text-muted truncate" title={sub}>{sub}</span>}
     </>
   )

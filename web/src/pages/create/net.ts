@@ -1,5 +1,3 @@
-// Small IPv4 helpers for the wizard's live checks; the daemon's lint is authoritative.
-
 export function ip4(s: string): number | null {
   const m = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(s.trim())
   if (!m) return null
@@ -10,7 +8,6 @@ export function ip4(s: string): number | null {
 
 export function fromInt(n: number) { return [n >>> 24, (n >>> 16) & 255, (n >>> 8) & 255, n & 255].join('.') }
 
-/** Address part of "a.b.c.d/nn" or a bare address. */
 export function addrOf(cidr: string) { return cidr.split('/')[0].trim() }
 
 export function prefixOf(cidr: string, dflt = 24) { const p = cidr.split('/')[1]; const n = p ? Number(p) : dflt; return Number.isFinite(n) && n >= 0 && n <= 32 ? n : dflt }
@@ -34,7 +31,6 @@ export function inRange(ip: string, r: string) {
   return x !== null && rr !== null && x >= rr[0] && x <= rr[1]
 }
 
-/** Guess the gateway (.1) for a lease; the operator can overwrite it. */
 export function guessGateway(ip: string, prefix: number) {
   const x = ip4(addrOf(ip))
   if (x === null) return ''

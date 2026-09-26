@@ -1,6 +1,3 @@
-// The one live connection. Every message the daemon publishes lands here and is
-// applied to the signals in store.ts; a reconnect replays what was missed (?since)
-// or, when the daemon says so, reloads the base state once.
 import { fmt, getToken, type Message } from './api'
 import {
   applyStepEvent, audit, clusters, connected, daemon, health, hostSamples, latestTalos, loadMachines, loadObserver, loadSettings, machines, me, observer, opEvents, operations,
@@ -31,7 +28,6 @@ export function connectLive() {
   ws.onerror = () => ws?.close()
 }
 
-/** After sign-in or sign-out: drop the socket and start over with the new identity. */
 export function reconnectLive() {
   everConnected = false
   lastSeq = 0
@@ -42,7 +38,6 @@ export function reconnectLive() {
   connectLive()
 }
 
-/** Reload everything the console derives from; views refetch through bumped scopes. */
 export async function resync() {
   resyncing.value = true
   try {
@@ -67,7 +62,6 @@ function apply(m: Message) {
       attempt = 0
       reconnectAttempt.value = 0
       if (m.hello) daemon.value = { version: m.hello.version, startedAt: m.hello.startedAt, service: m.hello.service, os: m.hello.os }
-      // First connection, or a daemon restart (sequence went backwards): full load.
       const restarted = m.hello && m.hello.seq < lastSeq
       helloSeq = m.hello?.seq ?? 0
       if (!everConnected || restarted) { everConnected = true; lastSeq = helloSeq; resync() }
@@ -166,7 +160,6 @@ function apply(m: Message) {
       if (m.sample && m.key) hostSamples.value = new Map(hostSamples.value).set(m.key, m.sample)
       break
     case 'healthAck': {
-      // The daemon is the authority on acks: same view in every tab.
       const hm = new Map(health.value)
       const c = m.cluster ?? ''
       hm.set(c, (hm.get(c) ?? []).map((e) => m.key === '*' || String(e.id) === m.key ? { ...e, acked: true } : e))

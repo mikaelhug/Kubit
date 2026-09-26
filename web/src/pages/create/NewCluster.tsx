@@ -12,18 +12,14 @@ const steps: { id: StepId; label: string }[] = [
 
 export interface Draft {
   name: string
-  machines: NodeRow[]          // every unassigned maintenance-mode machine known
-  selected: string[]           // MACs, in selection order
-  designedFor: string          // MAC set the proposal was computed for
+  machines: NodeRow[]
+  selected: string[]
+  designedFor: string
   cluster: ClusterSpec | null
   skipPlatform: boolean
   warnings: Warning[]
 }
 
-/**
- * Create-cluster wizard. The daemon proposes a declaration for the chosen machines
- * (POST /config/design); every later step edits that object, and Review lints it.
- */
 export function NewCluster() {
   const [step, setStep] = useState<StepId>('machines')
   const [draft, setDraft] = useState<Draft>({ name: 'homelab', machines: [], selected: [], designedFor: '', cluster: null, skipPlatform: false, warnings: [] })
@@ -61,7 +57,7 @@ export function NewCluster() {
     return (
       <div class="p-6 max-w-[1100px] flex flex-col gap-3">
         <h1 class="text-xl font-semibold">Creating {draft.cluster.metadata.name}</h1>
-        <div class="panel h-[65vh] flex flex-col overflow-hidden"><OperationView id={createOp} tall /></div>
+        <div class="panel h-[65vh] flex flex-col overflow-hidden"><OperationView id={createOp} /></div>
         <div class="flex gap-2 items-center">
           <a href={`/clusters/${draft.cluster.metadata.name}/overview`} class="btn btn-primary">Open cluster</a>
           <span class="text-[12px] text-muted">Provisioning keeps running if you leave; it stays in the Activity drawer.</span>

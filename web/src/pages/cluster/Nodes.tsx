@@ -76,7 +76,6 @@ export function Nodes({ ctx }: { ctx: ClusterCtx }) {
   )
 }
 
-/** One pill per fact; the reason travels in the tooltip and inline when unreachable. */
 export function NodeHealth({ n, apiReachable }: { n: NodeStatus; apiReachable: boolean }) {
   const pills = []
   if (!n.talosReachable) pills.push(<Pill tone="bad" title={n.talosError}>Talos unreachable</Pill>)
@@ -202,7 +201,6 @@ function AddNodeDialog({ cluster, onClose, preselect }: { cluster: ClusterRow; o
   )
 }
 
-/** Re-point the declaration (and the machine config) at the address the machine now uses, or pin a static one. */
 export function ReaddressDialog({ cluster, n, spec, onClose }: { cluster: ClusterRow; n: NodeStatus; spec?: NodeSpec; onClose: () => void }) {
   const isEndpoint = cluster.spec.spec.controlPlane.endpoint === `https://${n.ip}:6443`
   const [mode, setMode] = useState<'dhcp' | 'static'>(spec?.network ? 'static' : 'dhcp')

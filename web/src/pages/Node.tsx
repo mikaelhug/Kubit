@@ -13,7 +13,6 @@ import { elapsed } from '../clock'
 
 type TabId = 'overview' | 'hardware' | 'kubernetes' | 'services' | 'logs' | 'actions'
 
-/** One machine: what Talos says, what Kubernetes says, and what can be done to it. */
 export function NodePage({ ip: ipParam, mac }: { ip?: string; mac?: string }) {
   const [node, setNode] = useState<NodeRow | null>(null)
   const ip = node?.ip ?? ipParam ?? ''
@@ -26,15 +25,13 @@ export function NodePage({ ip: ipParam, mac }: { ip?: string; mac?: string }) {
   const [error, setError] = useState<string | null>(null)
   const finished = [...operations.value.values()].filter((o) => o.status !== 'running').length
 
-  // The machine row is live state; the two Talos/Kubernetes detail calls follow the
-  // cluster's status ticks and node-scope changes.
   const live = mac ? machines.value.get(mac.toLowerCase()) ?? null : machineList.value.find((n) => n.ip === ipParam) ?? null
   useEffect(() => {
     setNode(live)
     if (live?.kind === 'labhost') { route(`/labhosts/${live.mac}/overview`, true); return }
     if (live && !mac) history.replaceState(null, '', `/machines/${live.mac}`)
     if (!live && connected.value && !resyncing.value) setError(`No machine ${mac ?? ipParam} is known.`)
-  }, [live, mac, ipParam]) // eslint-disable-line
+  }, [live, mac, ipParam])
   const observed = live?.cluster ? statuses.value.get(live.cluster)?.observedAt : undefined
   useEffect(() => {
     if (!live) return
@@ -42,7 +39,7 @@ export function NodePage({ ip: ipParam, mac }: { ip?: string; mac?: string }) {
     else { setInv(null); setInvErr(null) }
     if (live.kind === 'member') api.nodeKubernetes(live.ip).then((d) => { setK8s(d); setK8sErr(null) }).catch((e) => setK8sErr(e.message))
     else { setK8s(null); setK8sErr(null) }
-  }, [live?.ip, live?.kind, live?.talos, finished, observed, refreshKey(live?.cluster ?? '', 'nodes')]) // eslint-disable-line
+  }, [live?.ip, live?.kind, live?.talos, finished, observed, refreshKey(live?.cluster ?? '', 'nodes')])
 
   const cluster = node?.cluster ? clusters.value.find((c) => c.name === node.cluster) : undefined
   const spec: NodeSpec | undefined = cluster?.spec.spec.nodes.find((n) => (node?.mac && n.mac === node.mac) || n.hostname === node?.hostname)
@@ -87,7 +84,6 @@ export function NodePage({ ip: ipParam, mac }: { ip?: string; mac?: string }) {
   )
 }
 
-/** Whether the Talos API answered on the last observation, and when. */
 function ReachPill({ node, inv, invErr }: { node: NodeRow; inv: Inventory | null; invErr: string | null }) {
   const st = node.cluster ? statuses.value.get(node.cluster) : undefined
   const ns = st?.nodes.find((n) => n.hostname === node.hostname)
@@ -241,12 +237,12 @@ function KubernetesTab({ k8s, err }: { k8s: NodeDetail | null; err: string | nul
     { id: 'ns', header: 'Namespace', sort: (p) => p.namespace, cell: (p) => p.namespace },
     { id: 'name', header: 'Pod', sort: (p) => p.name, mono: true, cell: (p) => p.name },
     { id: 'phase', header: 'Phase', sort: (p) => p.phase, cell: (p) => <Pill tone={p.phase === 'Running' || p.phase === 'Succeeded' ? 'good' : p.phase === 'Pending' ? 'warn' : 'bad'}>{p.phase}</Pill> },
-    { id: 'ready', header: 'Ready', cell: (p) => <span class="num">{p.ready}</span> },
+    { id: 'ready', header: 'Ready', cell: (p) => <span>{p.ready}</span> },
     { id: 'restarts', header: 'Restarts', align: 'right', sort: (p) => p.restarts, cell: (p) => <span class={p.restarts > 3 ? 'text-warn' : ''}>{p.restarts}</span> },
     { id: 'owner', header: 'Owner', sort: (p) => p.owner ?? '', cell: (p) => p.owner || '—' },
     { id: 'cpu', header: 'CPU use / req', align: 'right', sort: (p) => p.usageCpuMilli ?? 0, cell: (p) => <>{fmt.cores(p.usageCpuMilli ?? 0)}<span class="text-muted"> / {p.cpuMilli ? fmt.cores(p.cpuMilli) : '—'}</span></> },
     { id: 'mem', header: 'Mem use / req', align: 'right', sort: (p) => p.usageMemBytes ?? 0, cell: (p) => <>{fmt.bytes(p.usageMemBytes ?? 0)}<span class="text-muted"> / {p.memBytes ? fmt.bytes(p.memBytes) : '—'}</span></> },
-    { id: 'age', header: 'Age', cell: (p) => <span class="num text-muted">{p.age}</span> },
+    { id: 'age', header: 'Age', cell: (p) => <span class="text-muted">{p.age}</span> },
   ]
   return (
     <div class="flex flex-col gap-5">
@@ -260,7 +256,7 @@ function KubernetesTab({ k8s, err }: { k8s: NodeDetail | null; err: string | nul
                 <span class="w-40 font-medium">{c.type}</span>
                 <span class="mono w-14">{c.status}</span>
                 <span class="text-muted truncate" title={c.message}>{c.message}</span>
-                <span class="ml-auto text-muted num text-[12px]">since {fmt.datetime(c.since ?? '')}</span>
+                <span class="ml-auto text-muted text-[12px]">since {fmt.datetime(c.since ?? '')}</span>
               </div>
             )
           })}
@@ -409,7 +405,6 @@ function ActionsTab({ node, k8s, inv, cluster, spec, talosVersion }: { node: Nod
   )
 }
 
-/** Actions on a machine that is not (yet) a cluster member. */
 function MachineActions({ node }: { node: NodeRow | null }) {
   const { route } = useLocation()
   const [retire, setRetire] = useState(false)
@@ -444,10 +439,9 @@ function GroupHeading({ title, help }: { title: string; help: string }) {
 }
 
 function WakeAction({ node }: { node: NodeRow }) {
-  const refresh = () => Promise.resolve()
   return <Action title="Wake-on-LAN" what={node.wol ? 'Enabled: Kubit can send a magic packet to power the machine on.' : 'Off. Enable when the firmware supports WoL on the uplink NIC.'} button={node.wol ? 'Wake now' : 'Enable'}
-    onClick={() => (node.wol ? api.wake(node.mac).then(() => toast('Magic packet sent', 'good')) : api.setWOL(node.mac, true).then(refresh)).catch((e) => toast(e.message, 'error'))}
-    secondary={node.wol ? { label: 'Disable', onClick: () => api.setWOL(node.mac, false).then(refresh).catch((e) => toast(e.message, 'error')) } : undefined} />
+    onClick={() => (node.wol ? api.wake(node.mac).then(() => toast('Magic packet sent', 'good')) : api.setWOL(node.mac, true)).catch((e) => toast(e.message, 'error'))}
+    secondary={node.wol ? { label: 'Disable', onClick: () => api.setWOL(node.mac, false).catch((e) => toast(e.message, 'error')) } : undefined} />
 }
 
 function Action({ title, what, button, disabled, onClick, href, secondary }: { title: string; what: string; button: string; disabled?: boolean; onClick?: () => void; href?: string; secondary?: { label: string; onClick: () => void } }) {
@@ -469,7 +463,7 @@ function Stat({ label, value, sub }: { label: string; value: string; sub?: strin
   return (
     <div class="panel p-3 flex flex-col gap-1">
       <span class="label">{label}</span>
-      <span class="text-2xl font-semibold num">{value}</span>
+      <span class="text-2xl font-semibold">{value}</span>
       {sub && <span class="text-[12px] text-muted">{sub}</span>}
     </div>
   )

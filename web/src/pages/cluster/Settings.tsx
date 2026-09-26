@@ -8,7 +8,6 @@ import { Tabs } from '../../components/Tabs'
 import { ErrorBox, Field, Section } from '../../components/ui'
 import type { ClusterCtx } from './ClusterPage'
 
-/** The declaration: cluster.yaml as a form or as text, and the pools. Nothing here runs an operation except Apply node configs. */
 export function Settings({ ctx }: { ctx: ClusterCtx }) {
   const { name, cluster } = ctx
   const spec = cluster.spec.spec
@@ -29,7 +28,7 @@ export function Settings({ ctx }: { ctx: ClusterCtx }) {
 
   return (
     <div class="flex flex-col gap-5">
-      <Section title="Declaration" actions={<span class="text-[12px] text-muted num">created {new Date(cluster.createdAt).toLocaleDateString()} · changed {fmt.when(cluster.updatedAt)}</span>} help="Save changes cluster.yaml; Apply node configs pushes it to the nodes. Add-ons are planned under Add-ons.">
+      <Section title="Declaration" actions={<span class="text-[12px] text-muted">created {new Date(cluster.createdAt).toLocaleDateString()} · changed {fmt.when(cluster.updatedAt)}</span>} help="Save changes cluster.yaml; Apply node configs pushes it to the nodes. Add-ons are planned under Add-ons.">
         <ErrorBox error={error} />
         <Tabs active={tab} onSelect={(t) => setTab(t as any)} tabs={[{ id: 'form', label: 'Form' }, { id: 'yaml', label: 'YAML' }]} />
         {tab === 'form' && (
@@ -106,7 +105,6 @@ function fromSpec(spec: ClusterCtx['cluster']['spec']['spec']) {
   }
 }
 
-/** Pools live in cluster.yaml; saving resolves a schematic per distinct extension set. */
 function PoolsSection({ ctx }: { ctx: ClusterCtx }) {
   const { name, cluster } = ctx
   const spec = cluster.spec.spec

@@ -134,5 +134,5 @@ function DaemonUptime() {
   const pad = (n: number) => String(n).padStart(2, '0')
   const clock = `${pad(Math.floor(s / 3600) % 24)}:${pad(Math.floor(s / 60) % 60)}:${pad(s % 60)}`
   const days = Math.floor(s / 86400)
-  return <span class="num whitespace-nowrap" title={`kubit ${v.version} (${v.service ? 'service' : 'foreground'}), up since ${new Date(v.startedAt).toLocaleString()}`}>uptime {days > 0 ? `${days}d ` : ''}{clock}</span>
+  return <span class="whitespace-nowrap" title={`kubit ${v.version} (${v.service ? 'service' : 'foreground'}), up since ${new Date(v.startedAt).toLocaleString()}`}>uptime {days > 0 ? `${days}d ` : ''}{clock}</span>
 }

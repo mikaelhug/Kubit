@@ -8,14 +8,10 @@ import { bootTalosBlocked } from '../machine'
 const empty: OOBConfig = { type: 'amt', host: '', user: 'admin', password: '', tls: false }
 const defaultUser = (t: OOBConfig['type']) => (t === 'redfish' ? settings.value?.bmc?.user || 'root' : settings.value?.amt?.user || 'admin')
 
-/** Out-of-band management for one machine: configure AMT or a BMC, test it, use it. */
 export function RemoteManagement({ node }: { node: NodeRow }) {
-  // #oob in the URL (from the wizard's "set credentials") opens the dialog directly.
   const [edit, setEdit] = useState(() => typeof location !== 'undefined' && location.hash === '#oob')
   const [confirm, setConfirm] = useState<'off' | 'reset' | 'pxe' | null>(null)
   const cfg = node.oob
-  // Address and user are known before any credentials are: discovery saw the machine
-  // on its IP and Kubit settings hold the default AMT user.
   const seed: OOBConfig = cfg ?? { ...empty, host: node.ip, user: settings.value?.amt?.user || 'admin' }
   const gated = usePxeGated(() => api.power(node.mac, 'pxe'), (r) => { setConfirm(null); watch(r) }, (m) => toast(m, 'error'))
   const run = (action: 'on' | 'off' | 'reset' | 'cycle' | 'pxe') => action === 'pxe' ? gated.attempt('Boot into Talos') : api.power(node.mac, action).then((r) => { setConfirm(null); watch(r) }).catch((e) => toast(e.message, 'error'))
@@ -100,7 +96,6 @@ function InfoLine({ info }: { info: OOBInfo }) {
   )
 }
 
-/** Inventory: create a machine from its management engine alone, before Talos ever booted. */
 export function AddAMTDialog({ onClose }: { onClose: () => void }) {
   const [c, setC] = useState<OOBConfig>({ ...empty, user: defaultUser('amt') })
   const [error, setError] = useState<string | null>(null)

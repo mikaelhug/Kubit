@@ -11,7 +11,6 @@ import { DataTable, type Column } from './DataTable'
 
 const RESERVED_MIB = 2048
 export const reserveOf = (lh?: LabHost | null) => lh?.capacity.reserveMiB || RESERVED_MIB
-// MiB to bytes without the 32-bit `<<` that wraps at 2 GiB.
 const mib = (n: number) => n * 1048576
 
 type VMRow = VMSize & { key: number }
@@ -21,7 +20,6 @@ export const MIN_CP_MIB = 2048
 export const MIN_VM_MIB = 2048
 const PREFERRED_MIB = 3072
 
-/** VMs that fit the host: as many 3 GiB VMs as fit, else fewer, larger ones; first is the control plane. */
 export function planFor(hostMiB: number, cluster = true, reserve = RESERVED_MIB, most = Infinity): VMRow[] {
   if (hostMiB <= 0) return [defaultVM('controlplane'), defaultVM('worker'), defaultVM('worker'), defaultVM('worker')]
   const avail = hostMiB - reserve
@@ -32,14 +30,13 @@ export function planFor(hostMiB: number, cluster = true, reserve = RESERVED_MIB,
   return Array.from({ length: n }, (_, i) => defaultVM(cluster && i === 0 ? 'controlplane' : 'worker', each))
 }
 
-/** One editable row per VM. Every VM gets at least 2 GiB; roles matter only when a cluster is planned. */
 export function VMTable({ rows, onChange, roles }: { rows: VMRow[]; onChange: (rows: VMRow[]) => void; roles: boolean }) {
   const set = (i: number, patch: Partial<VMSize>) => onChange(rows.map((r, j) => (j === i ? { ...r, ...patch } : r)))
   const num = (i: number, k: 'cpus' | 'memMiB' | 'diskGiB' | 'dataGiB', min: number, step = 1) => (
-    <input class="input num !py-1 w-full" type="number" min={min} step={step} value={rows[i][k]} onInput={(e) => set(i, { [k]: Number((e.target as HTMLInputElement).value) })} />
+    <input class="input !py-1 w-full" type="number" min={min} step={step} value={rows[i][k]} onInput={(e) => set(i, { [k]: Number((e.target as HTMLInputElement).value) })} />
   )
   const columns: Column<number>[] = [
-    { id: 'n', header: '#', width: '2rem', cell: (i) => <span class="text-muted num">{i + 1}</span> },
+    { id: 'n', header: '#', width: '2rem', cell: (i) => <span class="text-muted">{i + 1}</span> },
     ...(roles ? [{ id: 'role', header: 'Role', width: '9rem', cell: (i: number) => { const r = rows[i]; return <select class="input !py-1 w-full" value={r.role} onChange={(e) => { const role = (e.target as HTMLSelectElement).value as VMSize['role']; set(i, { role, memMiB: role === 'controlplane' ? Math.max(r.memMiB, MIN_CP_MIB) : r.memMiB }) }}><option value="controlplane">control plane</option><option value="worker">worker</option></select> } }] : []),
     { id: 'cpus', header: 'vCPU', width: '5rem', cell: (i) => num(i, 'cpus', 1) },
     { id: 'mem', header: 'RAM (MiB)', width: '7rem', cell: (i) => num(i, 'memMiB', MIN_VM_MIB, 256) },
@@ -58,7 +55,6 @@ export function VMTable({ rows, onChange, roles }: { rows: VMRow[]; onChange: (r
 const totalMem = (rows: VMSize[]) => rows.reduce((s, v) => s + v.memMiB, 0)
 const cpCount = (rows: VMSize[]) => rows.filter((v) => v.role === 'controlplane').length
 
-/** Mirrors the server's per-VM floors so the dialog blocks a plan the API would 400. */
 const rowsProblem = (rows: VMSize[]): string | null => {
   for (const v of rows) {
     if (v.cpus < 1) return 'every VM needs at least 1 vCPU'
@@ -68,7 +64,6 @@ const rowsProblem = (rows: VMSize[]): string | null => {
   return null
 }
 
-/** Add VMs to a running lab host. */
 export function AddVMsDialog({ host, onClose }: { host: NodeRow; onClose: () => void }) {
   const lh = host.labhost!
   const vms = vmsOf(lh)
@@ -94,7 +89,6 @@ export function AddVMsDialog({ host, onClose }: { host: NodeRow; onClose: () => 
   )
 }
 
-/** The VMs of a lab host: state, size, boot source, cluster membership, and the per-VM operations. */
 export function HostVMs({ host }: { host: NodeRow }) {
   const lh = host.labhost
   const [add, setAdd] = useState(false)
@@ -114,7 +108,7 @@ export function HostVMs({ host }: { host: NodeRow }) {
       </span>
     ) } },
     { id: 'state', header: 'State', cell: (vm) => <Pill tone={offline ? 'muted' : vm.state === 'running' ? 'good' : 'muted'}>{vm.state}</Pill> },
-    { id: 'size', header: 'Size', cell: (vm) => <span class="num">{vm.cpus} vCPU · {fmt.bytes(mib(vm.memMiB))} · {vm.diskGiB} GiB{vm.dataGiB ? ` + ${vm.dataGiB} GiB data` : ''}</span> },
+    { id: 'size', header: 'Size', cell: (vm) => <span>{vm.cpus} vCPU · {fmt.bytes(mib(vm.memMiB))} · {vm.diskGiB} GiB{vm.dataGiB ? ` + ${vm.dataGiB} GiB data` : ''}</span> },
     { id: 'boot', header: 'Boot', cell: (vm) => <Pill tone={vm.boot === 'disk' ? 'info' : 'muted'}>{vm.boot === 'disk' ? 'disk' : onMac(lh) ? 'Talos ISO' : 'Talos (RAM)'}</Pill> },
     { id: 'kubit', header: 'Kubit', cell: (vm) => { const row = rowOf(vm); return row ? (row.cluster ? <a class="text-accent hover:underline" href={`/clusters/${row.cluster}/nodes`}>{row.cluster} · {row.hostname}</a> : <KindPill m={row} />) : <span class="text-muted">—</span> } },
     { id: 'actions', header: '', align: 'right', cell: (vm) => { const member = !!rowOf(vm)?.cluster; return (
@@ -138,7 +132,6 @@ export function HostVMs({ host }: { host: NodeRow }) {
   )
 }
 
-/** Change vCPU and memory of one VM; takes effect on its next boot. */
 function ResizeVMDialog({ host, vm, onClose }: { host: NodeRow; vm: LabVM; onClose: () => void }) {
   const lh = host.labhost!
   const [cpus, setCpus] = useState(vm.cpus)
@@ -153,8 +146,8 @@ function ResizeVMDialog({ host, vm, onClose }: { host: NodeRow; vm: LabVM; onClo
     <Dialog title={`Resize ${vm.name}`} onClose={onClose} footer={<><button class="btn" onClick={onClose}>Cancel</button><button class="btn btn-primary" disabled={over || small || cpus < 1} onClick={submit}>Save</button></>}>
       <ErrorBox error={error} />
       <div class="grid grid-cols-2 gap-3">
-        <Field label="vCPU"><input class="input num" type="number" min={1} value={cpus} onInput={(e) => setCpus(Number((e.target as HTMLInputElement).value))} /></Field>
-        <Field label="RAM (MiB)" hint={`${fmt.bytes(mib(freeMiB))} free for this VM`}><input class="input num" type="number" min={MIN_VM_MIB} step={256} value={memMiB} onInput={(e) => setMem(Number((e.target as HTMLInputElement).value))} /></Field>
+        <Field label="vCPU"><input class="input" type="number" min={1} value={cpus} onInput={(e) => setCpus(Number((e.target as HTMLInputElement).value))} /></Field>
+        <Field label="RAM (MiB)" hint={`${fmt.bytes(mib(freeMiB))} free for this VM`}><input class="input" type="number" min={MIN_VM_MIB} step={256} value={memMiB} onInput={(e) => setMem(Number((e.target as HTMLInputElement).value))} /></Field>
       </div>
       {over && <Notice tone="bad">Not enough memory.</Notice>}
       {small && <Notice tone="bad">Every VM needs at least {MIN_VM_MIB} MiB.</Notice>}
@@ -163,7 +156,6 @@ function ResizeVMDialog({ host, vm, onClose }: { host: NodeRow; vm: LabVM; onClo
   )
 }
 
-/** Install progress, boot line, maintenance and failure notices for a lab host. */
 export function HostStateNotice({ host }: { host: NodeRow }) {
   const lh = host.labhost
   const [retry, setRetry] = useState(false)
@@ -189,12 +181,10 @@ export function HostStateNotice({ host }: { host: NodeRow }) {
   )
 }
 
-/** Release confirmation, shared by the machine page's Actions tab. */
 export function ReleaseHostDialog({ host, onClose }: { host: NodeRow; onClose: () => void }) {
   return <ConfirmDialog title={`Release ${hostName(host)}`} action="Release host" tone="danger" typed={host.hostname || 'release'} onClose={onClose} onConfirm={() => api.labRelease(host.mac).then(onClose).catch((e) => toast(e.message, 'error'))} impact={<p>{onMac(host.labhost) ? 'Deletes every VM and its disks, and removes this Mac from Inventory.' : 'Deletes every VM and drops the lab-host role. Debian stays on the disk.'}</p>} />
 }
 
-/** Start, stop, re-provision and delete for one lab VM, driven through its host. */
 export function LabVMControls({ vm }: { vm: NodeRow }) {
   const host = hostOf(vm)
   const entry = vmsOf(host?.labhost).find((v) => v.mac === vm.mac)
@@ -218,12 +208,10 @@ export function LabVMControls({ vm }: { vm: NodeRow }) {
   )
 }
 
-/** Installer stages as the operator reads them. */
 export function installStage(stage: string) {
   return ({ installer: 'installer started', partitioning: 'partitioning', packages: 'packages installed', 'late-done': 'rebooting', booted: 'booted into Debian' } as Record<string, string>)[stage] ?? stage
 }
 
-/** Open alerts for the host, from the same watcher path clusters use. */
 export function HostAlerts({ mac }: { mac: string }) {
   const key = labHostKey(mac)
   useEffect(() => { loadHealth(key) }, [key])
@@ -240,7 +228,6 @@ export function HostAlerts({ mac }: { mac: string }) {
   )
 }
 
-/** CPU, memory, VM disk and VM count with history; the newest reading arrives live. */
 export function HostMetrics({ host, lh }: { host: NodeRow; lh: LabHost }) {
   const vms = vmsOf(lh)
   const [range, setRange] = useState('24h')
@@ -250,7 +237,7 @@ export function HostMetrics({ host, lh }: { host: NodeRow; lh: LabHost }) {
   useEffect(() => {
     if (!live) return
     setSamples((prev) => (prev.length && prev[prev.length - 1].ts >= live.ts ? prev : [...prev, live]))
-  }, [live?.ts]) // eslint-disable-line
+  }, [live?.ts])
   const m = lh.metrics
   const pts = (f: (s: Sample) => number) => samples.map((s) => ({ t: new Date(s.ts).getTime(), v: s.reachable ? f(s) : null }))
   const committed = vms.reduce((s, v) => s + v.diskGiB, 0)
@@ -292,14 +279,13 @@ function MetricCard({ label, value, sub, cls, children }: { label: string; value
   return (
     <div class="flex flex-col gap-1 min-w-0">
       <span class="label">{label}</span>
-      <span class={`text-2xl font-semibold num truncate ${cls || ''}`}>{value}</span>
+      <span class={`text-2xl font-semibold truncate ${cls || ''}`}>{value}</span>
       {sub && <span class="text-[12px] text-muted truncate" title={sub}>{sub}</span>}
       {children}
     </div>
   )
 }
 
-/** Debian, kernel, pending updates, and the two host operations. */
 export function HostSystem({ host, lh, busy }: { host: NodeRow; lh: LabHost; busy: boolean }) {
   const vms = vmsOf(lh)
   const u = lh.updates
@@ -372,7 +358,6 @@ function Fact({ label, value, mono }: { label: string; value: string; mono?: boo
   return <div class="flex flex-col min-w-0"><dt class="label">{label}</dt><dd class={`truncate ${mono ? 'mono text-[12px]' : ''}`} title={value}>{value}</dd></div>
 }
 
-/** Make lab host: install the host, and optionally carve VMs and create a cluster in one run. */
 function usePlan(memMiB: number, reserve: number, cluster = 'lab', most = Infinity) {
   const [withVMs, setWithVMs] = useState(true)
   const [withCluster, setWithCluster] = useState(true)

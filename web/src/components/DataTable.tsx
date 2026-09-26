@@ -5,9 +5,7 @@ export interface Column<T> {
   id: string
   header: ComponentChildren
   cell: (row: T) => ComponentChildren
-  /** Sort key; omit for unsortable columns. */
   sort?: (row: T) => string | number | boolean
-  /** Text used by the search box; defaults to the sort key. */
   text?: (row: T) => string
   align?: 'left' | 'right'
   width?: string
@@ -24,11 +22,9 @@ interface Props<T> {
   defaultSort?: { id: string; dir: 'asc' | 'desc' }
   onRowClick?: (row: T) => void
   rowClass?: (row: T) => string
-  /** Persisted table id for sort/density preferences. */
   id?: string
   toolbar?: ComponentChildren
   title?: ComponentChildren
-  /** Rows are still being fetched: show placeholders instead of the empty message. */
   loading?: boolean
 }
 
@@ -36,7 +32,6 @@ function read<T>(key: string, fallback: T): T {
   try { const v = localStorage.getItem(key); return v ? JSON.parse(v) : fallback } catch { return fallback }
 }
 
-/** Sortable, searchable, compact table with sticky header; rows beyond 300 are windowed by page. */
 export function DataTable<T>({ columns, rows, rowKey, empty = 'Nothing to show.', search = true, defaultSort, onRowClick, rowClass, id, toolbar, title, loading }: Props<T>) {
   const pref = id ? `kubit.table.${id}` : ''
   const [sort, setSort] = useState<{ id: string; dir: 'asc' | 'desc' } | undefined>(pref ? read(pref + '.sort', defaultSort) : defaultSort)
@@ -103,7 +98,7 @@ export function DataTable<T>({ columns, rows, rowKey, empty = 'Nothing to show.'
             {visible.length === 0 && !loading && <tr><td colSpan={columns.length} class="text-muted !py-6 text-center">{empty}</td></tr>}
             {visible.map((r) => (
               <tr key={rowKey(r)} class={`${onRowClick ? 'cursor-pointer hover:bg-panel-2' : ''} ${rowClass?.(r) ?? ''}`} onClick={() => onRowClick?.(r)}>
-                {columns.map((c) => <td key={c.id} class={`${c.align === 'right' ? 'text-right num' : ''} ${c.mono ? 'mono' : ''} ${c.wrap ? '!whitespace-normal' : ''}`}>{c.cell(r)}</td>)}
+                {columns.map((c) => <td key={c.id} class={`${c.align === 'right' ? 'text-right' : ''} ${c.mono ? 'mono' : ''} ${c.wrap ? '!whitespace-normal' : ''}`}>{c.cell(r)}</td>)}
               </tr>
             ))}
           </tbody>

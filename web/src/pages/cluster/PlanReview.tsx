@@ -5,7 +5,6 @@ import { DiffView } from '../../components/DiffView'
 import { Breadcrumbs, ErrorBox, Notice, Pill, stateTone } from '../../components/ui'
 import type { ClusterCtx } from './ClusterPage'
 
-/** Full-page review of one plan; the only place a reviewed plan can be applied from. */
 export function PlanReview({ ctx, planId }: { ctx: ClusterCtx; planId: number }) {
   const { name, cluster } = ctx
   const [op, setOp] = useState<Operation | null>(null)

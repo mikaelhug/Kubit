@@ -25,7 +25,6 @@ export function stateTone(state: string): Tone {
   }
 }
 
-/** The cluster pill: the lifecycle state, overridden by the watcher's verdict once ready. */
 export function ClusterPill({ state, status }: { state: string; status?: { health?: string; openAlerts?: number; observerError?: string } | null }) {
   const h = state === 'ready' && status?.health && status.health !== 'healthy' ? status.health : ''
   const label = h || state
@@ -33,14 +32,13 @@ export function ClusterPill({ state, status }: { state: string; status?: { healt
   return <Pill tone={state === 'ready' && !status ? 'muted' : stateTone(label)} title={state === 'ready' && !status ? 'not observed yet' : title}>{label}</Pill>
 }
 
-/** How long ago the observer last saw anything of this object, ticking from the clock. */
 export function SeenAgo({ contact, observed, blind }: { contact?: string; observed?: string; blind?: boolean }) {
   const at = contact || observed
   if (!at) return <span class="text-[12px] text-muted">not observed yet</span>
   const s = Math.floor(ageSec(at))
   const text = s < 60 ? `${s} s` : s < 3600 ? `${Math.round(s / 60)} min` : `${Math.round(s / 3600)} h`
   const stale = blind || s > 120
-  return <span class={`text-[12px] num ${stale ? 'text-warn' : 'text-muted'}`} title={`Last contact ${new Date(at).toLocaleString()}`}>{stale && blind ? `not seen for ${text}` : `seen ${text} ago`}</span>
+  return <span class={`text-[12px] ${stale ? 'text-warn' : 'text-muted'}`} title={`Last contact ${new Date(at).toLocaleString()}`}>{stale && blind ? `not seen for ${text}` : `seen ${text} ago`}</span>
 }
 
 export function StatusDot({ tone, pulse }: { tone: Tone; pulse?: boolean }) {
@@ -55,7 +53,7 @@ export function Meter({ label, used, cap, format }: { label: string; used: numbe
     <div class="flex flex-col gap-1.5">
       <div class="flex items-baseline justify-between">
         <span class="label">{label}</span>
-        <span class="num text-[13px]"><strong>{format(used)}</strong> <span class="text-muted">/ {format(cap)} · {pct}%</span></span>
+        <span class="text-[13px]"><strong>{format(used)}</strong> <span class="text-muted">/ {format(cap)} · {pct}%</span></span>
       </div>
       <div class="h-1 w-full bg-panel-2 overflow-hidden">
         <div class="h-full transition-[width]" style={{ width: pct + '%', background: tone }} />
@@ -76,14 +74,6 @@ export function EventLine({ e, showStep = true }: { e: Event; showStep?: boolean
   )
 }
 
-export function EventLog({ events, empty = 'No output yet.', className = '' }: { events: Event[]; empty?: string; className?: string }) {
-  return (
-    <div class={`log ${className}`} ref={(el) => { if (el) el.scrollTop = el.scrollHeight }}>
-      {events.length === 0 ? <span class="text-muted">{empty}</span> : events.map((e, i) => <EventLine key={i} e={e} />)}
-    </div>
-  )
-}
-
 export function Dialog({ title, onClose, children, width = 'max-w-lg', footer }: { title: string; onClose: () => void; children: ComponentChildren; width?: string; footer?: ComponentChildren }) {
   return (
     <div class="fixed inset-0 z-40 flex items-start justify-center bg-black/50 p-6 overflow-auto" onClick={(e) => { if (e.target === e.currentTarget) onClose() }} onKeyDown={(e) => { if (e.key === 'Escape') onClose() }}>
@@ -99,10 +89,8 @@ export function Dialog({ title, onClose, children, width = 'max-w-lg', footer }:
   )
 }
 
-/** Confirm with an explicit impact list; the primary action names what happens. */
 export function ConfirmDialog({ title, impact, action, tone = 'primary', onConfirm, onClose, typed, cluster }: { title: string; impact: ComponentChildren; action: string; tone?: 'primary' | 'danger'; onConfirm: () => void | Promise<unknown>; onClose: () => void; typed?: string; cluster?: string }) {
   let value = ''
-  // One click only: the button stays disabled until a returned promise settles.
   const [busy, setBusy] = useState(false)
   const confirm = () => {
     if (busy) return
@@ -126,7 +114,6 @@ export function ConfirmDialog({ title, impact, action, tone = 'primary', onConfi
           <input class="input mono" placeholder={typed} onInput={(e) => {
             value = (e.target as HTMLInputElement).value
             const btn = document.getElementById('confirm-action') as HTMLButtonElement | null
-            // The label style uppercases text, so the comparison must not care about case.
             if (btn) btn.disabled = busy || value.trim().toLowerCase() !== typed.toLowerCase()
           }} />
         </Field>
@@ -135,7 +122,6 @@ export function ConfirmDialog({ title, impact, action, tone = 'primary', onConfi
   )
 }
 
-/** Warns when a disruptive action is about to start outside the cluster's maintenance window. */
 export function MaintenanceNotice({ cluster }: { cluster: string }) {
   const [state, setState] = useState<MaintenanceState | null>(null)
   useEffect(() => { api.maintenance(cluster).then(setState).catch(() => {}) }, [cluster])
@@ -143,13 +129,11 @@ export function MaintenanceNotice({ cluster }: { cluster: string }) {
   return <Notice tone="warn">Outside the maintenance window <span class="mono">{state.window}{state.timezone ? ` ${state.timezone}` : ''}</span>{state.next ? `; it next opens ${new Date(state.next).toLocaleString()}` : ''}. Confirming runs it anyway.</Notice>
 }
 
-/** Small warning marker for a table row that has an open watcher alert. */
 export function AlertPill({ e }: { e?: { severity: string; message: string; kind: string } }) {
   if (!e) return null
   return <Pill tone={e.severity === 'critical' ? 'bad' : 'warn'} title={e.message}>{e.kind.split('.')[1]}</Pill>
 }
 
-/** One-line command with a copy button. */
 export function Code({ text }: { text: string }) {
   const [done, setDone] = useState(false)
   const copy = () => { navigator.clipboard?.writeText(text).then(() => { setDone(true); setTimeout(() => setDone(false), 1500) }) }
@@ -179,16 +163,6 @@ export function ErrorBox({ error }: { error: string | null | undefined }) {
 export function Notice({ tone = 'info', children }: { tone?: Tone; children: ComponentChildren }) {
   const cls = { good: 'border-good/40 bg-good/10 text-good', warn: 'border-warn/40 bg-warn/10 text-warn', bad: 'border-bad/40 bg-bad/10 text-bad', info: 'border-info/40 bg-info/10 text-info', muted: 'border-border bg-panel-2 text-muted' }[tone]
   return <div class={`rounded-[var(--r)] border px-3 py-2 text-[13px] ${cls}`}>{children}</div>
-}
-
-export function EmptyState({ title, children, action }: { title: string; children?: ComponentChildren; action?: ComponentChildren }) {
-  return (
-    <div class="panel p-8 flex flex-col items-start gap-2">
-      <h3 class="font-semibold">{title}</h3>
-      {children && <div class="text-[13px] text-muted max-w-prose">{children}</div>}
-      {action && <div class="mt-2">{action}</div>}
-    </div>
-  )
 }
 
 export function KeyValue({ rows }: { rows: [string, ComponentChildren][] }) {

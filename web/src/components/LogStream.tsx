@@ -1,7 +1,6 @@
 import { useEffect, useRef, useState } from 'preact/hooks'
 import { toast } from '../store'
 
-/** Streams a text log from a URL into a scrolling pane with search, follow and copy. */
 export function LogStream({ url, follow, onFollow, className = '' }: { url: string; follow: boolean; onFollow: (f: boolean) => void; className?: string }) {
   const [log, setLog] = useState('')
   const [q, setQ] = useState('')

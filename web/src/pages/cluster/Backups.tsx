@@ -5,10 +5,6 @@ import { DataTable, type Column } from '../../components/DataTable'
 import { ConfirmDialog, ErrorBox, Field, Notice, Pill, Section } from '../../components/ui'
 import type { ClusterCtx } from './ClusterPage'
 
-/**
- * etcd snapshots kept sealed on the admin host. Restore is the disaster-recovery path:
- * it wipes etcd on every control plane and rebuilds the cluster state from a snapshot.
- */
 export function Backups({ ctx }: { ctx: ClusterCtx }) {
   const { name, cluster, status } = ctx
   const rows = snapshots.value.get(name) ?? []
@@ -28,7 +24,7 @@ export function Backups({ ctx }: { ctx: ClusterCtx }) {
   }
 
   const columns: Column<Snapshot>[] = [
-    { id: 'ts', header: 'Taken', sort: (s) => s.ts, cell: (s) => <span class="num">{fmt.datetime(s.ts)}</span> },
+    { id: 'ts', header: 'Taken', sort: (s) => s.ts, cell: (s) => <span>{fmt.datetime(s.ts)}</span> },
     { id: 'source', header: 'Source', sort: (s) => s.source, cell: (s) => <Pill tone={s.source === 'schedule' ? 'muted' : 'info'}>{s.source}</Pill> },
     { id: 'node', header: 'From', sort: (s) => s.node, mono: true, cell: (s) => s.node },
     { id: 'keys', header: 'Keys', align: 'right', sort: (s) => s.keys, cell: (s) => s.keys.toLocaleString() },
@@ -95,7 +91,7 @@ function Stat({ label, value, sub, tone }: { label: string; value: string; sub?:
   return (
     <div class="panel p-3 flex flex-col gap-1">
       <span class="label">{label}</span>
-      <span class={`text-xl font-semibold num ${tone === 'warn' ? 'text-warn' : ''}`}>{value}</span>
+      <span class={`text-xl font-semibold ${tone === 'warn' ? 'text-warn' : ''}`}>{value}</span>
       {sub && <span class="text-[12px] text-muted">{sub}</span>}
     </div>
   )

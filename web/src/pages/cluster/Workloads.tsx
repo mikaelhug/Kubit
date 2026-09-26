@@ -26,7 +26,7 @@ export function Workloads({ ctx }: { ctx: ClusterCtx }) {
     api.workloads(name).then(setWorkloads).catch((e) => setError(e.message)).finally(() => setLoaded(true))
     api.pods(name).then(setPods).catch((e) => setError(e.message))
   }
-  useEffect(() => { load() }, [name, refreshKey(name, 'workloads')]) // eslint-disable-line
+  useEffect(() => { load() }, [name, refreshKey(name, 'workloads')])
   const wl = workloads.filter((w) => s.keep(w.namespace))
   const nodeNames = [...new Set(pods.map((p) => p.node).filter((n): n is string => !!n))].sort()
   const pl = pods.filter((p) => s.keep(p.namespace) && (!nodeFilter || p.node === nodeFilter))
@@ -37,20 +37,20 @@ export function Workloads({ ctx }: { ctx: ClusterCtx }) {
     { id: 'ns', header: 'Namespace', sort: (w) => w.namespace, cell: (w) => w.namespace },
     { id: 'kind', header: 'Kind', sort: (w) => w.kind, cell: (w) => w.kind },
     { id: 'name', header: 'Name', sort: (w) => w.name, cell: (w) => <span class="flex items-center gap-2"><button class="font-medium hover:underline text-left" onClick={() => { s.set({ ns: w.namespace }); setView('pods') }}>{w.name}</button><AlertPill e={openAlert(name, w.kind, w.namespace, w.name)} /></span> },
-    { id: 'ready', header: 'Ready', sort: (w) => w.ready / Math.max(1, w.desired), cell: (w) => <span class="flex items-center gap-2"><StatusDot tone={w.available ? 'good' : w.ready > 0 ? 'warn' : 'bad'} /><span class="num">{w.ready}/{w.desired}</span></span> },
+    { id: 'ready', header: 'Ready', sort: (w) => w.ready / Math.max(1, w.desired), cell: (w) => <span class="flex items-center gap-2"><StatusDot tone={w.available ? 'good' : w.ready > 0 ? 'warn' : 'bad'} /><span>{w.ready}/{w.desired}</span></span> },
     { id: 'images', header: 'Images', text: (w) => w.images, cell: (w) => <span class="mono text-[12px] text-muted truncate inline-block max-w-[420px]" title={w.images}>{w.images}</span> },
-    { id: 'age', header: 'Age', cell: (w) => <span class="num text-muted">{w.age}</span> },
+    { id: 'age', header: 'Age', cell: (w) => <span class="text-muted">{w.age}</span> },
   ]
   const pcols: Column<PodSummary>[] = [
     { id: 'ns', header: 'Namespace', sort: (p) => p.namespace, cell: (p) => p.namespace },
     { id: 'name', header: 'Pod', sort: (p) => p.name, mono: true, cell: (p) => <span class="flex items-center gap-2"><button class="hover:underline text-left" onClick={() => setPod(p)}>{p.name}</button><AlertPill e={openAlert(name, 'Pod', p.namespace, p.name)} /></span> },
     { id: 'phase', header: 'Phase', sort: (p) => p.phase, cell: (p) => <Pill tone={phaseTone(p.phase)}>{p.phase}</Pill> },
-    { id: 'ready', header: 'Ready', cell: (p) => <span class="num">{p.ready}</span> },
+    { id: 'ready', header: 'Ready', cell: (p) => <span>{p.ready}</span> },
     { id: 'restarts', header: 'Restarts', align: 'right', sort: (p) => p.restarts, cell: (p) => <span class={p.restarts > 3 ? 'text-warn' : ''}>{p.restarts}</span> },
     { id: 'node', header: 'Node', sort: (p) => p.node ?? '', cell: (p) => p.node ? <a href={nodeHref(p.node)} class="hover:underline">{p.node}</a> : '—' },
     { id: 'cpu', header: 'CPU', align: 'right', sort: (p) => p.usageCpuMilli ?? 0, cell: (p) => fmt.cores(p.usageCpuMilli ?? 0) },
     { id: 'mem', header: 'Memory', align: 'right', sort: (p) => p.usageMemBytes ?? 0, cell: (p) => fmt.bytes(p.usageMemBytes ?? 0) },
-    { id: 'age', header: 'Age', cell: (p) => <span class="num text-muted">{p.age}</span> },
+    { id: 'age', header: 'Age', cell: (p) => <span class="text-muted">{p.age}</span> },
   ]
 
   return (
@@ -109,7 +109,7 @@ function PodDialog({ cluster, pod, onClose }: { cluster: string; pod: PodSummary
           {events.map((e, i) => (
             <div key={i} class="flex gap-3 px-4 py-2 text-[13px]">
               <StatusDot tone={e.type === 'Warning' ? 'warn' : 'good'} />
-              <span class="num text-muted whitespace-nowrap">{fmt.when(e.since ?? '')}</span>
+              <span class="text-muted whitespace-nowrap">{fmt.when(e.since ?? '')}</span>
               <span class="font-medium whitespace-nowrap">{e.reason}</span>
               <span class="text-muted">×{e.status}</span>
               <span class="min-w-0 break-words">{e.message}</span>

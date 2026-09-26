@@ -8,7 +8,6 @@ type Boot = NonNullable<PxeStatus['boots']>[number]
 const stageTone: Record<string, Tone> = { dhcp: 'warn', ipxe: 'info', debian: 'info', kernel: 'good' }
 const stageText: Record<string, string> = { dhcp: 'firmware asked (DHCP)', ipxe: 'iPXE fetched boot script', debian: 'Debian installer script fetched', kernel: 'kernel downloaded' }
 
-/** State of the separate `kubit pxe` process and what has booted through it. */
 export function NetworkBoot() {
   const [st, setSt] = useState<PxeStatus | null>(null)
   useEffect(() => {
@@ -20,8 +19,8 @@ export function NetworkBoot() {
     { id: 'arch', header: 'Arch', cell: (b) => b.arch || '—' },
     { id: 'stage', header: 'Stage', sort: (b) => b.stage, cell: (b) => <Pill tone={stageTone[b.stage] ?? 'muted'}>{stageText[b.stage] ?? b.stage}</Pill> },
     { id: 'count', header: 'Requests', align: 'right', sort: (b) => b.count, cell: (b) => b.count },
-    { id: 'first', header: 'First seen', sort: (b) => b.firstSeen, cell: (b) => <span class="num text-muted">{fmt.when(b.firstSeen)}</span> },
-    { id: 'last', header: 'Last seen', sort: (b) => b.lastSeen, cell: (b) => <span class="num text-muted">{fmt.when(b.lastSeen)}</span> },
+    { id: 'first', header: 'First seen', sort: (b) => b.firstSeen, cell: (b) => <span class="text-muted">{fmt.when(b.firstSeen)}</span> },
+    { id: 'last', header: 'Last seen', sort: (b) => b.lastSeen, cell: (b) => <span class="text-muted">{fmt.when(b.lastSeen)}</span> },
   ]
   return (
     <div class="p-5 flex flex-col gap-4">
@@ -64,7 +63,6 @@ export function NetworkBoot() {
   )
 }
 
-/** Open: any unknown machine that network-boots gets Talos. Closed: only machines Kubit already knows or armed with Boot into Talos. */
 function EnrollmentSwitch() {
   const s = settings.value
   if (!s) return null

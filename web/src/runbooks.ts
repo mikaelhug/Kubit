@@ -1,6 +1,3 @@
-// What to do when an alert fires. Each step is an instruction; a link points at the
-// place in Kubit where the action lives. Written for the admin reading it at 2 a.m.
-
 export interface RunbookStep { text: string; link?: { label: string; href: string } }
 export interface Runbook { title: string; why: string; steps: RunbookStep[] }
 
