@@ -17,6 +17,12 @@ import (
 	"github.com/mikael/kubit/internal/store"
 )
 
+func (s *Server) alertRoutes() {
+	r := s.mux
+	r.HandleFunc("POST /api/v1/settings/alerts/test", s.handleAlertTest)
+	r.HandleFunc("GET /api/v1/audit", s.handleAudit)
+}
+
 func (s *Server) forwardEvent(e store.EventRow) {
 	v, err := s.store.GetSettings(context.Background())
 	if err != nil {

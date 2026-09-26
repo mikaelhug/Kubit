@@ -6,10 +6,11 @@ import (
 	"strings"
 
 	"github.com/mikael/kubit/internal/labhost"
+	"github.com/mikael/kubit/internal/labhost/libvirt"
 	"github.com/mikael/kubit/internal/store"
 )
 
-func (m *Manager) LabSSH(ctx context.Context, host *store.Machine) (*labhost.Client, error) {
+func (m *Manager) LabSSH(ctx context.Context, host *store.Machine) (*libvirt.Client, error) {
 	if host.LabHost == nil {
 		return nil, fmt.Errorf("%s is not a lab host", host.MAC)
 	}
@@ -20,7 +21,7 @@ func (m *Manager) LabSSH(ctx context.Context, host *store.Machine) (*labhost.Cli
 	if err != nil {
 		return nil, err
 	}
-	return labhost.Dial(ctx, host.IP, priv)
+	return libvirt.Dial(ctx, host.IP, priv)
 }
 
 func (m *Manager) LabDial(ctx context.Context, host *store.Machine) (labhost.Driver, error) {

@@ -171,18 +171,26 @@ func podSummary(p *corev1.Pod) PodSummary {
 	return ps
 }
 
-func (c *Client) PodEvents(ctx context.Context, namespace, name string) ([]Condition, error) {
+type PodEvent struct {
+	Type    string `json:"type"`
+	Status  string `json:"status"`
+	Reason  string `json:"reason,omitempty"`
+	Message string `json:"message,omitempty"`
+	Since   string `json:"since,omitempty"`
+}
+
+func (c *Client) PodEvents(ctx context.Context, namespace, name string) ([]PodEvent, error) {
 	list, err := c.CoreV1().Events(namespace).List(ctx, metav1.ListOptions{FieldSelector: "involvedObject.name=" + name + ",involvedObject.kind=Pod"})
 	if err != nil {
 		return nil, err
 	}
-	out := []Condition{}
+	out := []PodEvent{}
 	for _, e := range list.Items {
 		t := e.LastTimestamp
 		if t.IsZero() {
 			t = e.CreationTimestamp
 		}
-		out = append(out, Condition{Type: e.Type, Status: fmt.Sprint(e.Count), Reason: e.Reason, Message: e.Message, Since: t.UTC().Format("2006-01-02T15:04:05Z")})
+		out = append(out, PodEvent{Type: e.Type, Status: fmt.Sprint(e.Count), Reason: e.Reason, Message: e.Message, Since: t.UTC().Format("2006-01-02T15:04:05Z")})
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Since > out[j].Since })
 	return out, nil
@@ -198,4 +206,16 @@ func (c *Client) PodLogs(ctx context.Context, namespace, name, container string,
 		return nil, err
 	}
 	return cs.CoreV1().Pods(namespace).GetLogs(name, opts).Stream(ctx)
+}
+
+func (c *Client) PodCount(ctx context.Context) (map[string]int, error) {
+	pods, err := c.pods(ctx, "", metav1.ListOptions{FieldSelector: "status.phase=Running"})
+	if err != nil {
+		return nil, err
+	}
+	out := map[string]int{}
+	for _, p := range pods {
+		out[p.Spec.NodeName]++
+	}
+	return out, nil
 }

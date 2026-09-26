@@ -73,7 +73,7 @@ type buildsVars struct {
 	IP      string `json:"ip"`
 }
 
-type MetallbVars struct {
+type metallbVars struct {
 	Enabled bool           `json:"enabled"`
 	Range   string         `json:"range"`
 	Values  map[string]any `json:"values"`
@@ -125,7 +125,7 @@ func Vars(c *config.Cluster, kubeconfigPath string) map[string]any {
 	p := c.Spec.Platform
 	return map[string]any{
 		"kubeconfig":       kubeconfigPath,
-		"metallb":          MetallbVars{Enabled: p.MetalLB.Enabled, Range: p.MetalLB.Range, Values: merged(metallbDefaults, p.MetalLB.Values)},
+		"metallb":          metallbVars{Enabled: p.MetalLB.Enabled, Range: p.MetalLB.Range, Values: merged(metallbDefaults, p.MetalLB.Values)},
 		"ingress_nginx":    addonVars{p.IngressNginx.Enabled, merged(ingressDefaults, p.IngressNginx.Values)},
 		"gvisor":           addonVars{p.GVisor.Enabled, vals(p.GVisor.Values)},
 		"metrics_server":   addonVars{p.MetricsServer.Enabled, merged(metricsDefaults, p.MetricsServer.Values)},
@@ -137,10 +137,4 @@ func Vars(c *config.Cluster, kubeconfigPath string) map[string]any {
 	}
 }
 
-var Outputs = map[string]bool{"ingress_ip": true}
-
-const (
-	SOPSNamespace = "flux-system"
-	SOPSSecret    = "sops-age"
-	SOPSSecretKey = "age.agekey"
-)
+var DeclaredOutputs = map[string]bool{"ingress_ip": true}

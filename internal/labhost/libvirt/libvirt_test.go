@@ -1,8 +1,10 @@
-package labhost
+package libvirt
 
 import (
 	"strings"
 	"testing"
+
+	"github.com/mikael/kubit/internal/labhost"
 )
 
 func TestPreseedAndKernelArgs(t *testing.T) {
@@ -26,7 +28,7 @@ func TestPreseedAndKernelArgs(t *testing.T) {
 }
 
 func TestDomainXMLAndMAC(t *testing.T) {
-	xml, err := DomainXML(VMSpec{Name: "lab-vm-01", MAC: MAC(1, 1), CPUs: 2, MemMiB: 3072, DiskGiB: 20, Kernel: "/k", Initrd: "/i", Arch: "amd64"})
+	xml, err := DomainXML(labhost.VMSpec{Name: "lab-vm-01", MAC: labhost.MAC(1, 1), CPUs: 2, MemMiB: 3072, DiskGiB: 20, Kernel: "/k", Initrd: "/i", Arch: "amd64"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -41,36 +43,36 @@ func TestDomainXMLAndMAC(t *testing.T) {
 	if !strings.Contains(xml, "console=ttyS0") {
 		t.Error("amd64 serial console must be ttyS0")
 	}
-	armk, _ := DomainXML(VMSpec{Name: "a", MAC: MAC(1, 5), CPUs: 1, MemMiB: 1024, DiskGiB: 10, Kernel: "/k", Initrd: "/i", Arch: "arm64"})
+	armk, _ := DomainXML(labhost.VMSpec{Name: "a", MAC: labhost.MAC(1, 5), CPUs: 1, MemMiB: 1024, DiskGiB: 10, Kernel: "/k", Initrd: "/i", Arch: "arm64"})
 	if !strings.Contains(armk, "console=ttyAMA0") || strings.Contains(armk, "console=ttyS0") {
 		t.Errorf("arm64 serial console must be ttyAMA0, not ttyS0")
 	}
 	if serialConsole("arm64") != "console=ttyAMA0" || serialConsole("amd64") != "console=ttyS0" {
 		t.Error("serialConsole arch mapping wrong")
 	}
-	disk, _ := DomainXML(VMSpec{Name: "v", MAC: MAC(1, 2), CPUs: 1, MemMiB: 1024, DiskGiB: 10, Arch: "arm64"})
+	disk, _ := DomainXML(labhost.VMSpec{Name: "v", MAC: labhost.MAC(1, 2), CPUs: 1, MemMiB: 1024, DiskGiB: 10, Arch: "arm64"})
 	if !strings.Contains(disk, "<boot dev='hd'/>") || strings.Contains(disk, "<kernel>") || !strings.Contains(disk, "aarch64") {
 		t.Error("disk-boot arm64 domain wrong")
 	}
 	if !strings.Contains(disk, "/usr/share/AAVMF/AAVMF_CODE.fd") || !strings.Contains(disk, "<nvram template='/usr/share/AAVMF/AAVMF_VARS.fd'>/var/lib/kubit/vms/v.nvram</nvram>") {
 		t.Error("arm64 domain must carry AAVMF")
 	}
-	tcg, _ := DomainXML(VMSpec{Name: "t", MAC: MAC(1, 4), CPUs: 1, MemMiB: 1024, DiskGiB: 10, Arch: "arm64", TCG: true})
+	tcg, _ := DomainXML(labhost.VMSpec{Name: "t", MAC: labhost.MAC(1, 4), CPUs: 1, MemMiB: 1024, DiskGiB: 10, Arch: "arm64", TCG: true})
 	if !strings.Contains(tcg, "<domain type='qemu'>") || !strings.Contains(tcg, "<cpu mode='maximum'/>") {
 		t.Error("TCG domain must not ask for KVM or the host CPU")
 	}
 	if strings.Contains(xml, "vdb") {
 		t.Error("no data disk unless asked")
 	}
-	withData, _ := DomainXML(VMSpec{Name: "d", MAC: MAC(1, 3), CPUs: 1, MemMiB: 1024, DiskGiB: 10, DataGiB: 40, Arch: "amd64"})
+	withData, _ := DomainXML(labhost.VMSpec{Name: "d", MAC: labhost.MAC(1, 3), CPUs: 1, MemMiB: 1024, DiskGiB: 10, DataGiB: 40, Arch: "amd64"})
 	if !strings.Contains(withData, "/var/lib/kubit/vms/d-data.qcow2") || !strings.Contains(withData, "<target dev='vdb' bus='virtio'/>") {
 		t.Error("data disk must be the second virtio disk")
 	}
 	if !kernelBlock.MatchString(xml) {
 		t.Error("kernel block must be recognisable for SetDiskBoot")
 	}
-	if MAC(300, 5) != "52:54:00:6b:2c:05" {
-		t.Errorf("MAC wrap: %s", MAC(300, 5))
+	if labhost.MAC(300, 5) != "52:54:00:6b:2c:05" {
+		t.Errorf("MAC wrap: %s", labhost.MAC(300, 5))
 	}
 	priv, pub, err := GenerateKey()
 	if err != nil || !strings.HasPrefix(pub, "ssh-ed25519 ") || !strings.Contains(string(priv), "OPENSSH PRIVATE KEY") {
@@ -86,14 +88,14 @@ func TestTalosKernelArgsAreShared(t *testing.T) {
 	if got := vmCmdline("arm64"); !strings.HasPrefix(got, "talos.platform=metal console=ttyAMA0 console=tty0 ") {
 		t.Errorf("arm64 cmdline %q", got)
 	}
-	xml, err := DomainXML(VMSpec{Name: "v", MAC: MAC(1, 9), CPUs: 1, MemMiB: 1024, DiskGiB: 10, Kernel: "/k", Initrd: "/i", Arch: "amd64"})
+	xml, err := DomainXML(labhost.VMSpec{Name: "v", MAC: labhost.MAC(1, 9), CPUs: 1, MemMiB: 1024, DiskGiB: 10, Kernel: "/k", Initrd: "/i", Arch: "amd64"})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !strings.Contains(xml, "<cmdline>"+want+"</cmdline>") {
 		t.Errorf("domain XML must carry the shared cmdline:\n%s", xml)
 	}
-	pxe := strings.Join(TalosKernelArgs("console=tty0", "console=ttyS0"), " ")
+	pxe := strings.Join(labhost.TalosKernelArgs("console=tty0", "console=ttyS0"), " ")
 	if pxe != "talos.platform=metal console=tty0 console=ttyS0 init_on_alloc=1 slab_nomerge pti=on" {
 		t.Errorf("pxe args %q", pxe)
 	}

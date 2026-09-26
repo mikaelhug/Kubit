@@ -1,4 +1,4 @@
-package labhost
+package libvirt
 
 import (
 	"bytes"
@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/mikael/kubit/internal/factory"
+	"github.com/mikael/kubit/internal/labhost"
 	"golang.org/x/crypto/ssh"
 )
 
@@ -123,33 +124,13 @@ func (c *Client) Put(ctx context.Context, path string, content []byte, mode stri
 	return err
 }
 
-type Capacity struct {
-	CPUs       int    `json:"cpus"`
-	MemMiB     int    `json:"memMiB"`
-	DiskGiB    int    `json:"diskGiB"`
-	KVM        bool   `json:"kvm"`
-	Kernel     string `json:"kernel"`
-	Libvirt    string `json:"libvirt"`
-	Hostname   string `json:"hostname"`
-	Arch       string `json:"arch"`
-	Bridge     string `json:"bridge"`
-	Ready      bool   `json:"ready"`
-	CheckedAt  string `json:"checkedAt"`
-	Model      string `json:"model,omitempty"`
-	OS         string `json:"os,omitempty"`
-	Hypervisor string `json:"hypervisor,omitempty"`
-	ReserveMiB int    `json:"reserveMiB,omitempty"`
-	Problem    string `json:"problem,omitempty"`
-	Command    string `json:"command,omitempty"`
-}
-
-func (c *Client) Capacity(ctx context.Context) (Capacity, error) {
+func (c *Client) Capacity(ctx context.Context) (labhost.Capacity, error) {
 	out, err := c.Run(ctx, `echo "cpus=$(nproc)"; echo "mem=$(awk '/MemTotal/{print int($2/1024)}' /proc/meminfo)"; mkdir -p `+vmDir+`; echo "diskbytes=$(df -B1 --output=avail `+vmDir+` | tail -1 | tr -dc 0-9)"; echo "kvm=$( [ -c /dev/kvm ] && echo yes || echo no)"; echo "kernel=$(uname -r)"; echo "arch=$(uname -m)"; echo "host=$(hostname)"; echo "libvirt=$(virsh version --daemon 2>/dev/null | awk '/Using library/{print $NF}')"; echo "bridge=$(ip -o link show type bridge | awk -F': ' '{print $2}' | grep -xF br0 || ip -o link show type bridge | awk -F': ' '{print $2}' | head -1)"; echo "ready=$( [ -f /var/lib/kubit/READY ] && echo yes || echo no)"`)
 	if err != nil {
-		return Capacity{}, err
+		return labhost.Capacity{}, err
 	}
 	kv := keyValues(out)
-	cp := Capacity{Kernel: kv["kernel"], Libvirt: kv["libvirt"], Hostname: kv["host"], Bridge: kv["bridge"], KVM: kv["kvm"] == "yes", Ready: kv["ready"] == "yes", CheckedAt: time.Now().UTC().Format(time.RFC3339)}
+	cp := labhost.Capacity{Kernel: kv["kernel"], Libvirt: kv["libvirt"], Hostname: kv["host"], Bridge: kv["bridge"], KVM: kv["kvm"] == "yes", Ready: kv["ready"] == "yes", CheckedAt: time.Now().UTC().Format(time.RFC3339)}
 	cp.CPUs, _ = strconv.Atoi(kv["cpus"])
 	cp.MemMiB, _ = strconv.Atoi(kv["mem"])
 	if b, err := strconv.ParseInt(kv["diskbytes"], 10, 64); err == nil {
@@ -166,7 +147,7 @@ func (c *Client) Capacity(ctx context.Context) (Capacity, error) {
 	return cp, nil
 }
 
-func (c *Client) EnsureTalosBoot(ctx context.Context, f *factory.Client, schematic, version, arch string) (Boot, error) {
+func (c *Client) EnsureTalosBoot(ctx context.Context, f *factory.Client, schematic, version, arch string) (labhost.Boot, error) {
 	short := schematic
 	if len(short) > 12 {
 		short = short[:12]
@@ -178,7 +159,7 @@ mkdir -p %[1]s && cd %[1]s
 get() { [ -s "$1" ] && return 0; curl -fSL --retry 3 -o "$1.part" "$2" && mv -f "$1.part" "$1" || { rm -f "$1.part"; echo "download failed: $2" >&2; return 1; }; [ -s "$1" ] || { echo "empty after download: $1" >&2; return 1; }; }
 get kernel-%[2]s %[3]s
 get initramfs-%[2]s.xz %[4]s`, dir, arch, f.KernelURL(schematic, version, arch), f.InitramfsURL(schematic, version, arch)))
-	return Boot{Kernel: kernel, Initrd: initrd}, err
+	return labhost.Boot{Kernel: kernel, Initrd: initrd}, err
 }
 
 func connDropped(err error) bool {
@@ -207,3 +188,9 @@ func firstWord(s string) string {
 	}
 	return f[0]
 }
+
+var (
+	_ labhost.Driver  = (*Client)(nil)
+	_ labhost.Updater = (*Client)(nil)
+	_ labhost.Router  = (*Client)(nil)
+)

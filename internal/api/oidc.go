@@ -19,8 +19,9 @@ import (
 const oidcStateCookie = "kubit_oidc"
 
 func (s *Server) oidcRoutes() {
-	s.mux.HandleFunc("GET /api/v1/auth/oidc/start", s.handleOIDCStart)
-	s.mux.HandleFunc("GET /api/v1/auth/oidc/callback", s.handleOIDCCallback)
+	r := s.mux
+	r.HandleFunc("GET /api/v1/auth/oidc/start", s.handleOIDCStart)
+	r.HandleFunc("GET /api/v1/auth/oidc/callback", s.handleOIDCCallback)
 }
 
 func (s *Server) oidcConfig(ctx context.Context, r *http.Request) (*oidc.Provider, *oauth2.Config, store.OIDC, error) {

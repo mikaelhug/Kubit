@@ -7,11 +7,6 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
-	"k8s.io/client-go/dynamic"
-	"k8s.io/client-go/dynamic/dynamicinformer"
-	"k8s.io/client-go/metadata"
-	"k8s.io/client-go/metadata/metadatainformer"
-	"k8s.io/client-go/tools/cache"
 )
 
 type FluxObject struct {
@@ -40,6 +35,9 @@ var fluxKinds = []struct {
 var crdResource = schema.GroupVersionResource{Group: "apiextensions.k8s.io", Version: "v1", Resource: "customresourcedefinitions"}
 
 func (c *Client) FluxObjects(ctx context.Context) ([]FluxObject, error) {
+	if out, ok := c.cachedFluxObjects(); ok {
+		return out, nil
+	}
 	dyn, err := c.dynClient()
 	if err != nil {
 		return nil, err
@@ -58,6 +56,34 @@ func (c *Client) FluxObjects(ctx context.Context) ([]FluxObject, error) {
 		}
 	}
 	return out, nil
+}
+
+func (c *Client) cachedFluxObjects() ([]FluxObject, bool) {
+	k := c.cache.Load()
+	if k == nil {
+		return nil, false
+	}
+	stores, ok := k.fluxStores()
+	if !ok {
+		return nil, false
+	}
+	out := []FluxObject{}
+	for _, kind := range fluxKinds {
+		store := stores[kind.gvr]
+		if store == nil {
+			continue
+		}
+		var objs []*unstructured.Unstructured
+		for _, obj := range store.List() {
+			if u, ok := obj.(*unstructured.Unstructured); ok {
+				objs = append(objs, u)
+			}
+		}
+		for _, u := range sortedValues(objs) {
+			out = append(out, fluxObject(kind.kind, u))
+		}
+	}
+	return out, true
 }
 
 func fluxObject(kind string, u unstructured.Unstructured) FluxObject {
@@ -87,43 +113,4 @@ func fluxObject(kind string, u unstructured.Unstructured) FluxObject {
 		o.Since, _ = m["lastTransitionTime"].(string)
 	}
 	return o
-}
-
-func (c *Client) watchFlux(ctx context.Context, handler cache.ResourceEventHandler) {
-	cfg := c.streamConfig()
-	dyn, err := dynamic.NewForConfig(cfg)
-	if err != nil {
-		return
-	}
-	meta, err := metadata.NewForConfig(cfg)
-	if err != nil {
-		return
-	}
-	byCRD := map[string]schema.GroupVersionResource{}
-	for _, k := range fluxKinds {
-		byCRD[k.gvr.Resource+"."+k.gvr.Group] = k.gvr
-	}
-	running := map[string]context.CancelFunc{}
-	start := func(obj any) {
-		name, _ := cache.DeletionHandlingMetaNamespaceKeyFunc(obj)
-		gvr, ok := byCRD[name]
-		if !ok || running[name] != nil {
-			return
-		}
-		ictx, cancel := context.WithCancel(ctx)
-		running[name] = cancel
-		inf := dynamicinformer.NewFilteredDynamicInformer(dyn, gvr, "", 0, cache.Indexers{}, nil).Informer()
-		_, _ = inf.AddEventHandler(handler)
-		go inf.Run(ictx.Done())
-	}
-	stop := func(obj any) {
-		name, _ := cache.DeletionHandlingMetaNamespaceKeyFunc(obj)
-		if cancel := running[name]; cancel != nil {
-			cancel()
-			delete(running, name)
-		}
-	}
-	crds := metadatainformer.NewFilteredMetadataInformer(meta, crdResource, "", 0, cache.Indexers{}, nil).Informer()
-	_, _ = crds.AddEventHandler(cache.ResourceEventHandlerFuncs{AddFunc: start, DeleteFunc: stop})
-	crds.Run(ctx.Done())
 }

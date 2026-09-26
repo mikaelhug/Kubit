@@ -1,4 +1,4 @@
-package labhost
+package libvirt
 
 import (
 	"strings"

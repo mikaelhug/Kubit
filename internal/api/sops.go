@@ -10,9 +10,10 @@ import (
 )
 
 func (s *Server) sopsRoutes() {
-	s.mux.HandleFunc("GET /api/v1/clusters/{name}/sops", s.handleSOPSKey)
-	s.mux.HandleFunc("GET /api/v1/clusters/{name}/sops/identity", s.handleSOPSExport)
-	s.mux.HandleFunc("PUT /api/v1/clusters/{name}/sops/identity", s.handleSOPSImport)
+	r := s.mux
+	r.HandleFunc("GET /api/v1/clusters/{name}/sops", s.handleSOPSKey)
+	r.HandleFunc("GET /api/v1/clusters/{name}/sops/identity", s.handleSOPSExport)
+	r.HandleFunc("PUT /api/v1/clusters/{name}/sops/identity", s.handleSOPSImport)
 }
 
 func (s *Server) handleSOPSKey(w http.ResponseWriter, r *http.Request) {

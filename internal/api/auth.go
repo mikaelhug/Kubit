@@ -30,7 +30,6 @@ func (s *Server) authRoutes() {
 	r.HandleFunc("GET /api/v1/users/{name}/tokens", s.handleTokens)
 	r.HandleFunc("POST /api/v1/users/{name}/tokens", s.handleTokenCreate)
 	r.HandleFunc("DELETE /api/v1/users/{name}/tokens/{token}", s.handleTokenDelete)
-	s.oidcRoutes()
 }
 
 func (s *Server) authenticate(r *http.Request) (store.Actor, bool) {

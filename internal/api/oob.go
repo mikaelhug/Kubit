@@ -20,7 +20,6 @@ func (s *Server) oobRoutes() {
 	r.HandleFunc("POST /api/v1/machines/{mac}/oob/test", s.handleOOBTest)
 	r.HandleFunc("POST /api/v1/machines/{mac}/power", s.handleOOBPower)
 	r.HandleFunc("POST /api/v1/machines/oob", s.handleOOBAdd)
-	r.HandleFunc("GET /api/v1/pxe/decide", s.handlePXEDecide)
 }
 
 func (s *Server) oobConfig(ctx context.Context, mac string, submitted oob.Config) oob.Config {
@@ -234,36 +233,6 @@ func (s *Server) handleOOBPower(w http.ResponseWriter, r *http.Request) {
 		}
 		return nil, fmt.Errorf("no Talos maintenance mode at %s within 8 minutes: is kubit pxe running on this LAN, and did the machine network-boot (Network boot page shows its MAC)?", strings.Join(candidates, " / "))
 	})
-}
-
-func (s *Server) handlePXEDecide(w http.ResponseWriter, r *http.Request) {
-	mac := strings.ToLower(r.URL.Query().Get("mac"))
-	boot, reason := s.pxeDecision(r.Context(), mac)
-	writeJSON(w, http.StatusOK, map[string]string{"boot": boot, "reason": reason})
-}
-
-func (s *Server) pxeDecision(ctx context.Context, mac string) (string, string) {
-	m, err := s.store.GetMachine(ctx, mac)
-	if err != nil {
-		v, _ := s.store.GetSettings(ctx)
-		if v.PXEEnrollment == "closed" {
-			return "local", "unknown machine and enrollment is closed"
-		}
-		return "talos", "unknown machine, enrollment open"
-	}
-	if boot, ok := labBoot(m); ok {
-		return boot, "armed as lab host: Debian installer"
-	}
-	switch {
-	case m.Kind() == store.KindLabHost:
-		return "local", "lab host"
-	case m.Provision:
-		return "talos", "armed with Boot into Talos"
-	case m.Cluster != "":
-		return "local", "member of cluster " + m.Cluster
-	default:
-		return "talos", "known, unassigned machine"
-	}
 }
 
 func oobHardware(info oob.Info) []byte {

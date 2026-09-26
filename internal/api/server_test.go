@@ -37,6 +37,29 @@ func do(t *testing.T, h http.Handler, method, path string, body string, headers 
 	return rec
 }
 
+func TestStartMarksInterruptedOperations(t *testing.T) {
+	c, _ := store.NewCrypto(bytes.Repeat([]byte{3}, 32))
+	dir := t.TempDir()
+	st, err := store.Open(dir, c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { st.Close() })
+	ctx := t.Context()
+	id, err := st.CreateOperation(ctx, "lab", "cluster.apply", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := api.New("test", cluster.NewManager(st, dir), "", c)
+	if op, _ := st.GetOperation(ctx, id); op.Status != "running" {
+		t.Fatalf("New must not touch operations: %s", op.Status)
+	}
+	srv.Start()
+	if op, _ := st.GetOperation(ctx, id); op.Status != "failed" {
+		t.Errorf("Start must fail interrupted operations: %s", op.Status)
+	}
+}
+
 func TestTokenGuardsAPIOnly(t *testing.T) {
 	srv, _ := newServer(t, "secret")
 	if rec := do(t, srv, "GET", "/api/v1/clusters", ""); rec.Code != http.StatusUnauthorized {

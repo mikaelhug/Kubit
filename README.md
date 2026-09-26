@@ -945,7 +945,7 @@ the hardware MAC from `networksetup`, since Go sees en0's private Wi-Fi address;
 
 Driver seam: `labhost.Driver` (`internal/labhost/driver.go`) is what the API, the
 cluster manager and the watcher use; `Manager.LabDial` picks it from
-`LabHost.Driver` (`""` = Debian/libvirt over SSH, `vfkit` = `internal/labhost/vfkit`).
+`LabHost.Driver` (`""` = Debian/libvirt over SSH, `internal/labhost/libvirt`; `vfkit` = `internal/labhost/vfkit`).
 Debian-only parts sit behind optional interfaces (`Updater`, `Router`) or `LabSSH`, so
 updates, reboot, remote management and the install notices do not exist for the Mac
 (the routes answer 409).
@@ -985,7 +985,7 @@ reaching the VM subnet through macOS Local Network privacy.
 ### Host metrics, alerts and updates
 
 The host itself gets the treatment nodes get. Every service interval the watcher's
-SSH tick also reads `/proc` and `df` (`labhost.Client.Metrics`: load, CPU %, memory
+SSH tick also reads `/proc` and `df` (`libvirt.Client.Metrics`: load, CPU %, memory
 used, the filesystem carrying `/var/lib/kubit`, running VMs, uptime) and files a
 sample under the pseudo-cluster `labhost:<mac>` in the same `samples` table
 (`disk`/`disk_cap` columns, migration v11) — so the lab host page shows CPU, memory,

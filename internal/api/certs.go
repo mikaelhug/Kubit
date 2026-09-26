@@ -5,16 +5,15 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
-	"sync"
-	"time"
 
 	"github.com/mikael/kubit/internal/cluster"
 	"github.com/mikael/kubit/internal/store"
 )
 
 func (s *Server) certRoutes() {
-	s.mux.HandleFunc("GET /api/v1/clusters/{name}/certificates", s.handleCertificates)
-	s.mux.HandleFunc("POST /api/v1/clusters/{name}/certificates/rotate", s.handleCertRotate)
+	r := s.mux
+	r.HandleFunc("GET /api/v1/clusters/{name}/certificates", s.handleCertificates)
+	r.HandleFunc("POST /api/v1/clusters/{name}/certificates/rotate", s.handleCertRotate)
 }
 
 func (s *Server) handleCertificates(w http.ResponseWriter, r *http.Request) {
@@ -68,23 +67,4 @@ func (s *Server) checkCertificates(ctx context.Context, name string) {
 		}
 		s.raiseEvent(ctx, store.EventRow{Cluster: name, Node: c.Name, Severity: sev, Kind: "cert.expiring", Message: msg})
 	}
-}
-
-type throttle struct {
-	mu   sync.Mutex
-	last map[string]time.Time
-}
-
-func (t *throttle) every(key string, d time.Duration, fn func()) {
-	t.mu.Lock()
-	if t.last == nil {
-		t.last = map[string]time.Time{}
-	}
-	if time.Since(t.last[key]) < d {
-		t.mu.Unlock()
-		return
-	}
-	t.last[key] = time.Now()
-	t.mu.Unlock()
-	fn()
 }

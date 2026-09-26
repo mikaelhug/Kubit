@@ -5,13 +5,136 @@ import (
 	"encoding/json"
 	"log"
 	"net/http"
+	"os"
+	"runtime"
 	"strconv"
+	"strings"
+	"sync"
 	"time"
 
 	"github.com/coder/websocket"
+	"github.com/mikael/kubit/internal/cluster"
 	"github.com/mikael/kubit/internal/k8s"
 	"github.com/mikael/kubit/internal/store"
+	"github.com/mikael/kubit/internal/watch"
 )
+
+func (s *Server) liveRoutes() {
+	r := s.mux
+	r.HandleFunc("GET /api/v1/version", s.handleVersion)
+	r.HandleFunc("GET /api/v1/ws", s.handleLive)
+}
+
+type Message struct {
+	Seq         int64                `json:"seq,omitempty"`
+	Kind        string               `json:"kind"`
+	OperationID int64                `json:"operationId,omitempty"`
+	Event       *cluster.Event       `json:"event,omitempty"`
+	Operation   *store.OperationRow  `json:"operation,omitempty"`
+	Cluster     string               `json:"cluster,omitempty"`
+	Status      *cluster.Status      `json:"status,omitempty"`
+	Health      *store.EventRow      `json:"health,omitempty"`
+	Scope       string               `json:"scope,omitempty"`
+	ClusterRow  *store.ClusterRow    `json:"clusterRow,omitempty"`
+	Machine     *nodeView            `json:"machine,omitempty"`
+	Snapshot    *store.Snapshot      `json:"snapshot,omitempty"`
+	Audit       *store.AuditEntry    `json:"audit,omitempty"`
+	Settings    *store.Settings      `json:"settings,omitempty"`
+	Sample      *store.Sample        `json:"sample,omitempty"`
+	Key         string               `json:"key,omitempty"`
+	Node        string               `json:"node,omitempty"`
+	Hello       *Hello               `json:"hello,omitempty"`
+	Observer    *watch.ObserverState `json:"observer,omitempty"`
+}
+
+type Hello struct {
+	Seq       int64  `json:"seq"`
+	Version   string `json:"version"`
+	StartedAt string `json:"startedAt"`
+	Service   bool   `json:"service"`
+	PID       int    `json:"pid"`
+	OS        string `json:"os"`
+}
+
+func (s *Server) refresh(cluster string, scopes ...string) {
+	for _, sc := range scopes {
+		s.hub.publish(Message{Kind: "refresh", Cluster: cluster, Scope: sc})
+	}
+}
+
+func scopesForKind(kind string) []string {
+	switch {
+	case strings.HasPrefix(kind, "etcd."), strings.HasPrefix(kind, "node."), strings.HasPrefix(kind, "cluster."), strings.HasPrefix(kind, "upgrade."):
+		return []string{"nodes"}
+	case strings.HasPrefix(kind, "platform."):
+		return []string{"addons", "network"}
+	case kind == "cert.rotate":
+		return []string{"certificates"}
+	}
+	return nil
+}
+
+type hub struct {
+	mu   sync.Mutex
+	subs map[chan Message]struct{}
+	seq  int64
+	ring []Message
+	head int
+	n    int
+}
+
+const ringSize = 2000
+
+func newHub() *hub { return &hub{subs: map[chan Message]struct{}{}, ring: make([]Message, ringSize)} }
+
+func (h *hub) since(seq int64) (out []Message, head int64, ok bool) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	head = h.seq
+	if seq == 0 || seq >= head {
+		return nil, head, true
+	}
+	if seq < head-int64(h.n) {
+		return nil, head, false
+	}
+	for i := 0; i < h.n; i++ {
+		m := h.ring[(h.head-h.n+i+ringSize)%ringSize]
+		if m.Seq > seq {
+			out = append(out, m)
+		}
+	}
+	return out, head, true
+}
+
+func (h *hub) subscribe() (chan Message, func()) {
+	ch := make(chan Message, 256)
+	h.mu.Lock()
+	h.subs[ch] = struct{}{}
+	h.mu.Unlock()
+	return ch, func() {
+		h.mu.Lock()
+		delete(h.subs, ch)
+		h.mu.Unlock()
+	}
+}
+
+func (h *hub) publish(m Message) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.seq++
+	m.Seq = h.seq
+	h.ring[h.head] = m
+	h.head = (h.head + 1) % ringSize
+	if h.n < ringSize {
+		h.n++
+	}
+	for ch := range h.subs {
+		select {
+		case ch <- m:
+		default:
+		}
+	}
+}
 
 func (s *Server) attachLive(ctx context.Context) {
 	s.store.OnChange(func(c store.Change) { s.onChange(ctx, c) })
@@ -161,4 +284,13 @@ func (s *Server) handleLive(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
+}
+
+func (s *Server) handleVersion(w http.ResponseWriter, _ *http.Request) {
+	h := s.hello()
+	writeJSON(w, http.StatusOK, map[string]any{"kubit": h.Version, "startedAt": h.StartedAt, "service": h.Service, "pid": h.PID, "os": h.OS})
+}
+
+func (s *Server) hello() Hello {
+	return Hello{Version: s.version, StartedAt: s.started.UTC().Format(time.RFC3339), Service: os.Getenv("KUBIT_SERVICE") != "", PID: os.Getpid(), OS: runtime.GOOS}
 }

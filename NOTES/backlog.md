@@ -119,7 +119,7 @@
   landed on a 1 GiB worker VM instead of the 2 GiB VM the plan sized for it — etcd
   bootstrapped but 0/3 nodes ever went Ready and the API server died. `labDesign` now
   assigns roles by the VM's planned role (matched by MAC) and points the endpoint at a
-  control-plane node (`internal/api/labhost.go`, regression test
+  control-plane node (`internal/api/labhost_design.go`, regression test
   `TestLabDesignControlPlaneIsThePlannedVM`). Open: no path to re-run VMs+cluster on an
   already-installed lab host without re-PXE — a fix iteration reinstalls Debian.
 - Lab-host provision is now preflighted and self-cleaning (2026-09-17): before it
@@ -127,7 +127,7 @@
   machine's AMT (`pxe-segment`), or when AMT will not answer (`amt-down`); on any
   failure or cancel the operation releases the host (VMs deleted, record and arm
   cleared, machine back to `configured`) instead of leaving a dangling `error`
-  record, and the reason shows in Activity. `internal/api/labhost.go`. Residual: the
+  record, and the reason shows in Activity. `internal/api/labhost_provision.go`. Residual: the
   pxe process -> daemon link (`--kubit-url` for `/pxe/decide`) is not preflighted; a
   wrong URL makes the proxy serve Talos to everything. The old failures were timing —
   the PXE server started after the arm / was restarted mid-provision (wiping its boot
@@ -137,7 +137,7 @@
   command ended in `ls -l`, so a failed/partial `curl` (initramfs came back 0 bytes on
   the EliteDesk after a transient) still returned success, and the VMs booted nothing
   and hung "booting". Now each file is fetched to `.part`, renamed on success, and an
-  empty result is a hard error (`internal/labhost/client.go`); a stale 0-byte file
+  empty result is a hard error (`internal/labhost/libvirt/client.go`); a stale 0-byte file
   self-heals on the next setup because `-s` re-triggers the download.
 - Discovery and AMT: a scan of the LAN also finds the engine's own lease of a known
   machine; the row now keeps its OS address and only `oob.host` moves. Still open:
@@ -163,7 +163,7 @@
   setting if a site already uses it.
 - Boot into Talos and the lab install share `labWaitBoot`; the same phase machine
   could serve `discover` when it waits for a PXE-booted machine.
-- `handleClusterDesign` (server.go) falls back to `installDisk: /dev/sda` when a
+- The config draft (`draft`, `internal/api/clusters.go`) falls back to `installDisk: /dev/sda` when a
   machine has no inventory; wrong on NVMe-only boxes. Leave the path empty (pool
   policy / selector) or refuse instead of guessing.
 - Lab host hardware record: refresh from Debian in `labTick` (lsblk/dmidecode) so the
@@ -312,4 +312,3 @@
     seen on first contact and refuse a change.
   - JSON handlers accept any Content-Type (hack scripts post with `curl -d`); requiring
     `application/json` would close form-post CSRF from other origins.
-- `hack/**/*.go` still carries comments (phase 2 stripped only `internal/` and `cmd/`).

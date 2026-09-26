@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/mikael/kubit/internal/labhost"
+	"github.com/mikael/kubit/internal/labhost/libvirt"
 	"github.com/mikael/kubit/internal/oob"
 )
 
@@ -447,7 +448,7 @@ func (s *Store) SSHKey(ctx context.Context) (priv []byte, pub string, err error)
 	if sealed := s.GetValue(ctx, "ssh.priv"); sealed != "" {
 		return []byte(s.unseal(sealed)), s.GetValue(ctx, "ssh.pub"), nil
 	}
-	newPriv, newPub, err := labhost.GenerateKey()
+	newPriv, newPub, err := libvirt.GenerateKey()
 	if err != nil {
 		return nil, "", err
 	}

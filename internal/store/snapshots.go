@@ -89,6 +89,3 @@ func (s *Store) LatestSnapshotTS(ctx context.Context, cluster string) (string, e
 	err := s.db.QueryRowContext(ctx, `SELECT MAX(ts) FROM snapshots WHERE cluster = ? AND status = 'ok'`, cluster).Scan(&ts)
 	return ts.String, err
 }
-
-func (s *Store) SealFile(plain []byte) ([]byte, error)  { return s.crypto.Seal(plain) }
-func (s *Store) OpenFile(sealed []byte) ([]byte, error) { return s.crypto.Open(sealed) }

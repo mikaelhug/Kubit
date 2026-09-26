@@ -3,6 +3,7 @@ package k8s
 import (
 	"context"
 	"sort"
+	"sync"
 
 	appsv1 "k8s.io/api/apps/v1"
 	batchv1 "k8s.io/api/batch/v1"
@@ -13,6 +14,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/fields"
 	"k8s.io/apimachinery/pkg/labels"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/client-go/informers"
 	"k8s.io/client-go/tools/cache"
 )
@@ -20,6 +22,10 @@ import (
 type Cache struct {
 	f      informers.SharedInformerFactory
 	synced []cache.InformerSynced
+
+	fluxMu sync.Mutex
+	crds   cache.InformerSynced
+	flux   map[schema.GroupVersionResource]cache.SharedIndexInformer
 }
 
 func NewCache(f informers.SharedInformerFactory) *Cache {
@@ -51,6 +57,43 @@ func (k *Cache) HasSynced() bool {
 		}
 	}
 	return true
+}
+
+func (k *Cache) trackCRDs(synced cache.InformerSynced) {
+	k.fluxMu.Lock()
+	defer k.fluxMu.Unlock()
+	k.crds = synced
+}
+
+func (k *Cache) trackFlux(gvr schema.GroupVersionResource, inf cache.SharedIndexInformer) {
+	k.fluxMu.Lock()
+	defer k.fluxMu.Unlock()
+	if k.flux == nil {
+		k.flux = map[schema.GroupVersionResource]cache.SharedIndexInformer{}
+	}
+	k.flux[gvr] = inf
+}
+
+func (k *Cache) untrackFlux(gvr schema.GroupVersionResource) {
+	k.fluxMu.Lock()
+	defer k.fluxMu.Unlock()
+	delete(k.flux, gvr)
+}
+
+func (k *Cache) fluxStores() (map[schema.GroupVersionResource]cache.Store, bool) {
+	k.fluxMu.Lock()
+	defer k.fluxMu.Unlock()
+	if k.crds == nil || !k.crds() {
+		return nil, false
+	}
+	stores := map[schema.GroupVersionResource]cache.Store{}
+	for gvr, inf := range k.flux {
+		if !inf.HasSynced() {
+			return nil, false
+		}
+		stores[gvr] = inf.GetStore()
+	}
+	return stores, true
 }
 
 func (c *Client) UseCache(k *Cache) { c.cache.Store(k) }

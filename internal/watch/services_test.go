@@ -220,3 +220,11 @@ func TestFluxNotReadyRaisesAndClears(t *testing.T) {
 		t.Fatalf("recovery: %v", kinds(evs))
 	}
 }
+
+func TestServiceRecoveriesResolveTheirAlerts(t *testing.T) {
+	for rec, alert := range serviceResolves {
+		if resolves[rec] != alert {
+			t.Errorf("resolves[%q] = %q, want %q", rec, resolves[rec], alert)
+		}
+	}
+}

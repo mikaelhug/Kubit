@@ -1,5 +1,3 @@
-// seedlab fills a Kubit home with one fake lab host (metrics, history, updates and
-// alerts) so the Lab host tab can be reviewed without hardware. Dev only.
 package main
 
 import (
@@ -49,7 +47,7 @@ func main() {
 		age := now.Sub(t).Hours()
 		cpu := 30 + 15*math.Sin(age/2) + rand.Float64()*8
 		disk := m.DiskTotal - int64(float64(53*(1<<30))*(1+age/24))
-		if age > 6 && age < 6.5 { // an outage hole
+		if age > 6 && age < 6.5 {
 			continue
 		}
 		_ = s.AddSamples(ctx, key, t, []store.Sample{{CPUMilli: int64(cpu * 10), CPUCap: 1000, MemBytes: m.MemUsed - int64(rand.Float64()*(1<<30)), MemCap: m.MemTotal, Pods: 4, Ready: true, Reachable: true, Disk: disk, DiskCap: m.DiskTotal}})

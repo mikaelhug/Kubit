@@ -25,12 +25,6 @@ var serviceResolves = map[string]string{
 	"flux.ready":         "flux.not-ready",
 }
 
-func init() {
-	for k, v := range serviceResolves {
-		resolves[k] = v
-	}
-}
-
 type ServiceTracker struct {
 	open     map[string]string
 	bad      map[string]int

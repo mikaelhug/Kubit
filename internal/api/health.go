@@ -77,30 +77,6 @@ func (s *Server) watchVersions(ctx context.Context) {
 	}
 }
 
-func (s *Server) watchPXE(ctx context.Context) {
-	var last string
-	t := time.NewTicker(5 * time.Second)
-	defer t.Stop()
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-t.C:
-		}
-		statusURL, b, err := s.pxeFetch(ctx)
-		if statusURL == "" {
-			continue
-		}
-		s.pxeMu.Lock()
-		s.pxeLast = pxeSnapshot{url: statusURL, body: b, err: err, at: time.Now()}
-		s.pxeMu.Unlock()
-		if body := string(b); body != last {
-			last = body
-			s.refresh("", "pxe")
-		}
-	}
-}
-
 func (s *Server) handleObserver(w http.ResponseWriter, _ *http.Request) {
 	if s.watcher == nil {
 		writeJSON(w, http.StatusOK, watch.ObserverState{Online: true})

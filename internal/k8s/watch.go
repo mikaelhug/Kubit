@@ -7,7 +7,12 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/client-go/dynamic"
+	"k8s.io/client-go/dynamic/dynamicinformer"
 	"k8s.io/client-go/informers"
+	"k8s.io/client-go/metadata"
+	"k8s.io/client-go/metadata/metadatainformer"
 	"k8s.io/client-go/tools/cache"
 )
 
@@ -49,8 +54,8 @@ func (c *Client) WatchScopes(ctx context.Context, changed func(scope, namespace 
 	_, _ = f.Core().V1().PersistentVolumes().Informer().AddEventHandler(hook(ScopeStorage))
 	_, _ = f.Storage().V1().StorageClasses().Informer().AddEventHandler(hook(ScopeStorage))
 	_, _ = f.Core().V1().Nodes().Informer().AddEventHandler(hook(ScopeNodes))
-	go c.watchFlux(ctx, hook(ScopeFlux))
 	k := NewCache(f)
+	go c.watchFlux(ctx, k, hook(ScopeFlux))
 	c.UseCache(k)
 	f.Start(ctx.Done())
 	f.WaitForCacheSync(ctx.Done())
@@ -126,4 +131,48 @@ func (d *Debouncer) Stop() {
 		b.timer.Stop()
 		delete(d.pending, key)
 	}
+}
+
+func (c *Client) watchFlux(ctx context.Context, tracked *Cache, handler cache.ResourceEventHandler) {
+	cfg := c.streamConfig()
+	dyn, err := dynamic.NewForConfig(cfg)
+	if err != nil {
+		return
+	}
+	meta, err := metadata.NewForConfig(cfg)
+	if err != nil {
+		return
+	}
+	byCRD := map[string]schema.GroupVersionResource{}
+	for _, k := range fluxKinds {
+		byCRD[k.gvr.Resource+"."+k.gvr.Group] = k.gvr
+	}
+	running := map[string]context.CancelFunc{}
+	start := func(obj any) {
+		name, _ := cache.DeletionHandlingMetaNamespaceKeyFunc(obj)
+		gvr, ok := byCRD[name]
+		if !ok || running[name] != nil {
+			return
+		}
+		ictx, cancel := context.WithCancel(ctx)
+		running[name] = cancel
+		inf := dynamicinformer.NewFilteredDynamicInformer(dyn, gvr, "", 0, cache.Indexers{}, nil).Informer()
+		_, _ = inf.AddEventHandler(handler)
+		tracked.trackFlux(gvr, inf)
+		go inf.Run(ictx.Done())
+	}
+	stop := func(obj any) {
+		name, _ := cache.DeletionHandlingMetaNamespaceKeyFunc(obj)
+		if cancel := running[name]; cancel != nil {
+			tracked.untrackFlux(byCRD[name])
+			cancel()
+			delete(running, name)
+		}
+	}
+	crds := metadatainformer.NewFilteredMetadataInformer(meta, crdResource, "", 0, cache.Indexers{}, nil).Informer()
+	reg, err := crds.AddEventHandler(cache.ResourceEventHandlerFuncs{AddFunc: start, DeleteFunc: stop})
+	if err == nil {
+		tracked.trackCRDs(reg.HasSynced)
+	}
+	crds.Run(ctx.Done())
 }

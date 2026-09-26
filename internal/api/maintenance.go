@@ -9,6 +9,11 @@ import (
 	"github.com/mikael/kubit/internal/config"
 )
 
+func (s *Server) maintenanceRoutes() {
+	r := s.mux
+	r.HandleFunc("GET /api/v1/clusters/{name}/maintenance", s.handleMaintenance)
+}
+
 func (s *Server) disruptive(h http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		name := r.PathValue("name")

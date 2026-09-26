@@ -47,15 +47,3 @@ func (c *Client) podUsages(ctx context.Context) (map[string]NodeUsage, error) {
 	}
 	return out, nil
 }
-
-func (c *Client) PodCount(ctx context.Context) (map[string]int, error) {
-	pods, err := c.pods(ctx, "", metav1.ListOptions{FieldSelector: "status.phase=Running"})
-	if err != nil {
-		return nil, err
-	}
-	out := map[string]int{}
-	for _, p := range pods {
-		out[p.Spec.NodeName]++
-	}
-	return out, nil
-}

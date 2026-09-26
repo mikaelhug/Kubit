@@ -6,7 +6,6 @@ import (
 	"log"
 	"net/http"
 	"strconv"
-	"sync"
 	"time"
 
 	"github.com/mikael/kubit/internal/cluster"
@@ -23,20 +22,15 @@ func (s *Server) etcdRoutes() {
 	r.HandleFunc("POST /api/v1/clusters/{name}/snapshots/{id}/restore", s.disruptive(s.handleSnapshotRestore))
 }
 
-var (
-	scheduleMu      sync.Mutex
-	scheduleAttempt = map[string]time.Time{}
-)
-
 const scheduleRetry = 10 * time.Minute
 
 func (s *Server) maybeScheduleSnapshot(ctx context.Context, name string, st *cluster.Status) {
 	if st.State != cluster.StateReady || !st.APIReachable || !st.Etcd.Healthy || st.Health == cluster.HealthUnknown || st.Observer == cluster.ObserverOffline || s.locks.busy(name) {
 		return
 	}
-	scheduleMu.Lock()
-	defer scheduleMu.Unlock()
-	if time.Since(scheduleAttempt[name]) < scheduleRetry {
+	s.scheduleMu.Lock()
+	defer s.scheduleMu.Unlock()
+	if time.Since(s.scheduleAttempt[name]) < scheduleRetry {
 		return
 	}
 	c, _, err := s.manager.LoadCluster(ctx, name)
@@ -47,7 +41,7 @@ func (s *Server) maybeScheduleSnapshot(ctx context.Context, name string, st *clu
 		age, _ := s.manager.SnapshotAge(ctx, name)
 		s.raiseEvent(ctx, store.EventRow{Cluster: name, Severity: "warn", Kind: "backup.stale", Message: fmt.Sprintf("Last etcd snapshot is %s old; schedule is every %s. Check the Backups tab for failed snapshot operations.", age.Round(time.Minute), c.Spec.Backup.Etcd.Interval)})
 	}
-	scheduleAttempt[name] = time.Now()
+	s.scheduleAttempt[name] = time.Now()
 	if _, err := s.runOperation(name, "etcd.snapshot", map[string]string{"source": "schedule"}, func(ctx context.Context, sink cluster.Sink) (any, error) {
 		sn, err := s.manager.SnapshotEtcd(ctx, name, "schedule", sink)
 		if err == nil {
@@ -82,16 +76,6 @@ func (s *Server) observedSince(name string) bool {
 		}
 	}
 	return true
-}
-
-func (s *Server) raiseEvent(ctx context.Context, e store.EventRow) {
-	id, err := s.store.AddEvent(ctx, e)
-	if err != nil {
-		return
-	}
-	e.ID, e.TS = id, time.Now().UTC().Format(time.RFC3339)
-	s.hub.publish(Message{Kind: "health", Cluster: e.Cluster, Health: &e})
-	s.forwardEvent(e)
 }
 
 func (s *Server) handleSnapshots(w http.ResponseWriter, r *http.Request) {

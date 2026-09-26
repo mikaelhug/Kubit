@@ -1,5 +1,3 @@
-// labssh runs a command on a lab host with Kubit's SSH key (dev/debug only):
-//   go run ./hack/labssh <host-ip> '<command>'
 package main
 
 import (
@@ -8,7 +6,7 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/mikael/kubit/internal/labhost"
+	"github.com/mikael/kubit/internal/labhost/libvirt"
 	"github.com/mikael/kubit/internal/store"
 )
 
@@ -38,7 +36,7 @@ func main() {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
-	c, err := labhost.Dial(context.Background(), os.Args[1], priv)
+	c, err := libvirt.Dial(context.Background(), os.Args[1], priv)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)

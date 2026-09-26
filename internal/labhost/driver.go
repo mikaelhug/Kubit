@@ -48,6 +48,26 @@ type Autostarter interface {
 	Autostart(ctx context.Context) error
 }
 
+type Capacity struct {
+	CPUs       int    `json:"cpus"`
+	MemMiB     int    `json:"memMiB"`
+	DiskGiB    int    `json:"diskGiB"`
+	KVM        bool   `json:"kvm"`
+	Kernel     string `json:"kernel"`
+	Libvirt    string `json:"libvirt"`
+	Hostname   string `json:"hostname"`
+	Arch       string `json:"arch"`
+	Bridge     string `json:"bridge"`
+	Ready      bool   `json:"ready"`
+	CheckedAt  string `json:"checkedAt"`
+	Model      string `json:"model,omitempty"`
+	OS         string `json:"os,omitempty"`
+	Hypervisor string `json:"hypervisor,omitempty"`
+	ReserveMiB int    `json:"reserveMiB,omitempty"`
+	Problem    string `json:"problem,omitempty"`
+	Command    string `json:"command,omitempty"`
+}
+
 const defaultReserveMiB = 2048
 
 func (c Capacity) Reserve() int {
@@ -56,9 +76,3 @@ func (c Capacity) Reserve() int {
 	}
 	return defaultReserveMiB
 }
-
-var (
-	_ Driver  = (*Client)(nil)
-	_ Updater = (*Client)(nil)
-	_ Router  = (*Client)(nil)
-)

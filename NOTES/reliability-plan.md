@@ -42,7 +42,7 @@ control plane and nodes came up but whose add-ons OOM-crashlooped and left tofu 
 - Realistic lab defaults: **worker ≥ 2 GiB (default 3 GiB), control plane ≥ 3 GiB** when
   the platform stack is enabled; keep the current 2 GiB CP floor only for a bare cluster.
   Files: `web/src/components/LabHost.tsx` (`defaultVM`, `MIN_CP_MIB`, `rowsProblem`),
-  `internal/api/labhost.go` (`validate`, `sizes`, `minControlPlaneMiB`).
+  `internal/api/labhost_design.go` (`validate`, `sizes`, `minControlPlaneMiB`).
 - Preflight a **fits-the-workload** check in `internal/cluster/create.go:preflight`: for
   each node, require *allocatable*-equivalent RAM ≥ a role+add-on floor (control plane
   base + etcd + apiserver; worker base + enabled add-ons' requests). Block with a clear

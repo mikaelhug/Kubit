@@ -1,32 +1,17 @@
-package labhost
+package libvirt
 
 import (
 	"bytes"
 	"context"
 	"fmt"
 	"regexp"
-	"slices"
 	"strconv"
 	"strings"
 	"text/template"
 	"time"
-)
 
-type VMSpec struct {
-	Name    string `json:"name"`
-	MAC     string `json:"mac"`
-	CPUs    int    `json:"cpus"`
-	MemMiB  int    `json:"memMiB"`
-	DiskGiB int    `json:"diskGiB"`
-	DataGiB int    `json:"dataGiB,omitempty"`
-	Kernel  string `json:"-"`
-	Initrd  string `json:"-"`
-	ISO     string `json:"-"`
-	Arch    string `json:"-"`
-	Bridge  string `json:"-"`
-	Routed  bool   `json:"-"`
-	TCG     bool   `json:"-"`
-}
+	"github.com/mikael/kubit/internal/labhost"
+)
 
 func firmware(arch string) (code, vars string) {
 	if arch == "arm64" {
@@ -35,20 +20,6 @@ func firmware(arch string) (code, vars string) {
 	return "/usr/share/OVMF/OVMF_CODE_4M.fd", "/usr/share/OVMF/OVMF_VARS_4M.fd"
 }
 
-type VM struct {
-	Name    string `json:"name"`
-	MAC     string `json:"mac"`
-	State   string `json:"state"`
-	CPUs    int    `json:"cpus"`
-	MemMiB  int    `json:"memMiB"`
-	DiskGiB int    `json:"diskGiB"`
-	DataGiB int    `json:"dataGiB,omitempty"`
-	Boot    string `json:"boot"`
-	IP      string `json:"ip,omitempty"`
-}
-
-func MAC(host, n int) string { return fmt.Sprintf("52:54:00:6b:%02x:%02x", host&0xff, n&0xff) }
-
 func serialConsole(arch string) string {
 	if arch == "arm64" {
 		return "console=ttyAMA0"
@@ -56,12 +27,8 @@ func serialConsole(arch string) string {
 	return "console=ttyS0"
 }
 
-func TalosKernelArgs(consoles ...string) []string {
-	return slices.Concat([]string{"talos.platform=metal"}, consoles, []string{"init_on_alloc=1", "slab_nomerge", "pti=on"})
-}
-
 func vmCmdline(arch string) string {
-	return strings.Join(TalosKernelArgs(serialConsole(arch), "console=tty0"), " ")
+	return strings.Join(labhost.TalosKernelArgs(serialConsole(arch), "console=tty0"), " ")
 }
 
 var domainTmpl = template.Must(template.New("domain").Parse(`<domain type='{{.Type}}'>
@@ -107,7 +74,7 @@ var domainTmpl = template.Must(template.New("domain").Parse(`<domain type='{{.Ty
 </domain>
 `))
 
-func DomainXML(s VMSpec) (string, error) {
+func DomainXML(s labhost.VMSpec) (string, error) {
 	qarch, machine, emulator := "x86_64", "q35", "/usr/bin/qemu-system-x86_64"
 	if s.Arch == "arm64" {
 		qarch, machine, emulator = "aarch64", "virt", "/usr/bin/qemu-system-aarch64"
@@ -122,7 +89,7 @@ func DomainXML(s VMSpec) (string, error) {
 		typ, cpu = "qemu", "maximum"
 	}
 	data := struct {
-		VMSpec
+		labhost.VMSpec
 		QemuArch, Machine, Emulator, Disk, Data, Bridge, Type, CPUMode, Loader, Vars, NVRAM, Cmdline string
 	}{s, qarch, machine, emulator, diskPath(s.Name), "", bridge, typ, cpu, loader, vars, vmDir + "/" + s.Name + ".nvram", vmCmdline(s.Arch)}
 	if s.DataGiB > 0 {
@@ -138,7 +105,7 @@ func DomainXML(s VMSpec) (string, error) {
 func diskPath(name string) string { return vmDir + "/" + name + ".qcow2" }
 func dataPath(name string) string { return vmDir + "/" + name + "-data.qcow2" }
 
-func (c *Client) Define(ctx context.Context, s VMSpec) error {
+func (c *Client) Define(ctx context.Context, s labhost.VMSpec) error {
 	xml, err := DomainXML(s)
 	if err != nil {
 		return err
@@ -238,7 +205,7 @@ func (c *Client) SetDiskBoot(ctx context.Context, name string) error {
 
 var kernelBlock = regexp.MustCompile(`(?s)<kernel>.*?</kernel>\s*<initrd>.*?</initrd>\s*<cmdline>.*?</cmdline>`)
 
-func (c *Client) SetTalosBoot(ctx context.Context, name string, b Boot, arch string) error {
+func (c *Client) SetTalosBoot(ctx context.Context, name string, b labhost.Boot, arch string) error {
 	return c.redefine(ctx, name, func(out string) (string, error) {
 		block := fmt.Sprintf("<kernel>%s</kernel>\n    <initrd>%s</initrd>\n    <cmdline>%s</cmdline>", b.Kernel, b.Initrd, vmCmdline(arch))
 		xml := strings.Replace(out, "<boot dev='hd'/>", block, 1)
@@ -305,18 +272,18 @@ func (c *Client) Resize(ctx context.Context, name string, cpus, memMiB int) erro
 	return err
 }
 
-func (c *Client) List(ctx context.Context) ([]VM, error) {
+func (c *Client) List(ctx context.Context) ([]labhost.VM, error) {
 	out, err := c.Run(ctx, `for d in $(virsh list --all --name); do [ -z "$d" ] && continue; st=$(virsh domstate $d | head -1); x=$(virsh dumpxml $d --inactive); mac=$(echo "$x" | grep -o "mac address='[^']*'" | head -1 | cut -d"'" -f2); mem=$(echo "$x" | grep -o "<memory unit='[A-Za-z]*'>[0-9]*" | grep -o "[0-9]*$"); unit=$(echo "$x" | grep -o "<memory unit='[A-Za-z]*'" | cut -d"'" -f2); cpu=$(echo "$x" | grep -o "<vcpu[^>]*>[0-9]*" | grep -o "[0-9]*$"); boot=$(echo "$x" | grep -q "<kernel>" && echo talos || echo disk); disk=$(qemu-img info -U `+vmDir+`/$d.qcow2 2>/dev/null | grep '^virtual size' | grep -o '([0-9]* bytes)' | tr -dc 0-9); data=$(qemu-img info -U `+vmDir+`/$d-data.qcow2 2>/dev/null | grep '^virtual size' | grep -o '([0-9]* bytes)' | tr -dc 0-9); ip=$( (virsh domifaddr $d --source lease 2>/dev/null; virsh domifaddr $d --source arp 2>/dev/null) | awk '/ipv4/{print $4}' | head -1 | cut -d/ -f1); echo "$d|$st|$mac|$mem|$unit|$cpu|$boot|$disk|$ip|$data"; done`)
 	if err != nil {
 		return nil, err
 	}
-	var vms []VM
+	var vms []labhost.VM
 	for _, line := range strings.Split(strings.TrimSpace(out), "\n") {
 		f := strings.Split(line, "|")
 		if len(f) < 9 || f[0] == "" {
 			continue
 		}
-		vm := VM{Name: f[0], State: f[1], MAC: f[2], Boot: f[6], IP: f[8]}
+		vm := labhost.VM{Name: f[0], State: f[1], MAC: f[2], Boot: f[6], IP: f[8]}
 		mem, _ := strconv.Atoi(f[3])
 		switch f[4] {
 		case "KiB":

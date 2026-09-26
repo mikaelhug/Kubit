@@ -141,3 +141,6 @@ func (c *Crypto) Open(sealed []byte) ([]byte, error) {
 	}
 	return c.aead.Open(nil, sealed[:n], sealed[n:], nil)
 }
+
+func (s *Store) SealFile(plain []byte) ([]byte, error)  { return s.crypto.Seal(plain) }
+func (s *Store) OpenFile(sealed []byte) ([]byte, error) { return s.crypto.Open(sealed) }

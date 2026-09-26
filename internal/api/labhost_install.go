@@ -10,7 +10,7 @@ import (
 	"time"
 
 	"github.com/mikael/kubit/internal/cluster"
-	"github.com/mikael/kubit/internal/labhost"
+	"github.com/mikael/kubit/internal/labhost/libvirt"
 	"github.com/mikael/kubit/internal/pxe"
 	"github.com/mikael/kubit/internal/store"
 	"github.com/mikael/kubit/internal/talos"
@@ -153,7 +153,7 @@ func (s *Server) labWaitBoot(ctx context.Context, watch *pxeWatch) error {
 	})
 }
 
-func (s *Server) labWaitInstall(ctx context.Context, m *store.Machine, manual bool, sink cluster.Sink) (*labhost.Client, error) {
+func (s *Server) labWaitInstall(ctx context.Context, m *store.Machine, manual bool, sink cluster.Sink) (*libvirt.Client, error) {
 	mac := m.MAC
 	watch := newPXEWatch(s, mac, sink)
 	stageAt := func() (string, time.Time) {
@@ -198,7 +198,7 @@ func (s *Server) labWaitInstall(ctx context.Context, m *store.Machine, manual bo
 	if err != nil {
 		return nil, err
 	}
-	var lc *labhost.Client
+	var lc *libvirt.Client
 	if err := wait("ssh", labSSHWait, func() (bool, string) {
 		st, _ := stageAt()
 		rowIP := ""
@@ -209,10 +209,10 @@ func (s *Server) labWaitInstall(ctx context.Context, m *store.Machine, manual bo
 			if ip == "" {
 				continue
 			}
-			if cl := sshReady(ctx, ip, func() (*labhost.Client, error) { return labhost.Dial(ctx, ip, priv) }); cl != nil {
+			if cl := sshReady(ctx, ip, func() (*libvirt.Client, error) { return libvirt.Dial(ctx, ip, priv) }); cl != nil {
 				lc = cl
 				m.IP = ip
-				return true, "SSH answers at " + ip + " as " + labhost.User
+				return true, "SSH answers at " + ip + " as " + libvirt.User
 			}
 		}
 		if st == "booted" {
@@ -225,7 +225,7 @@ func (s *Server) labWaitInstall(ctx context.Context, m *store.Machine, manual bo
 	return lc, nil
 }
 
-func sshReady(ctx context.Context, ip string, dial func() (*labhost.Client, error)) *labhost.Client {
+func sshReady(ctx context.Context, ip string, dial func() (*libvirt.Client, error)) *libvirt.Client {
 	if talos.TCPErr(ctx, ip, "22", 2*time.Second) != nil {
 		return nil
 	}

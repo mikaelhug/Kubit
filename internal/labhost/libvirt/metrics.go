@@ -1,4 +1,4 @@
-package labhost
+package libvirt
 
 import (
 	"context"
@@ -6,34 +6,9 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/mikael/kubit/internal/labhost"
 )
-
-type Metrics struct {
-	Load1      float64 `json:"load1"`
-	CPUPct     float64 `json:"cpuPct"`
-	MemUsed    int64   `json:"memUsed"`
-	MemTotal   int64   `json:"memTotal"`
-	DiskUsed   int64   `json:"diskUsed"`
-	DiskTotal  int64   `json:"diskTotal"`
-	VMsRunning int     `json:"vmsRunning"`
-	UptimeSec  int64   `json:"uptimeSec"`
-	At         string  `json:"at"`
-}
-
-type Updates struct {
-	Count           int    `json:"count"`
-	Security        int    `json:"security"`
-	RebootRequired  bool   `json:"rebootRequired"`
-	KernelRunning   string `json:"kernelRunning"`
-	KernelInstalled string `json:"kernelInstalled"`
-	Release         string `json:"release"`
-	Unattended      bool   `json:"unattended"`
-	CheckedAt       string `json:"checkedAt"`
-}
-
-func (u Updates) NeedsReboot() bool {
-	return u.RebootRequired || (u.KernelInstalled != "" && u.KernelRunning != "" && u.KernelInstalled != u.KernelRunning)
-}
 
 const metricsScript = `read l1 rest < /proc/loadavg; echo "load1=$l1"
 echo "cpu1=$(head -1 /proc/stat)"; sleep 2; echo "cpu2=$(head -1 /proc/stat)"
@@ -42,17 +17,17 @@ df -B1 --output=used,size ` + vmDir + ` 2>/dev/null | tail -1 | awk '{print "dis
 echo "vms=$(virsh list --name 2>/dev/null | grep -c .)"
 echo "uptime=$(cut -d. -f1 /proc/uptime)"`
 
-func (c *Client) Metrics(ctx context.Context) (Metrics, error) {
+func (c *Client) Metrics(ctx context.Context) (labhost.Metrics, error) {
 	out, err := c.Run(ctx, metricsScript)
 	if err != nil {
-		return Metrics{}, err
+		return labhost.Metrics{}, err
 	}
 	return parseMetrics(out, time.Now()), nil
 }
 
-func parseMetrics(out string, at time.Time) Metrics {
+func parseMetrics(out string, at time.Time) labhost.Metrics {
 	kv := keyValues(out)
-	m := Metrics{At: at.UTC().Format(time.RFC3339)}
+	m := labhost.Metrics{At: at.UTC().Format(time.RFC3339)}
 	m.Load1, _ = strconv.ParseFloat(kv["load1"], 64)
 	m.MemTotal, _ = strconv.ParseInt(kv["memtotal"], 10, 64)
 	avail, _ := strconv.ParseInt(kv["memavail"], 10, 64)
@@ -100,17 +75,17 @@ echo "installed=$(ls -1 /boot/vmlinuz-* 2>/dev/null | sed 's#.*/vmlinuz-##' | so
 echo "release=$(. /etc/os-release 2>/dev/null && echo "$PRETTY_NAME")"
 echo "unattended=$(grep -qs 'Unattended-Upgrade "1"' /etc/apt/apt.conf.d/20auto-upgrades && echo yes || echo no)"`
 
-func (c *Client) CheckUpdates(ctx context.Context) (Updates, error) {
+func (c *Client) CheckUpdates(ctx context.Context) (labhost.Updates, error) {
 	out, err := c.Run(ctx, updatesScript)
 	if err != nil {
-		return Updates{}, err
+		return labhost.Updates{}, err
 	}
 	return parseUpdates(out, time.Now()), nil
 }
 
-func parseUpdates(out string, at time.Time) Updates {
+func parseUpdates(out string, at time.Time) labhost.Updates {
 	kv := keyValues(out)
-	u := Updates{RebootRequired: kv["reboot"] == "yes", KernelRunning: kv["kernel"], KernelInstalled: kv["installed"], Release: kv["release"], Unattended: kv["unattended"] == "yes", CheckedAt: at.UTC().Format(time.RFC3339)}
+	u := labhost.Updates{RebootRequired: kv["reboot"] == "yes", KernelRunning: kv["kernel"], KernelInstalled: kv["installed"], Release: kv["release"], Unattended: kv["unattended"] == "yes", CheckedAt: at.UTC().Format(time.RFC3339)}
 	u.Count, _ = strconv.Atoi(kv["updates"])
 	u.Security, _ = strconv.Atoi(kv["security"])
 	return u

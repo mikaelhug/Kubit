@@ -101,7 +101,7 @@ func (m *Manager) Status(ctx context.Context, name string) (*Status, error) {
 	}
 	if p, err := m.Store.GetPlatformStatus(ctx, name); err == nil && (p.AppliedAt != "" || p.Error != "") {
 		for k := range p.Outputs {
-			if !tofu.Outputs[k] {
+			if !tofu.DeclaredOutputs[k] {
 				delete(p.Outputs, k)
 			}
 		}

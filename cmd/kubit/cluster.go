@@ -17,22 +17,6 @@ func clusterCmd() *cobra.Command {
 	return cmd
 }
 
-func printEvents(cmd *cobra.Command) cluster.Sink {
-	return func(e cluster.Event) {
-		switch e.Kind {
-		case cluster.KindSteps:
-		case cluster.KindStep:
-			if e.Status == cluster.StepRunning {
-				fmt.Fprintf(cmd.ErrOrStderr(), "%s ▶ %s\n", e.Time.Format("15:04:05"), e.Step)
-			} else if e.Status == cluster.StepFailed {
-				fmt.Fprintf(cmd.ErrOrStderr(), "%s ✗ %s\n", e.Time.Format("15:04:05"), e.Step)
-			}
-		default:
-			fmt.Fprintln(cmd.ErrOrStderr(), e.String())
-		}
-	}
-}
-
 func clusterCreateCmd() *cobra.Command {
 	var file string
 	var skipPlatform bool

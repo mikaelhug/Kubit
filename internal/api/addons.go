@@ -8,6 +8,12 @@ import (
 	"go.yaml.in/yaml/v4"
 )
 
+func (s *Server) addonRoutes() {
+	r := s.mux
+	r.HandleFunc("GET /api/v1/clusters/{name}/addons", s.handleAddons)
+	r.HandleFunc("PUT /api/v1/clusters/{name}/addons/{addon}", s.handleAddonUpdate)
+}
+
 type addonUpdate struct {
 	Enabled    *bool                  `json:"enabled,omitempty"`
 	Range      *string                `json:"range,omitempty"`
@@ -91,4 +97,13 @@ func (req addonUpdate) apply(p *config.Platform, key string, values map[string]a
 		return &statusError{http.StatusNotFound, fmt.Sprintf("unknown add-on %q", key)}
 	}
 	return nil
+}
+
+func (s *Server) handleAddons(w http.ResponseWriter, r *http.Request) {
+	list, err := s.manager.Addons(r.Context(), r.PathValue("name"))
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, list)
 }

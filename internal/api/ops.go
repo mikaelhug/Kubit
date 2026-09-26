@@ -9,124 +9,21 @@ import (
 	"net/http"
 	"runtime/debug"
 	"slices"
-	"strings"
+	"strconv"
 	"sync"
 	"time"
 
 	"github.com/mikael/kubit/internal/cluster"
+	"github.com/mikael/kubit/internal/config"
 	"github.com/mikael/kubit/internal/store"
-	"github.com/mikael/kubit/internal/watch"
 )
 
-type Message struct {
-	Seq         int64                `json:"seq,omitempty"`
-	Kind        string               `json:"kind"`
-	OperationID int64                `json:"operationId,omitempty"`
-	Event       *cluster.Event       `json:"event,omitempty"`
-	Operation   *store.OperationRow  `json:"operation,omitempty"`
-	Cluster     string               `json:"cluster,omitempty"`
-	Status      *cluster.Status      `json:"status,omitempty"`
-	Health      *store.EventRow      `json:"health,omitempty"`
-	Scope       string               `json:"scope,omitempty"`
-	ClusterRow  *store.ClusterRow    `json:"clusterRow,omitempty"`
-	Machine     *nodeView            `json:"machine,omitempty"`
-	Snapshot    *store.Snapshot      `json:"snapshot,omitempty"`
-	Audit       *store.AuditEntry    `json:"audit,omitempty"`
-	Settings    *store.Settings      `json:"settings,omitempty"`
-	Sample      *store.Sample        `json:"sample,omitempty"`
-	Key         string               `json:"key,omitempty"`
-	Node        string               `json:"node,omitempty"`
-	Hello       *Hello               `json:"hello,omitempty"`
-	Observer    *watch.ObserverState `json:"observer,omitempty"`
-}
-
-type Hello struct {
-	Seq       int64  `json:"seq"`
-	Version   string `json:"version"`
-	StartedAt string `json:"startedAt"`
-	Service   bool   `json:"service"`
-	PID       int    `json:"pid"`
-	OS        string `json:"os"`
-}
-
-func (s *Server) refresh(cluster string, scopes ...string) {
-	for _, sc := range scopes {
-		s.hub.publish(Message{Kind: "refresh", Cluster: cluster, Scope: sc})
-	}
-}
-
-func scopesForKind(kind string) []string {
-	switch {
-	case strings.HasPrefix(kind, "etcd."), strings.HasPrefix(kind, "node."), strings.HasPrefix(kind, "cluster."), strings.HasPrefix(kind, "upgrade."):
-		return []string{"nodes"}
-	case strings.HasPrefix(kind, "platform."):
-		return []string{"addons", "network"}
-	case kind == "cert.rotate":
-		return []string{"certificates"}
-	}
-	return nil
-}
-
-type hub struct {
-	mu   sync.Mutex
-	subs map[chan Message]struct{}
-	seq  int64
-	ring []Message
-	head int
-	n    int
-}
-
-const ringSize = 2000
-
-func newHub() *hub { return &hub{subs: map[chan Message]struct{}{}, ring: make([]Message, ringSize)} }
-
-func (h *hub) since(seq int64) (out []Message, head int64, ok bool) {
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	head = h.seq
-	if seq == 0 || seq >= head {
-		return nil, head, true
-	}
-	if seq < head-int64(h.n) {
-		return nil, head, false
-	}
-	for i := 0; i < h.n; i++ {
-		m := h.ring[(h.head-h.n+i+ringSize)%ringSize]
-		if m.Seq > seq {
-			out = append(out, m)
-		}
-	}
-	return out, head, true
-}
-
-func (h *hub) subscribe() (chan Message, func()) {
-	ch := make(chan Message, 256)
-	h.mu.Lock()
-	h.subs[ch] = struct{}{}
-	h.mu.Unlock()
-	return ch, func() {
-		h.mu.Lock()
-		delete(h.subs, ch)
-		h.mu.Unlock()
-	}
-}
-
-func (h *hub) publish(m Message) {
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	h.seq++
-	m.Seq = h.seq
-	h.ring[h.head] = m
-	h.head = (h.head + 1) % ringSize
-	if h.n < ringSize {
-		h.n++
-	}
-	for ch := range h.subs {
-		select {
-		case ch <- m:
-		default:
-		}
-	}
+func (s *Server) opRoutes() {
+	r := s.mux
+	r.HandleFunc("GET /api/v1/operations", s.handleOperations)
+	r.HandleFunc("GET /api/v1/operations/{id}", s.handleOperation)
+	r.HandleFunc("DELETE /api/v1/operations/{id}", s.handleOperationCancel)
+	r.HandleFunc("POST /api/v1/operations/{id}/retry", s.handleOperationRetry)
 }
 
 type opFunc func(ctx context.Context, sink cluster.Sink) (artifact any, err error)
@@ -389,4 +286,79 @@ func (l *clusterLocks) lockAll(names []string) (unlock func()) {
 			l.unlock(names[i])
 		}
 	}
+}
+
+func (s *Server) handleOperations(w http.ResponseWriter, r *http.Request) {
+	ops, err := s.store.ListOperations(r.Context(), 100)
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+	if ops == nil {
+		ops = []store.OperationRow{}
+	}
+	writeJSON(w, http.StatusOK, ops)
+}
+
+func (s *Server) handleOperation(w http.ResponseWriter, r *http.Request) {
+	id, _ := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	op, err := s.store.GetOperation(r.Context(), id)
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, op)
+}
+
+func (s *Server) handleOperationCancel(w http.ResponseWriter, r *http.Request) {
+	id, _ := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if !s.cancelOperation(id) {
+		http.Error(w, "operation is not running", http.StatusConflict)
+		return
+	}
+	w.WriteHeader(http.StatusAccepted)
+}
+
+func (s *Server) handleOperationRetry(w http.ResponseWriter, r *http.Request) {
+	id, _ := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	op, err := s.store.GetOperation(r.Context(), id)
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+	if op.Status == "running" {
+		http.Error(w, "operation is still running", http.StatusConflict)
+		return
+	}
+	var newID int64
+	switch op.Kind {
+	case "cluster.create":
+		var req createRequest
+		_ = json.Unmarshal(op.Request, &req)
+		c, err := config.Parse([]byte(req.YAML))
+		if err != nil {
+			writeErr(w, err)
+			return
+		}
+		newID, err = s.startCreate(c, req.SkipPlatform, req)
+	case "node.add":
+		var n config.Node
+		_ = json.Unmarshal(op.Request, &n)
+		newID, err = s.startNodeAdd(op.Cluster, n)
+	case "platform.apply", "platform.plan":
+		newID, err = s.runOperation(op.Cluster, op.Kind, nil, func(ctx context.Context, sink cluster.Sink) (any, error) {
+			if op.Kind == "platform.plan" {
+				return s.manager.PlanPlatform(ctx, op.Cluster, sink)
+			}
+			return nil, s.manager.ApplyPlatform(ctx, op.Cluster, sink)
+		})
+	case "discover":
+		var req discoverRequest
+		_ = json.Unmarshal(op.Request, &req)
+		newID, err = s.startDiscover(req.Targets)
+	default:
+		http.Error(w, "this kind of operation cannot be retried; start it again from its page", http.StatusBadRequest)
+		return
+	}
+	accepted(w, newID, err)
 }

@@ -9,17 +9,9 @@ import (
 	"time"
 
 	"github.com/mikael/kubit/internal/cluster"
-	"github.com/mikael/kubit/internal/labhost"
+	"github.com/mikael/kubit/internal/labhost/libvirt"
 	"github.com/mikael/kubit/internal/store"
 )
-
-func (s *Server) labMaintRoutes() {
-	r := s.mux
-	r.HandleFunc("GET /api/v1/machines/{mac}/labhost/samples", s.handleLabSamples)
-	r.HandleFunc("POST /api/v1/machines/{mac}/labhost/check", s.handleLabCheck)
-	r.HandleFunc("POST /api/v1/machines/{mac}/labhost/update", s.handleLabMaintain(true))
-	r.HandleFunc("POST /api/v1/machines/{mac}/labhost/reboot", s.handleLabMaintain(false))
-}
 
 func (s *Server) handleLabSamples(w http.ResponseWriter, r *http.Request) {
 	rows, err := s.store.Samples(r.Context(), store.LabHostKey(r.PathValue("mac")), "", time.Now().Add(-sampleRange(r.URL.Query().Get("range"))))
@@ -259,7 +251,7 @@ func (s *Server) labMaintain(ctx context.Context, host *store.Machine, upgrade b
 	return nil
 }
 
-func (s *Server) labWaitSSH(ctx context.Context, host *store.Machine, timeout time.Duration) (*labhost.Client, error) {
+func (s *Server) labWaitSSH(ctx context.Context, host *store.Machine, timeout time.Duration) (*libvirt.Client, error) {
 	deadline := time.Now().Add(timeout)
 	select {
 	case <-ctx.Done():
@@ -267,7 +259,7 @@ func (s *Server) labWaitSSH(ctx context.Context, host *store.Machine, timeout ti
 	case <-time.After(15 * time.Second):
 	}
 	for time.Now().Before(deadline) {
-		if lc := sshReady(ctx, host.IP, func() (*labhost.Client, error) { return s.manager.LabSSH(ctx, host) }); lc != nil {
+		if lc := sshReady(ctx, host.IP, func() (*libvirt.Client, error) { return s.manager.LabSSH(ctx, host) }); lc != nil {
 			return lc, nil
 		}
 		select {

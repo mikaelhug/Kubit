@@ -13,6 +13,7 @@ import (
 
 	"github.com/mikael/kubit/internal/factory"
 	"github.com/mikael/kubit/internal/labhost"
+	"github.com/mikael/kubit/internal/labhost/libvirt"
 	"github.com/pin/tftp/v3"
 )
 
@@ -118,7 +119,7 @@ func (s *Server) Handler() http.Handler {
 		switch decision {
 		case "debian":
 			base := s.BaseURL()
-			args := labhost.KernelArgs(fmt.Sprintf("%s/labhost/%s/preseed?arch=%s", base, mac, arch), "")
+			args := libvirt.KernelArgs(fmt.Sprintf("%s/labhost/%s/preseed?arch=%s", base, mac, arch), "")
 			fmt.Fprintf(w, "#!ipxe\nkernel %s/assets/debian/%s/linux initrd=initrd.gz %s\ninitrd %s/assets/debian/%s/initrd.gz\nboot\n", base, arch, args, base, arch)
 			s.track.http(hostOf(r.RemoteAddr), arch, "debian")
 			s.track.logf(fmt.Sprintf("%s (%s) fetched the Debian installer script (lab host)", hostOf(r.RemoteAddr), mac))
@@ -142,7 +143,7 @@ func (s *Server) Handler() http.Handler {
 			http.NotFound(w, r)
 			return
 		}
-		path, err := s.Cache.Path(r.Context(), labhost.NetbootURL(arch, file))
+		path, err := s.Cache.Path(r.Context(), libvirt.NetbootURL(arch, file))
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusBadGateway)
 			return
