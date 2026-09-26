@@ -25,11 +25,6 @@ func (s *Server) handleAddonUpdate(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, err)
 		return
 	}
-	c, row, err := s.manager.LoadCluster(r.Context(), name)
-	if err != nil {
-		writeErr(w, err)
-		return
-	}
 	var values map[string]any
 	if req.ValuesYAML != nil {
 		if err := yaml.Unmarshal([]byte(*req.ValuesYAML), &values); err != nil {
@@ -37,7 +32,20 @@ func (s *Server) handleAddonUpdate(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	p := &c.Spec.Platform
+	if _, ok := s.editCluster(w, r, "addon.update", key, func(c *config.Cluster) error {
+		return req.apply(&c.Spec.Platform, key, values)
+	}); !ok {
+		return
+	}
+	list, err := s.manager.Addons(r.Context(), name)
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, list)
+}
+
+func (req addonUpdate) apply(p *config.Platform, key string, values map[string]any) error {
 	set := func(a *config.Addon) {
 		if req.Enabled != nil {
 			a.Enabled = *req.Enabled
@@ -84,22 +92,7 @@ func (s *Server) handleAddonUpdate(w http.ResponseWriter, r *http.Request) {
 	case "builds":
 		set(&p.Builds)
 	default:
-		http.Error(w, fmt.Sprintf("unknown add-on %q", key), http.StatusNotFound)
-		return
+		return &statusError{http.StatusNotFound, fmt.Sprintf("unknown add-on %q", key)}
 	}
-	if err := c.Validate(); err != nil {
-		writeJSON(w, http.StatusUnprocessableEntity, map[string]string{"error": err.Error()})
-		return
-	}
-	if err := s.manager.SaveCluster(r.Context(), c, row.State); err != nil {
-		writeErr(w, err)
-		return
-	}
-	_ = s.store.Audit(r.Context(), name, "addon.update", key)
-	list, err := s.manager.Addons(r.Context(), name)
-	if err != nil {
-		writeErr(w, err)
-		return
-	}
-	writeJSON(w, http.StatusOK, list)
+	return nil
 }

@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/mikael/kubit/internal/config"
+	"github.com/mikael/kubit/internal/fsx"
 	"github.com/mikael/kubit/internal/store"
 	"github.com/mikael/kubit/internal/talos"
 )
@@ -41,9 +42,7 @@ func (m *Manager) SnapshotEtcd(ctx context.Context, name, source string, sink Si
 	err = sink.run("pick", func() error {
 		var last error
 		for _, n := range c.ControlPlanes() {
-			dial, cancel := context.WithTimeout(ctx, 10*time.Second)
-			t, err := talos.Dial(dial, n.IP, sec.Talosconfig)
-			cancel()
+			t, err := talos.Dial(ctx, n.IP, sec.Talosconfig)
 			if err != nil {
 				last = err
 				continue
@@ -128,7 +127,7 @@ func (m *Manager) SnapshotEtcd(ctx context.Context, name, source string, sink Si
 			return err
 		}
 		sn.Path = plainPath + ".gz.sealed"
-		if err := os.WriteFile(sn.Path, sealed, 0o600); err != nil {
+		if err := fsx.WriteFile(sn.Path, sealed, 0o600); err != nil {
 			return err
 		}
 		sink.emit(Info, "verify", "", "%d keys; %s on disk, sealed to %s", keys, humanBytes(uint64(len(sealed))), filepath.Base(sn.Path))
@@ -365,15 +364,13 @@ func (m *Manager) RestoreEtcd(ctx context.Context, name string, snapshotID int64
 	err = sink.run("wipe", func() error {
 		boots := map[string]string{}
 		for _, n := range cps {
-			dial, cancel := context.WithTimeout(ctx, 15*time.Second)
-			tc, err := talos.Dial(dial, n.IP, sec.Talosconfig)
-			cancel()
+			tc, err := talos.Dial(ctx, n.IP, sec.Talosconfig)
 			if err != nil {
 				return err
 			}
-			id, err := tc.BootID(ctx)
+			id, err := readBootID(ctx, tc)
 			if err == nil {
-				err = tc.ResetEphemeral(ctx)
+				err = resetEphemeral(ctx, tc)
 			}
 			tc.Close()
 			if err != nil {

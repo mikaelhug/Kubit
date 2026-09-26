@@ -79,7 +79,7 @@ func (s *Store) LastFinished(ctx context.Context, cluster string, kinds []string
 	var out time.Time
 	for _, k := range kinds {
 		var ts sql.NullString
-		if err := s.db.QueryRowContext(ctx, `SELECT finished_at FROM operations WHERE cluster = ? AND kind = ? AND finished_at IS NOT NULL ORDER BY id DESC LIMIT 1`, cluster, k).Scan(&ts); err == nil && ts.Valid {
+		if err := s.db.QueryRowContext(ctx, `SELECT finished_at FROM operations WHERE kind = ? AND finished_at IS NOT NULL AND (cluster = ? OR EXISTS (SELECT 1 FROM json_each(CASE WHEN json_valid(request) THEN request ELSE '{}' END, '$.clusters') WHERE value = ?)) ORDER BY id DESC LIMIT 1`, k, cluster, cluster).Scan(&ts); err == nil && ts.Valid {
 			if t, err := time.Parse(time.RFC3339Nano, ts.String); err == nil && t.After(out) {
 				out = t
 			} else if t, err := time.Parse("2006-01-02T15:04:05.000Z", ts.String); err == nil && t.After(out) {

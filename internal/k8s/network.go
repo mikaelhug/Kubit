@@ -59,15 +59,16 @@ func (c *Client) Services(ctx context.Context) ([]Service, error) {
 	if err != nil {
 		return nil, err
 	}
-	eps, _ := c.DiscoveryV1().EndpointSlices("").List(ctx, metav1.ListOptions{})
+	eps, err := c.DiscoveryV1().EndpointSlices("").List(ctx, metav1.ListOptions{})
+	if err != nil {
+		return nil, err
+	}
 	ready := map[string]int{}
-	if eps != nil {
-		for _, s := range eps.Items {
-			svc := s.Labels["kubernetes.io/service-name"]
-			for _, e := range s.Endpoints {
-				if e.Conditions.Ready == nil || *e.Conditions.Ready {
-					ready[s.Namespace+"/"+svc] += len(e.Addresses)
-				}
+	for _, s := range eps.Items {
+		svc := s.Labels["kubernetes.io/service-name"]
+		for _, e := range s.Endpoints {
+			if e.Conditions.Ready == nil || *e.Conditions.Ready {
+				ready[s.Namespace+"/"+svc] += len(e.Addresses)
 			}
 		}
 	}

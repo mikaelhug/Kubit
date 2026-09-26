@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"slices"
 	"strings"
 )
 
@@ -115,7 +116,20 @@ func (r *Runner) Outputs(ctx context.Context) (map[string]string, error) {
 }
 
 func (r *Runner) env() []string {
-	return append(os.Environ(), "TF_IN_AUTOMATION=1", "TF_INPUT=0")
+	return append(childEnv(), "TF_IN_AUTOMATION=1", "TF_INPUT=0")
+}
+
+var secretEnv = []string{"KUBIT_MASTER_KEY", "KUBIT_TOKEN"}
+
+func childEnv() []string {
+	var out []string
+	for _, kv := range os.Environ() {
+		name, _, _ := strings.Cut(kv, "=")
+		if !slices.Contains(secretEnv, name) {
+			out = append(out, kv)
+		}
+	}
+	return out
 }
 
 func (r *Runner) run(ctx context.Context, args ...string) (Summary, error) {

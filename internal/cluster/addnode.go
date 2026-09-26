@@ -54,7 +54,7 @@ func (m *Manager) AddNode(ctx context.Context, name string, n config.Node, sink 
 		if err := m.recordNode(ctx, c, n, NodeDiscovered, gen.Nodes[n.Hostname]); err != nil {
 			return err
 		}
-		if err := m.SaveCluster(ctx, c, row.State); err != nil {
+		if err := m.SaveCluster(ctx, c, ""); err != nil {
 			return err
 		}
 		_ = m.Store.Audit(ctx, name, "node.add", marshalJSON(n))

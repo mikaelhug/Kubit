@@ -194,8 +194,8 @@ func (m *Manager) pendingInstall(ctx context.Context, c *config.Cluster, talosco
 		pending = append(pending, n)
 	}
 	if moved {
-		if _, row, err := m.LoadCluster(ctx, c.Metadata.Name); err == nil {
-			_ = m.SaveCluster(ctx, c, row.State)
+		if err := m.SaveCluster(ctx, c, ""); err != nil {
+			return nil, nil, fmt.Errorf("record the new addresses: %w", err)
 		}
 	}
 	return pending, cfgs, nil
@@ -292,10 +292,8 @@ func (m *Manager) installAll(ctx context.Context, c *config.Cluster, nodes []con
 	}
 	wg.Wait()
 	if moved {
-		if _, row, err := m.LoadCluster(ctx, c.Metadata.Name); err == nil {
-			if err := m.SaveCluster(ctx, c, row.State); err != nil {
-				errs = append(errs, err)
-			}
+		if err := m.SaveCluster(ctx, c, ""); err != nil {
+			errs = append(errs, err)
 		}
 	}
 	return errors.Join(errs...)
@@ -303,13 +301,11 @@ func (m *Manager) installAll(ctx context.Context, c *config.Cluster, nodes []con
 
 func (m *Manager) installOne(ctx context.Context, n config.Node, cfg []byte, talosconfig []byte, sink Sink) error {
 	_ = m.Store.SetNodeState(ctx, n.IP, NodeInstalling)
-	dial, cancel := context.WithTimeout(ctx, 30*time.Second)
-	tc, err := talos.DialMaintenance(dial, n.IP)
-	cancel()
+	tc, err := talos.DialMaintenance(ctx, n.IP)
 	if err != nil {
 		return err
 	}
-	bootID, err := tc.BootID(ctx)
+	bootID, err := readBootID(ctx, tc)
 	if err != nil {
 		tc.Close()
 		return fmt.Errorf("boot id: %w", err)
@@ -328,7 +324,7 @@ func (m *Manager) installOne(ctx context.Context, n config.Node, cfg []byte, tal
 			sink.emit(Info, "install", n.Hostname, "lab VM set to boot from disk")
 		}
 	}
-	err = tc.Apply(ctx, cfg)
+	err = applyConfig(ctx, tc, cfg)
 	tc.Close()
 	if err != nil {
 		return fmt.Errorf("apply: %w", err)

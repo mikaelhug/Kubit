@@ -4,6 +4,7 @@
 package watch
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -12,6 +13,7 @@ import (
 	"net"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/mikael/kubit/internal/cluster"
@@ -22,9 +24,8 @@ import (
 )
 
 type Watcher struct {
-	Manager  *cluster.Manager
-	Store    *store.Store
-	Interval time.Duration
+	Manager *cluster.Manager
+	Store   *store.Store
 	// ServiceInterval paces the in-cluster (workload) collection, which lists every
 	// pod, service and claim; it is a multiple of Interval.
 	ServiceInterval time.Duration
@@ -39,19 +40,26 @@ type Watcher struct {
 	// OnObserver reports when Kubit's own view of the network changes.
 	OnObserver func(o ObserverState)
 
+	interval atomic.Int64
+
 	mu           sync.Mutex
+	retune       chan struct{}
+	stopping     map[string]chan struct{}
 	last         map[string]*cluster.Status
 	lastServices map[string]*cluster.ServiceHealth
 	trackers     map[string]*ServiceTracker
 	confirms     map[string]*confirm
 	lastTick     map[string]time.Time
 	lastContact  map[string]time.Time
-	running      map[string]context.CancelFunc
+	running      map[string]*clusterLoop
 	memHigh      map[string]int // lab host MAC → consecutive samples over the memory line
 	observer     ObserverState
 	gaps         []time.Time
 	labNoNet     map[string]bool
 	offlineTicks int
+
+	sigMu       sync.Mutex
+	kubeSignals map[string]chan struct{}
 }
 
 // offlineAfter is how many consecutive blind observations declare the observer
@@ -146,11 +154,37 @@ func New(m *cluster.Manager, interval time.Duration) *Watcher {
 	if interval <= 0 {
 		interval = 15 * time.Second
 	}
-	return &Watcher{Manager: m, Store: m.Store, Interval: interval, ServiceInterval: 4 * interval, last: map[string]*cluster.Status{}, lastServices: map[string]*cluster.ServiceHealth{}, trackers: map[string]*ServiceTracker{}, confirms: map[string]*confirm{}, lastTick: map[string]time.Time{}, lastContact: map[string]time.Time{}, running: map[string]context.CancelFunc{}, memHigh: map[string]int{}, labNoNet: map[string]bool{}, observer: ObserverState{Online: true}}
+	w := &Watcher{Manager: m, Store: m.Store, ServiceInterval: 4 * interval, retune: make(chan struct{}), stopping: map[string]chan struct{}{}, last: map[string]*cluster.Status{}, lastServices: map[string]*cluster.ServiceHealth{}, trackers: map[string]*ServiceTracker{}, confirms: map[string]*confirm{}, lastTick: map[string]time.Time{}, lastContact: map[string]time.Time{}, running: map[string]*clusterLoop{}, memHigh: map[string]int{}, labNoNet: map[string]bool{}, kubeSignals: map[string]chan struct{}{}, observer: ObserverState{Online: true}}
+	w.interval.Store(int64(interval))
+	return w
+}
+
+func (w *Watcher) Interval() time.Duration { return time.Duration(w.interval.Load()) }
+
+func (w *Watcher) SetInterval(d time.Duration) {
+	if d <= 0 || time.Duration(w.interval.Swap(int64(d))) == d {
+		return
+	}
+	w.mu.Lock()
+	close(w.retune)
+	w.retune = make(chan struct{})
+	w.mu.Unlock()
+}
+
+func (w *Watcher) retuned() <-chan struct{} {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.retune
+}
+
+type clusterLoop struct {
+	cancel context.CancelFunc
+	done   chan struct{}
 }
 
 // Run starts a loop per stored cluster and picks up clusters added or forgotten later.
 func (w *Watcher) Run(ctx context.Context) {
+	w.Store.OnChange(w.onStoreChange)
 	sync := func() {
 		rows, err := w.Store.ListClusters(ctx)
 		if err != nil {
@@ -166,38 +200,72 @@ func (w *Watcher) Run(ctx context.Context) {
 		defer w.mu.Unlock()
 		for name := range want {
 			if _, ok := w.running[name]; !ok {
-				cctx, cancel := context.WithCancel(ctx)
-				w.running[name] = cancel
-				go w.loop(cctx, name)
+				w.startLoop(ctx, name)
 			}
 		}
-		for name, cancel := range w.running {
+		for name, l := range w.running {
 			if !want[name] {
-				cancel()
+				l.cancel()
 				delete(w.running, name)
-				delete(w.last, name)
-				delete(w.trackers, name)
-				delete(w.lastServices, name)
+				w.stopping[name] = l.done
 			}
 		}
 	}
 	sync()
 	go w.labLoop(ctx)
 	go w.candidateLoop(ctx)
-	t := time.NewTicker(w.Interval)
+	t := time.NewTicker(w.Interval())
 	prune := time.NewTicker(time.Hour)
 	defer t.Stop()
 	defer prune.Stop()
+	retune := w.retuned()
 	for {
 		select {
 		case <-ctx.Done():
 			return
+		case <-retune:
+			retune = w.retuned()
+			t.Reset(w.Interval())
 		case <-t.C:
 			sync()
 		case <-prune.C:
 			_ = w.Store.PruneSamples(ctx)
 		}
 	}
+}
+
+func (w *Watcher) startLoop(ctx context.Context, name string) {
+	prev := w.stopping[name]
+	delete(w.stopping, name)
+	cctx, cancel := context.WithCancel(ctx)
+	l := &clusterLoop{cancel: cancel, done: make(chan struct{})}
+	w.running[name] = l
+	go func() {
+		defer close(l.done)
+		if prev != nil {
+			select {
+			case <-prev:
+			case <-cctx.Done():
+				return
+			}
+		}
+		w.loop(cctx, name)
+		w.forget(name, l.done)
+	}()
+}
+
+func (w *Watcher) forget(name string, done chan struct{}) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.stopping[name] == done {
+		delete(w.stopping, name)
+	}
+	delete(w.last, name)
+	delete(w.trackers, name)
+	delete(w.lastServices, name)
+	delete(w.confirms, name)
+	delete(w.lastTick, name)
+	delete(w.lastContact, name)
 }
 
 // Latest returns the most recent Status the watcher saw for a cluster.
@@ -215,26 +283,38 @@ func (w *Watcher) LatestServices(name string) *cluster.ServiceHealth {
 }
 
 func (w *Watcher) loop(ctx context.Context, name string) {
-	go w.watchKubernetes(ctx, name)
+	kube := make(chan struct{})
+	go func() {
+		defer close(kube)
+		w.watchKubernetes(ctx, name)
+	}()
+	defer func() { <-kube }()
 	w.tick(ctx, name)
 	w.serviceTick(ctx, name)
-	t := time.NewTicker(w.Interval)
+	t := time.NewTicker(w.Interval())
 	defer t.Stop()
-	every := int(w.ServiceInterval / w.Interval)
-	if every < 1 {
-		every = 1
-	}
-	for i := 1; ; i++ {
+	every := w.serviceEvery()
+	retune := w.retuned()
+	for i := 1; ; {
 		select {
 		case <-ctx.Done():
 			return
+		case <-retune:
+			retune = w.retuned()
+			t.Reset(w.Interval())
+			every = w.serviceEvery()
 		case <-t.C:
 			w.tick(ctx, name)
 			if i%every == 0 {
 				w.serviceTick(ctx, name)
 			}
+			i++
 		}
 	}
+}
+
+func (w *Watcher) serviceEvery() int {
+	return max(int(w.ServiceInterval/w.Interval()), 1)
 }
 
 // watchKubernetes keeps informers open on the cluster and reports changed scopes;
@@ -242,11 +322,14 @@ func (w *Watcher) loop(ctx context.Context, name string) {
 // ready yet. Change bursts (a rollout touches dozens of objects) collapse to one
 // refresh per scope per second.
 func (w *Watcher) watchKubernetes(ctx context.Context, name string) {
-	deb := k8s.NewDebouncer(time.Second, func(scope string) {
+	deb := k8s.NewDebouncer(300*time.Millisecond, time.Second, func(scope string) {
 		if w.OnRefresh != nil {
 			w.OnRefresh(name, scope)
 		}
 	})
+	defer deb.Stop()
+	changed := w.kubeSignal(name)
+	defer w.dropKubeSignal(name, changed)
 	backoff := 5 * time.Second
 	for ctx.Err() == nil {
 		st := w.Latest(name)
@@ -258,17 +341,19 @@ func (w *Watcher) watchKubernetes(ctx context.Context, name string) {
 			}
 			continue
 		}
-		kc, err := w.Manager.KubeClient(ctx, name)
+		rotated := false
+		kc, kubeconfig, err := w.kubeClient(ctx, name)
 		if err != nil {
 			log.Printf("watch %s: informers: %v", name, err)
 		} else {
-			wctx, cancel := context.WithCancel(ctx)
 			started := time.Now()
-			kc.WatchScopes(wctx, deb.Hit)
-			cancel()
-			if time.Since(started) > time.Minute {
+			rotated = w.runInformers(ctx, name, kc, kubeconfig, changed, deb.Hit)
+			if rotated || time.Since(started) > time.Minute {
 				backoff = 5 * time.Second
 			}
+		}
+		if rotated {
+			continue
 		}
 		select {
 		case <-ctx.Done():
@@ -277,6 +362,75 @@ func (w *Watcher) watchKubernetes(ctx context.Context, name string) {
 		}
 		if backoff < time.Minute {
 			backoff *= 2
+		}
+	}
+}
+
+func (w *Watcher) kubeClient(ctx context.Context, name string) (*k8s.Client, []byte, error) {
+	sec, err := w.Store.GetClusterSecrets(ctx, name)
+	if err != nil {
+		return nil, nil, err
+	}
+	if sec.Kubeconfig == nil {
+		return nil, nil, fmt.Errorf("cluster %s has no kubeconfig yet", name)
+	}
+	kc, err := k8s.New(sec.Kubeconfig)
+	return kc, sec.Kubeconfig, err
+}
+
+func (w *Watcher) runInformers(ctx context.Context, name string, kc *k8s.Client, kubeconfig []byte, changed <-chan struct{}, hit func(string)) (rotated bool) {
+	wctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		kc.WatchScopes(wctx, hit)
+	}()
+	for {
+		select {
+		case <-done:
+			return false
+		case <-changed:
+			sec, err := w.Store.GetClusterSecrets(ctx, name)
+			if err != nil || bytes.Equal(sec.Kubeconfig, kubeconfig) {
+				continue
+			}
+			log.Printf("watch %s: kubeconfig changed; reconnecting informers", name)
+			cancel()
+			<-done
+			return true
+		}
+	}
+}
+
+func (w *Watcher) kubeSignal(name string) chan struct{} {
+	w.sigMu.Lock()
+	defer w.sigMu.Unlock()
+	ch := make(chan struct{}, 1)
+	w.kubeSignals[name] = ch
+	return ch
+}
+
+func (w *Watcher) dropKubeSignal(name string, ch chan struct{}) {
+	w.sigMu.Lock()
+	defer w.sigMu.Unlock()
+	if w.kubeSignals[name] == ch {
+		delete(w.kubeSignals, name)
+	}
+}
+
+func (w *Watcher) onStoreChange(c store.Change) {
+	if c.Table != "secrets" && c.Table != "*" {
+		return
+	}
+	w.sigMu.Lock()
+	defer w.sigMu.Unlock()
+	for name, ch := range w.kubeSignals {
+		if c.Table == "*" || c.Cluster == name {
+			select {
+			case ch <- struct{}{}:
+			default:
+			}
 		}
 	}
 }
@@ -318,7 +472,7 @@ func (w *Watcher) candidateLoop(ctx context.Context) {
 					if ok {
 						_ = w.Store.UpsertNode(ctx, store.NodeRow{MAC: m.MAC, IP: m.IP, Source: "redfish", State: m.State})
 					}
-				case m.OOB != nil && portOpen(m.OOB.Host, "16992"), portOpen(m.IP, "16992"):
+				case m.OOB != nil && portOpen(ctx, m.OOB.Host, "16992"), portOpen(ctx, m.IP, "16992"):
 					_ = w.Store.UpsertNode(ctx, store.NodeRow{MAC: m.MAC, IP: m.IP, Source: "amt", State: m.State})
 				}
 			}
@@ -326,11 +480,12 @@ func (w *Watcher) candidateLoop(ctx context.Context) {
 	}
 }
 
-func portOpen(host, port string) bool {
+func portOpen(ctx context.Context, host, port string) bool {
 	if host == "" {
 		return false
 	}
-	c, err := net.DialTimeout("tcp", net.JoinHostPort(host, port), 2*time.Second)
+	d := net.Dialer{Timeout: 2 * time.Second}
+	c, err := d.DialContext(ctx, "tcp", net.JoinHostPort(host, port))
 	if err != nil {
 		return false
 	}
@@ -452,7 +607,7 @@ const labUnreachableAfter = 3
 func (w *Watcher) labFailed(ctx context.Context, host *store.Machine, err error) {
 	key := store.LabHostKey(host.MAC)
 	if cluster.Classify(err) == cluster.ReachNoNetwork {
-		if r, _ := cluster.ControlProbe(2 * time.Second); r == cluster.ReachNoNetwork {
+		if r, _ := cluster.ControlProbe(ctx, 2*time.Second); r == cluster.ReachNoNetwork {
 			w.mu.Lock()
 			first := !w.labNoNet[host.MAC]
 			w.labNoNet[host.MAC] = true
@@ -579,6 +734,8 @@ var disruptive = []string{"cluster.create", "cluster.apply", "etcd.restore", "up
 
 const quietAfterOperation = 10 * time.Minute
 
+const serviceTickTimeout = 45 * time.Second
+
 // serviceTick collects what runs in the cluster and raises/resolves workload alerts.
 // It is skipped while the API server is unreachable (Status already alerts on that),
 // while the cluster is provisioning, and during the quiet window after an operation.
@@ -586,6 +743,8 @@ func (w *Watcher) serviceTick(ctx context.Context, name string) {
 	if st := w.Latest(name); st == nil || !st.APIReachable || st.State != cluster.StateReady {
 		return
 	}
+	ctx, cancel := context.WithTimeout(ctx, serviceTickTimeout)
+	defer cancel()
 	sh, err := w.Manager.ServiceHealth(ctx, name)
 	if err != nil {
 		log.Printf("watch %s: services: %v", name, err)
@@ -599,14 +758,19 @@ func (w *Watcher) serviceTick(ctx context.Context, name string) {
 	}
 	w.mu.Lock()
 	tr := w.trackers[name]
-	if tr == nil {
-		tr = NewServiceTracker()
-		if open, err := w.Store.Events(ctx, name, 1000, true); err == nil {
-			tr.Seed(open)
-		}
-		w.trackers[name] = tr
-	}
 	w.mu.Unlock()
+	if tr == nil {
+		fresh := NewServiceTracker()
+		if open, err := w.Store.Events(ctx, name, 1000, true); err == nil {
+			fresh.Seed(open)
+		}
+		w.mu.Lock()
+		if tr = w.trackers[name]; tr == nil {
+			tr = fresh
+			w.trackers[name] = tr
+		}
+		w.mu.Unlock()
+	}
 	var ignore []string
 	if set, err := w.Store.GetSettings(ctx); err == nil {
 		ignore = set.Alerts.IgnoreNamespaces
@@ -651,10 +815,9 @@ func (w *Watcher) tick(ctx context.Context, name string) {
 	now := time.Now()
 	w.mu.Lock()
 	prev := w.last[name]
-	w.last[name] = st
 	// A tick long after the previous one, or one that took far longer than it should,
 	// means the laptop slept: what was observed before is no baseline for now.
-	gap := isGap(w.lastTick[name], start, now, w.Interval)
+	gap := isGap(w.lastTick[name], start, now, w.Interval())
 	if gap {
 		w.gaps = append(w.gaps, now)
 	}
@@ -665,14 +828,19 @@ func (w *Watcher) tick(ctx context.Context, name string) {
 		st.LastContactAt = lc.UTC().Format(time.RFC3339)
 	}
 	c := w.confirms[name]
-	if c == nil {
-		c = newConfirm()
-		if open, err := w.Store.Events(ctx, name, 1000, true); err == nil {
-			c.Seed(open)
-		}
-		w.confirms[name] = c
-	}
 	w.mu.Unlock()
+	if c == nil {
+		fresh := newConfirm()
+		if open, err := w.Store.Events(ctx, name, 1000, true); err == nil {
+			fresh.Seed(open)
+		}
+		w.mu.Lock()
+		if c = w.confirms[name]; c == nil {
+			c = fresh
+			w.confirms[name] = c
+		}
+		w.mu.Unlock()
+	}
 
 	samples := []store.Sample{{CPUMilli: st.Totals.CPUMilli, CPUCap: st.Totals.CPUCapMilli, MemBytes: st.Totals.MemBytes, MemCap: st.Totals.MemCapBytes, Pods: st.Totals.Pods, Ready: st.Totals.NodesReady == st.Totals.Nodes, Reachable: st.APIReachable}}
 	for _, n := range st.Nodes {
@@ -713,6 +881,9 @@ func (w *Watcher) tick(ctx context.Context, name string) {
 		st.Health, st.OpenAlerts = health, open
 	}
 	w.mu.Lock()
+	if ctx.Err() == nil {
+		w.last[name] = st
+	}
 	w.lastTick[name] = time.Now()
 	w.mu.Unlock()
 	if w.OnStatus != nil {

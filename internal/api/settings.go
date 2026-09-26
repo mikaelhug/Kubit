@@ -9,6 +9,7 @@ import (
 	"os"
 	"time"
 
+	"github.com/mikael/kubit/internal/httpx"
 	"github.com/mikael/kubit/internal/store"
 )
 
@@ -92,11 +93,13 @@ func (s *Server) handlePutSettings(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, redactSettings(v))
 }
 
+const pxeStatusWait = 2 * time.Second
+
 // applySettings pushes live-changeable settings into running components.
 func (s *Server) applySettings(v store.Settings) {
-	s.manager.Factory.BaseURL = v.FactoryURL
+	s.manager.Factory.SetBaseURL(v.FactoryURL)
 	if s.watcher != nil && v.WatchIntervalSec > 0 {
-		s.watcher.Interval = time.Duration(v.WatchIntervalSec) * time.Second
+		s.watcher.SetInterval(time.Duration(v.WatchIntervalSec) * time.Second)
 	}
 }
 
@@ -127,8 +130,7 @@ func (s *Server) pxeRunning(ctx contextT) bool {
 	if err != nil || v.PXEStatusURL == "" {
 		return false
 	}
-	client := &http.Client{Timeout: 2 * time.Second}
-	resp, err := client.Get(v.PXEStatusURL)
+	resp, err := httpx.Get(ctx, v.PXEStatusURL, pxeStatusWait)
 	if err != nil {
 		return false
 	}
@@ -142,8 +144,7 @@ func (s *Server) handlePXEStatus(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, err)
 		return
 	}
-	client := &http.Client{Timeout: 2 * time.Second}
-	resp, err := client.Get(v.PXEStatusURL)
+	resp, err := httpx.Get(r.Context(), v.PXEStatusURL, pxeStatusWait)
 	if err != nil {
 		writeJSON(w, http.StatusOK, map[string]any{"running": false, "statusUrl": v.PXEStatusURL, "error": err.Error(),
 			"command": pxeCommand(r.Host), "serviceCommand": fmt.Sprintf("sudo kubit service install --pxe --iface en0 --kubit-url http://%s", r.Host)})

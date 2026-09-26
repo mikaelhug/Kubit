@@ -109,18 +109,16 @@ func (m *Manager) RebootNode(ctx context.Context, name, hostname string, drainFi
 		}
 	}
 	err = sink.run("reboot", func() error {
-		dial, cancel := context.WithTimeout(ctx, 30*time.Second)
-		tc, err := talos.Dial(dial, n.IP, sec.Talosconfig)
-		cancel()
+		tc, err := talos.Dial(ctx, n.IP, sec.Talosconfig)
 		if err != nil {
 			return err
 		}
-		bootID, err := tc.BootID(ctx)
+		bootID, err := readBootID(ctx, tc)
 		if err != nil {
 			tc.Close()
 			return err
 		}
-		err = tc.Reboot(tc.Context(ctx))
+		err = rebootNode(ctx, tc)
 		tc.Close()
 		if err != nil {
 			return err
@@ -175,9 +173,7 @@ func (m *Manager) UpgradeNode(ctx context.Context, name, hostname, version strin
 	image := m.Factory.InstallerImage(c.SchematicFor(c.PoolOf(n)), version)
 	_ = m.Store.Audit(ctx, name, "node.upgrade", hostname+" "+version)
 	return sink.run(step, func() error {
-		dial, cancel := context.WithTimeout(ctx, 30*time.Second)
-		tc, err := talos.Dial(dial, n.IP, sec.Talosconfig)
-		cancel()
+		tc, err := talos.Dial(ctx, n.IP, sec.Talosconfig)
 		if err != nil {
 			return err
 		}
@@ -187,13 +183,13 @@ func (m *Manager) UpgradeNode(ctx context.Context, name, hostname, version strin
 			sink.emit(Done, step, hostname, "already on %s", version)
 			return nil
 		}
-		bootID, err := tc.BootID(ctx)
+		bootID, err := readBootID(ctx, tc)
 		if err != nil {
 			tc.Close()
 			return err
 		}
 		sink.emit(Info, step, hostname, "upgrading to %s using %s", version, image)
-		_, err = tc.Upgrade(tc.Context(ctx), image, false, false)
+		err = upgradeNode(ctx, tc, image)
 		tc.Close()
 		if err != nil {
 			return fmt.Errorf("upgrade: %w", err)

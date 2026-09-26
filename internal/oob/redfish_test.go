@@ -169,3 +169,10 @@ func TestRedfishErrors(t *testing.T) {
 		t.Errorf("message: %q", got)
 	}
 }
+
+func TestRedfishClientsShareOneTransport(t *testing.T) {
+	a, b := newRedfish(Config{Host: "10.0.0.1"}, nil), newRedfish(Config{Host: "10.0.0.2"}, nil)
+	if a.client.Transport != b.client.Transport || a.client == b.client {
+		t.Error("each BMC client must reuse the package transport, not open its own pool")
+	}
+}

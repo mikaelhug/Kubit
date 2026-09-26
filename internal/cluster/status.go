@@ -230,7 +230,7 @@ func (m *Manager) Status(ctx context.Context, name string) (*Status, error) {
 		}()
 	}
 	wg.Wait()
-	st.Observer, st.ObserverError = observe(st)
+	st.Observer, st.ObserverError = observe(ctx, st)
 
 	st.Etcd.Expected = len(c.ControlPlanes())
 	for _, ns := range st.Nodes {
@@ -254,7 +254,7 @@ func (m *Manager) Status(ctx context.Context, name string) (*Status, error) {
 // observe decides whether a status with nothing answering is the cluster's fault or
 // the observer's: only when every failure is a no-network error and the default
 // gateway cannot be dialed either is the observer declared offline.
-func observe(st *Status) (string, string) {
+func observe(ctx context.Context, st *Status) (string, string) {
 	answered, noNet, failed := false, 0, 0
 	for _, n := range st.Nodes {
 		if n.TalosReachable {
@@ -277,7 +277,7 @@ func observe(st *Status) (string, string) {
 	if answered || failed == 0 || noNet != failed {
 		return ObserverOnline, ""
 	}
-	if r, _ := ControlProbe(2 * time.Second); r != ReachNoNetwork {
+	if r, _ := ControlProbe(ctx, 2*time.Second); r != ReachNoNetwork {
 		return ObserverOnline, ""
 	}
 	reason := st.APIError
@@ -293,7 +293,7 @@ func observe(st *Status) (string, string) {
 // probeNode asks a node for its version and stage over mTLS, wrapping failures with
 // what was attempted so the UI can show the cause.
 func probeNode(ctx context.Context, ip string, talosconfig []byte) (version, stage string, err error) {
-	if err := talos.PortErr(ip, 2*time.Second); err != nil {
+	if err := talos.PortErr(ctx, ip, 2*time.Second); err != nil {
 		if Classify(err) == ReachNoNetwork {
 			return "", "", err
 		}

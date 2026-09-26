@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"net"
 	"net/http"
@@ -79,20 +80,12 @@ machines land in maintenance mode and show up in 'kubit discover'.`,
 // pxeDecider asks the daemon per MAC and caches the answer briefly; when the daemon is
 // down every machine gets Talos, as before.
 func pxeDecider(url, token string, logger *log.Logger) func(string) string {
-	type entry struct {
-		boot string
-		at   time.Time
-	}
-	var mu sync.Mutex
-	cache := map[string]entry{}
+	cache := newDecideCache(1024)
 	client := &http.Client{Timeout: 2 * time.Second}
 	return func(mac string) string {
-		mu.Lock()
-		if e, ok := cache[mac]; ok && time.Since(e.at) < 10*time.Second {
-			mu.Unlock()
-			return e.boot
+		if boot, ok := cache.get(mac, time.Now()); ok {
+			return boot
 		}
-		mu.Unlock()
 		req, err := http.NewRequest("GET", strings.TrimRight(url, "/")+"/api/v1/pxe/decide?mac="+neturl.QueryEscape(mac), nil)
 		if err != nil {
 			return ""
@@ -107,13 +100,58 @@ func pxeDecider(url, token string, logger *log.Logger) func(string) string {
 		}
 		defer resp.Body.Close()
 		var d struct{ Boot, Reason string }
-		if err := json.NewDecoder(resp.Body).Decode(&d); err != nil {
+		if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<16)).Decode(&d); err != nil {
+			cache.put(mac, "", time.Now(), decideErrorTTL)
 			return ""
 		}
 		logger.Printf("pxe: %s → %s (%s)", mac, d.Boot, d.Reason)
-		mu.Lock()
-		cache[mac] = entry{boot: d.Boot, at: time.Now()}
-		mu.Unlock()
+		cache.put(mac, d.Boot, time.Now(), decideTTL)
 		return d.Boot
 	}
+}
+
+const (
+	decideTTL      = 10 * time.Second
+	decideErrorTTL = 2 * time.Second
+)
+
+type decideCache struct {
+	mu      sync.Mutex
+	max     int
+	entries map[string]decideEntry
+}
+
+type decideEntry struct {
+	boot    string
+	expires time.Time
+}
+
+func newDecideCache(max int) *decideCache {
+	return &decideCache{max: max, entries: map[string]decideEntry{}}
+}
+
+func (c *decideCache) get(mac string, now time.Time) (string, bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	e, ok := c.entries[mac]
+	if !ok || now.After(e.expires) {
+		return "", false
+	}
+	return e.boot, true
+}
+
+func (c *decideCache) put(mac, boot string, now time.Time, ttl time.Duration) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if _, ok := c.entries[mac]; !ok && len(c.entries) >= c.max {
+		for k, e := range c.entries {
+			if now.After(e.expires) {
+				delete(c.entries, k)
+			}
+		}
+		if len(c.entries) >= c.max {
+			clear(c.entries)
+		}
+	}
+	c.entries[mac] = decideEntry{boot: boot, expires: now.Add(ttl)}
 }

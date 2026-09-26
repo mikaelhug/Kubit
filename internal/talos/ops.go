@@ -109,7 +109,7 @@ func WaitForReboot(ctx context.Context, ip string, talosconfig []byte, prevBootI
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		if PortOpen(ip, 2*time.Second) {
+		if PortOpen(ctx, ip, 2*time.Second) {
 			attempt, cancel := context.WithTimeout(ctx, 10*time.Second)
 			id, err := bootIDWith(attempt, ip, talosconfig)
 			cancel()

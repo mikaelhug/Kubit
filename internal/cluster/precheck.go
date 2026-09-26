@@ -52,9 +52,7 @@ func (m *Manager) precheckUpgrade(ctx context.Context, c *config.Cluster, kc *k8
 	sink.emit(Info, "precheck", "", "etcd healthy, %d/%d nodes Ready and reachable", st.Totals.NodesReady, st.Totals.Nodes)
 
 	for _, n := range c.Spec.Nodes {
-		dial, cancel := context.WithTimeout(ctx, 15*time.Second)
-		tc, err := talos.Dial(dial, n.IP, talosconfig)
-		cancel()
+		tc, err := talos.Dial(ctx, n.IP, talosconfig)
 		if err != nil {
 			problems = append(problems, fmt.Sprintf("%s: %v", n.Hostname, err))
 			continue
@@ -82,7 +80,7 @@ func (m *Manager) precheckUpgrade(ctx context.Context, c *config.Cluster, kc *k8
 		if err != nil {
 			sink.emit(Warn, "precheck", "", "could not list Image Factory versions: %v", err)
 		} else if !slices.Contains(versions, target) {
-			return fmt.Errorf("Talos %s is not published by the Image Factory (%s); latest: %s", target, m.Factory.BaseURL, latestOf(versions))
+			return fmt.Errorf("Talos %s is not published by the Image Factory (%s); latest: %s", target, m.Factory.BaseURL(), latestOf(versions))
 		} else {
 			sink.emit(Info, "precheck", "", "Talos %s is available from the Image Factory", target)
 		}

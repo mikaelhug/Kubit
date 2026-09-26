@@ -305,3 +305,10 @@
     the root Kustomization could be switched with pruning suspended for one apply.
   - The Flux card lists every object; with many apps it wants grouping per app or
     hiding Ready rows.
+- Security follow-ups (phase 1 review):
+  - `/api/v1/labhost/progress` is unauthenticated and its `ip` parameter moves a lab
+    host's address; bind it to the armed MAC with a one-shot token from the preseed.
+  - The lab-host SSH client ignores host keys (`InsecureIgnoreHostKey`); pin the key
+    seen on first contact and refuse a change.
+  - JSON handlers accept any Content-Type (hack scripts post with `curl -d`); requiring
+    `application/json` would close form-post CSRF from other origins.

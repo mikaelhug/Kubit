@@ -30,7 +30,7 @@ func (s *Store) PutCluster(ctx context.Context, c ClusterRow) error {
 	_, err := s.db.ExecContext(ctx, `
 		INSERT INTO clusters (name, spec, schematic_id, state) VALUES (?, ?, ?, ?)
 		ON CONFLICT(name) DO UPDATE SET spec = excluded.spec, schematic_id = excluded.schematic_id,
-			state = excluded.state, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now')`,
+			state = CASE WHEN excluded.state = '' THEN clusters.state ELSE excluded.state END, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now')`,
 		c.Name, string(c.Spec), c.SchematicID, c.State)
 	return s.done(err, Change{Table: "clusters", Cluster: c.Name, Key: c.Name, Op: "put"})
 }
@@ -108,19 +108,31 @@ func (s *Store) SetClusterState(ctx context.Context, name, state string) error {
 // Talos ("configured") but belong to nobody Kubit knows, so a later scan that finds
 // them in maintenance mode can offer them again.
 func (s *Store) DeleteCluster(ctx context.Context, name string) error {
-	if _, err := s.db.ExecContext(ctx, `UPDATE machines SET cluster = NULL, hostname = '', pool = '', role = '', machine_config = NULL, system_split = 0, state = 'configured', updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE cluster = ?`, name); err != nil {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
 		return err
 	}
-	if res, err := s.db.ExecContext(ctx, `UPDATE events SET acked = 1 WHERE cluster = ? AND acked = 0`, name); err != nil {
+	defer tx.Rollback()
+	if _, err := tx.ExecContext(ctx, `UPDATE machines SET cluster = NULL, hostname = '', pool = '', role = '', machine_config = NULL, system_split = 0, state = 'configured', updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE cluster = ?`, name); err != nil {
 		return err
-	} else if n, _ := res.RowsAffected(); n > 0 {
+	}
+	res, err := tx.ExecContext(ctx, `UPDATE events SET acked = 1 WHERE cluster = ? AND acked = 0`, name)
+	if err != nil {
+		return err
+	}
+	acked, _ := res.RowsAffected()
+	if _, err := tx.ExecContext(ctx, `DELETE FROM clusters WHERE name = ?`, name); err != nil {
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	if acked > 0 {
 		s.notify(Change{Table: "events", Cluster: name, Key: "*", Op: "ack"})
 	}
-	_, err := s.db.ExecContext(ctx, `DELETE FROM clusters WHERE name = ?`, name)
-	if err == nil {
-		s.notify(Change{Table: "machines", Cluster: name, Op: "put"})
-	}
-	return s.done(err, Change{Table: "clusters", Cluster: name, Key: name, Op: "delete"})
+	s.notify(Change{Table: "machines", Cluster: name, Op: "put"})
+	s.notify(Change{Table: "clusters", Cluster: name, Key: name, Op: "delete"})
+	return nil
 }
 
 func (s *Store) PutClusterSecrets(ctx context.Context, name string, sec ClusterSecrets) error {
@@ -143,7 +155,7 @@ func (s *Store) PutClusterSecrets(ctx context.Context, name string, sec ClusterS
 		ON CONFLICT(cluster) DO UPDATE SET secrets_bundle = excluded.secrets_bundle,
 			talosconfig = excluded.talosconfig, kubeconfig = excluded.kubeconfig`,
 		name, bundle, tc, kc)
-	return err
+	return s.done(err, Change{Table: "secrets", Cluster: name, Key: name, Op: "put"})
 }
 
 func (s *Store) SetKubeconfig(ctx context.Context, name string, kubeconfig []byte) error {
@@ -158,6 +170,7 @@ func (s *Store) SetKubeconfig(ctx context.Context, name string, kubeconfig []byt
 	if n, _ := res.RowsAffected(); n == 0 {
 		return fmt.Errorf("secrets for cluster %q: %w", name, ErrNotFound)
 	}
+	s.notify(Change{Table: "secrets", Cluster: name, Key: name, Op: "put"})
 	return nil
 }
 

@@ -66,10 +66,13 @@ func (s *Server) handleMachineRetire(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleMachineWOL(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		Enabled bool `json:"enabled"`
+		Enabled *bool `json:"enabled"`
 	}
-	_ = json.NewDecoder(r.Body).Decode(&req)
-	if err := s.store.SetMachineWOL(r.Context(), r.PathValue("mac"), req.Enabled); err != nil {
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Enabled == nil {
+		http.Error(w, `body must be {"enabled": true|false}`, http.StatusBadRequest)
+		return
+	}
+	if err := s.store.SetMachineWOL(r.Context(), r.PathValue("mac"), *req.Enabled); err != nil {
 		writeErr(w, err)
 		return
 	}
@@ -327,31 +330,20 @@ func parsePrefix(cidr string) (string, error) {
 
 // handlePoolsSave replaces the pool list of a cluster (nodes keep their pool names).
 func (s *Server) handlePoolsSave(w http.ResponseWriter, r *http.Request) {
-	name := r.PathValue("name")
 	var pools []config.Pool
 	if err := json.NewDecoder(r.Body).Decode(&pools); err != nil {
 		writeErr(w, err)
 		return
 	}
-	c, row, err := s.manager.LoadCluster(r.Context(), name)
-	if err != nil {
-		writeErr(w, err)
+	c, ok := s.editCluster(w, r, "pools.save", "", func(c *config.Cluster) error {
+		c.Spec.Pools = pools
+		if err := c.Validate(); err != nil {
+			return unprocessable(err)
+		}
+		return s.manager.EnsureSchematic(r.Context(), c)
+	})
+	if !ok {
 		return
 	}
-	c.Spec.Pools = pools
-	// Re-run defaults so removed pools do not leave nodes dangling; Validate then reports them.
-	if err := c.Validate(); err != nil {
-		writeJSON(w, http.StatusUnprocessableEntity, map[string]string{"error": err.Error()})
-		return
-	}
-	if err := s.manager.EnsureSchematic(r.Context(), c); err != nil {
-		writeErr(w, err)
-		return
-	}
-	if err := s.manager.SaveCluster(r.Context(), c, row.State); err != nil {
-		writeErr(w, err)
-		return
-	}
-	_ = s.store.Audit(r.Context(), name, "pools.save", "")
 	writeJSON(w, http.StatusOK, c.Spec.Pools)
 }

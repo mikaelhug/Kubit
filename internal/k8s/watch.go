@@ -2,6 +2,7 @@ package k8s
 
 import (
 	"context"
+	"sync"
 	"time"
 
 	"k8s.io/client-go/informers"
@@ -22,7 +23,11 @@ const (
 // changed(scope) on every add/update/delete until ctx ends. The initial list is not
 // reported (the caller fetched it already). Returns when the informers stop.
 func (c *Client) WatchScopes(ctx context.Context, changed func(scope string)) {
-	f := informers.NewSharedInformerFactory(c.Clientset, 0)
+	cs, err := c.streamClient()
+	if err != nil {
+		return
+	}
+	f := informers.NewSharedInformerFactory(cs, 0)
 	hook := func(scope string) cache.ResourceEventHandlerFuncs {
 		return cache.ResourceEventHandlerFuncs{
 			AddFunc:    func(any) { changed(scope) },
@@ -53,27 +58,57 @@ func (c *Client) WatchScopes(ctx context.Context, changed func(scope string)) {
 
 // Debouncer coalesces bursts of changes per key into one callback.
 type Debouncer struct {
-	delay  time.Duration
-	timers map[string]*time.Timer
-	fire   func(key string)
-	mu     chan struct{}
+	delay   time.Duration
+	maxWait time.Duration
+	fire    func(key string)
+	mu      sync.Mutex
+	pending map[string]*burst
+	stopped bool
 }
 
-func NewDebouncer(delay time.Duration, fire func(key string)) *Debouncer {
-	return &Debouncer{delay: delay, timers: map[string]*time.Timer{}, fire: fire, mu: make(chan struct{}, 1)}
+type burst struct {
+	first time.Time
+	timer *time.Timer
+}
+
+func NewDebouncer(delay, maxWait time.Duration, fire func(key string)) *Debouncer {
+	return &Debouncer{delay: delay, maxWait: max(maxWait, delay), fire: fire, pending: map[string]*burst{}}
 }
 
 func (d *Debouncer) Hit(key string) {
-	d.mu <- struct{}{}
-	defer func() { <-d.mu }()
-	if t, ok := d.timers[key]; ok {
-		t.Reset(d.delay)
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if d.stopped {
 		return
 	}
-	d.timers[key] = time.AfterFunc(d.delay, func() {
-		d.mu <- struct{}{}
-		delete(d.timers, key)
-		<-d.mu
-		d.fire(key)
-	})
+	now := time.Now()
+	b := d.pending[key]
+	if b == nil {
+		b = &burst{first: now}
+		d.pending[key] = b
+		b.timer = time.AfterFunc(d.delay, func() { d.flush(key, b) })
+		return
+	}
+	b.timer.Reset(max(min(d.delay, b.first.Add(d.maxWait).Sub(now)), 0))
+}
+
+func (d *Debouncer) flush(key string, b *burst) {
+	d.mu.Lock()
+	if d.stopped || d.pending[key] != b {
+		d.mu.Unlock()
+		return
+	}
+	delete(d.pending, key)
+	d.mu.Unlock()
+	d.fire(key)
+}
+
+func (d *Debouncer) Stop() {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.stopped = true
+	for key, b := range d.pending {
+		b.timer.Stop()
+		delete(d.pending, key)
+	}
 }

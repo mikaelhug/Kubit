@@ -31,17 +31,23 @@ type clusterForm struct {
 // handleClusterForm validates and saves the structured fields; versions are only
 // recorded here — use the upgrade actions to move running nodes.
 func (s *Server) handleClusterForm(w http.ResponseWriter, r *http.Request) {
-	name := r.PathValue("name")
 	var f clusterForm
 	if err := json.NewDecoder(r.Body).Decode(&f); err != nil {
 		writeErr(w, err)
 		return
 	}
-	c, row, err := s.manager.LoadCluster(r.Context(), name)
-	if err != nil {
-		writeErr(w, err)
+	c, ok := s.editCluster(w, r, "cluster.form.save", "", func(c *config.Cluster) error {
+		f.apply(c)
+		return nil
+	})
+	if !ok {
 		return
 	}
+	out, _ := c.Marshal()
+	writeJSON(w, http.StatusOK, map[string]string{"yaml": string(out)})
+}
+
+func (f clusterForm) apply(c *config.Cluster) {
 	c.Spec.TalosVersion = f.TalosVersion
 	c.Spec.KubernetesVersion = f.KubernetesVersion
 	c.Spec.ControlPlane.Endpoint = f.Endpoint
@@ -65,15 +71,4 @@ func (s *Server) handleClusterForm(w http.ResponseWriter, r *http.Request) {
 	} else {
 		c.Spec.Auth.OIDC = nil
 	}
-	if err := c.Validate(); err != nil {
-		writeJSON(w, http.StatusUnprocessableEntity, map[string]string{"error": err.Error()})
-		return
-	}
-	if err := s.manager.SaveCluster(r.Context(), c, row.State); err != nil {
-		writeErr(w, err)
-		return
-	}
-	_ = s.store.Audit(r.Context(), name, "cluster.form.save", "")
-	out, _ := c.Marshal()
-	writeJSON(w, http.StatusOK, map[string]string{"yaml": string(out)})
 }

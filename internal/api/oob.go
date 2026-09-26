@@ -137,7 +137,11 @@ func (s *Server) handleOOBAdd(w http.ResponseWriter, r *http.Request) {
 		_ = s.store.UpsertNode(ctx, store.NodeRow{MAC: info.MAC, Source: c.Type, Hardware: oobHardware(info)})
 	}
 	_ = s.store.Audit(ctx, "", "machine.oob.add", info.MAC+" "+c.Host)
-	m, _ := s.store.GetMachine(ctx, info.MAC)
+	m, err := s.store.GetMachine(ctx, info.MAC)
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
 	writeJSON(w, http.StatusCreated, map[string]any{"machine": machineView(*m), "info": info})
 }
 

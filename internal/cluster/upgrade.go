@@ -107,9 +107,7 @@ func (m *Manager) UpgradeTalos(ctx context.Context, name, version string, sink S
 					return fmt.Errorf("machine config for the new extensions: %w", err)
 				}
 			}
-			dial, cancel := context.WithTimeout(ctx, 30*time.Second)
-			tc, err := talos.Dial(dial, n.IP, sec.Talosconfig)
-			cancel()
+			tc, err := talos.Dial(ctx, n.IP, sec.Talosconfig)
 			if err != nil {
 				return err
 			}
@@ -119,14 +117,14 @@ func (m *Manager) UpgradeTalos(ctx context.Context, name, version string, sink S
 				sink.emit(Info, step, n.Hostname, "already on %s", version)
 				return nil
 			}
-			bootID, err := tc.BootID(ctx)
+			bootID, err := readBootID(ctx, tc)
 			if err != nil {
 				tc.Close()
 				return err
 			}
 			image := imageFor(n)
 			sink.emit(Info, step, n.Hostname, "upgrading to %s from %s (A/B slot install, then reboot)", version, image)
-			_, err = tc.Upgrade(tc.Context(ctx), image, false, false)
+			err = upgradeNode(ctx, tc, image)
 			tc.Close()
 			if err != nil {
 				return fmt.Errorf("upgrade: %w", err)
@@ -152,7 +150,7 @@ func (m *Manager) UpgradeTalos(ctx context.Context, name, version string, sink S
 			c.Spec.Pools[i].SchematicID = id
 		}
 	}
-	if err := m.SaveCluster(ctx, c, row.State); err != nil {
+	if err := m.SaveCluster(ctx, c, ""); err != nil {
 		return err
 	}
 	sink.emit(Done, nodeStep(nodes[len(nodes)-1]), "", "all nodes on Talos %s", version)
@@ -203,7 +201,7 @@ func (m *Manager) UpgradeKubernetes(ctx context.Context, name, version string, s
 	if err := sink.run("manifests", func() error { return m.SyncManifests(ctx, c, sink) }); err != nil {
 		return err
 	}
-	if err := m.SaveCluster(ctx, c, row.State); err != nil {
+	if err := m.SaveCluster(ctx, c, ""); err != nil {
 		return err
 	}
 	sink.emit(Done, "manifests", "", "all nodes on Kubernetes %s", version)

@@ -74,7 +74,7 @@ func localServer(t *testing.T) (*Server, *store.Store, *memDriver) {
 	t.Cleanup(factory.Close)
 	d := &memDriver{mac: "84:2f:57:45:7e:dc", capa: labhost.Capacity{CPUs: 12, MemMiB: 24576, DiskGiB: 300, KVM: true, Hostname: "mbp", Arch: "arm64", Model: "Mac16,8", OS: "macOS 27.0", Hypervisor: "vfkit v0.6.4", ReserveMiB: 6144, Ready: true}}
 	m := cluster.NewManager(st, dir)
-	m.Factory.BaseURL = factory.URL
+	m.Factory.SetBaseURL(factory.URL)
 	m.Local = func() (labhost.Driver, error) { return d, nil }
 	return New("test", m, "", c), st, d
 }

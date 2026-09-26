@@ -108,7 +108,8 @@ func (s *Server) handleLabMaintain(upgrade bool) http.HandlerFunc {
 		if len(affected) > 0 {
 			owner = affected[0]
 		}
-		id, err := s.runOperation(owner, kind, map[string]any{"host": host.MAC, "clusters": affected}, func(ctx contextT, sink clusterSink) (any, error) {
+		locks := append([]string{"labhost:" + host.MAC}, affected...)
+		id, err := s.runOperationLocking(owner, locks, kind, map[string]any{"host": host.MAC, "clusters": affected}, func(ctx contextT, sink clusterSink) (any, error) {
 			return nil, s.labMaintain(ctx, host, upgrade, affected, sink)
 		})
 		if err != nil {

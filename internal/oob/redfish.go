@@ -21,11 +21,16 @@ type redfish struct {
 
 const redfishRoot = "/redfish/v1"
 
+var redfishTransport = &http.Transport{
+	Proxy:               http.ProxyFromEnvironment,
+	TLSClientConfig:     &tls.Config{InsecureSkipVerify: true},
+	TLSHandshakeTimeout: 10 * time.Second,
+	MaxIdleConnsPerHost: 2,
+	IdleConnTimeout:     30 * time.Second,
+}
+
 func newRedfish(c Config, trace func(string)) *redfish {
-	return &redfish{c: c, trace: trace, client: &http.Client{
-		Timeout:   20 * time.Second,
-		Transport: &http.Transport{TLSClientConfig: &tls.Config{InsecureSkipVerify: true}},
-	}}
+	return &redfish{c: c, trace: trace, client: &http.Client{Timeout: 20 * time.Second, Transport: redfishTransport}}
 }
 
 func (r *redfish) tracef(format string, args ...any) {

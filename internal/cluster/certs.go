@@ -141,9 +141,7 @@ func (m *Manager) RotateCredential(ctx context.Context, name, which string, sink
 	err = sink.run("rotate", func() error {
 		var last error
 		for _, cp := range cps {
-			dial, cancel := context.WithTimeout(ctx, 15*time.Second)
-			tc, err := talos.Dial(dial, cp.IP, sec.Talosconfig)
-			cancel()
+			tc, err := talos.Dial(ctx, cp.IP, sec.Talosconfig)
 			if err != nil {
 				last = err
 				continue

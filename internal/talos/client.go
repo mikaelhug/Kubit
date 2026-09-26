@@ -58,12 +58,15 @@ func (c *Client) Context(ctx context.Context) context.Context {
 }
 
 // PortOpen reports whether the Talos API port accepts TCP connections.
-func PortOpen(ip string, timeout time.Duration) bool { return PortErr(ip, timeout) == nil }
+func PortOpen(ctx context.Context, ip string, timeout time.Duration) bool {
+	return PortErr(ctx, ip, timeout) == nil
+}
 
 // PortErr is PortOpen with the dial error, so callers can tell a closed port from a
 // host they cannot route to.
-func PortErr(ip string, timeout time.Duration) error {
-	conn, err := net.DialTimeout("tcp", net.JoinHostPort(ip, Port), timeout)
+func PortErr(ctx context.Context, ip string, timeout time.Duration) error {
+	d := net.Dialer{Timeout: timeout}
+	conn, err := d.DialContext(ctx, "tcp", net.JoinHostPort(ip, Port))
 	if err != nil {
 		return err
 	}

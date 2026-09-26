@@ -10,18 +10,33 @@ import (
 	"io"
 	"net/http"
 	"sort"
+	"sync"
 
+	"github.com/mikael/kubit/internal/httpx"
 	"go.yaml.in/yaml/v4"
 )
 
 const DefaultBaseURL = "https://factory.talos.dev"
 
 type Client struct {
-	BaseURL string
-	HTTP    *http.Client
+	HTTP *http.Client
+	mu   sync.RWMutex
+	base string
 }
 
-func New() *Client { return &Client{BaseURL: DefaultBaseURL, HTTP: http.DefaultClient} }
+func New() *Client { return &Client{base: DefaultBaseURL, HTTP: httpx.Client} }
+
+func (c *Client) BaseURL() string {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.base
+}
+
+func (c *Client) SetBaseURL(u string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.base = u
+}
 
 type schematic struct {
 	Customization struct {
@@ -42,7 +57,7 @@ func (c *Client) CreateSchematic(ctx context.Context, extensions []string) (stri
 	if err != nil {
 		return "", err
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.BaseURL+"/schematics", bytes.NewReader(body))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.BaseURL()+"/schematics", bytes.NewReader(body))
 	if err != nil {
 		return "", err
 	}
@@ -70,7 +85,7 @@ func (c *Client) CreateSchematic(ctx context.Context, extensions []string) (stri
 
 // Versions lists the Talos releases the factory can build images for.
 func (c *Client) Versions(ctx context.Context) ([]string, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.BaseURL+"/versions", nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.BaseURL()+"/versions", nil)
 	if err != nil {
 		return nil, err
 	}
@@ -91,10 +106,11 @@ func (c *Client) Versions(ctx context.Context) ([]string, error) {
 
 func (c *Client) host() string {
 	const p = "https://"
-	if len(c.BaseURL) > len(p) && c.BaseURL[:len(p)] == p {
-		return c.BaseURL[len(p):]
+	base := c.BaseURL()
+	if len(base) > len(p) && base[:len(p)] == p {
+		return base[len(p):]
 	}
-	return c.BaseURL
+	return base
 }
 
 // InstallerImage is the OCI reference Talos installs from (machine.install.image).
@@ -103,18 +119,18 @@ func (c *Client) InstallerImage(schematicID, talosVersion string) string {
 }
 
 func (c *Client) ISOURL(schematicID, talosVersion, arch string) string {
-	return fmt.Sprintf("%s/image/%s/%s/metal-%s.iso", c.BaseURL, schematicID, talosVersion, arch)
+	return fmt.Sprintf("%s/image/%s/%s/metal-%s.iso", c.BaseURL(), schematicID, talosVersion, arch)
 }
 
 func (c *Client) KernelURL(schematicID, talosVersion, arch string) string {
-	return fmt.Sprintf("%s/image/%s/%s/kernel-%s", c.BaseURL, schematicID, talosVersion, arch)
+	return fmt.Sprintf("%s/image/%s/%s/kernel-%s", c.BaseURL(), schematicID, talosVersion, arch)
 }
 
 func (c *Client) InitramfsURL(schematicID, talosVersion, arch string) string {
-	return fmt.Sprintf("%s/image/%s/%s/initramfs-%s.xz", c.BaseURL, schematicID, talosVersion, arch)
+	return fmt.Sprintf("%s/image/%s/%s/initramfs-%s.xz", c.BaseURL(), schematicID, talosVersion, arch)
 }
 
 // PXEURL returns an iPXE script that boots Talos metal for the architecture.
 func (c *Client) PXEURL(schematicID, talosVersion, arch string) string {
-	return fmt.Sprintf("%s/pxe/%s/%s/metal-%s", c.BaseURL, schematicID, talosVersion, arch)
+	return fmt.Sprintf("%s/pxe/%s/%s/metal-%s", c.BaseURL(), schematicID, talosVersion, arch)
 }

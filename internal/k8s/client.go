@@ -32,6 +32,16 @@ func New(kubeconfig []byte) (*Client, error) {
 	return &Client{Clientset: cs, rest: cfg}, nil
 }
 
+func (c *Client) streamConfig() *rest.Config {
+	cfg := rest.CopyConfig(c.rest)
+	cfg.Timeout = 0
+	return cfg
+}
+
+func (c *Client) streamClient() (*kubernetes.Clientset, error) {
+	return kubernetes.NewForConfig(c.streamConfig())
+}
+
 type NodeStatus struct {
 	Name           string
 	Ready          bool
@@ -94,11 +104,10 @@ func (c *Client) WaitReady(ctx context.Context, names []string, timeout time.Dur
 	lastReady := -1
 	for {
 		ready := 0
-		if nodes, err := c.Nodes(ctx); err == nil {
-			for _, n := range nodes {
-				if want[n.Name] && n.Ready {
-					ready++
-				}
+		nodes, err := c.Nodes(ctx)
+		for _, n := range nodes {
+			if want[n.Name] && n.Ready {
+				ready++
 			}
 		}
 		if ready != lastReady && progress != nil {
@@ -109,6 +118,9 @@ func (c *Client) WaitReady(ctx context.Context, names []string, timeout time.Dur
 			return nil
 		}
 		if time.Now().After(deadline) {
+			if err != nil {
+				return fmt.Errorf("%d/%d nodes Ready after %s: %w", ready, len(want), timeout, err)
+			}
 			return fmt.Errorf("%d/%d nodes Ready after %s", ready, len(want), timeout)
 		}
 		select {

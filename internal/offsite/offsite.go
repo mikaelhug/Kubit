@@ -16,6 +16,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/mikael/kubit/internal/fsx"
 	"github.com/minio/minio-go/v7"
 	"github.com/minio/minio-go/v7/pkg/credentials"
 )
@@ -156,26 +157,10 @@ func (d *dirStore) Put(_ context.Context, key string, r io.Reader, _ int64) erro
 		return err
 	}
 	// Write beside, then rename: a half-copied file must never look like a backup.
-	tmp := p + ".part"
-	f, err := os.OpenFile(tmp, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
-	if err != nil {
+	return fsx.WriteStream(p, 0o600, func(w io.Writer) error {
+		_, err := io.Copy(w, r)
 		return err
-	}
-	if _, err := io.Copy(f, r); err != nil {
-		f.Close()
-		os.Remove(tmp)
-		return err
-	}
-	if err := f.Sync(); err != nil {
-		f.Close()
-		os.Remove(tmp)
-		return err
-	}
-	if err := f.Close(); err != nil {
-		os.Remove(tmp)
-		return err
-	}
-	return os.Rename(tmp, p)
+	})
 }
 
 func (d *dirStore) Get(_ context.Context, key string) (io.ReadCloser, error) {

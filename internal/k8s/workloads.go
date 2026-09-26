@@ -173,5 +173,12 @@ func (c *Client) PodEvents(ctx context.Context, namespace, name string) ([]Condi
 // PodLogs streams a container's log (follow keeps it open).
 func (c *Client) PodLogs(ctx context.Context, namespace, name, container string, tail int64, follow bool) (io.ReadCloser, error) {
 	opts := &corev1.PodLogOptions{Container: container, Follow: follow, TailLines: &tail}
-	return c.CoreV1().Pods(namespace).GetLogs(name, opts).Stream(ctx)
+	if !follow {
+		return c.CoreV1().Pods(namespace).GetLogs(name, opts).Stream(ctx)
+	}
+	cs, err := c.streamClient()
+	if err != nil {
+		return nil, err
+	}
+	return cs.CoreV1().Pods(namespace).GetLogs(name, opts).Stream(ctx)
 }

@@ -16,6 +16,10 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
+
+	"github.com/mikael/kubit/internal/fsx"
+	"github.com/mikael/kubit/internal/httpx"
 )
 
 // Version is the OpenTofu release Kubit drives. Checksums are from the release's
@@ -39,6 +43,11 @@ func Binary(ctx context.Context, binDir string) (string, error) {
 	if _, err := os.Stat(path); err == nil {
 		return path, nil
 	}
+	downloadMu.Lock()
+	defer downloadMu.Unlock()
+	if _, err := os.Stat(path); err == nil {
+		return path, nil
+	}
 	platform := runtime.GOOS + "_" + runtime.GOARCH
 	want, ok := checksums[platform]
 	if !ok {
@@ -49,7 +58,7 @@ func Binary(ctx context.Context, binDir string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := httpx.Download.Do(req)
 	if err != nil {
 		return "", err
 	}
@@ -57,9 +66,12 @@ func Binary(ctx context.Context, binDir string) (string, error) {
 	if resp.StatusCode != http.StatusOK {
 		return "", fmt.Errorf("download %s: %s", url, resp.Status)
 	}
-	archive, err := io.ReadAll(resp.Body)
+	archive, err := io.ReadAll(io.LimitReader(resp.Body, maxArchive+1))
 	if err != nil {
 		return "", err
+	}
+	if len(archive) > maxArchive {
+		return "", fmt.Errorf("download %s: larger than %d MiB", url, maxArchive>>20)
 	}
 	sum := sha256.Sum256(archive)
 	if got := hex.EncodeToString(sum[:]); got != want {
@@ -81,17 +93,10 @@ func Binary(ctx context.Context, binDir string) (string, error) {
 		if err := os.MkdirAll(binDir, 0o700); err != nil {
 			return "", err
 		}
-		tmp := path + ".part"
-		out, err := os.OpenFile(tmp, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o700)
-		if err != nil {
-			return "", err
-		}
-		if _, err := io.Copy(out, rc); err != nil {
-			out.Close()
-			return "", err
-		}
-		out.Close()
-		if err := os.Rename(tmp, path); err != nil {
+		if err := fsx.WriteStream(path, 0o700, func(w io.Writer) error {
+			_, err := io.Copy(w, io.LimitReader(rc, maxBinary))
+			return err
+		}); err != nil {
 			return "", err
 		}
 		return path, nil
@@ -99,8 +104,17 @@ func Binary(ctx context.Context, binDir string) (string, error) {
 	return "", fmt.Errorf("%s: no tofu binary in archive", url)
 }
 
+const (
+	maxArchive = 256 << 20
+	maxBinary  = 512 << 20
+)
+
+var downloadMu sync.Mutex
+
 func sameMinor(ctx context.Context, path string) bool {
-	out, err := exec.CommandContext(ctx, path, "version").Output()
+	cmd := exec.CommandContext(ctx, path, "version")
+	cmd.Env = childEnv()
+	out, err := cmd.Output()
 	if err != nil {
 		return false
 	}

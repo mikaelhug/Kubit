@@ -1,6 +1,7 @@
 package api
 
 import (
+	"strings"
 	"testing"
 	"time"
 
@@ -48,5 +49,44 @@ func TestStepTrackerSkipsPendingOnFailure(t *testing.T) {
 	tr.finish("failed")
 	if tr.steps[1].Status != cluster.StepSkipped || tr.steps[2].Status != cluster.StepSkipped {
 		t.Errorf("pending steps after a failure must read skipped: %+v", tr.steps)
+	}
+}
+
+func TestOperationPanicFailsTheOperation(t *testing.T) {
+	s, st, _ := localServer(t)
+	id, err := s.runOperation("c", "test.panic", nil, func(contextT, clusterSink) (any, error) {
+		var m map[string]int
+		m["boom"]++
+		return nil, nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	op := waitOp(t, st, id)
+	if op.Status != "failed" || !strings.Contains(op.Log, "internal error") {
+		t.Fatalf("status %s, log %q", op.Status, op.Log)
+	}
+	next, err := s.runOperation("c", "test.after", nil, func(contextT, clusterSink) (any, error) { return nil, nil })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if op := waitOp(t, st, next); op.Status != "done" {
+		t.Errorf("the cluster lock must be released after a panic: %s", op.Status)
+	}
+}
+
+func TestLockAllOrdersAndReleases(t *testing.T) {
+	var l clusterLocks
+	unlock := l.lockAll([]string{"b", "labhost:x", "a", "b"})
+	for _, n := range []string{"a", "b", "labhost:x"} {
+		if !l.busy(n) {
+			t.Errorf("%s not held", n)
+		}
+	}
+	unlock()
+	for _, n := range []string{"a", "b", "labhost:x"} {
+		if l.busy(n) {
+			t.Errorf("%s still held", n)
+		}
 	}
 }

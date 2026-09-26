@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"net/http"
 	"net/netip"
 	"os"
@@ -182,14 +183,16 @@ func (s *Server) handleLabProvision(w http.ResponseWriter, r *http.Request) {
 			rctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 			defer cancel()
 			if host, e := s.store.GetMachine(rctx, mac); e == nil {
-				s.releaseLabHost(rctx, host)
-			} else {
-				_ = s.store.SetMachineProvision(rctx, mac, false)
+				if rerr := s.releaseLabHost(rctx, host); rerr != nil {
+					sink(clusterEvent{Time: time.Now(), Kind: "log", Level: cluster.Warn, Message: "release: " + rerr.Error()})
+				}
+			} else if perr := s.store.SetMachineProvision(rctx, mac, false); perr != nil {
+				sink(clusterEvent{Time: time.Now(), Kind: "log", Level: cluster.Warn, Message: "clear the network-boot arm: " + perr.Error()})
 			}
 		}()
-		armWhat := "Arm a Debian network boot and reset via " + oob.Label(c.Type)
-		if plan.Manual {
-			armWhat = "Arm the Debian install; you boot the machine"
+		armWhat := "Arm the Debian install; you boot the machine"
+		if !plan.Manual {
+			armWhat = "Arm a Debian network boot and reset via " + oob.Label(c.Type)
 		}
 		steps := cluster.Steps("arm", armWhat)
 		if !plan.Manual {
@@ -210,7 +213,7 @@ func (s *Server) handleLabProvision(w http.ResponseWriter, r *http.Request) {
 		if err := s.store.SetMachineProvision(ctx, mac, true, "labhost"); err != nil {
 			return nil, err
 		}
-		if err := s.store.SetLabHost(ctx, mac, &store.LabHost{State: "installing", Index: s.store.NextLabHostIndex(ctx), Network: plan.Network, Disk: plan.Disk}); err != nil {
+		if err := s.store.SetLabHost(ctx, mac, &store.LabHost{State: "installing", Network: plan.Network, Disk: plan.Disk}); err != nil {
 			return nil, err
 		}
 		_ = s.store.SetNodeState(ctx, m.IP, "labhost")
@@ -222,9 +225,8 @@ func (s *Server) handleLabProvision(w http.ResponseWriter, r *http.Request) {
 					arch = "amd64"
 				}
 				boot := store.BootLine{Kernel: fmt.Sprintf("%s/assets/debian/%s/linux", base, arch), Initrd: fmt.Sprintf("%s/assets/debian/%s/initrd.gz", base, arch), Cmdline: labhost.KernelArgs(fmt.Sprintf("%s/labhost/%s/preseed?arch=%s", base, mac, arch), labHostname(m))}
-				if h, err := s.store.GetMachine(ctx, mac); err == nil && h.LabHost != nil {
-					h.LabHost.Boot = &boot
-					_ = s.store.SetLabHost(ctx, mac, h.LabHost)
+				if err := s.store.UpdateLabHost(ctx, mac, func(l *store.LabHost) { l.Boot = &boot }); err != nil {
+					return nil, err
 				}
 				sink(clusterEvent{Time: time.Now(), Kind: "log", Level: "info", Step: "arm", Message: fmt.Sprintf("boot the machine now with kernel %s, initrd %s, cmdline: %s", boot.Kernel, boot.Initrd, boot.Cmdline)})
 			}
@@ -465,9 +467,6 @@ func (s *Server) labSetup(ctx context.Context, lc labhost.Driver, m *store.Machi
 			sink(clusterEvent{Time: time.Now(), Kind: "log", Level: "info", Step: "setup", Message: fmt.Sprintf("VMs will live on %s behind the host; this machine needs a route to that subnet via %s", labhost.RoutedSubnet, m.IP)})
 		}
 	}
-	if lh.Index == 0 {
-		lh.Index = s.store.NextLabHostIndex(ctx)
-	}
 	capa, err := lc.Capacity(ctx)
 	if err != nil {
 		return lh, err
@@ -500,7 +499,7 @@ func (s *Server) labSetup(ctx context.Context, lc labhost.Driver, m *store.Machi
 	if sink != nil {
 		sink(clusterEvent{Time: time.Now(), Kind: "log", Level: "info", Step: "setup", Message: fmt.Sprintf("fetching Talos %s boot assets for %s onto the host", version, capa.Arch)})
 	}
-	boot, err := lc.EnsureTalosBoot(ctx, s.manager.Factory.BaseURL, schematic, version, capa.Arch)
+	boot, err := lc.EnsureTalosBoot(ctx, s.manager.Factory.BaseURL(), schematic, version, capa.Arch)
 	if err != nil {
 		return lh, fmt.Errorf("Talos boot assets: %w", err)
 	}
@@ -811,12 +810,14 @@ func (s *Server) reconcileLabHosts(ctx context.Context) {
 		}
 		switch host.LabHost.State {
 		case "installing", "setup":
-			s.releaseLabHost(ctx, host)
+			if err := s.releaseLabHost(ctx, host); err != nil {
+				log.Printf("lab host %s: release after restart: %v", host.MAC, err)
+			}
 		case "updating":
 			_ = s.store.UpdateLabHost(ctx, host.MAC, func(lh *store.LabHost) { lh.State = "ready" })
 		case "ready":
 			if host.LabHost.Driver == labhost.DriverVFKit {
-				go s.labAutostart(host)
+				go s.labAutostart(s.ctx, host)
 			}
 		}
 	}
@@ -953,6 +954,11 @@ func (s *Server) handleLabVMResize(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, `body: {"cpus":2,"memMiB":3072}`, http.StatusBadRequest)
 		return
 	}
+	unlock, ok := s.holdLock(w, r, "labhost:"+mac, labBusy)
+	if !ok {
+		return
+	}
+	defer unlock()
 	host, err := s.store.GetMachine(r.Context(), mac)
 	if err != nil || host.LabHost == nil {
 		http.Error(w, "not a lab host", http.StatusNotFound)
@@ -982,8 +988,15 @@ func (s *Server) handleLabVMResize(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
+const labBusy = "An operation is running on this lab host; try again when it finishes."
+
 func (s *Server) handleLabVMDelete(w http.ResponseWriter, r *http.Request) {
 	mac, name := strings.ToLower(r.PathValue("mac")), r.PathValue("name")
+	unlock, ok := s.holdLock(w, r, "labhost:"+mac, labBusy)
+	if !ok {
+		return
+	}
+	defer unlock()
 	host, err := s.store.GetMachine(r.Context(), mac)
 	if err != nil || host.LabHost == nil {
 		http.Error(w, "not a lab host", http.StatusNotFound)
@@ -1014,6 +1027,11 @@ func (s *Server) handleLabVMDelete(w http.ResponseWriter, r *http.Request) {
 // handleLabRelease destroys every VM and drops the host role; members block it.
 func (s *Server) handleLabRelease(w http.ResponseWriter, r *http.Request) {
 	mac := strings.ToLower(r.PathValue("mac"))
+	unlock, ok := s.holdLock(w, r, "labhost:"+mac, labBusy)
+	if !ok {
+		return
+	}
+	defer unlock()
 	host, err := s.store.GetMachine(r.Context(), mac)
 	if err != nil || host.LabHost == nil {
 		http.Error(w, "not a lab host", http.StatusNotFound)
@@ -1030,7 +1048,10 @@ func (s *Server) handleLabRelease(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	s.releaseLabHost(r.Context(), host)
+	if err := s.releaseLabHost(r.Context(), host); err != nil {
+		writeErr(w, err)
+		return
+	}
 	_ = s.store.Audit(r.Context(), "", "labhost.release", mac)
 	w.WriteHeader(http.StatusNoContent)
 }
@@ -1038,8 +1059,9 @@ func (s *Server) handleLabRelease(w http.ResponseWriter, r *http.Request) {
 // releaseLabHost forgets a machine's lab-host role: deletes its VMs (best effort),
 // drops the record and its history, clears the network-boot arm, and leaves the
 // machine unknown (Debian stays on disk). Used by the Release button and by a failed provision.
-func (s *Server) releaseLabHost(ctx context.Context, host *store.Machine) {
+func (s *Server) releaseLabHost(ctx context.Context, host *store.Machine) error {
 	local := host.LabHost != nil && host.LabHost.Driver == labhost.DriverVFKit
+	var errs []error
 	if host.LabHost != nil && (host.LabHost.State == "ready" || len(host.LabHost.VMs) > 0 || local) {
 		// A host that never finished installing has nothing to clean up; do not hang
 		// on an SSH timeout for it.
@@ -1057,21 +1079,36 @@ func (s *Server) releaseLabHost(ctx context.Context, host *store.Machine) {
 					continue
 				}
 				done[v.Name] = true
-				_ = lc.Delete(dctx, v.Name)
-				_ = s.store.DeleteMachine(dctx, v.MAC)
+				if err := lc.Delete(dctx, v.Name); err != nil {
+					log.Printf("lab host %s: delete VM %s: %v", host.MAC, v.Name, err)
+				}
+				if err := s.store.DeleteMachine(ctx, v.MAC); err != nil {
+					errs = append(errs, fmt.Errorf("forget VM %s: %w", v.Name, err))
+				}
 			}
 			lc.Close()
 		}
 		cancel()
 	}
-	_ = s.store.DeleteLabHostHistory(ctx, host.MAC)
-	if local {
-		_ = s.store.DeleteMachine(ctx, host.MAC)
-		return
+	if err := s.store.SetMachineProvision(ctx, host.MAC, false); err != nil {
+		errs = append(errs, fmt.Errorf("clear the network-boot arm: %w", err))
 	}
-	_ = s.store.SetLabHost(ctx, host.MAC, nil)
-	_ = s.store.SetMachineProvision(ctx, host.MAC, false)
-	_ = s.store.SetNodeState(ctx, host.IP, "unknown")
+	if err := s.store.DeleteLabHostHistory(ctx, host.MAC); err != nil {
+		errs = append(errs, fmt.Errorf("drop history: %w", err))
+	}
+	if local {
+		if err := s.store.DeleteMachine(ctx, host.MAC); err != nil {
+			errs = append(errs, fmt.Errorf("forget the host: %w", err))
+		}
+		return errors.Join(errs...)
+	}
+	if err := s.store.SetLabHost(ctx, host.MAC, nil); err != nil {
+		errs = append(errs, fmt.Errorf("drop the lab-host record: %w", err))
+	}
+	if err := s.store.SetNodeState(ctx, host.IP, "unknown"); err != nil {
+		errs = append(errs, fmt.Errorf("reset the machine state: %w", err))
+	}
+	return errors.Join(errs...)
 }
 
 func (s *Server) labDriver(ctx context.Context, hostMAC string) string {

@@ -90,11 +90,12 @@ func fluxObject(kind string, u unstructured.Unstructured) FluxObject {
 }
 
 func (c *Client) watchFlux(ctx context.Context, handler cache.ResourceEventHandler) {
-	dyn, err := dynamic.NewForConfig(c.rest)
+	cfg := c.streamConfig()
+	dyn, err := dynamic.NewForConfig(cfg)
 	if err != nil {
 		return
 	}
-	meta, err := metadata.NewForConfig(c.rest)
+	meta, err := metadata.NewForConfig(cfg)
 	if err != nil {
 		return
 	}

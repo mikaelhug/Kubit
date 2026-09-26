@@ -26,7 +26,7 @@ func (m *Manager) RemoveNode(ctx context.Context, name, hostname string, opts Re
 		"reset", "Graceful Talos reset back to maintenance mode",
 		"forget", "Remove from cluster.yaml",
 	)...)
-	c, row, err := m.LoadCluster(ctx, name)
+	c, _, err := m.LoadCluster(ctx, name)
 	if err != nil {
 		return err
 	}
@@ -89,12 +89,10 @@ func (m *Manager) RemoveNode(ctx context.Context, name, hostname string, opts Re
 	}
 
 	err = sink.run("reset", func() error {
-		dial, cancel := context.WithTimeout(ctx, 30*time.Second)
-		tc, err := talos.Dial(dial, n.IP, sec.Talosconfig)
-		cancel()
+		tc, err := talos.Dial(ctx, n.IP, sec.Talosconfig)
 		if err == nil {
 			sink.emit(Info, "reset", hostname, "graceful Talos reset (etcd leave, wipe, reboot to maintenance)")
-			err = tc.Reset(tc.Context(ctx), true, true)
+			err = resetNode(ctx, tc)
 			tc.Close()
 		}
 		if err != nil {
@@ -111,7 +109,7 @@ func (m *Manager) RemoveNode(ctx context.Context, name, hostname string, opts Re
 
 	return sink.run("forget", func() error {
 		c.Spec.Nodes = append(c.Spec.Nodes[:idx], c.Spec.Nodes[idx+1:]...)
-		if err := m.SaveCluster(ctx, c, row.State); err != nil {
+		if err := m.SaveCluster(ctx, c, ""); err != nil {
 			return err
 		}
 		if err := m.Store.UnassignNode(ctx, n.IP, string(talos.StateMaintenance)); err != nil {

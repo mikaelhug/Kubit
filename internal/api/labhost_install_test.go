@@ -194,3 +194,81 @@ func local(r *http.Request) *http.Request {
 	r.RemoteAddr = "127.0.0.1:40000"
 	return r
 }
+
+func TestManualProvisionWithoutRemoteManagement(t *testing.T) {
+	c, _ := store.NewCrypto(bytes.Repeat([]byte{8}, 32))
+	dir := t.TempDir()
+	st, err := store.Open(dir, c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	s := New("test", cluster.NewManager(st, dir), "", c)
+	defer s.Drain(5 * time.Second)
+	ctx := context.Background()
+	fake := &fakePXE{st: pxe.Status{IP: "192.168.5.1", HTTPPort: 8069, Boots: []pxe.Boot{}}}
+	srv := httptest.NewServer(fake)
+	defer srv.Close()
+	v, _ := st.GetSettings(ctx)
+	v.PXEStatusURL = srv.URL + "/status.json"
+	if err := st.PutSettings(ctx, v); err != nil {
+		t.Fatal(err)
+	}
+	mac := "52:54:00:4c:41:02"
+	if err := st.UpsertNode(ctx, store.NodeRow{MAC: mac, IP: "192.168.5.20", Source: "manual", State: "unknown", Arch: "amd64"}); err != nil {
+		t.Fatal(err)
+	}
+	rec := httptest.NewRecorder()
+	s.ServeHTTP(rec, local(httptest.NewRequest(http.MethodPost, "/api/v1/machines/"+mac+"/labhost", strings.NewReader(`{"manual":true}`))))
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("provision: %d %s", rec.Code, rec.Body.String())
+	}
+	var out struct{ OperationID int64 }
+	_ = json.Unmarshal(rec.Body.Bytes(), &out)
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) {
+		if m, err := st.GetMachine(ctx, mac); err == nil && m.LabHost != nil && m.LabHost.Boot != nil {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	m, _ := st.GetMachine(ctx, mac)
+	if m.LabHost == nil || m.LabHost.Boot == nil || !strings.Contains(m.LabHost.Boot.Kernel, "192.168.5.1:8069") || m.LabHost.Index < 1 {
+		t.Fatalf("manual boot line not armed: %+v", m.LabHost)
+	}
+	s.cancelOperation(out.OperationID)
+	if op := waitOp(t, st, out.OperationID); op.Status == "done" {
+		t.Errorf("a cancelled provision cannot be done: %s", op.Log)
+	}
+	if m, _ := st.GetMachine(ctx, mac); m.LabHost != nil || m.Provision {
+		t.Errorf("a cancelled provision must release the host: %+v provision=%v", m.LabHost, m.Provision)
+	}
+}
+
+func TestLabHostChangesWaitForTheHostLock(t *testing.T) {
+	s, st, _ := localServer(t)
+	defer func(d time.Duration) { lockWait = d }(lockWait)
+	lockWait = 50 * time.Millisecond
+	ctx := t.Context()
+	mac := "52:54:00:4c:41:03"
+	if err := st.UpsertNode(ctx, store.NodeRow{MAC: mac, IP: "192.168.5.21", Source: "labhost", State: "labhost"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.SetLabHost(ctx, mac, &store.LabHost{State: "ready"}); err != nil {
+		t.Fatal(err)
+	}
+	s.locks.lock("labhost:" + mac)
+	for _, r := range []struct{ method, path, body string }{
+		{"DELETE", "/api/v1/machines/" + mac + "/labhost", ""},
+		{"DELETE", "/api/v1/machines/" + mac + "/labhost/vms/vm-01", ""},
+		{"PUT", "/api/v1/machines/" + mac + "/labhost/vms/vm-01", `{"cpus":2,"memMiB":2048}`},
+	} {
+		if rec := call(t, s, r.method, r.path, r.body); rec.Code != http.StatusConflict {
+			t.Errorf("%s %s while an operation holds the host: %d %s", r.method, r.path, rec.Code, rec.Body)
+		}
+	}
+	s.locks.unlock("labhost:" + mac)
+	if m, _ := st.GetMachine(ctx, mac); m.LabHost == nil {
+		t.Fatal("refused release must leave the host alone")
+	}
+}

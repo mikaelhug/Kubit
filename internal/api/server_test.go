@@ -167,4 +167,13 @@ func TestMachinesAndRetire(t *testing.T) {
 	if rec := do(t, srv, "POST", "/api/v1/machines/aa:aa:aa:aa:aa:06/wake", ""); rec.Code != http.StatusConflict {
 		t.Errorf("wake without WOL enabled must be refused: %d", rec.Code)
 	}
+	if rec := do(t, srv, "PUT", "/api/v1/machines/aa:aa:aa:aa:aa:06/wol", "garbage"); rec.Code != http.StatusBadRequest {
+		t.Errorf("a bad Wake-on-LAN body must be refused, not read as off: %d", rec.Code)
+	}
+	if rec := do(t, srv, "PUT", "/api/v1/machines/aa:aa:aa:aa:aa:06/wol", `{"enabled":true}`); rec.Code != http.StatusNoContent {
+		t.Errorf("enable Wake-on-LAN: %d %s", rec.Code, rec.Body)
+	}
+	if m, _ := s.GetMachine(t.Context(), "aa:aa:aa:aa:aa:06"); !m.WOL {
+		t.Error("Wake-on-LAN not recorded")
+	}
 }

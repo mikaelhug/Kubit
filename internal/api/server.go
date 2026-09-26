@@ -3,12 +3,14 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"github.com/mikael/kubit/internal/oob"
 	"io"
 	"io/fs"
+	"log"
 	"net"
 	"net/http"
 	"net/netip"
@@ -46,17 +48,22 @@ type Server struct {
 	versionsAt  time.Time
 	latestTalos string
 	crypto      *store.Crypto
+	ctx         context.Context
+	stop        context.CancelFunc
 	// token, when set, is an administrator's bearer token (non-loopback binds, automation).
 	token string
 }
 
 func New(version string, m *cluster.Manager, token string, crypto *store.Crypto) *Server {
 	s := &Server{mux: http.NewServeMux(), version: version, manager: m, store: m.Store, hub: newHub(), token: token, crypto: crypto, started: time.Now()}
-	if v, err := m.Store.GetSettings(contextBackground()); err == nil {
-		m.Factory.BaseURL = v.FactoryURL
+	s.ctx, s.stop = context.WithCancel(context.Background())
+	if v, err := m.Store.GetSettings(s.ctx); err == nil {
+		m.Factory.SetBaseURL(v.FactoryURL)
 	}
-	_ = s.store.MarkStaleOperations(contextBackground())
-	s.reconcileLabHosts(contextBackground())
+	if err := s.store.MarkStaleOperations(s.ctx); err != nil {
+		log.Printf("mark interrupted operations: %v", err)
+	}
+	s.reconcileLabHosts(s.ctx)
 	r := s.mux
 	r.HandleFunc("GET /api/v1/version", s.handleVersion)
 	r.HandleFunc("GET /api/v1/ws", s.handleLive)
@@ -283,7 +290,6 @@ func (s *Server) handleClusterYAML(w http.ResponseWriter, r *http.Request) {
 // handleClusterYAMLSave stores an edited declaration without touching the cluster; the
 // operator then applies node configs and plans the platform layer explicitly.
 func (s *Server) handleClusterYAMLSave(w http.ResponseWriter, r *http.Request) {
-	name := r.PathValue("name")
 	body, err := io.ReadAll(io.LimitReader(r.Body, 1<<20))
 	if err != nil {
 		writeErr(w, err)
@@ -294,22 +300,17 @@ func (s *Server) handleClusterYAMLSave(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusUnprocessableEntity, map[string]string{"error": err.Error()})
 		return
 	}
-	c, row, err := s.manager.LoadCluster(r.Context(), name)
-	if err != nil {
-		writeErr(w, err)
+	c, ok := s.editCluster(w, r, "cluster.yaml.save", "", func(c *config.Cluster) error {
+		if err := adoptDeclaration(c, updated); err != nil {
+			return err
+		}
+		*c = *updated
+		return nil
+	})
+	if !ok {
 		return
 	}
-	if updated.Metadata.Name != name {
-		writeJSON(w, http.StatusUnprocessableEntity, map[string]string{"error": fmt.Sprintf("declaration names cluster %q", updated.Metadata.Name)})
-		return
-	}
-	updated.Spec.SchematicID = c.Spec.SchematicID
-	if err := s.manager.SaveCluster(r.Context(), updated, row.State); err != nil {
-		writeErr(w, err)
-		return
-	}
-	_ = s.store.Audit(r.Context(), name, "cluster.yaml.save", "")
-	out, _ := updated.Marshal()
+	out, _ := c.Marshal()
 	writeJSON(w, http.StatusOK, map[string]string{"yaml": string(out)})
 }
 
@@ -363,6 +364,11 @@ func (s *Server) handleClusterCreate(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleClusterForget(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")
+	unlock, ok := s.holdLock(w, r, name, clusterBusy)
+	if !ok {
+		return
+	}
+	defer unlock()
 	if _, err := s.store.GetCluster(r.Context(), name); err != nil {
 		writeErr(w, err)
 		return
@@ -382,7 +388,7 @@ func (s *Server) handleClusterApply(w http.ResponseWriter, r *http.Request) {
 	}
 	_ = json.NewDecoder(r.Body).Decode(&req)
 	id, err := s.runOperation(name, "cluster.apply", req, func(ctx contextT, sink clusterSink) (any, error) {
-		c, row, err := s.manager.LoadCluster(ctx, name)
+		c, _, err := s.manager.LoadCluster(ctx, name)
 		if err != nil {
 			return nil, err
 		}
@@ -391,11 +397,10 @@ func (s *Server) handleClusterApply(w http.ResponseWriter, r *http.Request) {
 			if err != nil {
 				return nil, err
 			}
-			if updated.Metadata.Name != name {
-				return nil, fmt.Errorf("declaration names cluster %q", updated.Metadata.Name)
+			if err := adoptDeclaration(c, updated); err != nil {
+				return nil, err
 			}
-			updated.Spec.SchematicID = c.Spec.SchematicID
-			if err := s.manager.SaveCluster(ctx, updated, row.State); err != nil {
+			if err := s.manager.SaveCluster(ctx, updated, ""); err != nil {
 				return nil, err
 			}
 			c = updated
@@ -461,7 +466,10 @@ func (s *Server) handlePlatformApplyPlan(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	var diff tofu.PlanDiff
-	_ = json.Unmarshal(planOp.Artifact, &diff)
+	if err := json.Unmarshal(planOp.Artifact, &diff); err != nil {
+		http.Error(w, fmt.Sprintf("plan #%d cannot be read; plan again", planID), http.StatusConflict)
+		return
+	}
 	if latest := s.latestPlan(r.Context(), name); latest != planID {
 		http.Error(w, fmt.Sprintf("plan #%d has been superseded by plan #%d; review the newer plan", planID, latest), http.StatusConflict)
 		return
@@ -687,7 +695,7 @@ func (s *Server) nodeClient(r *http.Request) (*talos.Client, error) {
 	if !row.Talos() {
 		return nil, &statusError{http.StatusConflict, noTalosReason(row)}
 	}
-	if !talos.PortOpen(ip, 2*time.Second) {
+	if !talos.PortOpen(r.Context(), ip, 2*time.Second) {
 		return nil, &statusError{http.StatusBadGateway, fmt.Sprintf("Talos API at %s:%s is not answering.", ip, talos.Port)}
 	}
 	if row.Cluster == "" {

@@ -3,6 +3,7 @@ package cluster
 import (
 	"context"
 	"fmt"
+	"log"
 	"net"
 	"path/filepath"
 
@@ -84,7 +85,9 @@ func (m *Manager) Addons(ctx context.Context, name string) ([]AddonStatus, error
 	var releases []tofu.Release
 	dir := filepath.Join(m.ClusterDir(name), "infra", "platform")
 	if bin, err := tofu.Binary(ctx, filepath.Join(m.Home, "bin")); err == nil {
-		releases, _ = (&tofu.Runner{Bin: bin, Dir: dir}).Releases(ctx)
+		if releases, err = (&tofu.Runner{Bin: bin, Dir: dir}).Releases(ctx); err != nil {
+			log.Printf("add-ons %s: %v", name, err)
+		}
 	}
 	kc, kerr := m.KubeClient(ctx, name)
 	out := make([]AddonStatus, 0, len(addonMeta))

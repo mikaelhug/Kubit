@@ -95,6 +95,8 @@ func alertText(e store.EventRow) string {
 	return fmt.Sprintf("[kubit %s] %s%s: %s", strings.ToUpper(e.Severity), e.Cluster, node, e.Message)
 }
 
+const smtpConversation = time.Minute
+
 func sendMail(c store.SMTP, e store.EventRow) error {
 	port := c.Port
 	if port == 0 {
@@ -120,17 +122,26 @@ func sendMail(c store.SMTP, e store.EventRow) error {
 		err error
 	)
 	dialer := net.Dialer{Timeout: 15 * time.Second}
+	deadline := time.Now().Add(smtpConversation)
 	switch c.Mode() {
 	case "tls":
 		conn, derr := tls.DialWithDialer(&dialer, "tcp", addr, &tls.Config{ServerName: c.Host})
 		if derr != nil {
 			return derr
 		}
+		if err := conn.SetDeadline(deadline); err != nil {
+			conn.Close()
+			return err
+		}
 		cl, err = smtp.NewClient(conn, c.Host)
 	default:
 		conn, derr := dialer.Dial("tcp", addr)
 		if derr != nil {
 			return derr
+		}
+		if err := conn.SetDeadline(deadline); err != nil {
+			conn.Close()
+			return err
 		}
 		cl, err = smtp.NewClient(conn, c.Host)
 		if err == nil && c.Mode() == "starttls" {

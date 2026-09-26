@@ -57,7 +57,7 @@ func (t *tracker) dhcp(mac, arch string) {
 	b := t.boots[mac]
 	if b == nil {
 		b = &Boot{MAC: mac, FirstSeen: time.Now()}
-		t.boots[mac] = b
+		t.add(b)
 	} else if time.Since(b.LastSeen) > time.Minute {
 		delete(t.byIP, b.IP)
 		*b = Boot{MAC: mac, FirstSeen: time.Now()}
@@ -80,7 +80,7 @@ func (t *tracker) plain(mac, class string) {
 	b := t.boots[mac]
 	if b == nil {
 		b = &Boot{MAC: mac, FirstSeen: time.Now(), Stage: "nopxe"}
-		t.boots[mac] = b
+		t.add(b)
 	}
 	if b.Stage != "nopxe" {
 		return
@@ -96,7 +96,7 @@ func (t *tracker) plain(mac, class string) {
 	if class != "" {
 		what = "vendor class " + class
 	}
-	t.log = append(t.log, time.Now().Format("15:04:05")+fmt.Sprintf(" %s asked for an address without PXE (%s): it is booting from disk or its management engine woke", mac, what))
+	t.appendLog(fmt.Sprintf("%s asked for an address without PXE (%s): it is booting from disk or its management engine woke", mac, what))
 }
 
 // http records a script or asset fetch. The IP is all HTTP knows; it is attributed to
@@ -121,7 +121,7 @@ func (t *tracker) http(ip, arch, stage string) {
 	b := t.boots[mac]
 	if b == nil {
 		b = &Boot{MAC: "unknown@" + ip, IP: ip, FirstSeen: time.Now()}
-		t.boots[b.MAC] = b
+		t.add(b)
 		t.byIP[ip] = b.MAC
 	}
 	b.LastSeen = time.Now()
@@ -136,9 +136,51 @@ func (t *tracker) http(ip, arch, stage string) {
 func (t *tracker) logf(line string) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
+	t.appendLog(line)
+}
+
+func (t *tracker) appendLog(line string) {
 	t.log = append(t.log, time.Now().Format("15:04:05")+" "+line)
 	if len(t.log) > 500 {
 		t.log = t.log[len(t.log)-400:]
+	}
+}
+
+const (
+	maxBoots = 512
+	bootTTL  = 24 * time.Hour
+)
+
+func (t *tracker) add(b *Boot) {
+	if len(t.boots) >= maxBoots {
+		t.prune(time.Now())
+	}
+	t.boots[b.MAC] = b
+}
+
+func (t *tracker) prune(now time.Time) {
+	for mac, b := range t.boots {
+		if now.Sub(b.LastSeen) > bootTTL {
+			t.drop(mac, b)
+		}
+	}
+	if len(t.boots) < maxBoots {
+		return
+	}
+	all := make([]*Boot, 0, len(t.boots))
+	for _, b := range t.boots {
+		all = append(all, b)
+	}
+	sort.Slice(all, func(i, j int) bool { return all[i].LastSeen.Before(all[j].LastSeen) })
+	for _, b := range all[:len(all)-maxBoots+1] {
+		t.drop(b.MAC, b)
+	}
+}
+
+func (t *tracker) drop(mac string, b *Boot) {
+	delete(t.boots, mac)
+	if b.IP != "" && t.byIP[b.IP] == mac {
+		delete(t.byIP, b.IP)
 	}
 }
 

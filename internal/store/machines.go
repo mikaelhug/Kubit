@@ -130,15 +130,20 @@ func scanMachine(sc interface{ Scan(...any) error }) (*Machine, error) {
 // still claiming that IP loses it. Cluster membership and hardware survive rescans
 // that carry neither.
 func (s *Store) UpsertNode(ctx context.Context, n Machine) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
 	key := MachineKey(n.MAC, n.IP)
 	if n.MAC == "" && n.IP != "" {
 		// No identity given: attach to whatever machine currently holds that IP.
-		if existing, err := s.GetNode(ctx, n.IP); err == nil {
+		if existing, err := machineByIP(ctx, tx, n.IP); err == nil {
 			key = existing.MAC
 		}
 	}
 	if n.IP != "" {
-		if _, err := s.db.ExecContext(ctx, `UPDATE machines SET ip = NULL WHERE ip = ? AND mac != ?`, n.IP, key); err != nil {
+		if _, err := tx.ExecContext(ctx, `UPDATE machines SET ip = NULL WHERE ip = ? AND mac != ?`, n.IP, key); err != nil {
 			return err
 		}
 	}
@@ -146,7 +151,7 @@ func (s *Store) UpsertNode(ctx context.Context, n Machine) error {
 	if hw == "" {
 		hw = "{}"
 	}
-	prev, _ := s.GetMachine(ctx, key)
+	prev, _ := machineByMAC(ctx, tx, key)
 	seen := []string{}
 	if prev != nil {
 		seen = prev.IPsSeen
@@ -159,7 +164,7 @@ func (s *Store) UpsertNode(ctx context.Context, n Machine) error {
 	if n.Cluster != "" {
 		cluster = n.Cluster
 	}
-	_, err := s.db.ExecContext(ctx, `
+	if _, err := tx.ExecContext(ctx, `
 		INSERT INTO machines (mac, uuid, serial, ip, ips_seen, cluster, hostname, pool, role, arch, source, state, hardware, talos_version, last_seen)
 		VALUES (?, ?, ?, NULLIF(?, ''), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, strftime('%Y-%m-%dT%H:%M:%fZ','now'))
 		ON CONFLICT(mac) DO UPDATE SET
@@ -182,12 +187,26 @@ func (s *Store) UpsertNode(ctx context.Context, n Machine) error {
 			provision     = CASE WHEN excluded.state = 'maintenance' THEN 0 ELSE machines.provision END,
 			system_split  = CASE WHEN excluded.state = 'maintenance' AND excluded.cluster IS NULL THEN 0 ELSE machines.system_split END,
 			updated_at    = strftime('%Y-%m-%dT%H:%M:%fZ','now')`,
-		key, n.UUID, n.Serial, n.IP, string(seenJSON), cluster, n.Hostname, n.Pool, n.Role, n.Arch, n.Source, n.State, hw, n.TalosVersion)
-	return s.done(err, Change{Table: "machines", Cluster: n.Cluster, Key: key, Op: "put"})
+		key, n.UUID, n.Serial, n.IP, string(seenJSON), cluster, n.Hostname, n.Pool, n.Role, n.Arch, n.Source, n.State, hw, n.TalosVersion); err != nil {
+		return err
+	}
+	return s.done(tx.Commit(), Change{Table: "machines", Cluster: n.Cluster, Key: key, Op: "put"})
+}
+
+type rowQuerier interface {
+	QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row
+}
+
+type execer interface {
+	ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error)
 }
 
 func (s *Store) GetMachine(ctx context.Context, mac string) (*Machine, error) {
-	m, err := scanMachine(s.db.QueryRowContext(ctx, `SELECT `+machineCols+` FROM machines WHERE mac = ?`, strings.ToLower(mac)))
+	return machineByMAC(ctx, s.db, mac)
+}
+
+func machineByMAC(ctx context.Context, q rowQuerier, mac string) (*Machine, error) {
+	m, err := scanMachine(q.QueryRowContext(ctx, `SELECT `+machineCols+` FROM machines WHERE mac = ?`, strings.ToLower(mac)))
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, fmt.Errorf("machine %s: %w", mac, ErrNotFound)
 	}
@@ -196,7 +215,11 @@ func (s *Store) GetMachine(ctx context.Context, mac string) (*Machine, error) {
 
 // GetNode looks a machine up by its current IP.
 func (s *Store) GetNode(ctx context.Context, ip string) (*Machine, error) {
-	m, err := scanMachine(s.db.QueryRowContext(ctx, `SELECT `+machineCols+` FROM machines WHERE ip = ? OR mac = ?`, ip, "ip:"+ip))
+	return machineByIP(ctx, s.db, ip)
+}
+
+func machineByIP(ctx context.Context, q rowQuerier, ip string) (*Machine, error) {
+	m, err := scanMachine(q.QueryRowContext(ctx, `SELECT `+machineCols+` FROM machines WHERE ip = ? OR mac = ?`, ip, "ip:"+ip))
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, fmt.Errorf("machine at %s: %w", ip, ErrNotFound)
 	}
@@ -395,33 +418,40 @@ func (s *Store) UpdateLabHost(ctx context.Context, mac string, mutate func(*LabH
 }
 
 func (s *Store) setLabHostLocked(ctx context.Context, mac string, l *LabHost) error {
-	raw := ""
-	if l != nil {
-		if l.VMs == nil {
-			l.VMs = []labhost.VM{}
-		}
-		l.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
-		b, err := json.Marshal(l)
-		if err != nil {
-			return err
-		}
-		raw = string(b)
+	mac = strings.ToLower(mac)
+	if l == nil {
+		_, err := s.db.ExecContext(ctx, `UPDATE machines SET labhost = '', updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE mac = ?`, mac)
+		return s.done(err, Change{Table: "machines", Key: mac, Op: "put"})
 	}
-	_, err := s.db.ExecContext(ctx, `UPDATE machines SET labhost = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE mac = ?`, raw, strings.ToLower(mac))
-	return s.done(err, Change{Table: "machines", Key: strings.ToLower(mac), Op: "put"})
+	if l.VMs == nil {
+		l.VMs = []labhost.VM{}
+	}
+	l.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
+	b, err := json.Marshal(l)
+	if err != nil {
+		return err
+	}
+	if l.Index > 0 {
+		_, err = s.db.ExecContext(ctx, `UPDATE machines SET labhost = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE mac = ?`, string(b), mac)
+		return s.done(err, Change{Table: "machines", Key: mac, Op: "put"})
+	}
+	var index int
+	err = s.db.QueryRowContext(ctx, `UPDATE machines SET labhost = json_set(?, '$.index', (`+nextLabIndex+`)), updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE mac = ? RETURNING CAST(json_extract(labhost, '$.index') AS INTEGER)`, string(b), mac, mac).Scan(&index)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil
+	}
+	if err == nil {
+		l.Index = index
+	}
+	return s.done(err, Change{Table: "machines", Key: mac, Op: "put"})
 }
+
+const nextLabIndex = `SELECT COALESCE(MAX(CAST(json_extract(labhost, '$.index') AS INTEGER)), 0) + 1 FROM machines WHERE labhost != '' AND mac != ?`
 
 // SetMachineHost records which lab host a VM lives on.
 func (s *Store) SetMachineHost(ctx context.Context, mac, host string) error {
 	_, err := s.db.ExecContext(ctx, `UPDATE machines SET host = ? WHERE mac = ?`, strings.ToLower(host), strings.ToLower(mac))
 	return s.done(err, Change{Table: "machines", Key: strings.ToLower(mac), Op: "put"})
-}
-
-// NextLabHostIndex hands out the per-host byte used in VM MAC addresses.
-func (s *Store) NextLabHostIndex(ctx context.Context) int {
-	var n int
-	_ = s.db.QueryRowContext(ctx, `SELECT COALESCE(MAX(CAST(json_extract(labhost, '$.index') AS INTEGER)), 0) FROM machines WHERE labhost != ''`).Scan(&n)
-	return n + 1
 }
 
 // SSHKey returns Kubit's key pair for lab hosts, minting it on first use. The private
@@ -430,18 +460,37 @@ func (s *Store) SSHKey(ctx context.Context) (priv []byte, pub string, err error)
 	if sealed := s.GetValue(ctx, "ssh.priv"); sealed != "" {
 		return []byte(s.unseal(sealed)), s.GetValue(ctx, "ssh.pub"), nil
 	}
-	priv, pub, err = labhost.GenerateKey()
+	newPriv, newPub, err := labhost.GenerateKey()
 	if err != nil {
 		return nil, "", err
 	}
-	sealed, err := s.seal(string(priv))
+	sealed, err := s.seal(string(newPriv))
 	if err != nil {
 		return nil, "", err
 	}
-	if err := s.SetValue(ctx, "ssh.priv", sealed); err != nil {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
 		return nil, "", err
 	}
-	return priv, pub, s.SetValue(ctx, "ssh.pub", pub)
+	defer tx.Rollback()
+	var stored string
+	switch err := tx.QueryRowContext(ctx, `SELECT value FROM settings WHERE key = 'ssh.priv'`).Scan(&stored); {
+	case err == nil && stored != "":
+		if err := tx.QueryRowContext(ctx, `SELECT value FROM settings WHERE key = 'ssh.pub'`).Scan(&pub); err != nil && !errors.Is(err, sql.ErrNoRows) {
+			return nil, "", err
+		}
+		return []byte(s.unseal(stored)), pub, nil
+	case err != nil && !errors.Is(err, sql.ErrNoRows):
+		return nil, "", err
+	}
+	if _, err := tx.ExecContext(ctx, `INSERT INTO settings (key, value) VALUES ('ssh.priv', ?), ('ssh.pub', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value`, sealed, newPub); err != nil {
+		return nil, "", err
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, "", err
+	}
+	s.notify(Change{Table: "settings", Key: "ssh.pub", Op: "put"})
+	return newPriv, newPub, nil
 }
 
 // SetMachineWOL flags whether Kubit may send Wake-on-LAN packets to a machine.
@@ -452,19 +501,32 @@ func (s *Store) SetMachineWOL(ctx context.Context, mac string, on bool) error {
 
 // DeleteMachine forgets a machine that will not come back.
 func (s *Store) DeleteMachine(ctx context.Context, mac string) error {
-	_ = s.DeleteLabHostHistory(ctx, mac)
-	_, err := s.db.ExecContext(ctx, `DELETE FROM machines WHERE mac = ?`, strings.ToLower(mac))
-	return s.done(err, Change{Table: "machines", Key: strings.ToLower(mac), Op: "delete"})
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if err := deleteLabHostHistory(ctx, tx, mac); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM machines WHERE mac = ?`, strings.ToLower(mac)); err != nil {
+		return err
+	}
+	return s.done(tx.Commit(), Change{Table: "machines", Key: strings.ToLower(mac), Op: "delete"})
 }
 
 // DeleteLabHostHistory drops the samples and events filed under a lab host's
 // pseudo-cluster; called when the role is released or the machine retired.
 func (s *Store) DeleteLabHostHistory(ctx context.Context, mac string) error {
+	return deleteLabHostHistory(ctx, s.db, mac)
+}
+
+func deleteLabHostHistory(ctx context.Context, x execer, mac string) error {
 	key := LabHostKey(mac)
-	if _, err := s.db.ExecContext(ctx, `DELETE FROM samples WHERE cluster = ?`, key); err != nil {
+	if _, err := x.ExecContext(ctx, `DELETE FROM samples WHERE cluster = ?`, key); err != nil {
 		return err
 	}
-	_, err := s.db.ExecContext(ctx, `DELETE FROM events WHERE cluster = ?`, key)
+	_, err := x.ExecContext(ctx, `DELETE FROM events WHERE cluster = ?`, key)
 	return err
 }
 

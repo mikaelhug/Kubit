@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/mikael/kubit/internal/cluster"
+	"github.com/mikael/kubit/internal/httpx"
 	"github.com/mikael/kubit/internal/labhost"
 	"github.com/mikael/kubit/internal/pxe"
 	"github.com/mikael/kubit/internal/store"
@@ -52,8 +53,8 @@ func (s *Server) handleLabProgress(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "unknown lab host", http.StatusNotFound)
 		return
 	}
-	m.LabHost.Install = &store.InstallProgress{Stage: stage, At: time.Now().UTC().Format(time.RFC3339)}
-	if err := s.store.SetLabHost(r.Context(), mac, m.LabHost); err != nil {
+	progress := &store.InstallProgress{Stage: stage, At: time.Now().UTC().Format(time.RFC3339)}
+	if err := s.store.UpdateLabHost(r.Context(), mac, func(l *store.LabHost) { l.Install = progress }); err != nil {
 		writeErr(w, err)
 		return
 	}
@@ -71,8 +72,7 @@ func (s *Server) pxeStatus(ctx context.Context) (*pxe.Status, error) {
 	if err != nil || v.PXEStatusURL == "" {
 		return nil, fmt.Errorf("no PXE status URL")
 	}
-	client := &http.Client{Timeout: 2 * time.Second}
-	resp, err := client.Get(v.PXEStatusURL)
+	resp, err := httpx.Get(ctx, v.PXEStatusURL, pxeStatusWait)
 	if err != nil {
 		return nil, err
 	}

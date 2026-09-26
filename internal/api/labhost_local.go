@@ -124,7 +124,7 @@ func (s *Server) handleLabLocalCreate(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, err)
 		return
 	}
-	if err := s.store.SetLabHost(r.Context(), mac, &store.LabHost{State: "setup", Driver: labhost.DriverVFKit, Index: s.store.NextLabHostIndex(r.Context()), Capacity: capa}); err != nil {
+	if err := s.store.SetLabHost(r.Context(), mac, &store.LabHost{State: "setup", Driver: labhost.DriverVFKit, Capacity: capa}); err != nil {
 		writeErr(w, err)
 		return
 	}
@@ -137,7 +137,9 @@ func (s *Server) handleLabLocalCreate(w http.ResponseWriter, r *http.Request) {
 			rctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 			defer cancel()
 			if host, e := s.store.GetMachine(rctx, mac); e == nil {
-				s.releaseLabHost(rctx, host)
+				if rerr := s.releaseLabHost(rctx, host); rerr != nil {
+					sink(clusterEvent{Time: time.Now(), Kind: "log", Level: cluster.Warn, Message: "release: " + rerr.Error()})
+				}
 			}
 		}()
 		stop := keepAwake(ctx)
@@ -174,7 +176,9 @@ func (s *Server) handleLabLocalCreate(w http.ResponseWriter, r *http.Request) {
 	})
 	if err != nil {
 		if host, e := s.store.GetMachine(context.WithoutCancel(r.Context()), mac); e == nil {
-			s.releaseLabHost(context.WithoutCancel(r.Context()), host)
+			if rerr := s.releaseLabHost(context.WithoutCancel(r.Context()), host); rerr != nil {
+				log.Printf("lab host %s: release: %v", mac, rerr)
+			}
 		}
 		writeErr(w, err)
 		return
@@ -198,8 +202,8 @@ func keepAwake(ctx context.Context) func() {
 	}
 }
 
-func (s *Server) labAutostart(host *store.Machine) {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+func (s *Server) labAutostart(ctx context.Context, host *store.Machine) {
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Minute)
 	defer cancel()
 	d, err := s.manager.LabDial(ctx, host)
 	if err != nil {

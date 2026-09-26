@@ -173,21 +173,7 @@ func (s *Store) CreateUser(ctx context.Context, name, password string, role Role
 
 func (s *Store) UpdateUser(ctx context.Context, name string, role *Role, disabled *bool, password string) error {
 	name = strings.ToLower(name)
-	if role != nil {
-		if _, err := s.db.ExecContext(ctx, `UPDATE users SET role = ? WHERE name = ?`, *role, name); err != nil {
-			return err
-		}
-	}
-	if disabled != nil {
-		if _, err := s.db.ExecContext(ctx, `UPDATE users SET disabled = ? WHERE name = ?`, boolInt(*disabled), name); err != nil {
-			return err
-		}
-		if *disabled {
-			if _, err := s.db.ExecContext(ctx, `DELETE FROM sessions WHERE kind = 'session' AND user_id = (SELECT id FROM users WHERE name = ?)`, name); err != nil {
-				return err
-			}
-		}
-	}
+	var hash []byte
 	if password != "" {
 		if len(password) < 8 {
 			return fmt.Errorf("password must be at least 8 characters")
@@ -196,9 +182,35 @@ func (s *Store) UpdateUser(ctx context.Context, name string, role *Role, disable
 		if err != nil {
 			return err
 		}
-		if _, err := s.db.ExecContext(ctx, `UPDATE users SET password_hash = ? WHERE name = ?`, string(h), name); err != nil {
+		hash = h
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if role != nil {
+		if _, err := tx.ExecContext(ctx, `UPDATE users SET role = ? WHERE name = ?`, *role, name); err != nil {
 			return err
 		}
+	}
+	if disabled != nil {
+		if _, err := tx.ExecContext(ctx, `UPDATE users SET disabled = ? WHERE name = ?`, boolInt(*disabled), name); err != nil {
+			return err
+		}
+		if *disabled {
+			if _, err := tx.ExecContext(ctx, `DELETE FROM sessions WHERE kind = 'session' AND user_id = (SELECT id FROM users WHERE name = ?)`, name); err != nil {
+				return err
+			}
+		}
+	}
+	if hash != nil {
+		if _, err := tx.ExecContext(ctx, `UPDATE users SET password_hash = ? WHERE name = ?`, string(hash), name); err != nil {
+			return err
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return err
 	}
 	s.notify(Change{Table: "users", Key: name, Op: "put"})
 	return nil

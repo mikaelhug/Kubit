@@ -93,15 +93,18 @@ func (s *Server) onChange(ctx context.Context, c store.Change) {
 	}
 }
 
+var devOrigins = []string{"localhost:5173", "127.0.0.1:5173"}
+
 // handleLive is the console's one live connection: hello, then replay from ?since
 // (or resync when too far behind), then every message as it happens.
 func (s *Server) handleLive(w http.ResponseWriter, r *http.Request) {
-	conn, err := websocket.Accept(w, r, &websocket.AcceptOptions{OriginPatterns: []string{"*"}})
+	conn, err := websocket.Accept(w, r, &websocket.AcceptOptions{OriginPatterns: devOrigins})
 	if err != nil {
 		return
 	}
 	defer conn.CloseNow()
-	ctx := r.Context()
+	ctx, stop := context.WithCancel(r.Context())
+	defer stop()
 	conn.SetReadLimit(1 << 16)
 	send := func(m Message) error {
 		wctx, cancel := context.WithTimeout(ctx, 5*time.Second)
@@ -128,9 +131,9 @@ func (s *Server) handleLive(w http.ResponseWriter, r *http.Request) {
 	}
 	// The client never sends anything meaningful; reading only surfaces the close.
 	go func() {
+		defer stop()
 		for {
 			if _, _, err := conn.Read(ctx); err != nil {
-				cancel()
 				return
 			}
 		}

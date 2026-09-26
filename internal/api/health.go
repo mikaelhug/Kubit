@@ -11,6 +11,7 @@ import (
 
 	"github.com/mikael/kubit/internal/cluster"
 	"github.com/mikael/kubit/internal/config"
+	"github.com/mikael/kubit/internal/httpx"
 	"github.com/mikael/kubit/internal/store"
 	"github.com/mikael/kubit/internal/watch"
 	"github.com/siderolabs/talos/pkg/machinery/constants"
@@ -23,7 +24,7 @@ func defaultTalosVersion() string { return gendata.VersionTag }
 func (s *Server) AttachWatcher(ctx context.Context, w *watch.Watcher) {
 	s.watcher = w
 	if v, err := s.store.GetSettings(ctx); err == nil && v.WatchIntervalSec > 0 {
-		w.Interval = time.Duration(v.WatchIntervalSec) * time.Second
+		w.SetInterval(time.Duration(v.WatchIntervalSec) * time.Second)
 	}
 	w.OnStatus = func(name string, st *cluster.Status) {
 		s.hub.publish(Message{Kind: "status", Cluster: name, Status: st})
@@ -83,7 +84,6 @@ func (s *Server) watchVersions(ctx context.Context) {
 // pushes a refresh only when it changed, so the console never polls it.
 func (s *Server) watchPXE(ctx context.Context) {
 	var last string
-	client := &http.Client{Timeout: 2 * time.Second}
 	t := time.NewTicker(5 * time.Second)
 	defer t.Stop()
 	for {
@@ -97,7 +97,7 @@ func (s *Server) watchPXE(ctx context.Context) {
 			continue
 		}
 		body := ""
-		if resp, err := client.Get(v.PXEStatusURL); err == nil {
+		if resp, err := httpx.Get(ctx, v.PXEStatusURL, pxeStatusWait); err == nil {
 			b, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 			resp.Body.Close()
 			body = string(b)
@@ -221,7 +221,7 @@ func (s *Server) handleVersions(w http.ResponseWriter, r *http.Request) {
 				v.Talos = append(v.Talos, t)
 			}
 		}
-		v.TalosSource = s.manager.Factory.BaseURL
+		v.TalosSource = s.manager.Factory.BaseURL()
 	}
 	sort.Slice(v.Talos, func(i, j int) bool { return versionLess(v.Talos[j], v.Talos[i]) })
 	major, minor := parseMinor(constants.DefaultKubernetesVersion)
@@ -235,22 +235,25 @@ func (s *Server) handleVersions(w http.ResponseWriter, r *http.Request) {
 // the factory cannot be reached); cached for an hour.
 func (s *Server) latestStableTalos(ctx context.Context) string {
 	s.versionsMu.Lock()
-	defer s.versionsMu.Unlock()
 	if time.Since(s.versionsAt) < time.Hour {
-		return s.latestTalos
+		latest := s.latestTalos
+		s.versionsMu.Unlock()
+		return latest
 	}
 	s.versionsAt = time.Now()
-	s.latestTalos = ""
-	list, err := s.manager.Factory.Versions(ctx)
-	if err != nil {
-		return ""
-	}
-	for _, t := range list {
-		if strings.HasPrefix(t, "v1.") && splitVer(t).pre == "" && (s.latestTalos == "" || versionLess(s.latestTalos, t)) {
-			s.latestTalos = t
+	s.versionsMu.Unlock()
+	latest := ""
+	if list, err := s.manager.Factory.Versions(ctx); err == nil {
+		for _, t := range list {
+			if strings.HasPrefix(t, "v1.") && splitVer(t).pre == "" && (latest == "" || versionLess(latest, t)) {
+				latest = t
+			}
 		}
 	}
-	return s.latestTalos
+	s.versionsMu.Lock()
+	s.latestTalos = latest
+	s.versionsMu.Unlock()
+	return latest
 }
 
 // updatesAvailable lists "cluster: Talos vX → vY" lines for the heartbeat.

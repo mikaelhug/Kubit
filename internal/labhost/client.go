@@ -110,7 +110,13 @@ func (c *Client) Run(ctx context.Context, cmd string) (string, error) {
 	select {
 	case <-ctx.Done():
 		_ = sess.Signal(ssh.SIGKILL)
-		return out.String(), ctx.Err()
+		_ = sess.Close()
+		select {
+		case <-done:
+			return out.String(), ctx.Err()
+		case <-time.After(runDrain):
+			return "", ctx.Err()
+		}
 	case err := <-done:
 		if err != nil {
 			return out.String(), fmt.Errorf("%s: %w: %s", firstWord(cmd), err, strings.TrimSpace(errb.String()))
@@ -118,6 +124,8 @@ func (c *Client) Run(ctx context.Context, cmd string) (string, error) {
 		return out.String(), nil
 	}
 }
+
+const runDrain = 5 * time.Second
 
 // Put writes a file on the host (small files: preseed leftovers, domain XML).
 func (c *Client) Put(ctx context.Context, path string, content []byte, mode string) error {
@@ -181,7 +189,11 @@ func (c *Client) Capacity(ctx context.Context) (Capacity, error) {
 // is a hard error: an incomplete initramfs boots a VM into nothing, which reads as a
 // VM stuck "booting".
 func (c *Client) EnsureTalosBoot(ctx context.Context, factoryURL, schematic, version, arch string) (Boot, error) {
-	dir := fmt.Sprintf("%s/%s-%s", BootDir, version, schematic[:12])
+	short := schematic
+	if len(short) > 12 {
+		short = short[:12]
+	}
+	dir := fmt.Sprintf("%s/%s-%s", BootDir, version, short)
 	kernel, initrd := dir+"/kernel-"+arch, dir+"/initramfs-"+arch+".xz"
 	base := fmt.Sprintf("%s/image/%s/%s", factoryURL, schematic, version)
 	_, err := c.Run(ctx, fmt.Sprintf(`set -e

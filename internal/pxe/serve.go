@@ -205,7 +205,7 @@ func (s *Server) Handler() http.Handler {
 			http.NotFound(w, r)
 			return
 		}
-		url := fmt.Sprintf("%s/image/%s/%s/%s", s.Factory.BaseURL, schematic, version, file)
+		url := fmt.Sprintf("%s/image/%s/%s/%s", s.Factory.BaseURL(), schematic, version, file)
 		path, err := s.Cache.Path(r.Context(), url)
 		if err != nil {
 			s.Log.Printf("http: %s: %v", url, err)

@@ -38,6 +38,57 @@ func TestLastFinished(t *testing.T) {
 	}
 }
 
+func TestLastFinishedCoversEveryListedCluster(t *testing.T) {
+	c, _ := store.NewCrypto(bytes.Repeat([]byte{3}, 32))
+	s, err := store.Open(t.TempDir(), c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	ctx := t.Context()
+	id, err := s.CreateOperation(ctx, "a", "labhost.reboot", []byte(`{"host":"aa","clusters":["a","b"]}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.CreateOperation(ctx, "x", "labhost.reboot", []byte(`not json`)); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.FinishOperation(ctx, id, "done"); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"a", "b"} {
+		if s.LastFinished(ctx, name, []string{"labhost.reboot"}).IsZero() {
+			t.Errorf("%s: a host reboot that took it down must count", name)
+		}
+	}
+	if !s.LastFinished(ctx, "c", []string{"labhost.reboot"}).IsZero() {
+		t.Error("a cluster not on the host must not see it")
+	}
+}
+
+func TestPutClusterWithoutStateKeepsStoredState(t *testing.T) {
+	c, _ := store.NewCrypto(bytes.Repeat([]byte{3}, 32))
+	s, err := store.Open(t.TempDir(), c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	ctx := t.Context()
+	if err := s.PutCluster(ctx, store.ClusterRow{Name: "c", Spec: []byte("x"), State: "provisioning"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SetClusterState(ctx, "c", "ready"); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.PutCluster(ctx, store.ClusterRow{Name: "c", Spec: []byte("y")}); err != nil {
+		t.Fatal(err)
+	}
+	row, err := s.GetCluster(ctx, "c")
+	if err != nil || row.State != "ready" || string(row.Spec) != "y" {
+		t.Fatalf("got %+v %v", row, err)
+	}
+}
+
 func TestForgetReleasesMachinesAndWipedMemberDropsMembership(t *testing.T) {
 	c, _ := store.NewCrypto(bytes.Repeat([]byte{4}, 32))
 	s, err := store.Open(t.TempDir(), c)

@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"os"
 	"regexp"
+
+	"github.com/mikael/kubit/internal/fsx"
 )
 
 type spec struct {
@@ -76,9 +78,5 @@ func (h *Host) specs() ([]*spec, error) {
 }
 
 func writeAtomic(path string, b []byte) error {
-	tmp := path + ".part"
-	if err := os.WriteFile(tmp, b, 0o644); err != nil {
-		return err
-	}
-	return os.Rename(tmp, path)
+	return fsx.WriteFile(path, b, 0o644)
 }

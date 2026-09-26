@@ -3,8 +3,10 @@ package main
 import (
 	"encoding/base64"
 	"fmt"
+	"io"
 	"os"
 
+	"github.com/mikael/kubit/internal/fsx"
 	"github.com/mikael/kubit/internal/store"
 	"github.com/spf13/cobra"
 )
@@ -25,12 +27,7 @@ machine needs that key: run 'kubit key export' here and set KUBIT_MASTER_KEY the
 			if err := m.Store.Checkpoint(cmd.Context()); err != nil {
 				return err
 			}
-			f, err := os.OpenFile(out, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o600)
-			if err != nil {
-				return err
-			}
-			defer f.Close()
-			if err := store.Backup(m.Home, crypto, f); err != nil {
+			if err := fsx.WriteStream(out, 0o600, func(w io.Writer) error { return store.Backup(m.Home, crypto, w) }); err != nil {
 				return err
 			}
 			_ = m.Store.Audit(cmd.Context(), "", "backup", out)

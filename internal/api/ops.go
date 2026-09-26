@@ -4,6 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"log"
+	"runtime/debug"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -246,6 +250,10 @@ func (t *stepTracker) json() []byte {
 // streaming events to subscribers. Operations are serialised per cluster and can be
 // cancelled through their context.
 func (s *Server) runOperation(cluster, kind string, request any, fn opFunc) (int64, error) {
+	return s.runOperationLocking(cluster, []string{cluster}, kind, request, fn)
+}
+
+func (s *Server) runOperationLocking(cluster string, locks []string, kind string, request any, fn opFunc) (int64, error) {
 	ctx, cancel := context.WithCancel(context.Background())
 	reqJSON, _ := json.Marshal(request)
 	id, err := s.store.CreateOperation(ctx, cluster, kind, reqJSON)
@@ -261,46 +269,66 @@ func (s *Server) runOperation(cluster, kind string, request any, fn opFunc) (int
 			e.Kind = "log"
 		}
 		if e.Kind == "log" {
-			_ = s.store.AppendOperationLog(ctx, id, e.String())
+			logOpWrite(id, "log", s.store.AppendOperationLog(ctx, id, e.String()))
 		}
 		if tracker.apply(e) {
-			_ = s.store.SetOperationSteps(ctx, id, tracker.json())
+			logOpWrite(id, "steps", s.store.SetOperationSteps(ctx, id, tracker.json()))
 		}
 		s.hub.publish(Message{Kind: "event", OperationID: id, Event: &e})
 	}
 	go func() {
 		defer s.cancels.Delete(id)
-		s.locks.lock(cluster)
-		defer s.locks.unlock(cluster)
+		defer s.locks.lockAll(locks)()
 		status := "done"
-		artifact, err := fn(ctx, sink)
+		artifact, err := callOperation(ctx, fn, sink)
 		bg := context.Background()
 		switch {
 		case err != nil && errors.Is(err, context.Canceled):
 			status = "cancelled"
-			_ = s.store.AppendOperationLog(bg, id, "cancelled")
+			logOpWrite(id, "log", s.store.AppendOperationLog(bg, id, "cancelled"))
 		case err != nil:
 			status = "failed"
-			_ = s.store.AppendOperationLog(bg, id, "error: "+err.Error())
+			logOpWrite(id, "log", s.store.AppendOperationLog(bg, id, "error: "+err.Error()))
 			s.hub.publish(Message{Kind: "event", OperationID: id, Event: &clusterEvent{Time: time.Now(), Kind: "log", Level: "error", Step: kind, Message: err.Error()}})
 		}
 		if artifact != nil {
 			if b, err := json.Marshal(artifact); err == nil {
-				_ = s.store.SetOperationArtifact(bg, id, b)
+				logOpWrite(id, "artifact", s.store.SetOperationArtifact(bg, id, b))
 			}
 		}
 		tracker.finish(status)
-		_ = s.store.SetOperationSteps(bg, id, tracker.json())
-		_ = s.store.FinishOperation(bg, id, status)
+		logOpWrite(id, "steps", s.store.SetOperationSteps(bg, id, tracker.json()))
+		if err := s.store.FinishOperation(bg, id, status); err != nil {
+			log.Printf("operation %d: finish: %v; retrying", id, err)
+			time.Sleep(time.Second)
+			logOpWrite(id, "finish", s.store.FinishOperation(bg, id, status))
+		}
 		s.publishOperation(bg, id)
 		s.refresh(cluster, scopesForKind(kind)...)
 	}()
 	return id, nil
 }
 
+func callOperation(ctx context.Context, fn opFunc, sink clusterSink) (artifact any, err error) {
+	defer func() {
+		if p := recover(); p != nil {
+			log.Printf("operation panic: %v\n%s", p, debug.Stack())
+			artifact, err = nil, fmt.Errorf("internal error: %v", p)
+		}
+	}()
+	return fn(ctx, sink)
+}
+
+func logOpWrite(id int64, what string, err error) {
+	if err != nil && !errors.Is(err, context.Canceled) {
+		log.Printf("operation %d: %s: %v", id, what, err)
+	}
+}
+
 // Drain cancels every running operation and waits (bounded) for them to record their
 // cancelled state, so a daemon stop leaves no operation stuck in "running".
 func (s *Server) Drain(timeout time.Duration) {
+	s.stop()
 	s.cancels.Range(func(_, v any) bool {
 		v.(context.CancelFunc)()
 		return true
@@ -344,32 +372,48 @@ func contextBackground() context.Context { return context.Background() }
 // clusterLocks serialises mutating operations per cluster ("" = global, e.g. discovery).
 type clusterLocks struct {
 	mu    sync.Mutex
-	locks map[string]*sync.Mutex
+	locks map[string]chan struct{}
 }
 
-func (l *clusterLocks) get(name string) *sync.Mutex {
+func (l *clusterLocks) get(name string) chan struct{} {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	if l.locks == nil {
-		l.locks = map[string]*sync.Mutex{}
+		l.locks = map[string]chan struct{}{}
 	}
 	m, ok := l.locks[name]
 	if !ok {
-		m = &sync.Mutex{}
+		m = make(chan struct{}, 1)
 		l.locks[name] = m
 	}
 	return m
 }
 
-func (l *clusterLocks) lock(name string)   { l.get(name).Lock() }
-func (l *clusterLocks) unlock(name string) { l.get(name).Unlock() }
+func (l *clusterLocks) lock(name string)   { l.get(name) <- struct{}{} }
+func (l *clusterLocks) unlock(name string) { <-l.get(name) }
 func (l *clusterLocks) busy(name string) bool {
-	m := l.get(name)
-	if m.TryLock() {
-		m.Unlock()
-		return false
+	return len(l.get(name)) > 0
+}
+
+func (l *clusterLocks) lockContext(ctx context.Context, name string) error {
+	select {
+	case l.get(name) <- struct{}{}:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
 	}
-	return true
+}
+
+func (l *clusterLocks) lockAll(names []string) (unlock func()) {
+	names = slices.Compact(slices.Sorted(slices.Values(names)))
+	for _, n := range names {
+		l.lock(n)
+	}
+	return func() {
+		for i := len(names) - 1; i >= 0; i-- {
+			l.unlock(names[i])
+		}
+	}
 }
 
 func marshal(v any) []byte {

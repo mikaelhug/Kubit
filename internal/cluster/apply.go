@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"strings"
-	"time"
 
 	"github.com/mikael/kubit/internal/config"
 	"github.com/mikael/kubit/internal/talos"
@@ -56,19 +55,17 @@ func (m *Manager) ApplyConfigs(ctx context.Context, c *config.Cluster, wantKubel
 }
 
 func (m *Manager) applyNodeConfig(ctx context.Context, n config.Node, cfg []byte, talosconfig []byte, step string, sink Sink) error {
-	dial, cancel := context.WithTimeout(ctx, 30*time.Second)
-	tc, err := talos.Dial(dial, n.IP, talosconfig)
-	cancel()
+	tc, err := talos.Dial(ctx, n.IP, talosconfig)
 	if err != nil {
 		return err
 	}
-	details, err := tc.ApplyDryRun(ctx, cfg)
+	details, err := applyDryRun(ctx, tc, cfg)
 	if err != nil {
 		tc.Close()
 		return fmt.Errorf("dry run: %w", err)
 	}
-	bootID, _ := tc.BootID(ctx)
-	err = tc.Apply(ctx, cfg)
+	bootID, _ := readBootID(ctx, tc)
+	err = applyConfig(ctx, tc, cfg)
 	tc.Close()
 	if err != nil {
 		return fmt.Errorf("apply: %w", err)

@@ -67,14 +67,12 @@ func (m *Manager) RenameNode(ctx context.Context, name, hostname, newName string
 		if err != nil {
 			return err
 		}
-		dial, cancel := context.WithTimeout(ctx, 30*time.Second)
-		tc, err := talos.Dial(dial, n.IP, sec.Talosconfig)
-		cancel()
+		tc, err := talos.Dial(ctx, n.IP, sec.Talosconfig)
 		if err != nil {
 			return err
 		}
 		defer tc.Close()
-		if err := tc.Apply(ctx, gen.Nodes[newName]); err != nil {
+		if err := applyConfig(ctx, tc, gen.Nodes[newName]); err != nil {
 			return err
 		}
 		if err := m.Store.PutNodeMachineConfig(ctx, n.IP, gen.Nodes[newName], config.HasSystemVolume(gen.Nodes[newName])); err != nil {
@@ -93,11 +91,10 @@ func (m *Manager) RenameNode(ctx context.Context, name, hostname, newName string
 		if err := kc.DeleteNode(ctx, hostname); err != nil {
 			return fmt.Errorf("delete old node object: %w", err)
 		}
-		row, err := m.Store.GetCluster(ctx, name)
-		if err != nil {
+		if _, err := m.Store.GetCluster(ctx, name); err != nil {
 			return err
 		}
-		if err := m.SaveCluster(ctx, c, row.State); err != nil {
+		if err := m.SaveCluster(ctx, c, ""); err != nil {
 			return err
 		}
 		if err := m.Store.AssignNode(ctx, n.IP, name, newName, string(n.Role)); err != nil {
@@ -147,11 +144,10 @@ func (m *Manager) MoveNodeToPool(ctx context.Context, name, hostname, pool strin
 			n = c.Spec.Nodes[i]
 		}
 	}
-	row, err := m.Store.GetCluster(ctx, name)
-	if err != nil {
+	if _, err := m.Store.GetCluster(ctx, name); err != nil {
 		return err
 	}
-	if err := m.SaveCluster(ctx, c, row.State); err != nil {
+	if err := m.SaveCluster(ctx, c, ""); err != nil {
 		return err
 	}
 	if reimage {
@@ -207,10 +203,8 @@ func (m *Manager) ReaddressNode(ctx context.Context, name, hostname string, netw
 		// gRPC dials lazily, so only the call itself tells.
 		var err error
 		for _, addr := range []string{n.IP, target} {
-			dial, cancel := context.WithTimeout(ctx, 20*time.Second)
 			var tc *talos.Client
-			tc, err = talos.Dial(dial, addr, sec.Talosconfig)
-			cancel()
+			tc, err = talos.Dial(ctx, addr, sec.Talosconfig)
 			if err != nil {
 				continue
 			}
@@ -257,12 +251,12 @@ func (m *Manager) ReaddressNode(ctx context.Context, name, hostname string, netw
 			if err != nil {
 				return err
 			}
-			bootID, err := tc.BootID(ctx)
+			bootID, err := readBootID(ctx, tc)
 			if err != nil {
 				tc.Close()
 				return err
 			}
-			err = tc.Reboot(tc.Context(ctx))
+			err = rebootNode(ctx, tc)
 			tc.Close()
 			if err != nil {
 				return err
@@ -301,11 +295,10 @@ func (m *Manager) ReaddressNode(ctx context.Context, name, hostname string, netw
 	if err := sink.run("ready", func() error { return kc.WaitReady(ctx, []string{hostname}, m.Timeouts.Ready, nil) }); err != nil {
 		return err
 	}
-	row, err := m.Store.GetCluster(ctx, name)
-	if err != nil {
+	if _, err := m.Store.GetCluster(ctx, name); err != nil {
 		return err
 	}
-	if err := m.SaveCluster(ctx, c, row.State); err != nil {
+	if err := m.SaveCluster(ctx, c, ""); err != nil {
 		return err
 	}
 	for _, x := range c.Spec.Nodes {

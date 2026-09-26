@@ -5,3 +5,4 @@ web/node_modules/
 hack/vm/state/
 .DS_Store
 hack/qemu/state/
+.claude/worktrees/

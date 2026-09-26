@@ -34,10 +34,13 @@ func Scan(ctx context.Context, addrs []netip.Addr, amtCreds, bmcCreds Config, ti
 		wg  sync.WaitGroup
 	)
 	for _, a := range addrs {
+		if ctx.Err() != nil {
+			break
+		}
 		wg.Add(1)
+		sem <- struct{}{}
 		go func(ip string) {
 			defer wg.Done()
-			sem <- struct{}{}
 			defer func() { <-sem }()
 			d := net.Dialer{Timeout: timeout}
 			conn, err := d.DialContext(ctx, "tcp", net.JoinHostPort(ip, "16992"))
@@ -45,7 +48,7 @@ func Scan(ctx context.Context, addrs []netip.Addr, amtCreds, bmcCreds Config, ti
 			var creds Config
 			if err == nil {
 				conn.Close()
-				r = ScanResult{IP: ip, Type: "amt", MAC: macFromARP(ip)}
+				r = ScanResult{IP: ip, Type: "amt", MAC: macFromARP(ctx, ip)}
 				creds = amtCreds
 			} else if _, ok := ProbeRedfish(ctx, ip, timeout); ok {
 				r = ScanResult{IP: ip, Type: "redfish"}
@@ -83,13 +86,15 @@ var macRe = regexp.MustCompile(`([0-9a-fA-F]{1,2}[:-]){5}[0-9a-fA-F]{1,2}`)
 
 // macFromARP reads the neighbour table after the TCP probe populated it; only works
 // for addresses on the daemon host's own segment, which is where PXE works anyway.
-func macFromARP(ip string) string {
+func macFromARP(ctx context.Context, ip string) string {
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
 	var out []byte
 	var err error
 	if runtime.GOOS == "linux" {
-		out, err = exec.Command("ip", "neigh", "show", ip).Output()
+		out, err = exec.CommandContext(ctx, "ip", "neigh", "show", ip).Output()
 	} else {
-		out, err = exec.Command("arp", "-n", ip).Output()
+		out, err = exec.CommandContext(ctx, "arp", "-n", ip).Output()
 	}
 	if err != nil {
 		return ""

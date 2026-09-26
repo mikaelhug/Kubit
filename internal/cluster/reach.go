@@ -1,6 +1,7 @@
 package cluster
 
 import (
+	"context"
 	"errors"
 	"net"
 	"strings"
@@ -59,12 +60,13 @@ func ShortNet(err error) string {
 // default gateway: a refusal or a timeout means the network is fine and the targets are
 // the problem; a no-network error means the observer is blind. Without a default
 // gateway the answer is unknown and the caller must not claim to be blind.
-func ControlProbe(timeout time.Duration) (Reach, string) {
+func ControlProbe(ctx context.Context, timeout time.Duration) (Reach, string) {
 	gw := DefaultGateway()
 	if gw == "" {
 		return ReachOK, ""
 	}
-	conn, err := net.DialTimeout("tcp", net.JoinHostPort(gw, "443"), timeout)
+	d := net.Dialer{Timeout: timeout}
+	conn, err := d.DialContext(ctx, "tcp", net.JoinHostPort(gw, "443"))
 	if err == nil {
 		conn.Close()
 		return ReachOK, gw

@@ -78,7 +78,7 @@ func Scan(ctx context.Context, addrs []netip.Addr, concurrency int, timeout time
 		go func(ip string) {
 			defer wg.Done()
 			defer func() { <-sem }()
-			if !PortOpen(ip, timeout) {
+			if !PortOpen(ctx, ip, timeout) {
 				return
 			}
 			r := Probe(ctx, ip, timeout)
