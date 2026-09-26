@@ -1,34 +1,33 @@
-import { useCallback, useEffect, useState } from 'preact/hooks'
+import { useEffect, useState } from 'preact/hooks'
 import { useLocation } from 'preact-iso'
 import { api, type ClusterRow, type Status } from '../../api'
-import { clusters, loadHealth, operations, statuses } from '../../store'
 import { Tabs } from '../../components/Tabs'
 import { ClusterPill, ErrorBox, Pill, SeenAgo } from '../../components/ui'
-import { sectionList, type Section } from '../../app'
-import { Overview } from './Overview'
-import { Nodes } from './Nodes'
+import { setIn } from '../../maps'
+import { sectionList, type Section } from '../../routes'
+import { clusters, loadHealth, runningFor, statuses } from '../../store'
+import { useLive } from '../../useLive'
 import { Addons } from './Addons'
-import { PlanReview } from './PlanReview'
-import { Settings } from './Settings'
-import { Workloads } from './Workloads'
-import { Network } from './Network'
-import { Storage } from './Storage'
 import { Backups } from './Backups'
 import { Lifecycle } from './Lifecycle'
+import { Network } from './Network'
+import { Nodes } from './Nodes'
+import { Overview } from './Overview'
+import { PlanReview } from './PlanReview'
+import { Settings } from './Settings'
+import { Storage } from './Storage'
+import { Workloads } from './Workloads'
 
 export interface ClusterCtx { name: string; cluster: ClusterRow; status: Status | null }
 
 export function ClusterPage({ name, section = 'overview', sub }: { name: string; section?: string; sub?: string }) {
-  const [fetched, setFetched] = useState<Status | null>(null)
-  const [error, setError] = useState<string | null>(null)
+  const { data: fetched, error } = useLive(() => api.status(name), [name])
+  useEffect(() => { loadHealth(name) }, [name])
   const cluster = clusters.value.find((c) => c.name === name)
-  const pushed = statuses.value.get(name)
-  const status: Status | null = pushed ?? fetched
-  const refresh = useCallback(() => { api.status(name).then((s) => { setFetched(s); setError(null) }).catch((e) => setError(e.message)) }, [name])
-  useEffect(() => { setFetched(null); refresh(); loadHealth(name) }, [refresh, name])
+  const status: Status | null = statuses.value.get(name) ?? fetched
   if (!cluster) return <div class="p-8 text-muted">{error ?? `Cluster ${name} is not known.`}</div>
   const ctx: ClusterCtx = { name, cluster, status }
-  const runningHere = [...operations.value.values()].filter((o) => o.cluster === name && o.status === 'running')
+  const runningHere = runningFor(name).length
 
   return (
     <div class="flex flex-col">
@@ -36,11 +35,11 @@ export function ClusterPage({ name, section = 'overview', sub }: { name: string;
         <div class="flex flex-wrap items-center gap-3 mb-3">
           <h1 class="text-xl font-semibold">{name}</h1>
           <ClusterPill state={cluster.state} status={status} />
-          {runningHere.length > 0 && <Pill tone="warn">{runningHere.length} operation{runningHere.length === 1 ? '' : 's'} running</Pill>}
+          {runningHere > 0 && <Pill tone="warn">{runningHere} operation{runningHere === 1 ? '' : 's'} running</Pill>}
           <SeenAgo contact={status?.lastContactAt} observed={status?.observedAt} blind={!!status && (status.observer === 'offline' || (!status.apiReachable && !status.nodes.some((n) => n.talosReachable)))} />
           <CheckNow name={name} />
         </div>
-        <Tabs active={section} tabs={sectionList.map(([id, label]) => ({ id, label, href: `/clusters/${name}/${id}`, badge: id === 'overview' && runningHere.length ? runningHere.length : undefined }))} />
+        <Tabs active={section} tabs={sectionList.map(([id, label]) => ({ id, label, href: `/clusters/${name}/${id}`, badge: id === 'overview' && runningHere ? runningHere : undefined }))} />
       </header>
       <div class="p-5 flex flex-col gap-4 max-w-[1300px]">
         <ErrorBox error={error} />
@@ -68,8 +67,15 @@ function renderSection(section: Section | 'operations', sub: string | undefined,
 
 function CheckNow({ name }: { name: string }) {
   const [busy, setBusy] = useState(false)
-  const check = () => { setBusy(true); api.status(name, true).then((st) => { const sm = new Map(statuses.value); sm.set(name, { ...(statuses.value.get(name) ?? st), ...st, health: statuses.value.get(name)?.health, openAlerts: statuses.value.get(name)?.openAlerts, lastContactAt: st.apiReachable || st.nodes.some((n) => n.talosReachable) ? st.observedAt : statuses.value.get(name)?.lastContactAt }); statuses.value = sm }).catch(() => {}).finally(() => setBusy(false)) }
-  return <button class="btn !py-0.5 !px-2 text-[11px]" disabled={busy} title="Probe the Talos and Kubernetes APIs now" onClick={check}>{busy ? 'Checking' : 'Check now'}</button>
+  const check = () => {
+    setBusy(true)
+    api.status(name, true).then((st) => {
+      const prev = statuses.value.get(name)
+      const contact = st.apiReachable || st.nodes.some((n) => n.talosReachable) ? st.observedAt : prev?.lastContactAt
+      setIn(statuses, name, { ...(prev ?? st), ...st, health: prev?.health, openAlerts: prev?.openAlerts, lastContactAt: contact })
+    }).catch(() => {}).finally(() => setBusy(false))
+  }
+  return <button class="btn btn-xs" disabled={busy} title="Probe the Talos and Kubernetes APIs now" onClick={check}>{busy ? 'Checking' : 'Check now'}</button>
 }
 
 function Redirect({ to }: { to: string }) {

@@ -1,12 +1,15 @@
-import { useEffect, useState } from 'preact/hooks'
+import { useEffect, useMemo, useState } from 'preact/hooks'
 import { api, fmt, type ClusterRow, type NodeNetwork, type NodeSpec, type NodeStatus } from '../../api'
-import { machineList, toast, watch } from '../../store'
 import { DataTable, type Column } from '../../components/DataTable'
-import { ConfirmDialog, Dialog, ErrorBox, Field, MaintenanceNotice, Pill, Section } from '../../components/ui'
 import { KVEditor } from '../../components/PoolsEditor'
-import { guessGateway } from '../create/net'
-import { dataCandidates, formOf, installCandidates, modelOf } from '../../machine'
+import { ReaddressDialog } from '../../components/ReaddressDialog'
+import { ConfirmDialog, Dialog, ErrorBox, Field, Pill, Section } from '../../components/ui'
+import { dataCandidates, diskLabel, formOf, installCandidates, modelOf } from '../../machine'
+import { staticNetwork } from '../../net'
+import { machineList, toast, watch } from '../../store'
 import type { ClusterCtx } from './ClusterPage'
+
+const smallAlloc = 768 * 1048576
 
 export function Nodes({ ctx }: { ctx: ClusterCtx }) {
   const { status, cluster, name } = ctx
@@ -16,40 +19,42 @@ export function Nodes({ ctx }: { ctx: ClusterCtx }) {
   const [readdress, setReaddress] = useState<NodeStatus | null>(null)
   const [pool, setPool] = useState('')
   const specs = cluster.spec.spec.nodes
-  const all: NodeStatus[] = status?.nodes ?? specs.map((n) => ({ ...n, role: n.role ?? 'worker', pool: n.pool ?? '', kvm: !!n.kvm, ready: false, unschedulable: false, registered: false, stage: '', talosVersion: '', kubeletVersion: '', cpuMilli: 0, cpuCapMilli: 0, memBytes: 0, memCapBytes: 0, memAllocBytes: 0, pods: 0, podCap: 0, gvisor: false, talosReachable: false, talosError: 'querying…' }))
+  const all: NodeStatus[] = status?.nodes ?? specs.map((n) => ({ ...n, role: n.role ?? 'worker', pool: n.pool ?? '', kvm: !!n.kvm, ready: false, unschedulable: false, registered: false, stage: '', talosVersion: '', kubeletVersion: '', cpuMilli: 0, cpuCapMilli: 0, memBytes: 0, memCapBytes: 0, memAllocBytes: 0, pods: 0, podCap: 0, gvisor: false, talosReachable: false, talosError: 'querying' }))
   const rows = pool ? all.filter((n) => n.pool === pool) : all
   const pools = cluster.spec.spec.pools ?? []
   const apiUp = !!status?.apiReachable
-  const specOf = (n: NodeStatus) => specs.find((s) => s.hostname === n.hostname)
-  const machineHref = (n: NodeStatus) => { const mac = specOf(n)?.mac; return mac ? `/machines/${mac}` : `/nodes/${n.ip}` }
 
-  const columns: Column<NodeStatus>[] = [
-    { id: 'hostname', header: 'Hostname', sort: (n) => n.hostname, cell: (n) => <a href={machineHref(n)} class="font-medium hover:underline">{n.hostname}</a> },
-    { id: 'ip', header: 'Address', sort: (n) => n.ip, mono: true, text: (n) => `${n.ip} ${n.seenAt ?? ''}`, cell: (n) => {
-      const sp = specOf(n)
-      const moved = n.seenAt && n.seenAt !== n.ip
-      return (
-        <div class="flex flex-col">
-          <span>{n.ip} <span class="text-[10px] text-muted">{sp?.network ? (sp.network.vlan ? `static · vlan ${sp.network.vlan}` : 'static') : 'dhcp'}</span></span>
-          {moved && <button class="text-[11px] text-warn hover:underline text-left" title={`Discovery last saw this machine (by MAC) at ${n.seenAt}; the declaration still says ${n.ip}.`} onClick={() => setReaddress(n)}>seen at {n.seenAt} — update</button>}
-        </div>
-      )
-    } },
-    { id: 'pool', header: 'Pool', sort: (n) => n.pool, cell: (n) => <span class="flex items-center gap-1.5"><span class="mono">{n.pool || '—'}</span><span class="text-[10px] text-muted">{n.role === 'controlplane' ? 'control plane' : 'worker'}</span></span> },
-    { id: 'status', header: 'Status', sort: (n) => (n.talosReachable ? 1 : 0) + (n.ready ? 2 : 0), text: (n) => `${n.talosReachable ? '' : 'unreachable'} ${n.ready ? 'ready' : 'notready'}`, cell: (n) => <NodeHealth n={n} apiReachable={apiUp} /> },
-    { id: 'talos', header: 'Talos', sort: (n) => n.talosVersion, mono: true, cell: (n) => n.talosVersion || '—' },
-    { id: 'kubelet', header: 'Kubelet', sort: (n) => n.kubeletVersion, mono: true, cell: (n) => n.kubeletVersion || '—' },
-    { id: 'cpu', header: 'CPU', align: 'right', sort: (n) => n.cpuMilli, cell: (n) => <>{fmt.cores(n.cpuMilli)}<span class="text-muted">/{fmt.cores(n.cpuCapMilli)}</span></> },
-    { id: 'ram', header: 'RAM used / total', align: 'right', sort: (n) => n.memBytes, cell: (n) => <span title={n.memAllocBytes && n.memAllocBytes < 768 * 1048576 ? `${fmt.bytes(n.memAllocBytes)} allocatable for pods: too small for the platform add-ons` : n.memAllocBytes ? `${fmt.bytes(n.memAllocBytes)} allocatable for pods` : undefined}><span class={n.memCapBytes && n.memBytes >= n.memCapBytes * 0.95 ? 'text-bad' : ''}>{fmt.bytes(n.memBytes)}</span><span class={n.memAllocBytes && n.memAllocBytes < 768 * 1048576 ? 'text-warn' : 'text-muted'}>/{fmt.bytes(n.memCapBytes)}</span></span> },
-    { id: 'pods', header: 'Pods', align: 'right', sort: (n) => n.pods, cell: (n) => <a href={`/clusters/${name}/workloads?view=pods&node=${encodeURIComponent(n.hostname)}`} class="hover:underline">{n.pods}</a> },
-    { id: 'gvisor', header: 'gVisor', sort: (n) => n.gvisor ? 1 : 0, cell: (n) => n.gvisor ? <Pill tone="good">{n.kvm ? 'kvm' : 'runsc'}</Pill> : <span class="text-muted">—</span> },
-    { id: 'actions', header: '', align: 'right', cell: (n) => (
-      <span class="whitespace-nowrap flex gap-1 justify-end">
-        <a href={machineHref(n)} class="btn !py-1">Open</a>
-        <button class="btn btn-danger !py-1" disabled={!apiUp} title={!apiUp ? 'Needs the Kubernetes API to drain' : 'Drain, delete and reset'} onClick={() => setRemove(n)}>Remove</button>
-      </span>
-    ) },
-  ]
+  const columns = useMemo<Column<NodeStatus>[]>(() => {
+    const specOf = (n: NodeStatus) => specs.find((s) => s.hostname === n.hostname)
+    const machineHref = (n: NodeStatus) => { const mac = specOf(n)?.mac; return mac ? `/machines/${mac}` : `/nodes/${n.ip}` }
+    return [
+      { id: 'hostname', header: 'Hostname', sort: (n) => n.hostname, cell: (n) => <a href={machineHref(n)} class="font-medium hover:underline">{n.hostname}</a> },
+      { id: 'ip', header: 'Address', sort: (n) => n.ip, mono: true, text: (n) => `${n.ip} ${n.seenAt ?? ''}`, cell: (n) => {
+        const sp = specOf(n)
+        const moved = n.seenAt && n.seenAt !== n.ip
+        return (
+          <div class="flex flex-col">
+            <span>{n.ip} <span class="text-[10px] text-muted">{sp?.network ? (sp.network.vlan ? `static · vlan ${sp.network.vlan}` : 'static') : 'dhcp'}</span></span>
+            {moved && <button class="text-[11px] text-warn hover:underline text-left" title={`Last seen at ${n.seenAt}; declared ${n.ip}`} onClick={() => setReaddress(n)}>seen at {n.seenAt} — update</button>}
+          </div>
+        )
+      } },
+      { id: 'pool', header: 'Pool', sort: (n) => `${n.role === 'controlplane' ? 0 : 1} ${n.pool}`, cell: (n) => <span class="flex items-center gap-1.5"><span class="mono">{n.pool || '—'}</span><span class="text-[10px] text-muted">{n.role === 'controlplane' ? 'control plane' : 'worker'}</span></span> },
+      { id: 'status', header: 'Status', sort: (n) => (n.talosReachable ? 1 : 0) + (n.ready ? 2 : 0), text: (n) => `${n.talosReachable ? '' : 'unreachable'} ${n.ready ? 'ready' : 'notready'}`, cell: (n) => <NodeHealth n={n} apiReachable={apiUp} /> },
+      { id: 'talos', header: 'Talos', sort: (n) => n.talosVersion, mono: true, cell: (n) => n.talosVersion || '—' },
+      { id: 'kubelet', header: 'Kubelet', sort: (n) => n.kubeletVersion, mono: true, cell: (n) => n.kubeletVersion || '—' },
+      { id: 'cpu', header: 'CPU', align: 'right', sort: (n) => n.cpuMilli, cell: (n) => <>{fmt.cores(n.cpuMilli)}<span class="text-muted">/{fmt.cores(n.cpuCapMilli)}</span></> },
+      { id: 'ram', header: 'RAM used / total', align: 'right', sort: (n) => n.memBytes, cell: (n) => { const small = !!n.memAllocBytes && n.memAllocBytes < smallAlloc; return <span title={n.memAllocBytes ? `${fmt.bytes(n.memAllocBytes)} allocatable for pods${small ? '; too small for the add-ons' : ''}` : undefined}><span class={n.memCapBytes && n.memBytes >= n.memCapBytes * 0.95 ? 'text-bad' : ''}>{fmt.bytes(n.memBytes)}</span><span class={small ? 'text-warn' : 'text-muted'}>/{fmt.bytes(n.memCapBytes)}</span></span> } },
+      { id: 'pods', header: 'Pods', align: 'right', sort: (n) => n.pods, cell: (n) => <a href={`/clusters/${name}/workloads?view=pods&node=${encodeURIComponent(n.hostname)}`} class="hover:underline">{n.pods}</a> },
+      { id: 'gvisor', header: 'gVisor', sort: (n) => n.gvisor ? 1 : 0, cell: (n) => n.gvisor ? <Pill tone="good">{n.kvm ? 'kvm' : 'runsc'}</Pill> : <span class="text-muted">—</span> },
+      { id: 'actions', header: '', align: 'right', cell: (n) => (
+        <span class="whitespace-nowrap flex gap-1 justify-end">
+          <a href={machineHref(n)} class="btn !py-1">Open</a>
+          <button class="btn btn-danger !py-1" disabled={!apiUp} title={!apiUp ? 'Needs the Kubernetes API to drain' : 'Drain, delete and reset'} onClick={() => setRemove(n)}>Remove</button>
+        </span>
+      ) },
+    ]
+  }, [specs, apiUp, name])
 
   return (
     <>
@@ -63,10 +68,10 @@ export function Nodes({ ctx }: { ctx: ClusterCtx }) {
           ) : null}
           <button class="btn btn-primary" onClick={() => setAdd(true)}>+ Add node</button>
         </>}>
-        <DataTable id="nodes" columns={columns} rows={rows} rowKey={(n) => n.hostname} defaultSort={{ id: 'role', dir: 'asc' }} />
+        <DataTable id="nodes" columns={columns} rows={rows} rowKey={(n) => n.hostname} defaultSort={{ id: 'pool', dir: 'asc' }} />
       </Section>
       {add && <AddNodeDialog cluster={cluster} preselect={adoptIP ?? undefined} onClose={() => { setAdd(false); if (adoptIP) history.replaceState(null, '', location.pathname) }} />}
-      {readdress && <ReaddressDialog cluster={cluster} n={readdress} spec={specOf(readdress)} onClose={() => setReaddress(null)} />}
+      {readdress && <ReaddressDialog cluster={cluster} n={readdress} spec={specs.find((s) => s.hostname === readdress.hostname)} onClose={() => setReaddress(null)} />}
       {remove && (
         <ConfirmDialog title={`Remove ${remove.hostname}`} action="Drain and remove" tone="danger" cluster={name} onClose={() => setRemove(null)}
           onConfirm={() => api.removeNode(name, remove.hostname).then((r) => { setRemove(null); watch(r) }).catch((e) => toast(e.message, 'error'))}
@@ -76,15 +81,15 @@ export function Nodes({ ctx }: { ctx: ClusterCtx }) {
   )
 }
 
-export function NodeHealth({ n, apiReachable }: { n: NodeStatus; apiReachable: boolean }) {
+function NodeHealth({ n, apiReachable }: { n: NodeStatus; apiReachable: boolean }) {
   const pills = []
-  if (!n.talosReachable) pills.push(<Pill tone="bad" title={n.talosError}>Talos unreachable</Pill>)
-  else if (n.stage && n.stage !== 'running') pills.push(<Pill tone="warn">{n.stage}</Pill>)
-  if (!apiReachable) pills.push(<Pill tone="muted">k8s unknown</Pill>)
-  else if (!n.registered) pills.push(<Pill tone="warn" title="No Node object: the kubelet has not registered with the API server">not registered</Pill>)
-  else if (!n.ready) pills.push(<Pill tone="warn">NotReady</Pill>)
-  else pills.push(<Pill tone="good">Ready</Pill>)
-  if (n.unschedulable) pills.push(<Pill tone="warn">cordoned</Pill>)
+  if (!n.talosReachable) pills.push(<Pill key="talos" tone="bad" title={n.talosError}>Talos unreachable</Pill>)
+  else if (n.stage && n.stage !== 'running') pills.push(<Pill key="talos" tone="warn">{n.stage}</Pill>)
+  if (!apiReachable) pills.push(<Pill key="k8s" tone="muted">k8s unknown</Pill>)
+  else if (!n.registered) pills.push(<Pill key="k8s" tone="warn" title="The kubelet has not registered a Node object">not registered</Pill>)
+  else if (!n.ready) pills.push(<Pill key="k8s" tone="warn">NotReady</Pill>)
+  else pills.push(<Pill key="k8s" tone="good">Ready</Pill>)
+  if (n.unschedulable) pills.push(<Pill key="cordon" tone="warn">cordoned</Pill>)
   return (
     <div class="flex flex-col gap-0.5">
       <span class="inline-flex flex-wrap gap-1">{pills}</span>
@@ -98,13 +103,10 @@ function RemoveImpact({ n, cluster }: { n: NodeStatus; cluster: ClusterRow }) {
   const remaining = n.role === 'controlplane' ? cps - 1 : cps
   return (
     <ul class="list-disc pl-5 flex flex-col gap-1">
-      <li>Cordon and drain <b>{n.pods}</b> running pod{n.pods === 1 ? '' : 's'} (DaemonSet pods stay).</li>
-      <li>Delete the Node object from Kubernetes.</li>
-      <li>Talos <b>reset</b>: {n.role === 'controlplane' ? 'leave etcd, ' : ''}wipe state and reboot into maintenance mode. The machine becomes a candidate again.</li>
+      <li>Cordons and drains <b>{n.pods}</b> running pod{n.pods === 1 ? '' : 's'}, deletes the Node object and resets Talos to maintenance mode.</li>
       {n.role === 'controlplane' && remaining === 0 && <li class="text-bad">This is the last control plane: Kubit will refuse.</li>}
-      {n.role === 'controlplane' && remaining === 2 && <li class="text-warn">Leaves 2 control planes: etcd survives no further failure. Kubit refuses unless forced from the CLI.</li>}
+      {n.role === 'controlplane' && remaining === 2 && <li class="text-warn">Leaves 2 control planes; Kubit refuses unless forced from the CLI.</li>}
       {n.role === 'controlplane' && remaining >= 3 && <li>etcd keeps quorum with {remaining} members.</li>}
-      <li>cluster.yaml is updated; the platform layer is left as is.</li>
     </ul>
   )
 }
@@ -140,6 +142,8 @@ function AddNodeDialog({ cluster, onClose, preselect }: { cluster: ClusterRow; o
   }
   const cps = cluster.spec.spec.nodes.filter((x) => x.role === 'controlplane').length
   const staticOn = !!network
+  const count = (m?: Record<string, string>) => Object.keys(m ?? {}).length
+  const poolHint = role === 'controlplane' ? `etcd goes from ${cps} to ${cps + 1} members${(cps + 1) % 2 === 0 ? '; an even count adds no fault tolerance' : ''}` : p ? [count(p.labels) ? `${count(p.labels)} pool label(s)` : '', count(p.taints) ? `${count(p.taints)} taint(s)` : '', p.extensions?.length ? 'own installer image' : ''].filter(Boolean).join(', ') || 'plain worker' : undefined
   return (
     <Dialog title={`Add node to ${cluster.name}`} width="max-w-2xl" onClose={onClose} footer={
       <>
@@ -148,29 +152,29 @@ function AddNodeDialog({ cluster, onClose, preselect }: { cluster: ClusterRow; o
       </>
     }>
       <ErrorBox error={error} />
-      <Field label="Discovered machine (maintenance mode)" hint={candidates.length === 0 ? 'No unassigned machines. Run a discovery under Fleet → Inventory first.' : undefined}>
+      <Field label="Discovered machine (maintenance mode)" hint={candidates.length === 0 ? 'None unassigned; scan in Inventory first' : undefined}>
         <select class="input" value={ip} onChange={(e) => setIp((e.target as HTMLSelectElement).value)}>
-          <option value="">Select…</option>
+          <option value="">Select</option>
           {candidates.map((c) => <option key={c.mac} value={c.ip}>{modelOf(c)} ({formOf(c)}) · {c.ip} · {c.arch} · {c.inventory?.cpus ?? '?'} CPU · {fmt.bytes(c.inventory?.memoryBytes ?? 0)}{c.inventory?.kvm ? ' · kvm' : ''} · {c.mac}</option>)}
         </select>
       </Field>
       <div class="grid grid-cols-2 gap-3">
-        <Field label="Pool" hint={role === 'controlplane' ? `etcd goes from ${cps} to ${cps + 1} members${(cps + 1) % 2 === 0 ? ' — an even count adds no fault tolerance' : ''}` : p ? [Object.keys(p.labels ?? {}).length ? `${Object.keys(p.labels ?? {}).length} pool label(s)` : '', Object.keys(p.taints ?? {}).length ? `${Object.keys(p.taints ?? {}).length} taint(s)` : '', p.extensions?.length ? 'own installer image' : ''].filter(Boolean).join(', ') || 'plain worker' : undefined}>
+        <Field label="Pool" hint={poolHint}>
           <select class="input" value={pool} onChange={(e) => setPool((e.target as HTMLSelectElement).value)}>
             {pools.map((x) => <option key={x.name} value={x.name}>{x.name}{x.role === 'controlplane' ? ' (control plane)' : ''}</option>)}
           </select>
         </Field>
         <Field label="Hostname"><input class="input mono" value={hostname} onInput={(e) => setHostname((e.target as HTMLInputElement).value)} /></Field>
       </div>
-      <Field label="Install disk" hint={p?.installDisk ? 'Empty follows the pool\'s disk policy.' : 'Wiped and installed with Talos.'}>
+      <Field label="Install disk" hint={p?.installDisk ? 'Empty follows the pool policy' : 'Wiped and installed with Talos'}>
         <select class="input mono" value={disk} onChange={(e) => { const v = (e.target as HTMLSelectElement).value; setDisk(v); setDataDisks(dataDisks.filter((d) => d !== v)) }}>
           {p?.installDisk && <option value="">pool policy ({Object.values(p.installDisk.selector ?? {}).join(' ')})</option>}
-          {installCandidates(selected).map((d) => <option key={d.devPath} value={d.devPath}>{d.devPath} · {fmt.bytes(d.sizeBytes)} {d.model ? `· ${d.model}` : ''} {d.transport ? `· ${d.transport}` : ''}</option>)}
+          {installCandidates(selected).map((d) => <option key={d.devPath} value={d.devPath}>{diskLabel(d)}</option>)}
           {!selected && <option value="">—</option>}
         </select>
       </Field>
       {selected && dataCandidates(selected, disk).length > 0 && (
-        <Field label="Data disks" hint="Wiped, formatted (xfs) and mounted at /var/mnt/data-N for node-local storage.">
+        <Field label="Data disks" hint="Wiped and mounted at /var/mnt/data-N">
           <div class="flex flex-col gap-1 text-[13px] mono">
             {dataCandidates(selected, disk).map((d) => <label key={d.devPath} class="flex items-center gap-2"><input type="checkbox" checked={dataDisks.includes(d.devPath)} onChange={(e) => setDataDisks((e.target as HTMLInputElement).checked ? dataCandidates(selected, disk).map((x) => x.devPath).filter((x) => x === d.devPath || dataDisks.includes(x)) : dataDisks.filter((x) => x !== d.devPath))} />{d.devPath} <span class="text-muted">{fmt.bytes(d.sizeBytes)}{d.model ? ` · ${d.model}` : ''}</span></label>)}
           </div>
@@ -179,10 +183,10 @@ function AddNodeDialog({ cluster, onClose, preselect }: { cluster: ClusterRow; o
       <button class="text-[12px] text-accent text-left hover:underline" onClick={() => setMore(!more)}>{more ? '▾' : '▸'} Labels, taints and addressing</button>
       {more && (
         <div class="grid grid-cols-2 gap-3">
-          <Field label="Extra labels" hint="key=value per line; merged over the pool's."><KVEditor value={labels} onChange={setLabels} /></Field>
-          <Field label="Extra taints" hint="key=value:Effect per line."><KVEditor value={taints} onChange={setTaints} /></Field>
-          <Field label="Addressing" hint={staticOn ? 'Pinned in the machine config; the node comes up on this address.' : 'Follows the LAN DHCP server; Kubit tracks the machine by MAC.'}>
-            <select class="input" value={staticOn ? 'static' : 'dhcp'} onChange={(e) => setNetwork((e.target as HTMLSelectElement).value === 'static' && selected ? { addresses: [`${selected.ip}/24`], gateway: guessGateway(selected.ip, 24) } : undefined)}>
+          <Field label="Extra labels" hint="key=value per line, over the pool's"><KVEditor value={labels} onChange={setLabels} /></Field>
+          <Field label="Extra taints" hint="key=value:Effect per line"><KVEditor value={taints} onChange={setTaints} /></Field>
+          <Field label="Addressing" hint={staticOn ? 'Pinned in the machine config' : 'DHCP; tracked by MAC'}>
+            <select class="input" value={staticOn ? 'static' : 'dhcp'} onChange={(e) => setNetwork((e.target as HTMLSelectElement).value === 'static' && selected ? staticNetwork(selected.ip) : undefined)}>
               <option value="dhcp">DHCP</option>
               <option value="static">Static</option>
             </select>
@@ -196,43 +200,7 @@ function AddNodeDialog({ cluster, onClose, preselect }: { cluster: ClusterRow; o
           )}
         </div>
       )}
-      <p class="text-[12px] text-muted">Preflight, config, install, wait for Ready. Progress in Activity.</p>
-    </Dialog>
-  )
-}
-
-export function ReaddressDialog({ cluster, n, spec, onClose }: { cluster: ClusterRow; n: NodeStatus; spec?: NodeSpec; onClose: () => void }) {
-  const isEndpoint = cluster.spec.spec.controlPlane.endpoint === `https://${n.ip}:6443`
-  const [mode, setMode] = useState<'dhcp' | 'static'>(spec?.network ? 'static' : 'dhcp')
-  const seen = n.seenAt && n.seenAt !== n.ip ? n.seenAt : ''
-  const [ip, setIp] = useState(seen || n.ip)
-  const [network, setNetwork] = useState<NodeNetwork>(spec?.network ?? { addresses: [`${seen || n.ip}/24`], gateway: guessGateway(seen || n.ip, 24) })
-  const [error, setError] = useState<string | null>(null)
-  const submit = () => api.readdressNode(cluster.name, n.hostname, mode === 'static' ? network : null, mode === 'static' ? network.addresses[0].split('/')[0] : ip)
-    .then((r) => { onClose(); watch(r) }).catch((e) => setError(e.message))
-  return (
-    <Dialog title={`Update address of ${n.hostname}`} onClose={onClose} footer={<><button class="btn" onClick={onClose}>Cancel</button><button class="btn btn-primary" disabled={isEndpoint && ip !== n.ip} onClick={submit}>Apply</button></>}>
-      <ErrorBox error={error} />
-      <MaintenanceNotice cluster={cluster.name} />
-      {seen && <p class="text-[13px]">The declaration says <span class="mono">{n.ip}</span>; discovery last saw this MAC at <span class="mono">{seen}</span>.</p>}
-      {isEndpoint && <p class="text-[13px] text-warn">This node is the API endpoint (no VIP). Changing its address would break every kubeconfig; set a VIP first.</p>}
-      <Field label="Mode">
-        <select class="input" value={mode} onChange={(e) => setMode((e.target as HTMLSelectElement).value as any)}>
-          <option value="dhcp">DHCP — record the new lease address</option>
-          <option value="static">Static — pin an address in the machine config</option>
-        </select>
-      </Field>
-      {mode === 'dhcp' ? (
-        <Field label="Address Kubit should use" hint="Where the Talos API answers now."><input class="input mono" value={ip} onInput={(e) => setIp((e.target as HTMLInputElement).value.trim())} /></Field>
-      ) : (
-        <div class="grid grid-cols-2 gap-3">
-          <Field label="Address (CIDR)"><input class="input mono" value={network.addresses[0] ?? ''} onInput={(e) => setNetwork({ ...network, addresses: [(e.target as HTMLInputElement).value.trim()] })} /></Field>
-          <Field label="Gateway"><input class="input mono" value={network.gateway ?? ''} onInput={(e) => setNetwork({ ...network, gateway: (e.target as HTMLInputElement).value.trim() || undefined })} /></Field>
-          <Field label="Nameservers" hint="Optional; comma-separated."><input class="input mono" value={(network.nameservers ?? []).join(', ')} onInput={(e) => { const v = (e.target as HTMLInputElement).value.split(/[,\s]+/).filter(Boolean); setNetwork({ ...network, nameservers: v.length ? v : undefined }) }} /></Field>
-          <Field label="VLAN"><input class="input mono" type="number" min={0} max={4094} value={network.vlan ?? ''} onInput={(e) => { const v = Number((e.target as HTMLInputElement).value); setNetwork({ ...network, vlan: v > 0 ? v : undefined }) }} /></Field>
-        </div>
-      )}
-      <p class="text-[12px] text-muted">Applies without a reboot, waits for Talos and Kubernetes on the new address, saves cluster.yaml.</p>
+      <p class="text-[12px] text-muted">Installs Talos and joins the node; progress in Activity.</p>
     </Dialog>
   )
 }

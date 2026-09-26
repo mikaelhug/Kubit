@@ -1,7 +1,7 @@
 import { useLocation } from 'preact-iso'
 import { useEffect } from 'preact/hooks'
 import { can } from '../store'
-import { settingsPages, type SettingsPage } from '../app'
+import { settingsPages, type SettingsPage } from '../routes'
 import { UsersSection } from '../components/Users'
 import { SettingsLayout } from './settings/Layout'
 import { General } from './settings/General'

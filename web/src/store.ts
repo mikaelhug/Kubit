@@ -1,12 +1,18 @@
-import { signal, computed } from '@preact/signals'
-import { api, setUnauthorizedHandler, type Me, type AuditEntry, type ClusterRow, type Event, type HealthEvent, type NodeRow, type ObserverState, type Operation, type Sample, type Settings, type Snapshot, type Status, type Step } from './api'
+import { batch, computed, signal, type ReadonlySignal, type Signal } from '@preact/signals'
+import { api, setUnauthorizedHandler, type AuditEntry, type ClusterRow, type Event, type HealthEvent, type Me, type NodeRow, type ObserverState, type Operation, type Role, type Sample, type Settings, type Snapshot, type Status, type Step, type Versions } from './api'
+import { persist, read } from './local'
+import { copyMap, editMap, setIn } from './maps'
+
+export const kubitKey = 'kubit'
 
 export const clusters = signal<ClusterRow[]>([])
 export const machines = signal<Map<string, NodeRow>>(new Map())
 export const machineList = computed(() => [...machines.value.values()].sort((a, b) => a.ip.localeCompare(b.ip, undefined, { numeric: true })))
+export const labHosts = computed(() => machineList.value.filter((m) => m.labhost))
 export const snapshots = signal<Map<string, Snapshot[]>>(new Map())
 export const audit = signal<AuditEntry[]>([])
 export const settings = signal<Settings | null>(null)
+export const versions = signal<Versions | null>(null)
 export const me = signal<Me | null | undefined>(undefined)
 export const authState = signal<{ setup: boolean; users: number; sso?: string }>({ setup: false, users: 0 })
 export async function loadMe() {
@@ -21,8 +27,8 @@ export async function loadMe() {
   }
 }
 setUnauthorizedHandler(() => { if (me.value !== null) me.value = null })
-export const can = (role: 'viewer' | 'operator' | 'admin') => { const r = me.value?.role; return !!r && ({ viewer: 1, operator: 2, admin: 3 })[r] >= ({ viewer: 1, operator: 2, admin: 3 })[role] }
-export const latestTalos = signal<string>('')
+const rank: Record<Role, number> = { viewer: 1, operator: 2, admin: 3 }
+export const can = (role: Role) => { const r = me.value?.role; return !!r && rank[r] >= rank[role] }
 export const daemon = signal<{ version: string; startedAt: string; service: boolean; os?: string } | null>(null)
 export const operations = signal<Map<number, Operation>>(new Map())
 export const opEvents = signal<Map<number, Event[]>>(new Map())
@@ -34,34 +40,66 @@ export const drawerHeight = signal<number>(read('kubit.drawerHeight', 260))
 export const drawerTab = signal<number | null>(null)
 export const toasts = signal<{ id: number; text: string; tone: 'info' | 'error' | 'good' }[]>([])
 export const statuses = signal<Map<string, Status>>(new Map())
-export const refreshes = signal<Map<string, number>>(new Map())
-export function refreshKey(cluster: string, scope: string) { return refreshes.value.get(`${cluster}/${scope}`) ?? 0 }
 export const hostSamples = signal<Map<string, Sample>>(new Map())
 export const observer = signal<ObserverState>({ online: true, gaps24h: 0 })
+export const health = signal<Map<string, HealthEvent[]>>(new Map())
+
+const refreshes = new Map<string, Signal<number>>()
+function refreshSignal(key: string) {
+  let s = refreshes.get(key)
+  if (!s) { s = signal(0); refreshes.set(key, s) }
+  return s
+}
+export function refreshKey(cluster: string, scope: string) { return refreshSignal(`${cluster}/${scope}`).value }
+export function bumpRefresh(cluster: string, scope: string) { refreshSignal(`${cluster}/${scope}`).value++ }
+export function bumpAllRefreshes() {
+  batch(() => {
+    for (const s of refreshes.values()) s.value++
+    refreshSignal('*/resync').value++
+  })
+}
+
+export function setDrawer(open: boolean) {
+  drawerOpen.value = open
+  persist('kubit.drawer', open)
+}
+
 export async function loadObserver() {
   try { observer.value = await api.observer() } catch {}
 }
-export const health = signal<Map<string, HealthEvent[]>>(new Map())
 
-export function openAlert(cluster: string, kind: string, ns: string, name: string): HealthEvent | undefined {
-  const key = `${kind}/${ns}/${name}`
-  return (health.value.get(cluster) ?? []).find((e) => !e.acked && e.node === key && e.severity !== 'info')
+export async function loadVersions() {
+  try { versions.value = await api.versions() } catch {}
 }
+
+const isOpen = (e: HealthEvent) => !e.acked && e.severity !== 'info'
+
+export function openAlerts(key: string) { return (health.value.get(key) ?? []).filter(isOpen) }
+
+const alertIndexes = new Map<string, ReadonlySignal<Map<string, HealthEvent>>>()
+
+export function alertIndex(cluster: string) {
+  let index = alertIndexes.get(cluster)
+  if (!index) {
+    index = computed(() => {
+      const m = new Map<string, HealthEvent>()
+      for (const e of health.value.get(cluster) ?? []) if (isOpen(e) && e.node && !m.has(e.node)) m.set(e.node, e)
+      return m
+    })
+    alertIndexes.set(cluster, index)
+  }
+  return index.value
+}
+
+export const objectKey = (kind: string, ns: string, name: string) => `${kind}/${ns}/${name}`
 
 export async function loadAllHealth(keys: string[]) {
   const lists = await Promise.all(keys.map((k) => api.events(k).catch(() => null)))
-  const m = new Map(health.value)
-  lists.forEach((list, i) => { if (list) m.set(keys[i], list) })
-  health.value = m
+  editMap(health, (m) => lists.forEach((list, i) => { if (list) m.set(keys[i], list) }))
 }
 
 export async function loadHealth(name: string) {
-  try {
-    const list = await api.events(name)
-    const m = new Map(health.value)
-    m.set(name, list)
-    health.value = m
-  } catch {}
+  try { setIn(health, name, await api.events(name)) } catch {}
 }
 
 export async function ack(name: string, id?: number) {
@@ -73,20 +111,17 @@ export function upsertCluster(row: ClusterRow) {
   clusters.value = [...rest, row].sort((a, b) => a.name.localeCompare(b.name))
 }
 
+export const machineKey = (m: NodeRow) => m.mac || `ip:${m.ip}`
+
 export async function loadMachines() {
   try {
     const rows = await api.nodes()
-    machines.value = new Map(rows.map((m) => [m.mac || `ip:${m.ip}`, m]))
+    machines.value = new Map(rows.map((m) => [machineKey(m), m]))
   } catch {}
 }
 
 export async function loadSnapshots(name: string) {
-  try {
-    const rows = await api.snapshots(name)
-    const m = new Map(snapshots.value)
-    m.set(name, rows)
-    snapshots.value = m
-  } catch {}
+  try { setIn(snapshots, name, await api.snapshots(name)) } catch {}
 }
 
 export async function loadAudit(cluster?: string) {
@@ -103,12 +138,19 @@ export async function loadSettings() {
   try { settings.value = await api.settings() } catch {}
 }
 
-export const running = computed(() => [...operations.value.values()].filter((o) => o.status === 'running').sort((a, b) => a.id - b.id))
-
-function read<T>(key: string, fallback: T): T {
-  try { const v = localStorage.getItem(key); return v === null ? fallback : JSON.parse(v) } catch { return fallback }
-}
-export function persist(key: string, v: unknown) { try { localStorage.setItem(key, JSON.stringify(v)) } catch {} }
+export const opList = computed(() => [...operations.value.values()])
+export const running = computed(() => opList.value.filter((o) => o.status === 'running').sort((a, b) => a.id - b.id))
+export const runningCount = computed(() => running.value.length)
+const opsByCluster = computed(() => {
+  const m = new Map<string, Operation[]>()
+  for (const o of opList.value) {
+    const list = m.get(o.cluster)
+    if (list) list.push(o); else m.set(o.cluster, [o])
+  }
+  return m
+})
+export function opsFor(cluster: string): Operation[] { return opsByCluster.value.get(cluster) ?? [] }
+export function runningFor(cluster: string) { return opsFor(cluster).filter((o) => o.status === 'running') }
 
 let toastSeq = 0
 export function toast(text: string, tone: 'info' | 'error' | 'good' = 'info') {
@@ -121,52 +163,58 @@ export async function reloadClusters() {
   try {
     clusters.value = await api.clusters()
     const rows = await Promise.all(clusters.value.map((c) => api.status(c.name).catch(() => null)))
-    const sm = new Map(statuses.value)
-    rows.forEach((s, i) => { if (s) sm.set(clusters.value[i].name, s) })
-    statuses.value = sm
+    editMap(statuses, (m) => rows.forEach((s, i) => { if (s) m.set(clusters.value[i].name, s) }))
   } catch {}
 }
 
 export async function reloadOperations() {
   try {
     const list = await api.operations()
-    const m = new Map(operations.value)
-    for (const o of list) m.set(o.id, { ...m.get(o.id), ...o })
-    operations.value = m
+    editMap(operations, (m) => { for (const o of list) m.set(o.id, { ...m.get(o.id), ...o }) })
   } catch {}
 }
 
 export function watch(op: { operationId: number } | number, open = true) {
   const id = typeof op === 'number' ? op : op.operationId
   drawerTab.value = id
-  if (open) { drawerOpen.value = true; persist('kubit.drawer', true) }
+  if (open) setDrawer(true)
   if (!operations.value.has(id)) api.operation(id).then((o) => upsertOp(o)).catch(() => {})
 }
 
 export function upsertOp(o: Operation) {
-  const m = new Map(operations.value)
-  m.set(o.id, { ...m.get(o.id), ...o, steps: o.steps ?? m.get(o.id)?.steps ?? [] })
-  operations.value = m
+  operations.value = copyMap(operations.value, (m) => m.set(o.id, { ...m.get(o.id), ...o, steps: o.steps ?? m.get(o.id)?.steps ?? [] }))
+}
+
+const finalStatus = new Set(['done', 'failed', 'skipped', 'cancelled'])
+
+function nextSteps(steps: Step[], e: Event): Step[] | null {
+  if (e.kind === 'steps' && e.steps) {
+    const added = e.steps.filter((s) => !steps.some((x) => x.id === s.id))
+    return added.length ? [...steps, ...added] : null
+  }
+  const i = steps.findIndex((s) => s.id === e.step)
+  if (e.kind === 'step' && e.status) {
+    if (i < 0) return [...steps, { id: e.step, title: e.step, status: e.status, startedAt: e.time, ...(finalStatus.has(e.status) ? { finishedAt: e.time } : {}) }]
+    const cur = steps[i]
+    const next = { ...cur, status: e.status, startedAt: cur.startedAt ?? e.time, finishedAt: finalStatus.has(e.status) ? e.time : cur.finishedAt }
+    if (next.status === cur.status && next.startedAt === cur.startedAt && next.finishedAt === cur.finishedAt) return null
+    return steps.map((s, j) => (j === i ? next : s))
+  }
+  if (!e.step) return null
+  if (i < 0) return [...steps, { id: e.step, title: e.step, status: 'running', startedAt: e.time }]
+  if (steps[i].status !== 'pending') return null
+  return steps.map((s, j) => (j === i ? { ...s, status: 'running', startedAt: e.time } : s))
 }
 
 export function applyStepEvent(id: number, e: Event) {
   const op = operations.value.get(id)
   if (!op) return
-  let steps: Step[] = [...(op.steps || [])]
-  if (e.kind === 'steps' && e.steps) {
-    for (const s of e.steps) if (!steps.find((x) => x.id === s.id)) steps.push(s)
-  } else if (e.kind === 'step' && e.status) {
-    const i = steps.findIndex((s) => s.id === e.step)
-    const now = e.time
-    if (i < 0) steps.push({ id: e.step, title: e.step, status: e.status, startedAt: now })
-    else steps[i] = { ...steps[i], status: e.status, startedAt: steps[i].startedAt ?? now, finishedAt: ['done', 'failed', 'skipped', 'cancelled'].includes(e.status) ? now : steps[i].finishedAt }
-  } else if (e.step) {
-    const i = steps.findIndex((s) => s.id === e.step)
-    if (i < 0) steps.push({ id: e.step, title: e.step, status: 'running', startedAt: e.time })
-    else if (steps[i].status === 'pending') steps[i] = { ...steps[i], status: 'running', startedAt: e.time }
-  }
-  upsertOp({ ...op, steps })
+  const steps = nextSteps(op.steps ?? [], e)
+  if (steps) upsertOp({ ...op, steps })
 }
+
+let eventSeq = 0
+export const nextEventSeq = () => ++eventSeq
 
 export async function loadOperationLog(id: number) {
   const o = await api.operation(id)
@@ -175,11 +223,10 @@ export async function loadOperationLog(id: number) {
     const lines = o.log.split('\n').filter(Boolean).map((line): Event => {
       const m = /^(\d\d:\d\d:\d\d) \[([^\]]+)\] (?:([^:]+): )?(.*)$/.exec(line)
       const level: Event['level'] = line.startsWith('error:') ? 'error' : 'info'
-      return m ? { time: '', clock: m[1], level, step: m[2], node: m[3], message: m[4] } : { time: '', level, step: '', message: line }
+      const seq = nextEventSeq()
+      return m ? { seq, time: '', clock: m[1], level, step: m[2], node: m[3], message: m[4] } : { seq, time: '', level, step: '', message: line }
     })
-    const map = new Map(opEvents.value)
-    map.set(id, lines)
-    opEvents.value = map
+    setIn(opEvents, id, lines)
   }
   return o
 }

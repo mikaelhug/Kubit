@@ -1,7 +1,8 @@
 import { fmt, getToken, type Message } from './api'
+import { editMap, setIn } from './maps'
 import {
-  applyStepEvent, audit, clusters, connected, daemon, health, hostSamples, latestTalos, loadMachines, loadObserver, loadSettings, machines, me, observer, opEvents, operations,
-  reconnectAttempt, refreshes, reloadClusters, reloadOperations, resyncing, settings, snapshots, statuses, toast, upsertCluster, upsertOp,
+  applyStepEvent, audit, bumpAllRefreshes, bumpRefresh, clusters, connected, daemon, health, hostSamples, loadMachines, loadObserver, loadSettings, loadVersions, machineKey, machines, me, nextEventSeq, observer, opEvents, operations,
+  reconnectAttempt, reloadClusters, reloadOperations, resyncing, settings, snapshots, statuses, toast, upsertCluster, upsertOp,
 } from './store'
 
 let ws: WebSocket | null = null
@@ -41,11 +42,8 @@ export function reconnectLive() {
 export async function resync() {
   resyncing.value = true
   try {
-    await Promise.all([reloadClusters(), reloadOperations(), loadMachines(), loadSettings(), loadObserver()])
-    const rm = new Map(refreshes.value)
-    for (const k of rm.keys()) rm.set(k, (rm.get(k) ?? 0) + 1)
-    rm.set('*/resync', (rm.get('*/resync') ?? 0) + 1)
-    refreshes.value = rm
+    await Promise.all([reloadClusters(), reloadOperations(), loadMachines(), loadSettings(), loadObserver(), loadVersions()])
+    bumpAllRefreshes()
   } finally {
     resyncing.value = false
   }
@@ -73,40 +71,26 @@ function apply(m: Message) {
     case 'cluster':
       if (m.clusterRow) upsertCluster(m.clusterRow)
       break
-    case 'clusterRemoved': {
+    case 'clusterRemoved':
       clusters.value = clusters.value.filter((c) => c.name !== m.key)
-      const hm = new Map(health.value)
-      hm.delete(m.key ?? '')
-      health.value = hm
+      editMap(health, (hm) => hm.delete(m.key ?? ''))
       break
-    }
     case 'machine':
-      if (m.machine) {
-        const mm = new Map(machines.value)
-        mm.set(m.machine.mac || `ip:${m.machine.ip}`, m.machine)
-        machines.value = mm
-      }
+      if (m.machine) setIn(machines, machineKey(m.machine), m.machine)
       break
-    case 'machineRemoved': {
-      const mm = new Map(machines.value)
-      for (const [k, v] of mm) if (k === m.key || v.ip === m.key) mm.delete(k)
-      machines.value = mm
+    case 'machineRemoved':
+      editMap(machines, (mm) => { for (const [k, v] of mm) if (k === m.key || v.ip === m.key) mm.delete(k) })
       break
-    }
     case 'snapshot': {
-      if (!m.snapshot || !m.cluster) break
-      const sm = new Map(snapshots.value)
-      const list = (sm.get(m.cluster) ?? []).filter((s) => s.id !== m.snapshot!.id)
-      sm.set(m.cluster, [m.snapshot, ...list].sort((a, b) => b.id - a.id))
-      snapshots.value = sm
+      const snap = m.snapshot
+      const cluster = m.cluster
+      if (!snap || !cluster) break
+      editMap(snapshots, (sm) => sm.set(cluster, [snap, ...(sm.get(cluster) ?? []).filter((s) => s.id !== snap.id)].sort((a, b) => b.id - a.id)))
       break
     }
-    case 'snapshotRemoved': {
-      const sm = new Map(snapshots.value)
-      for (const [c, list] of sm) sm.set(c, list.filter((s) => String(s.id) !== m.key))
-      snapshots.value = sm
+    case 'snapshotRemoved':
+      editMap(snapshots, (sm) => { for (const [c, list] of sm) sm.set(c, list.filter((s) => String(s.id) !== m.key)) })
       break
-    }
     case 'audit':
       if (m.audit && !audit.value.some((a) => a.id === m.audit!.id)) audit.value = [m.audit, ...audit.value].slice(0, 500)
       break
@@ -114,7 +98,7 @@ function apply(m: Message) {
       if (m.settings) settings.value = m.settings
       break
     case 'versions':
-      latestTalos.value = m.key ?? ''
+      loadVersions()
       break
     case 'operation':
       if (m.operation) {
@@ -127,29 +111,24 @@ function apply(m: Message) {
       break
     case 'event':
       if (m.event && m.operationId !== undefined) {
-        const e = m.event
+        const id = m.operationId
+        const e = { ...m.event, seq: nextEventSeq() }
         if (e.kind === 'log' || !e.kind) {
-          const map = new Map(opEvents.value)
-          const list = map.get(m.operationId) ?? []
-          map.set(m.operationId, list.length > 2000 ? [...list.slice(-1500), e] : [...list, e])
-          opEvents.value = map
+          editMap(opEvents, (map) => {
+            const list = map.get(id) ?? []
+            map.set(id, list.length > 2000 ? [...list.slice(-1500), e] : [...list, e])
+          })
         }
-        applyStepEvent(m.operationId, e)
+        applyStepEvent(id, e)
       }
       break
     case 'status':
-      if (m.status && m.cluster) {
-        const sm = new Map(statuses.value)
-        sm.set(m.cluster, m.status)
-        statuses.value = sm
-      }
+      if (m.status && m.cluster) setIn(statuses, m.cluster, m.status)
       break
     case 'health':
       if (m.health) {
-        const hm = new Map(health.value)
         const h = m.health
-        hm.set(h.cluster, [h, ...(hm.get(h.cluster) ?? []).filter((e) => e.id !== h.id)].slice(0, 200))
-        health.value = hm
+        editMap(health, (hm) => hm.set(h.cluster, [h, ...(hm.get(h.cluster) ?? []).filter((e) => e.id !== h.id)].slice(0, 200)))
         if (h.severity !== 'info' && !h.acked && !replayed) toast(h.cluster.startsWith('labhost:') ? h.message : `${h.cluster}: ${h.message}`, 'error')
       }
       break
@@ -157,28 +136,20 @@ function apply(m: Message) {
       if (m.observer) observer.value = m.observer
       break
     case 'hostSample':
-      if (m.sample && m.key) hostSamples.value = new Map(hostSamples.value).set(m.key, m.sample)
+      if (m.sample && m.key) setIn(hostSamples, m.key, m.sample)
       break
     case 'healthAck': {
-      const hm = new Map(health.value)
       const c = m.cluster ?? ''
-      hm.set(c, (hm.get(c) ?? []).map((e) => m.key === '*' || String(e.id) === m.key ? { ...e, acked: true } : e))
-      health.value = hm
+      editMap(health, (hm) => hm.set(c, (hm.get(c) ?? []).map((e) => m.key === '*' || String(e.id) === m.key ? { ...e, acked: true } : e)))
       break
     }
     case 'healthResolved': {
-      const hm = new Map(health.value)
       const c = m.cluster ?? ''
-      hm.set(c, (hm.get(c) ?? []).map((e) => e.kind === m.key && (e.node ?? '') === (m.node ?? '') ? { ...e, acked: true } : e))
-      health.value = hm
+      editMap(health, (hm) => hm.set(c, (hm.get(c) ?? []).map((e) => e.kind === m.key && (e.node ?? '') === (m.node ?? '') ? { ...e, acked: true } : e)))
       break
     }
-    case 'refresh': {
-      const rm = new Map(refreshes.value)
-      const k = `${m.cluster ?? ''}/${m.scope}`
-      rm.set(k, (rm.get(k) ?? 0) + 1)
-      refreshes.value = rm
+    case 'refresh':
+      bumpRefresh(m.cluster ?? '', m.scope ?? '')
       break
-    }
   }
 }

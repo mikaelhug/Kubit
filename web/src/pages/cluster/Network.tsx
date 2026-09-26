@@ -1,47 +1,48 @@
-import { useEffect, useState } from 'preact/hooks'
-import { api, type KIngress, type KService, type NetworkView } from '../../api'
-import { DataTable, type Column } from '../../components/DataTable'
-import { AlertPill, ErrorBox, KeyValue, Notice, Pill, Section } from '../../components/ui'
-import { openAlert, refreshKey } from '../../store'
-import type { ClusterCtx } from './ClusterPage'
+import { useMemo } from 'preact/hooks'
+import { api, type KIngress, type KService } from '../../api'
+import { DataTable, withoutColumn } from '../../components/DataTable'
 import { NamespaceScope, useNamespaceScope } from '../../components/NamespaceScope'
+import { AlertPill, ErrorBox, KeyValue, Notice, Pill, Section } from '../../components/ui'
+import { ipAt } from '../../net'
+import { alertIndex, objectKey } from '../../store'
+import { useLive } from '../../useLive'
+import type { ClusterCtx } from './ClusterPage'
+
+const home = (x: KService) => (x.namespace === 'default' && x.name === 'kubernetes' ? 'kube-system' : x.namespace)
 
 export function Network({ ctx }: { ctx: ClusterCtx }) {
   const { name, cluster } = ctx
   const spec = cluster.spec.spec
-  const [view, setView] = useState<NetworkView | null>(null)
-  const [error, setError] = useState<string | null>(null)
-  useEffect(() => {
-    api.network(name).then((v) => { setView(v); setError(null) }).catch((e) => setError(e.message))
-  }, [name, refreshKey(name, 'network'), refreshKey(name, 'addons')])
+  const { data: view, error } = useLive(() => api.network(name), [name], [[name, 'network'], [name, 'addons']])
   const pool = view?.pool
   const s = useNamespaceScope(name)
-  const home = (x: KService) => (x.namespace === 'default' && x.name === 'kubernetes' ? 'kube-system' : x.namespace)
-  const services = (view?.services ?? []).filter((x) => s.keep(home(x)))
-  const ingresses = (view?.ingresses ?? []).filter((x) => s.keep(x.namespace))
+  const alerts = alertIndex(name)
+  const services = useMemo(() => (view?.services ?? []).filter((x) => s.keep(home(x))), [view, s.keep])
+  const ingresses = useMemo(() => (view?.ingresses ?? []).filter((x) => s.keep(x.namespace)), [view, s.keep])
   const loading = (!view && !error) || s.loading
-  const scols: Column<KService>[] = [
-    { id: 'ns', header: 'Namespace', sort: (s) => s.namespace, cell: (s) => s.namespace },
-    { id: 'name', header: 'Service', sort: (s) => s.name, cell: (s) => <span class="flex items-center gap-2"><span class="font-medium">{s.name}</span><AlertPill e={openAlert(name, 'Service', s.namespace, s.name)} /></span> },
-    { id: 'type', header: 'Type', sort: (s) => s.type, cell: (s) => <Pill tone={s.type === 'LoadBalancer' ? 'info' : 'muted'}>{s.type}</Pill> },
-    { id: 'cip', header: 'Cluster IP', mono: true, cell: (s) => s.clusterIP },
-    { id: 'ext', header: 'External IP', mono: true, sort: (s) => (s.externalIPs ?? []).join(','), cell: (s) => (s.externalIPs ?? []).join(', ') || <span class="text-muted">—</span> },
-    { id: 'ports', header: 'Ports', mono: true, text: (s) => s.ports.join(' '), cell: (s) => s.ports.join(', ') },
-    { id: 'eps', header: 'Endpoints', align: 'right', sort: (s) => s.endpoints, cell: (s) => <span class={s.endpoints === 0 && s.selector ? 'text-warn' : ''}>{s.endpoints}</span> },
-    { id: 'age', header: 'Age', cell: (s) => <span class="text-muted">{s.age}</span> },
-  ]
-  const icols: Column<KIngress>[] = [
+  const scols = useMemo(() => withoutColumn<KService>([
+    { id: 'ns', header: 'Namespace', sort: (x) => x.namespace, cell: (x) => x.namespace },
+    { id: 'name', header: 'Service', sort: (x) => x.name, cell: (x) => <span class="flex items-center gap-2"><span class="font-medium">{x.name}</span><AlertPill e={alerts.get(objectKey('Service', x.namespace, x.name))} /></span> },
+    { id: 'type', header: 'Type', sort: (x) => x.type, cell: (x) => <Pill tone={x.type === 'LoadBalancer' ? 'info' : 'muted'}>{x.type}</Pill> },
+    { id: 'cip', header: 'Cluster IP', mono: true, cell: (x) => x.clusterIP },
+    { id: 'ext', header: 'External IP', mono: true, sort: (x) => (x.externalIPs ?? []).join(','), cell: (x) => (x.externalIPs ?? []).join(', ') || <span class="text-muted">—</span> },
+    { id: 'ports', header: 'Ports', mono: true, text: (x) => x.ports.join(' '), cell: (x) => x.ports.join(', ') },
+    { id: 'eps', header: 'Endpoints', align: 'right', sort: (x) => x.endpoints, cell: (x) => <span class={x.endpoints === 0 && x.selector ? 'text-warn' : ''}>{x.endpoints}</span> },
+    { id: 'age', header: 'Age', cell: (x) => <span class="text-muted">{x.age}</span> },
+  ], 'ns', !!s.ns), [alerts, s.ns])
+  const icols = useMemo(() => withoutColumn<KIngress>([
     { id: 'ns', header: 'Namespace', sort: (i) => i.namespace, cell: (i) => i.namespace },
-    { id: 'name', header: 'Ingress', sort: (i) => i.name, cell: (i) => <span class="flex items-center gap-2"><span class="font-medium">{i.name}</span><AlertPill e={openAlert(name, 'Ingress', i.namespace, i.name)} /></span> },
+    { id: 'name', header: 'Ingress', sort: (i) => i.name, cell: (i) => <span class="flex items-center gap-2"><span class="font-medium">{i.name}</span><AlertPill e={alerts.get(objectKey('Ingress', i.namespace, i.name))} /></span> },
     { id: 'class', header: 'Class', cell: (i) => i.class || <span class="text-muted">default</span> },
     { id: 'rules', header: 'Host / path → service', text: (i) => i.rules.map((r) => `${r.host}${r.path} ${r.service}`).join(' '), cell: (i) => (
       <div class="flex flex-col gap-0.5">
-        {i.rules.map((r, k) => <span key={k} class="mono text-[12px]">{r.host || '*'}{r.path} <span class="text-muted">→</span> {r.service}:{r.port}{i.tlsHosts?.includes(r.host) && <Pill tone="good">tls</Pill>}</span>)}
+        {i.rules.map((r) => <span key={`${r.host}${r.path}`} class="mono text-[12px]">{r.host || '*'}{r.path} <span class="text-muted">→</span> {r.service}:{r.port}{i.tlsHosts?.includes(r.host) && <Pill tone="good">tls</Pill>}</span>)}
       </div>
     ) },
     { id: 'addr', header: 'Address', mono: true, cell: (i) => (i.addresses ?? []).join(', ') || <span class="text-muted">pending</span> },
     { id: 'age', header: 'Age', cell: (i) => <span class="text-muted">{i.age}</span> },
-  ]
+  ], 'ns', !!s.ns), [alerts, s.ns])
+  const ingressIP = pool?.allocated.find((a) => a.service.startsWith('ingress-nginx/'))?.ip
 
   return (
     <div class="flex flex-col gap-5">
@@ -51,7 +52,7 @@ export function Network({ ctx }: { ctx: ClusterCtx }) {
           <div class="panel p-3">
             <KeyValue rows={[
               ['API endpoint', <span class="mono">{spec.controlPlane.endpoint}</span>],
-              ['Control plane VIP', spec.controlPlane.vip ? <span class="mono">{spec.controlPlane.vip}</span> : <span class="text-muted">none — endpoint follows the first control plane</span>],
+              ['Control plane VIP', spec.controlPlane.vip ? <span class="mono">{spec.controlPlane.vip}</span> : <span class="text-muted">none; endpoint is the first control plane</span>],
               ['Pod CIDR', <span class="mono">{spec.network.podCIDR}</span>],
               ['Service CIDR', <span class="mono">{spec.network.serviceCIDR}</span>],
               ['CNI', 'Flannel (Talos default)'],
@@ -59,7 +60,7 @@ export function Network({ ctx }: { ctx: ClusterCtx }) {
             ]} />
           </div>
         </Section>
-        <Section title="MetalLB pool" help="Layer-2 pool: each address is announced from one node via ARP. Allocation is per LoadBalancer service.">
+        <Section title="MetalLB pool" help="Layer-2 addresses, one per LoadBalancer service.">
           {!spec.platform.metallb.enabled && <Notice tone="muted">MetalLB is disabled; LoadBalancer services stay pending.</Notice>}
           {view?.poolError && <Notice tone="bad">{view.poolError}</Notice>}
           {pool && (
@@ -69,7 +70,7 @@ export function Network({ ctx }: { ctx: ClusterCtx }) {
                 {Array.from({ length: pool.total }, (_, i) => {
                   const ip = ipAt(pool.range, i)
                   const a = pool.allocated.find((x) => x.ip === ip)
-                  return <span key={i} title={a ? `${ip} → ${a.service}` : `${ip} free`} class={`inline-block h-3 w-3 rounded-sm ${a ? 'bg-accent' : 'bg-panel-2 border border-border'}`} />
+                  return <span key={ip} title={a ? `${ip} → ${a.service}` : `${ip} free`} class={`inline-block h-3 w-3 rounded-sm ${a ? 'bg-accent' : 'bg-panel-2 border border-border'}`} />
                 })}
               </div>
               {pool.allocated.length > 0 && <KeyValue rows={pool.allocated.map((a) => [a.ip, a.service] as [string, string])} />}
@@ -78,19 +79,12 @@ export function Network({ ctx }: { ctx: ClusterCtx }) {
         </Section>
       </div>
       <div class="flex justify-end"><NamespaceScope s={s} rows={[...(view?.services ?? []).map(home), ...(view?.ingresses ?? []).map((x) => x.namespace)]} /></div>
-      <Section title={`Services (${services.length})`} help="Endpoints counts ready backends; a selector-backed service with 0 endpoints receives traffic nowhere.">
-        <DataTable loading={loading} id="services" columns={s.ns ? scols.filter((c) => c.id !== 'ns') : scols} rows={services} rowKey={(x) => x.namespace + '/' + x.name} defaultSort={{ id: 'type', dir: 'desc' }} empty={s.scope === 'apps' && !s.ns ? 'No app services yet.' : 'No services.'} />
+      <Section title={`Services (${services.length})`} help="Endpoints counts ready backends.">
+        <DataTable loading={loading} id="services" columns={scols} rows={services} rowKey={(x) => x.namespace + '/' + x.name} defaultSort={{ id: 'type', dir: 'desc' }} empty={s.scope === 'apps' && !s.ns ? 'No app services yet.' : 'No services.'} />
       </Section>
-      <Section title={`Ingresses (${ingresses.length})`} help={`HTTP routes handled by Ingress-NGINX${view?.pool?.allocated.find((a) => a.service.startsWith('ingress-nginx/')) ? ` at ${view.pool.allocated.find((a) => a.service.startsWith('ingress-nginx/'))!.ip}` : ''}.`}>
-        <DataTable loading={loading} id="ingresses" columns={s.ns ? icols.filter((c) => c.id !== 'ns') : icols} rows={ingresses} rowKey={(i) => i.namespace + '/' + i.name} empty="No Ingress objects yet. Create one to expose an HTTP service by hostname." />
+      <Section title={`Ingresses (${ingresses.length})`} help={`HTTP routes served by Ingress-NGINX${ingressIP ? ` at ${ingressIP}` : ''}.`}>
+        <DataTable loading={loading} id="ingresses" columns={icols} rows={ingresses} rowKey={(i) => i.namespace + '/' + i.name} empty="No Ingress objects yet." />
       </Section>
     </div>
   )
-}
-
-function ipAt(range: string, i: number) {
-  const start = range.split('-')[0].trim().split('.').map(Number)
-  let n = ((start[0] << 24) | (start[1] << 16) | (start[2] << 8) | start[3]) >>> 0
-  n += i
-  return [n >>> 24, (n >>> 16) & 255, (n >>> 8) & 255, n & 255].join('.')
 }

@@ -1,24 +1,21 @@
-import { useEffect, useState } from 'preact/hooks'
-import { api, type ClusterSpec, type NodeRow, type Warning } from '../../api'
-import { watch } from '../../store'
-import { ErrorBox } from '../../components/ui'
+import { useState } from 'preact/hooks'
+import { api, type ClusterSpec } from '../../api'
 import { OperationView } from '../../components/ActivityDrawer'
-import { MachinesStep, DesignStep, NetworkStep, PlatformStep, ReviewStep, Summary } from './steps'
+import { ErrorBox } from '../../components/ui'
+import { isDnsLabel } from '../../net'
+import { settings, watch } from '../../store'
+import { DesignStep } from './Design'
+import type { Draft } from './draft'
+import { MachinesStep } from './Machines'
+import { NetworkStep } from './Network'
+import { PlatformStep } from './Platform'
+import { ReviewStep } from './Review'
+import { Summary } from './Summary'
 
-export type StepId = 'machines' | 'design' | 'network' | 'platform' | 'review'
+type StepId = 'machines' | 'design' | 'network' | 'platform' | 'review'
 const steps: { id: StepId; label: string }[] = [
   { id: 'machines', label: 'Machines' }, { id: 'design', label: 'Design' }, { id: 'network', label: 'Network' }, { id: 'platform', label: 'Platform' }, { id: 'review', label: 'Review' },
 ]
-
-export interface Draft {
-  name: string
-  machines: NodeRow[]
-  selected: string[]
-  designedFor: string
-  cluster: ClusterSpec | null
-  skipPlatform: boolean
-  warnings: Warning[]
-}
 
 export function NewCluster() {
   const [step, setStep] = useState<StepId>('machines')
@@ -26,8 +23,6 @@ export function NewCluster() {
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [createOp, setCreateOp] = useState<number | null>(null)
-  const [defaultRange, setDefaultRange] = useState('')
-  useEffect(() => { api.settings().then((s) => setDefaultRange(s.defaultMetalLBRange)).catch(() => {}) }, [])
 
   const patch = (p: Partial<Draft>) => setDraft((d) => ({ ...d, ...p }))
   const setCluster = (fn: (c: ClusterSpec) => ClusterSpec) => setDraft((d) => d.cluster ? { ...d, cluster: fn(d.cluster) } : d)
@@ -37,7 +32,7 @@ export function NewCluster() {
     const key = [...draft.selected].sort().join(',')
     if (!force && draft.cluster && draft.designedFor === key && draft.cluster.metadata.name === draft.name) return Promise.resolve()
     setBusy(true)
-    return api.design(draft.name, draft.selected, defaultRange || undefined)
+    return api.design(draft.name, draft.selected, settings.value?.defaultMetalLBRange || undefined)
       .then((d) => { patch({ cluster: d.cluster, designedFor: key, warnings: d.warnings ?? [] }); setError(null) })
       .catch((e) => { setError(e.message); throw e })
       .finally(() => setBusy(false))
@@ -60,13 +55,13 @@ export function NewCluster() {
         <div class="panel h-[65vh] flex flex-col overflow-hidden"><OperationView id={createOp} /></div>
         <div class="flex gap-2 items-center">
           <a href={`/clusters/${draft.cluster.metadata.name}/overview`} class="btn btn-primary">Open cluster</a>
-          <span class="text-[12px] text-muted">Provisioning keeps running if you leave; it stays in the Activity drawer.</span>
+          <span class="text-[12px] text-muted">Keeps running if you leave; it stays in the Activity drawer.</span>
         </div>
       </div>
     )
   }
 
-  const canNext = step === 'machines' ? draft.selected.length > 0 && /^[a-z0-9]([-a-z0-9]*[a-z0-9])?$/.test(draft.name) : !!draft.cluster
+  const canNext = step === 'machines' ? draft.selected.length > 0 && isDnsLabel(draft.name) : !!draft.cluster
   return (
     <div class="p-5 flex flex-col gap-4 max-w-[1400px]">
       <header class="flex flex-wrap items-center gap-4">
@@ -90,7 +85,7 @@ export function NewCluster() {
           {step === 'review' && draft.cluster && <ReviewStep draft={draft} setCluster={setCluster} patch={patch} onCreate={create} busy={busy} />}
           <div class="flex items-center gap-2">
             {idx > 0 && <button class="btn" onClick={() => setStep(steps[idx - 1].id)}>← Back</button>}
-            {step !== 'review' && <button class="btn btn-primary ml-auto" disabled={!canNext || busy} onClick={next}>{busy ? 'Working…' : `Continue to ${steps[idx + 1].label} →`}</button>}
+            {step !== 'review' && <button class="btn btn-primary ml-auto" disabled={!canNext || busy} onClick={next}>{busy ? 'Working' : `Continue to ${steps[idx + 1].label} →`}</button>}
           </div>
         </div>
         <Summary draft={draft} />

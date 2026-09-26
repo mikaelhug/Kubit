@@ -1,9 +1,9 @@
 import { useState } from 'preact/hooks'
-import { api, fmt, oobLabel, type NodeRow, type OOBConfig, type OOBInfo } from '../api'
+import { api, fmt, type NodeRow, type OOBConfig, type OOBInfo } from '../api'
+import { bootTalosBlocked, oobLabel } from '../machine'
 import { settings, toast, watch } from '../store'
-import { ConfirmDialog, Dialog, ErrorBox, Field, Notice, Pill } from './ui'
 import { usePxeGated } from './PxeGate'
-import { bootTalosBlocked } from '../machine'
+import { ConfirmDialog, Dialog, ErrorBox, Field, Pill } from './ui'
 
 const empty: OOBConfig = { type: 'amt', host: '', user: 'admin', password: '', tls: false }
 const defaultUser = (t: OOBConfig['type']) => (t === 'redfish' ? settings.value?.bmc?.user || 'root' : settings.value?.amt?.user || 'admin')
@@ -22,7 +22,7 @@ export function RemoteManagement({ node }: { node: NodeRow }) {
       <div class="flex items-center gap-3">
         <div class="flex-1 min-w-0">
           <div class="font-medium">Remote management</div>
-          <p class="text-[12.5px] text-muted">{cfg ? <>{oobLabel(cfg.type)} at <span class="mono">{cfg.host}</span>{cfg.type === 'amt' ? ` (${cfg.tls ? 'TLS' : 'plain'})` : ''} — power control and one-shot network boot, even when the machine is off.</> : 'Not configured. With Intel AMT (vPro) or a server BMC (Redfish) Kubit can power the machine on/off, reset it, and boot it into Talos without touching it.'}</p>
+          <p class="text-[12.5px] text-muted">{cfg ? <>{oobLabel(cfg.type)} at <span class="mono">{cfg.host}</span>{cfg.type === 'amt' ? ` (${cfg.tls ? 'TLS' : 'plain'})` : ''}: power and network boot.</> : 'Not configured; AMT or a Redfish BMC adds remote power and network boot.'}</p>
         </div>
         <button class="btn" onClick={() => setEdit(true)}>{cfg ? 'Edit' : 'Configure'}</button>
       </div>
@@ -31,16 +31,16 @@ export function RemoteManagement({ node }: { node: NodeRow }) {
           <button class="btn" onClick={() => run('on')}>Power on</button>
           <button class="btn" onClick={() => setConfirm('off')}>Power off</button>
           <button class="btn" onClick={() => setConfirm('reset')}>Hard reset</button>
-          <button class="btn btn-primary" disabled={!!blocked} title={blocked || 'Force one network boot: Kubit\'s PXE server hands this MAC Talos in maintenance mode'} onClick={() => setConfirm('pxe')}>Boot into Talos</button>
+          <button class="btn btn-primary" disabled={!!blocked} title={blocked || 'One network boot into Talos maintenance mode'} onClick={() => setConfirm('pxe')}>Boot into Talos</button>
           <button class="btn" onClick={() => api.oobTest(node.mac).then((r) => toast(r.ok ? `${r.info?.version}: power ${r.info?.power}${r.info?.model ? ', ' + r.info.model : ''}` : r.error ?? 'failed', r.ok ? 'good' : 'error')).catch((e) => toast(e.message, 'error'))}>Test</button>
         </div>
       )}
       {gated.element}
       {edit && <OOBDialog mac={node.mac} initial={seed} onClose={() => { setEdit(false); if (location.hash === '#oob') history.replaceState(null, '', location.pathname + '#actions') }} />}
-      {confirm === 'off' && <ConfirmDialog title="Power off" action="Power off" tone="danger" onClose={() => setConfirm(null)} onConfirm={() => run('off')} impact={<p>Hard power-off through the management engine — like holding the power button. {member ? 'Drain the node first if it runs workloads.' : ''}</p>} />}
-      {confirm === 'reset' && <ConfirmDialog title="Hard reset" action="Reset" tone="danger" onClose={() => setConfirm(null)} onConfirm={() => run('reset')} impact={<p>Immediate reset without a clean shutdown; use when the machine is hung. {member ? 'Prefer Reboot on the node\'s Actions tab when Talos still answers.' : ''}</p>} />}
+      {confirm === 'off' && <ConfirmDialog title="Power off" action="Power off" tone="danger" onClose={() => setConfirm(null)} onConfirm={() => run('off')} impact={<p>Hard power-off.{member ? ' Drain the node first.' : ''}</p>} />}
+      {confirm === 'reset' && <ConfirmDialog title="Hard reset" action="Reset" tone="danger" onClose={() => setConfirm(null)} onConfirm={() => run('reset')} impact={<p>Immediate reset without a clean shutdown.{member ? ' Prefer Reboot while Talos answers.' : ''}</p>} />}
       {confirm === 'pxe' && <ConfirmDialog title="Boot into Talos" action="Boot into Talos" onClose={() => setConfirm(null)} onConfirm={() => run('pxe')}
-        impact={<ul class="list-disc pl-5 flex flex-col gap-1"><li>{oobLabel(cfg?.type)} forces one network boot and powers on / resets the machine.</li><li>Kubit's PXE server (<span class="mono">kubit pxe</span> must be running on this LAN) answers this MAC with Talos in maintenance mode; the disk is not touched.</li><li>The machine then appears here as <b>maintenance</b> and can be adopted or used in a new cluster.</li></ul>} />}
+        impact={<p>{oobLabel(cfg?.type)} forces one network boot into Talos maintenance mode; the disk is untouched.</p>} />}
     </div>
   )
 }
@@ -67,18 +67,15 @@ function OOBFields({ c, onChange }: { c: OOBConfig; onChange: (c: OOBConfig) => 
     <>
       <Field label="Type">
         <select class="input" value={c.type} onChange={(e) => setType((e.target as HTMLSelectElement).value as OOBConfig['type'])}>
-          <option value="amt">Intel AMT (vPro desktop, NUC)</option>
-          <option value="redfish">BMC via Redfish (iDRAC, iLO, XCC, Supermicro, OpenBMC)</option>
+          <option value="amt">Intel AMT</option>
+          <option value="redfish">BMC (Redfish)</option>
         </select>
       </Field>
-      {c.type === 'amt'
-        ? <Notice tone="muted">Enable AMT in the BIOS, set the MEBx password, allow network access. Ports 16992 (plain) or 16993 (TLS).</Notice>
-        : <Notice tone="muted">A local BMC account with power and boot rights. HTTPS on the BMC's own address; self-signed certificates are accepted.</Notice>}
       <div class="grid grid-cols-2 gap-3">
-        <Field label="Address" hint={c.type === 'amt' ? "IP or DNS name of the machine's wired interface." : 'IP or DNS name of the BMC, with :port if not 443.'}><input class="input mono" value={c.host} onInput={(e) => onChange({ ...c, host: (e.target as HTMLInputElement).value.trim() })} /></Field>
+        <Field label="Address" hint={c.type === 'amt' ? 'IP or DNS name of the wired interface' : 'IP or DNS name of the BMC, :port if not 443'}><input class="input mono" value={c.host} onInput={(e) => onChange({ ...c, host: (e.target as HTMLInputElement).value.trim() })} /></Field>
         <Field label="User"><input class="input mono" value={c.user} onInput={(e) => onChange({ ...c, user: (e.target as HTMLInputElement).value.trim() })} /></Field>
-        <Field label="Password" hint="Stored sealed with the master key."><input class="input mono" type="password" value={c.password} onInput={(e) => onChange({ ...c, password: (e.target as HTMLInputElement).value })} /></Field>
-        {c.type === 'amt' && <Field label="Transport"><select class="input" value={c.tls ? 'tls' : 'plain'} onChange={(e) => onChange({ ...c, tls: (e.target as HTMLSelectElement).value === 'tls' })}><option value="plain">Plain (16992)</option><option value="tls">TLS (16993, self-signed accepted)</option></select></Field>}
+        <Field label="Password" hint="Sealed at rest"><input class="input mono" type="password" value={c.password} onInput={(e) => onChange({ ...c, password: (e.target as HTMLInputElement).value })} /></Field>
+        {c.type === 'amt' && <Field label="Transport"><select class="input" value={c.tls ? 'tls' : 'plain'} onChange={(e) => onChange({ ...c, tls: (e.target as HTMLSelectElement).value === 'tls' })}><option value="plain">Plain (16992)</option><option value="tls">TLS (16993)</option></select></Field>}
       </div>
     </>
   )
@@ -104,7 +101,7 @@ export function AddAMTDialog({ onClose }: { onClose: () => void }) {
   return (
     <Dialog title="Add machine by remote management" onClose={onClose} footer={<><button class="btn" onClick={onClose}>Cancel</button><button class="btn btn-primary" disabled={busy || !c.host || !c.password} onClick={add}>{busy ? 'Probing' : 'Add'}</button></>}>
       <ErrorBox error={error} />
-      <p class="text-[13px] text-muted">Kubit reads MAC, model and serial from the management engine and adds the machine; power and network boot are then remote.</p>
+      <p class="text-[13px] text-muted">Reads MAC, model and serial from the management engine.</p>
       <OOBFields c={c} onChange={setC} />
     </Dialog>
   )

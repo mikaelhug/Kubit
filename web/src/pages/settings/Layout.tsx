@@ -2,7 +2,7 @@ import type { ComponentChildren } from 'preact'
 import { useEffect, useState } from 'preact/hooks'
 import { api, type Settings } from '../../api'
 import { can, loadSettings, settings, toast } from '../../store'
-import { settingsPages, type SettingsPage } from '../../app'
+import { settingsPages, type SettingsPage } from '../../routes'
 import { Notice } from '../../components/ui'
 
 const adminOnly: SettingsPage[] = ['accounts', 'sso']

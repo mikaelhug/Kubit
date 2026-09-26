@@ -1,14 +1,12 @@
-import { signal } from '@preact/signals'
-import { fmt } from './api'
+import { computed, signal, type ReadonlySignal } from '@preact/signals'
 
 export const now = signal(Date.now())
 setInterval(() => { now.value = Date.now() }, 1000)
 
-export function elapsed(from?: string, to?: string) {
-  if (!to) void now.value
-  return fmt.duration(from, to)
-}
+const coarse = new Map<number, ReadonlySignal<number>>()
 
-export function ageSec(iso?: string) {
-  return iso ? (now.value - new Date(iso).getTime()) / 1000 : Infinity
+export function nowEvery(ms: number) {
+  let s = coarse.get(ms)
+  if (!s) { s = computed(() => Math.floor(now.value / ms) * ms); coarse.set(ms, s) }
+  return s.value
 }

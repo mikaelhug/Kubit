@@ -1,6 +1,7 @@
 import { useEffect, useRef } from 'preact/hooks'
+import { fmt } from '../api'
 
-export interface Point { t: number; v: number | null }
+interface Point { t: number; v: number | null }
 
 const spans: Record<string, number> = { '1h': 3600e3, '6h': 6 * 3600e3, '24h': 86400e3, '7d': 7 * 86400e3 }
 export const spanOf = (range: string) => spans[range] ?? spans['24h']
@@ -75,15 +76,14 @@ export function Sparkline({ points, max, height = 56, format, label, span, tone 
       ctx.textBaseline = 'top'
       ctx.textAlign = 'center'
       for (let t = Math.ceil((t0 - off) / step) * step + off; t <= t1; t += step) {
-        const d = new Date(t)
-        const text = step >= 86400e3 ? d.toLocaleDateString(undefined, { weekday: 'short' }) : d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+        const text = step >= 86400e3 ? fmt.weekday(t) : fmt.hm(t)
         ctx.fillText(text, Math.min(Math.max(x(t), px0 + 16), px1 - 16), py1 + 4)
       }
     }
     if (known.length < 2) {
       ctx.textBaseline = 'middle'
       ctx.textAlign = 'left'
-      ctx.fillText('collecting…', px0 + 4, (py0 + py1) / 2)
+      ctx.fillText('collecting', px0 + 4, (py0 + py1) / 2)
       return
     }
     ctx.lineWidth = 1.5

@@ -1,15 +1,13 @@
-import { useEffect, useRef, useState } from 'preact/hooks'
-import { toast } from '../store'
+import type { ComponentChildren } from 'preact'
+import { useEffect, useState } from 'preact/hooks'
+import { CopyButton, ErrorBox } from './ui'
 
-export function LogStream({ url, follow, onFollow, className = '' }: { url: string; follow: boolean; onFollow: (f: boolean) => void; className?: string }) {
+export function LogStream({ url, follow, onFollow, toolbar, className = '', height = '!max-h-[60vh]' }: { url: string; follow: boolean; onFollow: (f: boolean) => void; toolbar?: ComponentChildren; className?: string; height?: string }) {
   const [log, setLog] = useState('')
   const [q, setQ] = useState('')
   const [error, setError] = useState<string | null>(null)
-  const abort = useRef<AbortController | null>(null)
   useEffect(() => {
-    abort.current?.abort()
     const ac = new AbortController()
-    abort.current = ac
     setLog('')
     setError(null)
     fetch(url, { signal: ac.signal }).then(async (res) => {
@@ -28,12 +26,13 @@ export function LogStream({ url, follow, onFollow, className = '' }: { url: stri
   return (
     <div class={`flex flex-col gap-2 min-w-0 ${className}`}>
       <div class="flex items-center gap-2">
-        <input class="input !w-56" placeholder="Search…" value={q} onInput={(e) => setQ((e.target as HTMLInputElement).value)} />
+        {toolbar}
+        <input class="input !w-56" placeholder="Search" value={q} onInput={(e) => setQ((e.target as HTMLInputElement).value)} />
         <label class="flex items-center gap-2 text-[13px]"><input type="checkbox" checked={follow} onChange={(e) => onFollow((e.target as HTMLInputElement).checked)} /> Follow</label>
-        <button class="btn ml-auto" onClick={() => navigator.clipboard.writeText(lines).then(() => toast('Copied'))}>Copy</button>
+        <CopyButton text={() => lines} className="btn ml-auto" />
       </div>
-      {error && <div class="text-bad text-[13px]">{error}</div>}
-      <pre class="log !max-h-[60vh]" ref={(el) => { if (el && follow) el.scrollTop = el.scrollHeight }}>{lines || (error ? '' : 'Loading…')}</pre>
+      <ErrorBox error={error} />
+      <pre class={`log ${height}`} ref={(el) => { if (el && follow) el.scrollTop = el.scrollHeight }}>{lines || (error ? '' : 'Loading')}</pre>
     </div>
   )
 }

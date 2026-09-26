@@ -1,55 +1,58 @@
+import { Fragment } from 'preact'
 import { useEffect, useMemo, useRef, useState } from 'preact/hooks'
 import { useLocation } from 'preact-iso'
+import { readText, writeText } from '../local'
+import { hostName, kindLabel, vmsOf } from '../machine'
+import { sectionList, settingsPages } from '../routes'
 import { clusters, machineList } from '../store'
-import { hostName, kindLabel } from '../machine'
-import { sectionList, settingsPages } from '../app'
 import { Pill } from './ui'
 
 interface Item { label: string; hint?: string; href: string; group: string }
 
+function paletteItems(): Item[] {
+  const out: Item[] = []
+  for (const c of clusters.value) {
+    for (const [id, label] of sectionList) out.push({ label: `${c.name} › ${label}`, href: `/clusters/${c.name}/${id}`, group: 'Clusters' })
+    for (const n of c.spec.spec.nodes) out.push({ label: n.hostname, hint: `${c.name} · ${n.ip} · ${n.pool ?? n.role}`, href: n.mac ? `/machines/${n.mac}` : `/nodes/${n.ip}`, group: 'Nodes' })
+  }
+  for (const m of machineList.value) {
+    if (m.kind === 'labhost') out.push({ label: hostName(m), hint: `lab host · ${vmsOf(m.labhost).length} VMs · ${m.ip}`, href: `/labhosts/${m.mac}/overview`, group: 'Lab hosts' })
+    else if (m.kind !== 'member') out.push({ label: m.hostname || m.mac, hint: `${kindLabel[m.kind]} · ${m.ip || m.mac}`, href: `/machines/${m.mac}`, group: 'Machines' })
+  }
+  out.push({ label: 'Home', href: '/', group: 'Kubit' }, { label: 'New cluster', href: '/clusters/new', group: 'Kubit' }, { label: 'Inventory', href: '/fleet/inventory', group: 'Kubit' }, { label: 'Network boot', href: '/fleet/network-boot', group: 'Kubit' }, { label: 'Activity', href: '/operations', group: 'Kubit' })
+  for (const [id, label] of settingsPages) out.push({ label: `Settings › ${label}`, href: `/settings/${id}`, group: 'Kubit' })
+  return out
+}
+
 export function Palette() {
   const [open, setOpen] = useState(false)
-  const [q, setQ] = useState('')
-  const [cursor, setCursor] = useState(0)
-  const input = useRef<HTMLInputElement>(null)
-  const { route } = useLocation()
-
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') { e.preventDefault(); setOpen((o) => !o); setQ(''); setCursor(0) }
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') { e.preventDefault(); setOpen((o) => !o) }
       if (e.key === 'Escape') setOpen(false)
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
   }, [])
-  useEffect(() => { if (open) setTimeout(() => input.current?.focus(), 0) }, [open])
+  return open ? <PaletteDialog onClose={() => setOpen(false)} /> : null
+}
 
-  const items = useMemo<Item[]>(() => {
-    const out: Item[] = []
-    for (const c of clusters.value) {
-      for (const [id, label] of sectionList) out.push({ label: `${c.name} › ${label}`, href: `/clusters/${c.name}/${id}`, group: 'Clusters' })
-      for (const n of c.spec.spec.nodes) out.push({ label: n.hostname, hint: `${c.name} · ${n.ip} · ${n.pool ?? n.role}`, href: n.mac ? `/machines/${n.mac}` : `/nodes/${n.ip}`, group: 'Nodes' })
-    }
-    for (const m of machineList.value) {
-      if (m.kind === 'labhost') out.push({ label: hostName(m), hint: `lab host · ${(m.labhost?.vms ?? []).length} VMs · ${m.ip}`, href: `/labhosts/${m.mac}/overview`, group: 'Lab hosts' })
-      else if (m.kind !== 'member') out.push({ label: m.hostname || m.mac, hint: `${kindLabel[m.kind]} · ${m.ip || m.mac}`, href: `/machines/${m.mac}`, group: 'Machines' })
-    }
-    out.push({ label: 'Home', href: '/', group: 'Kubit' }, { label: 'New cluster', href: '/clusters/new', group: 'Kubit' }, { label: 'Inventory', href: '/fleet/inventory', group: 'Kubit' }, { label: 'Network boot', href: '/fleet/network-boot', group: 'Kubit' }, { label: 'Activity', href: '/operations', group: 'Kubit' })
-    for (const [id, label] of settingsPages) out.push({ label: `Settings › ${label}`, href: `/settings/${id}`, group: 'Kubit' })
-    return out
-  }, [clusters.value, machineList.value])
-
+function PaletteDialog({ onClose }: { onClose: () => void }) {
+  const [q, setQ] = useState('')
+  const [cursor, setCursor] = useState(0)
+  const input = useRef<HTMLInputElement>(null)
+  const { route } = useLocation()
+  useEffect(() => { input.current?.focus() }, [])
+  const items = useMemo(paletteItems, [clusters.value, machineList.value])
   const matches = useMemo(() => {
     const words = q.toLowerCase().split(/\s+/).filter(Boolean)
     return items.filter((it) => words.every((w) => (it.label + ' ' + (it.hint ?? '')).toLowerCase().includes(w))).slice(0, 12)
   }, [items, q])
-
-  if (!open) return null
-  const go = (it: Item) => { setOpen(false); route(it.href) }
+  const go = (it: Item) => { onClose(); route(it.href) }
   return (
-    <div class="fixed inset-0 z-50 flex items-start justify-center bg-black/50 p-6" onClick={(e) => { if (e.target === e.currentTarget) setOpen(false) }}>
+    <div class="fixed inset-0 z-50 flex items-start justify-center bg-black/50 p-6" onClick={(e) => { if (e.target === e.currentTarget) onClose() }}>
       <div class="panel w-full max-w-lg mt-16 overflow-hidden" role="dialog" aria-label="Jump to">
-        <input ref={input} class="w-full bg-transparent px-4 py-3 text-[15px] outline-none border-b border-border" placeholder="Jump to a cluster, node or page…" value={q}
+        <input ref={input} class="w-full bg-transparent px-4 py-3 text-[15px] outline-none border-b border-border" placeholder="Jump to a cluster, node or page" value={q}
           onInput={(e) => { setQ((e.target as HTMLInputElement).value); setCursor(0) }}
           onKeyDown={(e) => {
             if (e.key === 'ArrowDown') { e.preventDefault(); setCursor((c) => Math.min(c + 1, matches.length - 1)) }
@@ -59,7 +62,7 @@ export function Palette() {
         <ul class="max-h-[50vh] overflow-auto py-1">
           {matches.length === 0 && <li class="px-4 py-3 text-muted text-[13px]">No match.</li>}
           {matches.map((it, i) => (
-            <li key={it.href + it.label}>
+            <li key={`${it.group}:${it.href}:${it.label}`}>
               <button class={`w-full text-left px-4 py-2 flex items-center gap-3 text-[13.5px] ${i === cursor ? 'bg-panel-2' : 'hover:bg-panel-2/60'}`} onMouseEnter={() => setCursor(i)} onClick={() => go(it)}>
                 <span class="truncate">{it.label}</span>
                 {it.hint && <span class="text-muted text-[12px] truncate">{it.hint}</span>}
@@ -74,26 +77,27 @@ export function Palette() {
   )
 }
 
+const shortcuts: [string, string][] = [['⌘K / Ctrl+K', 'Jump to a cluster, node or page'], ['a', 'Toggle the Activity drawer'], ['/', 'Focus the table filter'], ['?', 'This sheet'], ['Esc', 'Close dialogs and drawers']]
+
 export function Shortcuts() {
   const [open, setOpen] = useState(false)
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       const typing = e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement || e.target instanceof HTMLSelectElement
       if (e.key === '?' && !typing) setOpen((o) => !o)
-      if (e.key === '/' && !typing) { const f = document.querySelector<HTMLInputElement>('input[placeholder="Filter…"]'); if (f) { e.preventDefault(); f.focus() } }
+      if (e.key === '/' && !typing) { const f = document.querySelector<HTMLInputElement>('input[data-table-filter]'); if (f) { e.preventDefault(); f.focus() } }
       if (e.key === 'Escape') setOpen(false)
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
   }, [])
   if (!open) return null
-  const rows: [string, string][] = [['⌘K / Ctrl+K', 'Jump to a cluster, node or page'], ['a', 'Toggle the Activity drawer'], ['/', 'Focus the table filter'], ['?', 'This sheet'], ['Esc', 'Close dialogs and drawers']]
   return (
     <div class="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-6" onClick={(e) => { if (e.target === e.currentTarget) setOpen(false) }}>
       <div class="panel w-full max-w-sm p-5">
         <h2 class="font-semibold mb-3">Keyboard shortcuts</h2>
         <dl class="grid grid-cols-[auto_1fr] gap-x-4 gap-y-2 text-[13px]">
-          {rows.map(([k, v]) => <><dt><kbd class="mono rounded border border-border bg-panel-2 px-1.5 py-0.5 text-[11px]">{k}</kbd></dt><dd class="text-muted">{v}</dd></>)}
+          {shortcuts.map(([k, v]) => <Fragment key={k}><dt><kbd class="mono rounded border border-border bg-panel-2 px-1.5 py-0.5 text-[11px]">{k}</kbd></dt><dd class="text-muted">{v}</dd></Fragment>)}
         </dl>
       </div>
     </div>
@@ -101,11 +105,11 @@ export function Shortcuts() {
 }
 
 export function ThemeToggle() {
-  const [theme, setTheme] = useState<string>(() => { try { return localStorage.getItem('kubit.theme') ?? 'system' } catch { return 'system' } })
+  const [theme, setTheme] = useState(() => readText('kubit.theme', 'system'))
   useEffect(() => {
     const root = document.documentElement
     if (theme === 'system') root.removeAttribute('data-theme'); else root.setAttribute('data-theme', theme)
-    try { theme === 'system' ? localStorage.removeItem('kubit.theme') : localStorage.setItem('kubit.theme', theme) } catch {}
+    writeText('kubit.theme', theme === 'system' ? null : theme)
   }, [theme])
   const next = theme === 'system' ? 'light' : theme === 'light' ? 'dark' : 'system'
   const icon = theme === 'light' ? '☀' : theme === 'dark' ? '☾' : '◐'

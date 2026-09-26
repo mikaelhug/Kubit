@@ -29,11 +29,11 @@ export function SignIn() {
         </div>
         <div>
           <h1 class="font-semibold text-lg">{setup ? 'Create the first administrator' : 'Sign in'}</h1>
-          {setup && <p class="text-[12.5px] text-muted">No accounts exist yet. This one owns the installation.</p>}
+          {setup && <p class="text-[12.5px] text-muted">No accounts yet; this one owns the installation.</p>}
         </div>
         <ErrorBox error={error} />
         <Field label="User"><input class="input mono" autocomplete="username" value={name} onInput={(e) => setName((e.target as HTMLInputElement).value)} /></Field>
-        <Field label="Password" hint={setup ? 'At least 8 characters.' : undefined}><input class="input mono" type="password" autocomplete={setup ? 'new-password' : 'current-password'} value={password} onInput={(e) => setPassword((e.target as HTMLInputElement).value)} /></Field>
+        <Field label="Password" hint={setup ? 'At least 8 characters' : undefined}><input class="input mono" type="password" autocomplete={setup ? 'new-password' : 'current-password'} value={password} onInput={(e) => setPassword((e.target as HTMLInputElement).value)} /></Field>
         <button class="btn btn-primary" type="submit" disabled={busy || !name || !password}>{setup ? 'Create and sign in' : 'Sign in'}</button>
         {sso && !setup && <a class="btn text-center" href="/api/v1/auth/oidc/start">Sign in with {sso}</a>}
       </form>

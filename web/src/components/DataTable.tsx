@@ -1,5 +1,6 @@
 import { useMemo, useState } from 'preact/hooks'
 import type { ComponentChildren } from 'preact'
+import { persist, read } from '../local'
 
 export interface Column<T> {
   id: string
@@ -12,6 +13,8 @@ export interface Column<T> {
   mono?: boolean
   wrap?: boolean
 }
+
+export const withoutColumn = <T,>(cols: Column<T>[], id: string, hide: boolean) => (hide ? cols.filter((c) => c.id !== id) : cols)
 
 interface Props<T> {
   columns: Column<T>[]
@@ -26,10 +29,6 @@ interface Props<T> {
   toolbar?: ComponentChildren
   title?: ComponentChildren
   loading?: boolean
-}
-
-function read<T>(key: string, fallback: T): T {
-  try { const v = localStorage.getItem(key); return v ? JSON.parse(v) : fallback } catch { return fallback }
 }
 
 export function DataTable<T>({ columns, rows, rowKey, empty = 'Nothing to show.', search = true, defaultSort, onRowClick, rowClass, id, toolbar, title, loading }: Props<T>) {
@@ -69,7 +68,7 @@ export function DataTable<T>({ columns, rows, rowKey, empty = 'Nothing to show.'
     if (!c.sort) return
     const next = sort?.id === c.id && sort.dir === 'asc' ? { id: c.id, dir: 'desc' as const } : { id: c.id, dir: 'asc' as const }
     setSort(next)
-    if (pref) try { localStorage.setItem(pref + '.sort', JSON.stringify(next)) } catch {}
+    if (pref) persist(pref + '.sort', next)
   }
 
   return (
@@ -77,7 +76,7 @@ export function DataTable<T>({ columns, rows, rowKey, empty = 'Nothing to show.'
       {(search || toolbar || title) && (
         <div class="flex items-center gap-2 px-3 py-2 border-b border-border">
           {title}
-          {search && <input class="input !w-64" placeholder="Filter…" value={q} onInput={(e) => { setQ((e.target as HTMLInputElement).value); setPage(0) }} aria-label="Filter rows" />}
+          {search && <input class="input !w-64" placeholder="Filter" data-table-filter value={q} onInput={(e) => { setQ((e.target as HTMLInputElement).value); setPage(0) }} aria-label="Filter rows" />}
           {(search || !title) && <span class="text-[12px] text-muted">{filtered.length === rows.length ? `${rows.length} rows` : `${filtered.length} of ${rows.length}`}</span>}
           {toolbar && <div class="ml-auto flex items-center gap-2">{toolbar}</div>}
         </div>
@@ -106,9 +105,9 @@ export function DataTable<T>({ columns, rows, rowKey, empty = 'Nothing to show.'
       </div>
       {pages > 1 && (
         <div class="flex items-center gap-2 px-3 py-2 border-t border-border text-[12px] text-muted">
-          <button class="btn !py-0.5 !px-2" disabled={page === 0} onClick={() => setPage(page - 1)}>‹</button>
+          <button class="btn btn-sm" disabled={page === 0} onClick={() => setPage(page - 1)}>‹</button>
           <span>page {page + 1} / {pages}</span>
-          <button class="btn !py-0.5 !px-2" disabled={page >= pages - 1} onClick={() => setPage(page + 1)}>›</button>
+          <button class="btn btn-sm" disabled={page >= pages - 1} onClick={() => setPage(page + 1)}>›</button>
         </div>
       )}
     </div>

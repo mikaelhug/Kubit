@@ -1,4 +1,4 @@
-export interface Tab { id: string; label: string; href?: string; badge?: string | number }
+interface Tab { id: string; label: string; href?: string; badge?: string | number }
 
 export function Tabs({ tabs, active, onSelect }: { tabs: Tab[]; active: string; onSelect?: (id: string) => void }) {
   return (
