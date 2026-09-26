@@ -11,6 +11,7 @@ import (
 	talosconfig "github.com/siderolabs/talos/pkg/machinery/config"
 	"github.com/siderolabs/talos/pkg/machinery/config/configloader"
 	"github.com/siderolabs/talos/pkg/machinery/config/types/block"
+	"github.com/siderolabs/talos/pkg/machinery/config/types/cri"
 	"github.com/siderolabs/talos/pkg/machinery/config/types/k8s"
 	"github.com/siderolabs/talos/pkg/machinery/config/types/network"
 	"github.com/siderolabs/talos/pkg/machinery/config/types/runtime"
@@ -455,5 +456,104 @@ func TestGenerateLonghorn(t *testing.T) {
 	}
 	if err := c.Validate(); err == nil || !strings.Contains(err.Error(), "dataDisks") {
 		t.Errorf("longhorn without any data disk must be refused: %v", err)
+	}
+}
+
+func TestGenerateSystemDiskStorage(t *testing.T) {
+	c, err := config.Parse([]byte(strings.Replace(sampleCluster, "spec:\n", "spec:\n  storage: { systemDisk: true }\n", 1)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	c.Spec.Platform.Longhorn.Enabled = true
+	if err := c.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	if c.Spec.Storage.EphemeralSize != config.DefaultEphemeralSize || len(c.LonghornNodes()) != len(c.Spec.Nodes) {
+		t.Fatalf("storage %+v, longhorn nodes %d of %d", c.Spec.Storage, len(c.LonghornNodes()), len(c.Spec.Nodes))
+	}
+	g, err := config.Generate(c, nil, func(config.Pool) string { return installer })
+	if err != nil {
+		t.Fatal(err)
+	}
+	cp := load(t, g.Nodes["cp-01"])
+	var eph *block.VolumeConfigV1Alpha1
+	var vol *block.UserVolumeConfigV1Alpha1
+	for _, d := range cp.Documents() {
+		switch v := d.(type) {
+		case *block.VolumeConfigV1Alpha1:
+			if v.MetaName == "EPHEMERAL" {
+				eph = v
+			}
+		case *block.UserVolumeConfigV1Alpha1:
+			vol = v
+		}
+	}
+	if eph == nil || eph.ProvisioningSpec.ProvisioningMaxSize.Value() != 40<<30 || eph.ProvisioningSpec.ProvisioningGrow == nil || *eph.ProvisioningSpec.ProvisioningGrow {
+		t.Fatalf("EPHEMERAL must be capped at 40GiB without growing: %+v", eph)
+	}
+	if vol == nil || vol.MetaName != "data-system" || *vol.VolumeType != blockres.VolumeTypePartition || vol.ProvisioningSpec.ProvisioningMinSize.Value() != 10<<30 || !*vol.ProvisioningSpec.ProvisioningGrow {
+		t.Fatalf("system data volume = %+v", vol)
+	}
+	for _, system := range []bool{true, false} {
+		ok, err := vol.ProvisioningSpec.DiskSelectorSpec.Match.EvalBool(celenv.DiskLocator(), map[string]any{"disk": &blockpb.DiskSpec{DevPath: "/dev/vda"}, "system_disk": system})
+		if err != nil || ok != system {
+			t.Errorf("system_disk=%v: matched=%v err=%v", system, ok, err)
+		}
+	}
+	n := doc[*k8s.KubeNodeConfigV1Alpha1](t, cp)
+	if n.LabelsConfig["node.longhorn.io/create-default-disk"] != "config" || !strings.Contains(n.AnnotationsConfig["node.longhorn.io/default-disks-config"], `"path":"/var/mnt/data-system"`) {
+		t.Errorf("system disk must be a Longhorn disk: %v %v", n.LabelsConfig, n.AnnotationsConfig)
+	}
+	w := load(t, g.Nodes["worker-01"])
+	for _, d := range w.Documents() {
+		if v, ok := d.(*block.UserVolumeConfigV1Alpha1); ok && v.MetaName == "data-system" {
+			t.Error("a node with data disks keeps its system disk to Talos")
+		}
+		if v, ok := d.(*block.VolumeConfigV1Alpha1); ok && v.MetaName == "EPHEMERAL" && !v.ProvisioningSpec.ProvisioningMaxSize.IsZero() {
+			t.Error("a node with data disks keeps EPHEMERAL uncapped")
+		}
+	}
+	for _, bad := range []string{"ephemeralSize: 5GiB", "ephemeralSize: 50%", "ephemeralSize: lots"} {
+		y := strings.Replace(sampleCluster, "spec:\n", "spec:\n  storage: { systemDisk: true, "+bad+" }\n", 1)
+		if _, err := config.Parse([]byte(y)); err == nil {
+			t.Errorf("%s must be rejected", bad)
+		}
+	}
+}
+
+func TestGenerateBuildsRegistryMirror(t *testing.T) {
+	y := strings.Replace(sampleCluster, "spec:\n", "spec:\n  storage: { systemDisk: true }\n", 1)
+	c, err := config.Parse([]byte(y))
+	if err != nil {
+		t.Fatal(err)
+	}
+	c.Spec.Platform.Longhorn.Enabled = true
+	c.Spec.Platform.Builds.Enabled = true
+	if err := c.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	start, _, _ := config.ParseIPRange(c.Spec.Platform.MetalLB.Range)
+	if ip := c.RegistryIP(); !strings.HasSuffix(c.Spec.Platform.MetalLB.Range, "-"+ip) {
+		t.Errorf("registry IP %s is not the end of %s", ip, c.Spec.Platform.MetalLB.Range)
+	}
+	if pool := c.MetalLBPool(); pool != start.String()+"-192.168.64.219" {
+		t.Errorf("pool = %s", pool)
+	}
+	g, err := config.Generate(c, nil, func(config.Pool) string { return installer })
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := doc[*cri.RegistryMirrorConfigV1Alpha1](t, load(t, g.Nodes["worker-01"]))
+	if m.MetaName != "registry.kubit" || len(m.RegistryEndpoints) != 1 || m.RegistryEndpoints[0].EndpointURL.String() != "http://192.168.64.220:5000" || m.RegistrySkipFallback == nil || !*m.RegistrySkipFallback {
+		t.Errorf("mirror = %+v", m)
+	}
+	c.Spec.Platform.Longhorn.Enabled = false
+	if err := c.Validate(); err == nil || !strings.Contains(err.Error(), "platform.builds needs Longhorn") {
+		t.Errorf("builds without Longhorn: %v", err)
+	}
+	c.Spec.Platform.Longhorn.Enabled = true
+	c.Spec.Platform.MetalLB.Enabled = false
+	if err := c.Validate(); err == nil || !strings.Contains(err.Error(), "platform.builds needs MetalLB") {
+		t.Errorf("builds without MetalLB: %v", err)
 	}
 }

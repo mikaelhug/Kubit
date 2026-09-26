@@ -204,6 +204,13 @@ func TestFluxNotReadyRaisesAndClears(t *testing.T) {
 	if len(evs) != 1 || evs[0].Kind != "flux.not-ready" || evs[0].Message != "Kustomization flux-system/flux-system is not ready: Deployment/shop/shop dry-run failed: .spec.replicas: expected numeric" {
 		t.Fatalf("second failed collection: %+v", evs)
 	}
+	waiting := &cluster.ServiceHealth{Flux: []cluster.FluxHealth{{Kind: "Kustomization", Namespace: "flux-system", Name: "app", Ready: "False", Reason: "DependencyNotReady"}}}
+	wt := NewServiceTracker()
+	for i := 0; i < 3; i++ {
+		if evs := wt.Derive("c", waiting, now, nil); len(evs) != 0 {
+			t.Fatalf("waiting on a build is not a failure: %v", kinds(evs))
+		}
+	}
 	suspended := &cluster.ServiceHealth{Flux: []cluster.FluxHealth{{Kind: "HelmRelease", Namespace: "a", Name: "b", Ready: "False", Suspended: true}}}
 	if evs := NewServiceTracker().Derive("c", suspended, now, nil); len(evs) != 0 {
 		t.Fatalf("suspended object alerted: %v", kinds(evs))

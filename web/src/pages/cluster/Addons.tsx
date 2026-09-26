@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'preact/hooks'
 import { useLocation } from 'preact-iso'
-import { api, fmt, type AddonStatus, type FluxObject, type SOPSKey } from '../../api'
+import { api, fmt, podLogsUrl, type AddonStatus, type Build, type FluxObject, type SOPSKey } from '../../api'
 import { ageSec } from '../../clock'
 import { can, operations, toast, watch, refreshKey } from '../../store'
 import { Dialog, ErrorBox, Field, Notice, Pill, Section, StatusDot, type Tone } from '../../components/ui'
@@ -15,9 +15,12 @@ const defs: AddonDef[] = [
   { key: 'gvisor', name: 'gVisor', what: 'RuntimeClasses gvisor (runsc) and gvisor-kvm (runsc-kvm) for sandboxed pods; nodes are labelled by what they support.', docs: 'https://gvisor.dev/docs/user_guide/containerd/quick_start/', hint: 'Plain manifests; values are not used.' },
   { key: 'metricsServer', name: 'metrics-server', what: 'Pod and node CPU/memory usage for kubectl top, autoscaling and this UI.', docs: 'https://github.com/kubernetes-sigs/metrics-server/blob/master/charts/metrics-server/values.yaml', hint: 'Runs in kube-system with --kubelet-insecure-tls (Talos kubelets use self-signed serving certs).' },
   { key: 'certManager', name: 'cert-manager', what: 'Issues and renews TLS certificates for ingresses.', docs: 'https://cert-manager.io/docs/installation/helm/' },
-  { key: 'longhorn', name: 'Longhorn', what: 'Replicated block storage on the nodes\' data disks: the default StorageClass, snapshots, backups to S3.', docs: 'https://longhorn.io/docs/latest/advanced-resources/deploy/customizing-default-settings/', hint: 'Replicas live on nodes with data disks (Nodes tab); replica count defaults to 3 or the number of such nodes. Talos gets the iscsi-tools and util-linux-tools extensions on the next upgrade.' },
+  { key: 'longhorn', name: 'Longhorn', what: 'Replicated block storage on data disks, or on the system disk beyond /var: the default StorageClass, snapshots, backups to S3.', docs: 'https://longhorn.io/docs/latest/advanced-resources/deploy/customizing-default-settings/', hint: 'Replica count defaults to 3 or the number of storage nodes. Talos gets the iscsi-tools and util-linux-tools extensions on the next upgrade.' },
+  { key: 'builds', name: 'Builds', what: 'Builds images from the apps repository in the cluster and serves them from a private registry.', docs: 'https://github.com/moby/buildkit', hint: 'Apps pull registry.kubit/<app>:<version>; a build Job in the repo pushes it. The registry takes the last MetalLB address.' },
   { key: 'flux', name: 'Flux', what: 'GitOps: syncs workloads from a Git repository. Runs without a UI.', docs: 'https://github.com/fluxcd-community/helm-charts/blob/main/charts/flux2/values.yaml', hint: 'Applies the repository path with pruning and decrypts *.sops.yaml files with the cluster key.' },
 ]
+
+const noValues = new Set(['gvisor', 'builds'])
 
 const stateTone: Record<AddonStatus['state'], Tone> = { disabled: 'muted', pending: 'warn', deploying: 'warn', ready: 'good', degraded: 'warn', failed: 'bad', orphaned: 'warn' }
 const stateText: Record<AddonStatus['state'], string> = { disabled: 'disabled', pending: 'enabled, not applied yet', deploying: 'deploying', ready: 'ready', degraded: 'degraded', failed: 'release failed', orphaned: 'disabled in cluster.yaml, still installed' }
@@ -44,6 +47,10 @@ export function Addons({ ctx }: { ctx: ClusterCtx }) {
   const [importing, setImporting] = useState(false)
   useEffect(() => { if (flux) api.sopsKey(name).then(setSops).catch(() => setSops(null)); else setSops(null) }, [name, flux, refreshKey(name, 'sops')])
   useEffect(() => { if (flux) api.flux(name).then(setSync).catch(() => setSync(null)); else setSync(null) }, [name, flux, refreshKey(name, 'flux')])
+  const builds = !!cluster.spec.spec.platform.builds?.enabled
+  const [buildList, setBuildList] = useState<Build[] | null>(null)
+  useEffect(() => { if (builds) api.builds(name).then(setBuildList).catch(() => setBuildList(null)); else setBuildList(null) }, [name, builds, refreshKey(name, 'workloads')])
+  const registryIP = cluster.spec.spec.platform.metallb.range?.split('-')[1]
   const [pendingPlan, setPendingPlan] = useState<number | null>(null)
   const plan = () => api.platformPlan(name).then((r) => { watch(r, false); toast('Planning… the review opens when it finishes'); setPendingPlan(r.operationId) }).catch((e) => toast(e.message, 'error'))
   // The plan's completion arrives over SSE; open the review then.
@@ -87,17 +94,19 @@ export function Addons({ ctx }: { ctx: ClusterCtx }) {
                     </span>
                   </div>
                   <p class="text-[12.5px] text-muted">{d.what}</p>
-                  {a && (a.release || a.readiness || a.key === 'metallb' || a.key === 'flux') && (
+                  {a && (a.release || a.readiness || a.key === 'metallb' || a.key === 'flux' || a.key === 'builds') && (
                     <div class="grid grid-cols-[max-content_1fr] gap-x-4 gap-y-0.5 text-[12px] mt-1">
                       {a.release && <><span class="text-muted">Installed</span><span class="mono">{a.release.chart} {a.release.chartVersion}{a.release.appVersion ? ` (app ${a.release.appVersion})` : ''}{a.pinnedVersion && a.pinnedVersion !== a.release.chartVersion && <span class="text-warn"> · pinned {a.pinnedVersion}</span>}</span></>}
                       {a.release && <><span class="text-muted">Helm status</span><span class={a.release.status === 'deployed' ? '' : 'text-bad'}>{a.release.status}{a.release.lastDeployed ? ` · ${fmt.when(new Date(a.release.lastDeployed * 1000).toISOString())}` : ''}</span></>}
                       {a.readiness && <><span class="text-muted">Workloads</span><span class={a.readiness.ready === a.readiness.total ? '' : 'text-warn'}>{a.readiness.ready}/{a.readiness.total} available in {a.readiness.namespace}{a.readiness.detail?.length ? ` — ${a.readiness.detail.join(', ')}` : ''}</span></>}
                       {a.key === 'metallb' && <><span class="text-muted">Pool</span><span class="mono">{cluster.spec.spec.platform.metallb.range || '—'}</span></>}
+                      {a.key === 'builds' && <><span class="text-muted">Registry</span><span class="mono">registry.kubit → {registryIP ?? '—'}:5000</span></>}
                       {a.key === 'flux' && <><span class="text-muted">Repository</span><span class="mono truncate" title={repo?.url}>{repo ? `${repo.url} @ ${repo.branch} · ${repo.path}` : 'not set'}</span></>}
                       {a.values && Object.keys(a.values).length > 0 && <><span class="text-muted">Values</span><span class="mono truncate" title={JSON.stringify(a.values)}>{Object.keys(a.values).join(', ')} overridden</span></>}
                     </div>
                   )}
                   {a?.key === 'flux' && sync && sync.length > 0 && <FluxSync objects={sync} />}
+                  {a?.key === 'builds' && buildList && buildList.length > 0 && <BuildList cluster={name} builds={buildList} />}
                   {a?.key === 'flux' && sops && <SOPSRow cluster={name} sops={sops} onImport={() => setImporting(true)} />}
                 </div>
               </div>
@@ -132,6 +141,26 @@ function FluxSync({ objects }: { objects: FluxObject[] }) {
             <span class="ml-auto text-muted num shrink-0" title={o.reason}>{o.suspended ? 'suspended' : ago(o.since)}</span>
           </div>
           <span class={`mono truncate pl-4 ${o.ready === 'False' ? 'text-bad' : 'text-muted'}`} title={o.message || o.revision}>{o.ready === 'False' ? o.message : shortRevision(o.revision)}</span>
+        </div>
+      ))}
+    </div>
+  )
+}
+
+const buildTone: Record<Build['state'], Tone> = { running: 'warn', succeeded: 'good', failed: 'bad' }
+
+function BuildList({ cluster, builds }: { cluster: string; builds: Build[] }) {
+  return (
+    <div class="flex flex-col gap-1 text-[12px] mt-1 pt-2 border-t border-border">
+      {builds.slice(0, 8).map((b) => (
+        <div key={b.name} class="flex flex-col min-w-0">
+          <div class="flex items-center gap-2 min-w-0">
+            <span class="inline-flex shrink-0"><StatusDot tone={buildTone[b.state]} pulse={b.state === 'running'} /></span>
+            <span class="mono truncate min-w-0">{b.name}</span>
+            <span class="ml-auto text-muted num shrink-0">{b.state === 'running' ? `building, ${ago(b.startedAt).replace(' ago', '')}` : `${b.state} ${ago(b.finishedAt ?? b.startedAt)}`}</span>
+            {b.pod && <a class="text-accent hover:underline shrink-0" href={podLogsUrl(cluster, 'kubit-builds', b.pod, '', false)} target="_blank" rel="noreferrer">Logs</a>}
+          </div>
+          {b.image && <span class="mono truncate pl-4 text-muted" title={b.image}>{b.image.replace(/^[^/]+\//, 'registry.kubit/')}</span>}
         </div>
       ))}
     </div>
@@ -175,7 +204,7 @@ function ConfigureDialog({ ctx, addon, def, onClose, onSaved }: { ctx: ClusterCt
   const [repo, setRepo] = useState({ url: '', branch: '', path: '', interval: '', ...ctx.cluster.spec.spec.platform.flux?.repository })
   const [values, setValues] = useState(toYaml(addon.values ?? {}))
   const [error, setError] = useState<string | null>(null)
-  const save = () => api.updateAddon(ctx.name, addon.key, { enabled, range: addon.key === 'metallb' ? range : undefined, repository: addon.key === 'flux' ? repo : undefined, valuesYaml: def.key === 'gvisor' ? undefined : values })
+  const save = () => api.updateAddon(ctx.name, addon.key, { enabled, range: addon.key === 'metallb' ? range : undefined, repository: addon.key === 'flux' ? repo : undefined, valuesYaml: noValues.has(def.key) ? undefined : values })
     .then((list) => { toast('Saved to cluster.yaml. Plan to review the change.', 'good'); onSaved(list) }).catch((e) => setError(e.message))
   return (
     <Dialog title={`Configure ${def.name}`} onClose={onClose} width="max-w-2xl" footer={<><button class="btn" onClick={onClose}>Cancel</button><button class="btn btn-primary" onClick={save}>Save to cluster.yaml</button></>}>
@@ -193,7 +222,7 @@ function ConfigureDialog({ ctx, addon, def, onClose, onSaved }: { ctx: ClusterCt
           </div>
         </>
       )}
-      {def.key !== 'gvisor' && (
+      {!noValues.has(def.key) && (
         <Field label="Helm values (YAML)" hint={<>Merged over Kubit's defaults. <a class="underline" href={def.docs} target="_blank" rel="noreferrer">Chart values reference ↗</a></> as any}>
           <textarea class="input mono !text-[12px] h-52" value={values} spellcheck={false} onInput={(e) => setValues((e.target as HTMLTextAreaElement).value)} placeholder={'# e.g.\nreplicaCount: 2'} />
         </Field>

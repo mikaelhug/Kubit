@@ -43,6 +43,8 @@ resource "kubectl_manifest" "flux_source" {
     helm_release.longhorn,
     kubectl_manifest.runtimeclass_gvisor,
     kubectl_manifest.runtimeclass_gvisor_kvm,
+    kubectl_manifest.builds_registry,
+    kubectl_manifest.builds_buildkitd,
   ]
 }
 

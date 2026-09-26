@@ -32,6 +32,7 @@ var addonMeta = []struct{ key, namespace, pin string }{
 	{"certManager", "cert-manager", "v1.21.2"},
 	{"flux", "flux-system", "2.19.1"},
 	{"longhorn", "longhorn-system", "1.10.1"},
+	{"builds", "kubit-builds", ""},
 }
 
 func PlatformNamespace(ns string) (string, bool) {
@@ -47,7 +48,7 @@ func PlatformNamespace(ns string) (string, bool) {
 	return "", false
 }
 
-var addonTofuName = map[string]string{"metallb": "metallb", "ingressNginx": "ingress-nginx", "gvisor": "gvisor", "metricsServer": "metrics-server", "certManager": "cert-manager", "flux": "flux", "longhorn": "longhorn"}
+var addonTofuName = map[string]string{"metallb": "metallb", "ingressNginx": "ingress-nginx", "gvisor": "gvisor", "metricsServer": "metrics-server", "certManager": "cert-manager", "flux": "flux", "longhorn": "longhorn", "builds": "builds"}
 
 func addonSpec(p config.Platform, key string) (bool, map[string]any) {
 	switch key {
@@ -65,6 +66,8 @@ func addonSpec(p config.Platform, key string) (bool, map[string]any) {
 		return p.Flux.Enabled, p.Flux.Values
 	case "longhorn":
 		return p.Longhorn.Enabled, p.Longhorn.Values
+	case "builds":
+		return p.Builds.Enabled, p.Builds.Values
 	}
 	return false, nil
 }
@@ -95,13 +98,13 @@ func (m *Manager) Addons(ctx context.Context, name string) ([]AddonStatus, error
 				st.Readiness = r
 			}
 		}
-		st.State = addonState(st, meta.namespace == "")
+		st.State = addonState(st, meta.namespace == "", meta.pin == "" && meta.namespace != "")
 		out = append(out, st)
 	}
 	return out, nil
 }
 
-func addonState(st AddonStatus, manifestOnly bool) string {
+func addonState(st AddonStatus, manifestOnly, chartless bool) string {
 	switch {
 	case !st.Enabled && st.Release == nil:
 		return "disabled"
@@ -109,9 +112,11 @@ func addonState(st AddonStatus, manifestOnly bool) string {
 		return "orphaned" // declared off, still installed: plan will remove it
 	case manifestOnly:
 		return "ready"
-	case st.Release == nil:
+	case chartless && (st.Readiness == nil || st.Readiness.Total == 0):
 		return "pending"
-	case st.Release.Status != "deployed":
+	case !chartless && st.Release == nil:
+		return "pending"
+	case !chartless && st.Release.Status != "deployed":
 		return "failed"
 	case st.Readiness == nil:
 		return "deploying"

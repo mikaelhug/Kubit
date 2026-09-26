@@ -81,6 +81,8 @@ func (s *Server) handleAddonUpdate(w http.ResponseWriter, r *http.Request) {
 		}
 	case "longhorn":
 		set(&p.Longhorn)
+	case "builds":
+		set(&p.Builds)
 	default:
 		http.Error(w, fmt.Sprintf("unknown add-on %q", key), http.StatusNotFound)
 		return

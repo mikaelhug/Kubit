@@ -112,7 +112,7 @@ export function topologyText(n: number) {
 
 // ─── 2 · Design ──────────────────────────────────────────────────────────────
 
-const hasData = (c: ClusterSpec) => c.spec.nodes.some((n) => n.dataDisks?.length)
+const hasData = (c: ClusterSpec) => !!c.spec.storage?.systemDisk || c.spec.nodes.some((n) => n.dataDisks?.length)
 
 function followDisks(prev: ClusterSpec, next: ClusterSpec): ClusterSpec {
   const on = hasData(next)
@@ -185,7 +185,7 @@ export function DesignStep({ draft, setCluster, reset, busy }: { draft: Draft; s
             <button class="btn !py-1" disabled={busy} onClick={() => reset().catch(() => {})}>Reset to proposal</button>
           </span>
         </div>
-        <p class="text-[13px] text-muted">Proposed roles: bare metal first for the control plane, KVM-capable machines as workers. Change any cell. Data disks are wiped and mounted at <span class="mono">/var/mnt/data-N</span>.</p>
+        <p class="text-[13px] text-muted">Proposed roles: bare metal first for the control plane, KVM-capable machines as workers. Change any cell. Data disks are wiped and mounted at <span class="mono">/var/mnt/data-N</span>.{c.spec.storage?.systemDisk && <> On nodes without data disks, Talos keeps {c.spec.storage.ephemeralSize ?? '40GiB'} of the system disk and the rest goes to Longhorn.</>}</p>
       </div>
       <DataTable search={false} columns={designCols} rows={c.spec.nodes.map((_, i) => i)} rowKey={(i) => c.spec.nodes[i].mac ?? c.spec.nodes[i].ip} />
       <div class="flex flex-col gap-2">
@@ -293,8 +293,9 @@ const addons: { key: keyof ClusterSpec['spec']['platform']; title: string; what:
   { key: 'ingressNginx', title: 'ingress-nginx', what: 'HTTP(S) ingress controller behind a LoadBalancer address; the default IngressClass.', size: '~250 MiB, 1 pod' },
   { key: 'metricsServer', title: 'metrics-server', what: 'Resource metrics for kubectl top, HPA and Kubit\'s capacity views.', size: '~100 MiB, 1 pod' },
   { key: 'certManager', title: 'cert-manager', what: 'X.509 certificates from ACME (Let\'s Encrypt) or internal CAs; issuers are configured afterwards.', size: '~300 MiB, 3 pods' },
+  { key: 'builds', title: 'Builds', what: 'Builds images from the apps repository inside the cluster; a private registry serves them.', size: '~200 MiB idle, more while building' },
   { key: 'flux', title: 'Flux', what: 'GitOps: syncs workloads from the Git repository below. No UI of its own.', size: '~150 MiB, 4 pods' },
-  { key: 'longhorn', title: 'Longhorn', what: 'Replicated block storage on the data disks chosen in the previous step; becomes the default StorageClass.', size: '~1 GiB, 1 manager + engine per node' },
+  { key: 'longhorn', title: 'Longhorn', what: 'Replicated block storage on the data disks, or on the system disk beyond /var; becomes the default StorageClass.', size: '~1 GiB, 1 manager + engine per node' },
   { key: 'gvisor', title: 'gVisor runtime class', what: 'RuntimeClass "gvisor" for sandboxed pods; uses KVM acceleration on machines that expose it.', size: 'no running pods' },
 ]
 
@@ -309,7 +310,7 @@ export function PlatformStep({ draft, setCluster, patch }: { draft: Draft; setCl
       <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
         {addons.map((a) => {
           const on = c.spec.platform[a.key].enabled
-          const blocked = a.key === 'longhorn' && !c.spec.nodes.some((n) => n.dataDisks?.length) ? 'No node has a data disk.' : ''
+          const blocked = a.key === 'longhorn' && !hasData(c) ? 'No node has storage.' : a.key === 'builds' && (!c.spec.platform.metallb.enabled || !c.spec.platform.longhorn?.enabled) ? 'Needs MetalLB and Longhorn.' : ''
           return (
             <label key={a.key} class={`panel p-4 flex gap-3 cursor-pointer ${on ? 'border-accent/60' : ''} ${draft.skipPlatform || blocked ? 'opacity-50' : ''}`}>
               <input type="checkbox" class="mt-1" checked={on && !blocked} disabled={draft.skipPlatform || !!blocked} onChange={(e) => toggle(a.key, (e.target as HTMLInputElement).checked)} />

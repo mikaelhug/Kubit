@@ -176,6 +176,8 @@ func (w *Watcher) Run(ctx context.Context) {
 				cancel()
 				delete(w.running, name)
 				delete(w.last, name)
+				delete(w.trackers, name)
+				delete(w.lastServices, name)
 			}
 		}
 	}

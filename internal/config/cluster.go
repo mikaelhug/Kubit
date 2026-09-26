@@ -15,6 +15,7 @@ import (
 	"time"
 
 	talosconfig "github.com/siderolabs/talos/pkg/machinery/config"
+	"github.com/siderolabs/talos/pkg/machinery/config/types/block"
 	"github.com/siderolabs/talos/pkg/machinery/constants"
 	"github.com/siderolabs/talos/pkg/machinery/gendata"
 	"go.yaml.in/yaml/v4"
@@ -68,7 +69,35 @@ type Spec struct {
 	Maintenance Maintenance `yaml:"maintenance,omitempty" json:"maintenance,omitempty"`
 	// Auth wires the cluster's API server to an OpenID Connect provider so people
 	// use kubectl with their own identity and RBAC binds to their groups.
-	Auth ClusterAuth `yaml:"auth,omitempty" json:"auth,omitempty"`
+	Auth    ClusterAuth `yaml:"auth,omitempty" json:"auth,omitempty"`
+	Storage Storage     `yaml:"storage,omitempty" json:"storage,omitempty"`
+}
+
+type Storage struct {
+	SystemDisk    bool   `yaml:"systemDisk,omitempty" json:"systemDisk,omitempty"`
+	EphemeralSize string `yaml:"ephemeralSize,omitempty" json:"ephemeralSize,omitempty"`
+}
+
+const (
+	DefaultEphemeralSize = "40GiB"
+	MinEphemeralBytes    = 10 << 30
+	MinSystemDataSize    = "10GiB"
+	SystemDataVolume     = "data-system"
+)
+
+func (s Storage) EphemeralBytes() (uint64, error) {
+	var size block.Size
+	if err := size.UnmarshalText([]byte(s.EphemeralSize)); err != nil {
+		return 0, err
+	}
+	if size.IsRelative() || size.IsNegative() {
+		return 0, fmt.Errorf("must be an absolute size like 40GiB")
+	}
+	return size.Value(), nil
+}
+
+func (c *Cluster) SharesSystemDisk(n Node) bool {
+	return c.Spec.Storage.SystemDisk && len(n.DataDisks) == 0
 }
 
 type ClusterAuth struct {
@@ -259,22 +288,49 @@ type Platform struct {
 	// StorageClass, volume snapshots, backups to S3. Needs dataDisks on the nodes
 	// that should hold replicas; Talos gets the iscsi and util-linux extensions.
 	Longhorn Addon `yaml:"longhorn" json:"longhorn"`
+	Builds   Addon `yaml:"builds" json:"builds"`
 }
 
 // AddOns reports whether any in-cluster add-on is enabled: the workers then carry
 // MetalLB, ingress and metrics pods on top of the kubelet.
 func (p Platform) AddOns() bool {
-	return p.MetalLB.Enabled || p.IngressNginx.Enabled || p.MetricsServer.Enabled || p.CertManager.Enabled || p.Flux.Enabled || p.Longhorn.Enabled
+	return p.MetalLB.Enabled || p.IngressNginx.Enabled || p.MetricsServer.Enabled || p.CertManager.Enabled || p.Flux.Enabled || p.Longhorn.Enabled || p.Builds.Enabled
+}
+
+const (
+	RegistryHost = "registry.kubit"
+	RegistryPort = 5000
+)
+
+func (c *Cluster) RegistryIP() string {
+	_, end, err := ParseIPRange(c.Spec.Platform.MetalLB.Range)
+	if err != nil {
+		return ""
+	}
+	return end.String()
+}
+
+func (c *Cluster) MetalLBPool() string {
+	r := c.Spec.Platform.MetalLB.Range
+	if !c.Spec.Platform.Builds.Enabled {
+		return r
+	}
+	start, end, err := ParseIPRange(r)
+	if err != nil || start == end {
+		return r
+	}
+	return start.String() + "-" + end.Prev().String()
 }
 
 // LonghornExtensions are the Talos system extensions Longhorn's engine needs.
 var LonghornExtensions = []string{"siderolabs/iscsi-tools", "siderolabs/util-linux-tools"}
 
-// LonghornNodes are the nodes that carry Longhorn replicas: those with data disks.
+// LonghornNodes are the nodes that carry Longhorn replicas: those with data disks,
+// and those sharing their system disk.
 func (c *Cluster) LonghornNodes() []Node {
 	var out []Node
 	for _, n := range c.Spec.Nodes {
-		if len(n.DataDisks) > 0 {
+		if len(n.DataDisks) > 0 || c.SharesSystemDisk(n) {
 			out = append(out, n)
 		}
 	}
@@ -397,6 +453,9 @@ func (c *Cluster) applyDefaults() {
 	}
 	if c.Spec.Network.ServiceCIDR == "" {
 		c.Spec.Network.ServiceCIDR = constants.DefaultIPv4ServiceCIDR
+	}
+	if c.Spec.Storage.SystemDisk && c.Spec.Storage.EphemeralSize == "" {
+		c.Spec.Storage.EphemeralSize = DefaultEphemeralSize
 	}
 	if r := c.Spec.Platform.Flux.Repository; r != nil && r.URL == "" {
 		c.Spec.Platform.Flux.Repository = nil
@@ -549,7 +608,23 @@ func (c *Cluster) Validate() error {
 		errs = append(errs, err)
 	}
 	if c.Spec.Platform.Longhorn.Enabled && len(c.LonghornNodes()) == 0 {
-		errs = append(errs, fmt.Errorf("platform.longhorn needs dataDisks on at least one node to hold replicas"))
+		errs = append(errs, fmt.Errorf("platform.longhorn needs storage.systemDisk or dataDisks on at least one node to hold replicas"))
+	}
+	if b := c.Spec.Platform; b.Builds.Enabled {
+		start, end, err := ParseIPRange(b.MetalLB.Range)
+		if !b.MetalLB.Enabled || err != nil || start == end {
+			errs = append(errs, fmt.Errorf("platform.builds needs MetalLB with a range of at least 2 addresses; the last one serves the registry"))
+		}
+		if !b.Longhorn.Enabled {
+			errs = append(errs, fmt.Errorf("platform.builds needs Longhorn for the registry's volume"))
+		}
+	}
+	if s := c.Spec.Storage; s.EphemeralSize != "" {
+		if b, err := s.EphemeralBytes(); err != nil {
+			errs = append(errs, fmt.Errorf("storage.ephemeralSize %q: %w", s.EphemeralSize, err))
+		} else if b < MinEphemeralBytes {
+			errs = append(errs, fmt.Errorf("storage.ephemeralSize %q: at least 10GiB", s.EphemeralSize))
+		}
 	}
 	if r := c.Spec.Platform.Flux.Repository; r != nil {
 		if err := r.Validate(); err != nil {

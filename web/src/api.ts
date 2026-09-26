@@ -16,6 +16,7 @@ export interface HealthEvent { id: number; ts: string; cluster: string; node?: s
 export interface ServiceHealth { collectedAt: string; metallb: boolean; workloads?: { kind: string; namespace: string; name: string; ready: number; desired: number; available: boolean; ageSec: number }[]; pods?: { namespace: string; name: string; node?: string; owner?: string; phase: string; restarts: number; ageSec: number }[]; claims?: { namespace: string; name: string; phase: string; ageSec: number }[]; services?: { namespace: string; name: string; type: string; hasSelector: boolean; endpoints: number; ageSec: number }[]; ingresses?: { namespace: string; name: string; hasAddress: boolean; ageSec: number }[]; pool?: { range: string; total: number; allocated: number } }
 export interface Sample { ts: string; node?: string; cpuMilli: number; cpuCap: number; memBytes: number; memCap: number; pods: number; ready: boolean; reachable: boolean; disk?: number; diskCap?: number }
 export interface SOPSKey { cluster: string; recipient: string; createdAt: string }
+export interface Build { name: string; image?: string; state: 'running' | 'succeeded' | 'failed'; pod?: string; startedAt?: string; finishedAt?: string }
 export interface FluxRepository { url: string; branch?: string; path?: string; interval?: string }
 export interface FluxObject { kind: string; namespace: string; name: string; ready: 'True' | 'False' | 'Unknown'; reason?: string; message?: string; revision?: string; suspended?: boolean; since?: string }
 export interface ImageStatus { talosVersion: string; installed: string; desired: string; extensions?: string[]; outdated: boolean }
@@ -46,7 +47,7 @@ export interface Pool { name: string; role: 'controlplane' | 'worker'; labels?: 
 export interface Warning { level: 'info' | 'warn'; code: string; message: string; node?: string }
 export interface AddonSpec { enabled: boolean; values?: Record<string, unknown> }
 export interface Snapshot { id: number; cluster: string; ts: string; node: string; sizeBytes: number; sha256: string; keys: number; talosVersion?: string; k8sVersion?: string; source: 'manual' | 'schedule' | 'pre-upgrade'; status: 'ok' | 'corrupt' | 'missing'; offsite?: string }
-export interface PlatformSpec { metallb: AddonSpec & { range?: string }; ingressNginx: AddonSpec; gvisor: AddonSpec; metricsServer: AddonSpec; certManager: AddonSpec; flux: AddonSpec & { repository?: FluxRepository }; longhorn: AddonSpec }
+export interface PlatformSpec { metallb: AddonSpec & { range?: string }; ingressNginx: AddonSpec; gvisor: AddonSpec; metricsServer: AddonSpec; certManager: AddonSpec; flux: AddonSpec & { repository?: FluxRepository }; longhorn: AddonSpec; builds: AddonSpec }
 export interface ClusterSpec {
   apiVersion: string; kind: string; metadata: { name: string }
   spec: {
@@ -59,6 +60,7 @@ export interface ClusterSpec {
     backup?: { etcd: { interval?: string; keep?: number } }
     maintenance?: { window?: string; timezone?: string }
     auth?: { oidc?: ClusterOIDC }
+    storage?: { systemDisk?: boolean; ephemeralSize?: string }
   }
 }
 export interface ClusterOIDC { issuer: string; clientID: string; usernameClaim?: string; usernamePrefix?: string; groupsClaim?: string; groupsPrefix?: string; adminGroup?: string }
@@ -242,6 +244,7 @@ export const api = {
   imageStatus: (name: string) => req<ImageStatus>('GET', `/clusters/${name}/image`),
   sopsKey: (name: string) => req<SOPSKey>('GET', `/clusters/${name}/sops`),
   flux: (name: string) => req<FluxObject[]>('GET', `/clusters/${name}/flux`),
+  builds: (name: string) => req<Build[]>('GET', `/clusters/${name}/builds`),
   importSOPSKey: (name: string, keys: string) => req<SOPSKey>('PUT', `/clusters/${name}/sops/identity`, { keys }),
   pods: (name: string, namespace = '', selector = '') => req<PodSummary[]>('GET', `/clusters/${name}/pods?namespace=${encodeURIComponent(namespace)}&selector=${encodeURIComponent(selector)}`),
   podEvents: (name: string, ns: string, pod: string) => req<PodEvent[]>('GET', `/clusters/${name}/pods/${ns}/${pod}/events`),

@@ -155,8 +155,8 @@ func TestDesignEnablesOnlyWhatAClusterNeeds(t *testing.T) {
 	if !p.MetalLB.Enabled || !p.IngressNginx.Enabled || !p.MetricsServer.Enabled || !p.CertManager.Enabled || !p.Flux.Enabled {
 		t.Errorf("a ready cluster needs networking, metrics, certificates and GitOps: %+v", p)
 	}
-	if p.GVisor.Enabled || p.Longhorn.Enabled {
-		t.Errorf("gVisor is opt-in, Longhorn needs data disks: %+v", p)
+	if p.GVisor.Enabled || !p.Longhorn.Enabled || !c.Spec.Storage.SystemDisk || c.Spec.Storage.EphemeralSize != config.DefaultEphemeralSize {
+		t.Errorf("gVisor is opt-in; Longhorn shares the system disks: %+v %+v", p, c.Spec.Storage)
 	}
 	d := []config.MachineDisk{{DevPath: "/dev/vda", SizeBytes: 20 << 30}, {DevPath: "/dev/vdb", SizeBytes: 20 << 30}}
 	ms := []config.Machine{
@@ -169,5 +169,17 @@ func TestDesignEnablesOnlyWhatAClusterNeeds(t *testing.T) {
 	}
 	if err := c.Validate(); err != nil {
 		t.Error(err)
+	}
+}
+
+func TestDesignWarnsWhenTheSystemDiskIsTooSmallToShare(t *testing.T) {
+	ms := []config.Machine{{IP: "10.0.0.41", MAC: "aa:aa:aa:aa:aa:41", Arch: "arm64", CPUs: 2, MemBytes: 4 << 30, Virtual: true, Disks: []config.MachineDisk{{DevPath: "/dev/vda", SizeBytes: 40 << 30}}}}
+	_, warnings := config.Design("one", ms, config.DesignOptions{})
+	found := false
+	for _, w := range warnings {
+		found = found || w.Code == "small-system-disk"
+	}
+	if !found {
+		t.Errorf("a 40 GiB system disk leaves nothing after a 40 GiB /var: %+v", warnings)
 	}
 }

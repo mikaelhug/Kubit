@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/netip"
+	"net/url"
+	"path"
 	"strings"
 	"time"
 
@@ -17,6 +19,7 @@ import (
 	"github.com/siderolabs/talos/pkg/machinery/config/generate/secrets"
 	"github.com/siderolabs/talos/pkg/machinery/config/machine"
 	"github.com/siderolabs/talos/pkg/machinery/config/types/block"
+	"github.com/siderolabs/talos/pkg/machinery/config/types/cri"
 	"github.com/siderolabs/talos/pkg/machinery/config/types/k8s"
 	"github.com/siderolabs/talos/pkg/machinery/config/types/meta"
 	"github.com/siderolabs/talos/pkg/machinery/config/types/network"
@@ -139,6 +142,19 @@ func generateNode(c *Cluster, in *generate.Input, n Node, installerImage string)
 		}
 		docs = append(docs, vol)
 	}
+	if c.SharesSystemDisk(n) {
+		if _, err := c.Spec.Storage.EphemeralBytes(); err != nil {
+			return nil, err
+		}
+		eph := ephemeralVolume(&docs)
+		eph.ProvisioningSpec.ProvisioningMaxSize = block.MustSize(c.Spec.Storage.EphemeralSize)
+		eph.ProvisioningSpec.ProvisioningGrow = new(false)
+		vol, err := systemVolume()
+		if err != nil {
+			return nil, err
+		}
+		docs = append(docs, vol)
+	}
 
 	host := findOrAppend(&docs, network.NewHostnameConfigV1Alpha1)
 	host.ConfigAuto = nil
@@ -159,12 +175,12 @@ func generateNode(c *Cluster, in *generate.Input, n Node, installerImage string)
 		node.LabelsConfig[LabelDataDisks] = fmt.Sprint(len(n.DataDisks))
 	}
 	if c.Spec.Platform.Longhorn.Enabled {
-		if len(n.DataDisks) > 0 {
+		if mounts := c.StorageMounts(n); len(mounts) > 0 {
 			node.LabelsConfig[LabelLonghornDisk] = "config"
 			if node.AnnotationsConfig == nil {
 				node.AnnotationsConfig = map[string]string{}
 			}
-			node.AnnotationsConfig[AnnotationLonghornDisks] = longhornDisksConfig(len(n.DataDisks))
+			node.AnnotationsConfig[AnnotationLonghornDisks] = longhornDisksConfig(mounts)
 		} else {
 			node.LabelsConfig[LabelLonghornDisk] = "false"
 		}
@@ -225,6 +241,13 @@ func generateNode(c *Cluster, in *generate.Input, n Node, installerImage string)
 		v := network.NewLayer2VIPConfigV1Alpha1(vip)
 		v.LinkName = linkName
 		docs = append(docs, v)
+	}
+	if c.Spec.Platform.Builds.Enabled {
+		mirror, err := registryMirror(c.RegistryIP())
+		if err != nil {
+			return nil, err
+		}
+		docs = append(docs, mirror)
 	}
 	if nameservers := firstNonEmpty(nodeNameservers(n), c.Spec.Network.Nameservers); len(nameservers) > 0 {
 		resolver := findOrAppend(&docs, network.NewResolverConfigV1Alpha1)
@@ -315,6 +338,17 @@ func uplinkSelector(mac string) (cel.Expression, error) {
 // under /var/mnt/<name>).
 func DataMount(n int) string { return fmt.Sprintf("/var/mnt/data-%d", n) }
 
+func (c *Cluster) StorageMounts(n Node) []string {
+	var out []string
+	for i := range n.DataDisks {
+		out = append(out, DataMount(i+1))
+	}
+	if c.SharesSystemDisk(n) {
+		out = append(out, "/var/mnt/"+SystemDataVolume)
+	}
+	return out
+}
+
 // dataVolume claims a whole disk for node-local storage: xfs, mounted at DataMount.
 func dataVolume(n int, path string) (*block.UserVolumeConfigV1Alpha1, error) {
 	vol := block.NewUserVolumeConfigV1Alpha1()
@@ -327,6 +361,44 @@ func dataVolume(n int, path string) (*block.UserVolumeConfigV1Alpha1, error) {
 	vol.ProvisioningSpec.DiskSelectorSpec.Match = match
 	vol.FilesystemSpec.FilesystemType = blockres.FilesystemTypeXFS
 	return vol, nil
+}
+
+func registryMirror(ip string) (*cri.RegistryMirrorConfigV1Alpha1, error) {
+	u, err := url.Parse(fmt.Sprintf("http://%s:%d", ip, RegistryPort))
+	if err != nil {
+		return nil, err
+	}
+	m := cri.NewRegistryMirrorConfigV1Alpha1(RegistryHost)
+	m.RegistryEndpoints = []cri.RegistryEndpoint{{EndpointURL: meta.URL{URL: u}}}
+	m.RegistrySkipFallback = new(true)
+	return m, nil
+}
+
+func systemVolume() (*block.UserVolumeConfigV1Alpha1, error) {
+	vol := block.NewUserVolumeConfigV1Alpha1()
+	vol.MetaName = SystemDataVolume
+	vol.VolumeType = new(blockres.VolumeTypePartition)
+	match, err := cel.ParseBooleanExpression("system_disk", celenv.DiskLocator())
+	if err != nil {
+		return nil, err
+	}
+	vol.ProvisioningSpec.DiskSelectorSpec.Match = match
+	vol.ProvisioningSpec.ProvisioningMinSize = block.MustByteSize(MinSystemDataSize)
+	vol.ProvisioningSpec.ProvisioningGrow = new(true)
+	vol.FilesystemSpec.FilesystemType = blockres.FilesystemTypeXFS
+	return vol, nil
+}
+
+func ephemeralVolume(docs *[]config.Document) *block.VolumeConfigV1Alpha1 {
+	for _, d := range *docs {
+		if v, ok := d.(*block.VolumeConfigV1Alpha1); ok && v.MetaName == constants.EphemeralPartitionLabel {
+			return v
+		}
+	}
+	v := block.NewVolumeConfigV1Alpha1()
+	v.MetaName = constants.EphemeralPartitionLabel
+	*docs = append(*docs, v)
+	return v
 }
 
 // diskSelector builds the CEL expression Talos evaluates against each disk at install.
@@ -379,11 +451,11 @@ func ParseSecrets(b []byte) (*secrets.Bundle, error) {
 	return &bundle, nil
 }
 
-// longhornDisksConfig lists every data-disk mount as a schedulable Longhorn disk.
-func longhornDisksConfig(n int) string {
-	disks := make([]map[string]any, 0, n)
-	for i := 1; i <= n; i++ {
-		disks = append(disks, map[string]any{"path": fmt.Sprintf("/var/mnt/data-%d", i), "allowScheduling": true, "name": fmt.Sprintf("data-%d", i)})
+// longhornDisksConfig lists every storage mount as a schedulable Longhorn disk.
+func longhornDisksConfig(mounts []string) string {
+	disks := make([]map[string]any, 0, len(mounts))
+	for _, m := range mounts {
+		disks = append(disks, map[string]any{"path": m, "allowScheduling": true, "name": path.Base(m)})
 	}
 	b, _ := json.Marshal(disks)
 	return string(b)

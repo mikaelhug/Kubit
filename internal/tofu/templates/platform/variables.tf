@@ -9,6 +9,7 @@ variable "metallb" {
   type = object({
     enabled = bool
     range   = optional(string, "")
+    pool    = optional(string, "")
     values  = optional(any, {})
   })
 }
@@ -35,6 +36,15 @@ variable "flux" {
     values     = optional(any, {})
     repository = optional(object({ url = string, branch = string, path = string, interval = string }))
   })
+}
+
+variable "builds" {
+  type = object({
+    enabled       = bool
+    ip            = optional(string, "")
+    registry_size = optional(string, "5Gi")
+  })
+  default = { enabled = false }
 }
 
 variable "longhorn" {

@@ -28,6 +28,7 @@ type FluxHealth struct {
 	Namespace string `json:"namespace"`
 	Name      string `json:"name"`
 	Ready     string `json:"ready"`
+	Reason    string `json:"reason,omitempty"`
 	Message   string `json:"message,omitempty"`
 	Suspended bool   `json:"suspended,omitempty"`
 }
@@ -131,7 +132,7 @@ func (m *Manager) ServiceHealth(ctx context.Context, name string) (*ServiceHealt
 	if c.Spec.Platform.Flux.Enabled {
 		if objs, err := kc.FluxObjects(ctx); err == nil {
 			for _, o := range objs {
-				out.Flux = append(out.Flux, FluxHealth{Kind: o.Kind, Namespace: o.Namespace, Name: o.Name, Ready: o.Ready, Message: o.Message, Suspended: o.Suspended})
+				out.Flux = append(out.Flux, FluxHealth{Kind: o.Kind, Namespace: o.Namespace, Name: o.Name, Ready: o.Ready, Reason: o.Reason, Message: o.Message, Suspended: o.Suspended})
 			}
 		}
 	}

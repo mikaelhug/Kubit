@@ -277,6 +277,19 @@
     backups).
   - The Flux card shows the recipient Kubit holds, not whether the cluster's
     `flux-system/sops-age` still matches it; a drift check could compare the two.
+- Builds follow-ups: rootless BuildKit (needs `user.max_user_namespaces` > 0 on the
+  nodes), TLS and auth for buildkitd and the registry (the registry answers on a LAN
+  address), registry garbage collection of old tags, private Git repositories (a deploy
+  key), build logs streamed in the UI instead of the raw log link, rebuilds on source
+  changes without a version bump.
+- Platform apply: a Deployment that never rolls out (the registry on the first M25
+  run) blocks `tofu apply` for 10 minutes with no progress line; Kubit could surface
+  the pod's events while it waits.
+- The lab dialog and wizard take no sync interval, so a push lands within the 5 min
+  default; *Sync now* (Flux follow-ups) would cover demos.
+- Storage on the system disk: Kubit does not detect an existing node whose EPHEMERAL
+  already fills the disk (the `data-system` volume then stays unprovisioned); the node
+  page could show the live volume status.
 - Flux (M24) follow-ups:
   - *Sync now* on the Flux card: annotate the GitRepository with
     `reconcile.fluxcd.io/requestedAt` instead of waiting for the interval.

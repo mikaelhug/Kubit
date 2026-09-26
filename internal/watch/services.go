@@ -224,11 +224,13 @@ func (t *ServiceTracker) Derive(name string, cur *cluster.ServiceHealth, now tim
 		}
 		key := Key(f.Kind, f.Namespace, f.Name)
 		obj := fmt.Sprintf("%s %s/%s", f.Kind, f.Namespace, f.Name)
-		switch f.Ready {
-		case "False":
+		switch {
+		case f.Ready == "False" && f.Reason == "DependencyNotReady":
+			present[key] = true
+		case f.Ready == "False":
 			msg, _, _ := strings.Cut(f.Message, "\n")
 			unhealthy(key, "flux.not-ready", "warn", fmt.Sprintf("%s is not ready: %s", obj, msg))
-		case "True":
+		case f.Ready == "True":
 			healthy(key, "flux.ready", obj+" is ready again")
 		default:
 			present[key] = true

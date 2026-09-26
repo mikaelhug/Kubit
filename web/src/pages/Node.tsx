@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'preact/hooks'
-import { api, fmt, logsUrl, type ClusterRow, type Inventory, type NodeDetail, type NodeRow, type NodeSpec, type PodSummary, type Service } from '../api'
+import { api, fmt, logsUrl, type ClusterRow, type ClusterSpec, type Inventory, type NodeDetail, type NodeRow, type NodeSpec, type PodSummary, type Service } from '../api'
 import { useLocation } from 'preact-iso'
 import { clusters, connected, machineList, machines, operations, refreshKey, resyncing, statuses, toast, watch } from '../store'
 import { ReaddressDialog } from './cluster/Nodes'
@@ -76,7 +76,7 @@ export function NodePage({ ip: ipParam, mac }: { ip?: string; mac?: string }) {
       </header>
       <div class="p-5 flex flex-col gap-4 max-w-[1300px]">
         <ErrorBox error={error} />
-        {shown === 'overview' && <OverviewTab inv={inv} invErr={invErr} k8s={k8s} k8sErr={k8sErr} node={node} spec={spec} />}
+        {shown === 'overview' && <OverviewTab inv={inv} invErr={invErr} k8s={k8s} k8sErr={k8sErr} node={node} spec={spec} storage={cluster?.spec.spec.storage} />}
         {shown === 'hardware' && <HardwareTab inv={inv} invErr={invErr} node={node} />}
         {shown === 'kubernetes' && <KubernetesTab k8s={k8s} err={k8sErr} />}
         {shown === 'services' && <ServicesTab ip={ip} cluster={node?.cluster} />}
@@ -99,7 +99,7 @@ function ReachPill({ node, inv, invErr }: { node: NodeRow; inv: Inventory | null
   return null
 }
 
-function OverviewTab({ inv, invErr, k8s, k8sErr, node, spec }: { inv: Inventory | null; invErr: string | null; k8s: NodeDetail | null; k8sErr: string | null; node: NodeRow | null; spec?: NodeSpec }) {
+function OverviewTab({ inv, invErr, k8s, k8sErr, node, spec, storage }: { inv: Inventory | null; invErr: string | null; k8s: NodeDetail | null; k8sErr: string | null; node: NodeRow | null; spec?: NodeSpec; storage?: ClusterSpec['spec']['storage'] }) {
   if (!node) return <div class="text-muted">Loading…</div>
   const host = hostOf(node)
   const identity = (
@@ -114,6 +114,7 @@ function OverviewTab({ inv, invErr, k8s, k8sErr, node, spec }: { inv: Inventory 
           ['Last seen', fmt.datetime(lastSeenOf(node))],
           ...(spec ? [['Install disk', <span class="mono">{spec.installDisk?.path ?? (spec.installDisk?.selector ? JSON.stringify(spec.installDisk.selector) : 'pool policy')}</span>] as [string, any]] : []),
           ...(spec?.dataDisks?.length ? [['Data disks', <span class="mono">{spec.dataDisks.map((d, i) => `${d} → /var/mnt/data-${i + 1}`).join(' · ')}</span>] as [string, any]] : []),
+          ...(spec && !spec.dataDisks?.length && storage?.systemDisk ? [['System disk', <span class="mono">/var {storage.ephemeralSize ?? '40GiB'} · rest → /var/mnt/data-system</span>] as [string, any]] : []),
         ]} />
       </div>
     </Section>

@@ -83,7 +83,9 @@ func Design(name string, machines []Machine, opts DesignOptions) (*Cluster, []Wa
 		}
 		c.Spec.Nodes = append(c.Spec.Nodes, n)
 	}
+	c.Spec.Storage.SystemDisk = true
 	c.Spec.Platform.Longhorn.Enabled = len(c.LonghornNodes()) > 0
+	c.Spec.Platform.Builds.Enabled = c.Spec.Platform.Longhorn.Enabled
 	if opts.MetalLBRange != "" {
 		c.Spec.Platform.MetalLB.Range = opts.MetalLBRange
 	} else if len(machines) > 0 {
@@ -192,6 +194,14 @@ func Lint(c *Cluster, machines []Machine) []Warning {
 				warn("warn", "no-disk", n.Hostname, "%s has no install disk candidate.", n.Hostname)
 			} else if m.Disks[0].SizeBytes < 20<<30 {
 				warn("warn", "small-disk", n.Hostname, "%s: largest disk is %d GiB; Talos wants 10 GiB plus room for images and etcd.", n.Hostname, m.Disks[0].SizeBytes>>30)
+			}
+			if c.SharesSystemDisk(n) {
+				eph, _ := c.Spec.Storage.EphemeralBytes()
+				for _, d := range m.Disks {
+					if d.DevPath == n.InstallDisk.Path && d.SizeBytes < eph+(10<<30) {
+						warn("warn", "small-system-disk", n.Hostname, "%s: the %d GiB system disk leaves under 10 GiB for storage after /var (%s).", n.Hostname, d.SizeBytes>>30, c.Spec.Storage.EphemeralSize)
+					}
+				}
 			}
 			for _, d := range n.DataDisks {
 				if !hasDisk(m.Disks, d) {

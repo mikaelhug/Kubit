@@ -1,6 +1,7 @@
 package cluster
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"os"
@@ -177,6 +178,9 @@ func (m *Manager) ApplyPlatform(ctx context.Context, name string, sink Sink) err
 		if err := m.installSOPSKey(ctx, name, sink); err != nil {
 			return err
 		}
+		if err := m.ensureRegistryMirror(ctx, name, sink); err != nil {
+			return err
+		}
 		sink.emit(Info, "apply", "", "no changes")
 		sink.skip("apply")
 		return m.recordPlatform(ctx, name, r, sum, sink)
@@ -185,6 +189,9 @@ func (m *Manager) ApplyPlatform(ctx context.Context, name string, sink Sink) err
 }
 
 func (m *Manager) applyWith(ctx context.Context, name string, r *tofu.Runner, sink Sink) error {
+	if err := m.ensureRegistryMirror(ctx, name, sink); err != nil {
+		return err
+	}
 	var sum tofu.Summary
 	err := sink.run("apply", func() error {
 		if err := m.installSOPSKey(ctx, name, sink); err != nil {
@@ -243,4 +250,21 @@ func tofuLogger(sink Sink) func(tofu.Line) {
 			sink.emit(Error, step, l.Hook.Resource.Addr, "%s failed", l.Hook.Action)
 		}
 	}
+}
+
+func (m *Manager) ensureRegistryMirror(ctx context.Context, name string, sink Sink) error {
+	c, _, err := m.LoadCluster(ctx, name)
+	if err != nil || !c.Spec.Platform.Builds.Enabled {
+		return err
+	}
+	want := fmt.Sprintf("http://%s:%d", c.RegistryIP(), config.RegistryPort)
+	for _, n := range c.Spec.Nodes {
+		cfg, err := m.Store.GetNodeMachineConfig(ctx, n.IP)
+		if err == nil && bytes.Contains(cfg, []byte(want)) {
+			continue
+		}
+		sink.emit(Info, "render", "", "updating node registry mirrors (%s → %s)", config.RegistryHost, want)
+		return m.ApplyConfigs(ctx, c, "", sink)
+	}
+	return nil
 }

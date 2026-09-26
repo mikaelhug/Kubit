@@ -16,7 +16,7 @@ const mib = (n: number) => n * 1048576
 
 type VMRow = VMSize & { key: number }
 let vmKey = 0
-const defaultVM = (role: VMSize['role'], mem = 3072): VMRow => ({ key: ++vmKey, role, cpus: 2, memMiB: Math.max(mem, MIN_VM_MIB), diskGiB: 20, dataGiB: 0 })
+const defaultVM = (role: VMSize['role'], mem = 3072): VMRow => ({ key: ++vmKey, role, cpus: 2, memMiB: Math.max(mem, MIN_VM_MIB), diskGiB: 60, dataGiB: 0 })
 export const MIN_CP_MIB = 2048
 export const MIN_VM_MIB = 2048
 const PREFERRED_MIB = 3072

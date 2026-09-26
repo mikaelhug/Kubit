@@ -43,7 +43,7 @@ func TestRenderWritesModuleAndVars(t *testing.T) {
 	if err := tofu.Render(dir, c, "/x/kubeconfig"); err != nil {
 		t.Fatal(err)
 	}
-	for _, f := range []string{"versions.tf", "variables.tf", "metallb.tf", "ingress-nginx.tf", "gvisor.tf", "metrics-server.tf", "cert-manager.tf", "flux.tf", "outputs.tf", "terraform.tfvars.json", "terraform.tfstate"} {
+	for _, f := range []string{"versions.tf", "variables.tf", "metallb.tf", "ingress-nginx.tf", "gvisor.tf", "metrics-server.tf", "cert-manager.tf", "flux.tf", "builds.tf", "outputs.tf", "terraform.tfvars.json", "terraform.tfstate"} {
 		if _, err := os.Stat(filepath.Join(dir, f)); err != nil {
 			t.Errorf("%s missing", f)
 		}
@@ -58,7 +58,8 @@ func TestRenderWritesModuleAndVars(t *testing.T) {
 	}
 	want := map[string]string{
 		"kubeconfig":     `"/x/kubeconfig"`,
-		"metallb":        `{"enabled":true,"range":"10.0.0.200-10.0.0.210","values":{"controller":{"resources":{"requests":{"cpu":"20m","memory":"64Mi"}}},"frrk8s":{"enabled":false},"speaker":{"frr":{"enabled":false},"resources":{"requests":{"cpu":"20m","memory":"64Mi"}}}}}`,
+		"builds":         `{"enabled":false,"ip":"10.0.0.210"}`,
+		"metallb":        `{"enabled":true,"range":"10.0.0.200-10.0.0.210","pool":"10.0.0.200-10.0.0.210","values":{"controller":{"resources":{"requests":{"cpu":"20m","memory":"64Mi"}}},"frrk8s":{"enabled":false},"speaker":{"frr":{"enabled":false},"resources":{"requests":{"cpu":"20m","memory":"64Mi"}}}}}`,
 		"ingress_nginx":  `{"enabled":true,"values":{"controller":{"replicaCount":1,"resources":{"requests":{"cpu":"50m","memory":"128Mi"}}}}}`,
 		"gvisor":         `{"enabled":true,"values":{}}`,
 		"metrics_server": `{"enabled":false,"values":{"resources":{"requests":{"cpu":"20m","memory":"48Mi"}}}}`,

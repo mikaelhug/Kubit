@@ -70,9 +70,15 @@ type fluxVars struct {
 	Repository *config.FluxRepository `json:"repository"`
 }
 
+type buildsVars struct {
+	Enabled bool   `json:"enabled"`
+	IP      string `json:"ip"`
+}
+
 type MetallbVars struct {
 	Enabled bool           `json:"enabled"`
 	Range   string         `json:"range"`
+	Pool    string         `json:"pool"`
 	Values  map[string]any `json:"values"`
 }
 
@@ -128,11 +134,12 @@ func Vars(c *config.Cluster, kubeconfigPath string) map[string]any {
 	p := c.Spec.Platform
 	return map[string]any{
 		"kubeconfig":       kubeconfigPath,
-		"metallb":          MetallbVars{Enabled: p.MetalLB.Enabled, Range: p.MetalLB.Range, Values: merged(metallbDefaults, p.MetalLB.Values)},
+		"metallb":          MetallbVars{Enabled: p.MetalLB.Enabled, Range: p.MetalLB.Range, Pool: c.MetalLBPool(), Values: merged(metallbDefaults, p.MetalLB.Values)},
 		"ingress_nginx":    addonVars{p.IngressNginx.Enabled, merged(ingressDefaults, p.IngressNginx.Values)},
 		"gvisor":           addonVars{p.GVisor.Enabled, vals(p.GVisor.Values)},
 		"metrics_server":   addonVars{p.MetricsServer.Enabled, merged(metricsDefaults, p.MetricsServer.Values)},
 		"cert_manager":     addonVars{p.CertManager.Enabled, vals(p.CertManager.Values)},
+		"builds":           buildsVars{Enabled: p.Builds.Enabled, IP: c.RegistryIP()},
 		"flux":             fluxVars{Enabled: p.Flux.Enabled, Values: vals(p.Flux.Values), Repository: p.Flux.Repository},
 		"longhorn":         longhornVars{Enabled: p.Longhorn.Enabled, Values: vals(p.Longhorn.Values), Replicas: c.LonghornReplicas()},
 		"oidc_admin_group": c.Spec.Auth.AdminGroupSubject(),
