@@ -1,7 +1,6 @@
 package api
 
 import (
-	"encoding/json"
 	"net/http"
 	"strings"
 
@@ -28,8 +27,7 @@ type clusterForm struct {
 
 func (s *Server) handleClusterForm(w http.ResponseWriter, r *http.Request) {
 	var f clusterForm
-	if err := json.NewDecoder(r.Body).Decode(&f); err != nil {
-		writeErr(w, err)
+	if !decodeJSON(w, r, &f) {
 		return
 	}
 	c, ok := s.editCluster(w, r, "cluster.form.save", "", func(c *config.Cluster) error {
@@ -39,8 +37,7 @@ func (s *Server) handleClusterForm(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	out, _ := c.Marshal()
-	writeJSON(w, http.StatusOK, map[string]string{"yaml": string(out)})
+	writeJSON(w, http.StatusOK, map[string]string{"yaml": mustYAML(c)})
 }
 
 func (f clusterForm) apply(c *config.Cluster) {

@@ -64,7 +64,7 @@ func (m *Manager) deleteSnapshotOffsite(ctx context.Context, sn *store.Snapshot)
 }
 
 func (m *Manager) BackupOffsite(ctx context.Context, sink Sink) (string, error) {
-	sink.plan(Steps("archive", "Build the sealed backup archive", "upload", "Upload to the off-site target", "prune", "Apply retention")...)
+	sink.Plan(Steps("archive", "Build the sealed backup archive", "upload", "Upload to the off-site target", "prune", "Apply retention")...)
 	st, target, err := m.Offsite(ctx)
 	if err != nil {
 		return "", err
@@ -76,7 +76,7 @@ func (m *Manager) BackupOffsite(ctx context.Context, sink Sink) (string, error) 
 	defer os.Remove(tmp.Name())
 	defer tmp.Close()
 	var size int64
-	if err := sink.run("archive", func() error {
+	if err := sink.Run("archive", func() error {
 		if err := m.Store.Checkpoint(ctx); err != nil {
 			return err
 		}
@@ -88,33 +88,33 @@ func (m *Manager) BackupOffsite(ctx context.Context, sink Sink) (string, error) 
 			return err
 		}
 		size = info.Size()
-		sink.emit(Info, "archive", "", "%s sealed archive", humanBytes(uint64(size)))
+		sink.Emit(Info, "archive", "", "%s sealed archive", HumanBytes(uint64(size)))
 		return nil
 	}); err != nil {
 		return "", err
 	}
 	key := path.Join("backups", time.Now().UTC().Format("20060102T150405Z")+".kubitbak")
-	if err := sink.run("upload", func() error {
+	if err := sink.Run("upload", func() error {
 		if _, err := tmp.Seek(0, 0); err != nil {
 			return err
 		}
 		if err := st.Put(ctx, key, tmp, size); err != nil {
 			return err
 		}
-		sink.emit(Info, "upload", "", "%s → %s", key, target)
+		sink.Emit(Info, "upload", "", "%s → %s", key, target)
 		return nil
 	}); err != nil {
 		return "", err
 	}
-	if err := sink.run("prune", func() error {
+	if err := sink.Run("prune", func() error {
 		n, err := offsite.PruneOldest(ctx, st, "backups", target.KeepBackups)
 		if err != nil {
 			return err
 		}
 		if n == 0 {
-			sink.skip("prune")
+			sink.Skip("prune")
 		} else {
-			sink.emit(Info, "prune", "", "removed %d older backup(s) beyond keep=%d", n, target.KeepBackups)
+			sink.Emit(Info, "prune", "", "removed %d older backup(s) beyond keep=%d", n, target.KeepBackups)
 		}
 		return nil
 	}); err != nil {
@@ -122,7 +122,7 @@ func (m *Manager) BackupOffsite(ctx context.Context, sink Sink) (string, error) 
 	}
 	_ = m.Store.SetValue(ctx, "offsite.lastBackup", time.Now().UTC().Format(time.RFC3339))
 	_ = m.Store.Audit(ctx, "", "offsite.backup", key)
-	sink.emit(Done, "prune", "", "Kubit backup stored off-site as %s", key)
+	sink.Emit(Done, "prune", "", "Kubit backup stored off-site as %s", key)
 	return key, nil
 }
 

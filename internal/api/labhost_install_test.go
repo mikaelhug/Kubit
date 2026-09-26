@@ -68,7 +68,7 @@ func TestLabWaitBootPhases(t *testing.T) {
 	w0 := newPXEWatch(s, mac, sink)
 	w0.poll(ctx)
 	fake.set(func(p *pxe.Status) {
-		p.Boots = []pxe.Boot{{MAC: mac, Arch: "amd64", Stage: "dhcp", LastSeen: time.Now()}}
+		p.Boots = []pxe.Boot{{MAC: mac, Arch: "amd64", Stage: "dhcp", LastSeen: w0.since.Add(time.Second)}}
 		p.Log = []string{"12:00:00 PXE request from " + mac + " (amd64)"}
 	})
 	err = s.labWaitBoot(ctx, w0)
@@ -83,7 +83,7 @@ func TestLabWaitBootPhases(t *testing.T) {
 	fake.set(func(p *pxe.Status) {
 		p.Boots[0].Stage = "kernel"
 		p.Boots[0].IP = "192.168.5.204"
-		p.Boots[0].LastSeen = time.Now()
+		p.Boots[0].LastSeen = w.since.Add(time.Second)
 	})
 	if err := s.labWaitBoot(ctx, w); err != nil {
 		t.Fatalf("healthy boot: %v", err)
@@ -92,8 +92,9 @@ func TestLabWaitBootPhases(t *testing.T) {
 		t.Errorf("watch must learn the IP from the PXE server, got %q", w.ip)
 	}
 
-	fake.set(func(p *pxe.Status) { p.Boots[0].LastSeen = time.Now().Add(-time.Hour) })
-	if err := s.labWaitBoot(ctx, newPXEWatch(s, mac, sink)); err == nil || !strings.Contains(err.Error(), "no network boot request") {
+	stale := newPXEWatch(s, mac, sink)
+	fake.set(func(p *pxe.Status) { p.Boots[0].LastSeen = stale.since.Add(-time.Hour) })
+	if err := s.labWaitBoot(ctx, stale); err == nil || !strings.Contains(err.Error(), "no network boot request") {
 		t.Errorf("stale boot must not satisfy the boot phase: %v", err)
 	}
 }

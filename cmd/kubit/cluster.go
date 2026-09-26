@@ -7,6 +7,7 @@ import (
 
 	"github.com/mikael/kubit/internal/cluster"
 	"github.com/mikael/kubit/internal/config"
+	"github.com/mikael/kubit/internal/store"
 	"github.com/spf13/cobra"
 )
 
@@ -38,16 +39,11 @@ func clusterCreateCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "create",
 		Short: "Provision a cluster from cluster.yaml on nodes in maintenance mode",
-		RunE: func(cmd *cobra.Command, _ []string) error {
+		RunE: withManager(func(cmd *cobra.Command, _ []string, m *cluster.Manager) error {
 			c, err := config.Load(file)
 			if err != nil {
 				return err
 			}
-			m, err := openManager()
-			if err != nil {
-				return err
-			}
-			defer m.Store.Close()
 			if err := m.Create(cmd.Context(), c, printEvents(cmd)); err != nil {
 				return err
 			}
@@ -55,7 +51,7 @@ func clusterCreateCmd() *cobra.Command {
 				return nil
 			}
 			return m.ApplyPlatform(cmd.Context(), c.Metadata.Name, printEvents(cmd))
-		},
+		}),
 	}
 	cmd.Flags().StringVarP(&file, "file", "f", "cluster.yaml", "cluster declaration")
 	cmd.Flags().BoolVar(&skipPlatform, "skip-platform", false, "stop after the Kubernetes API is up; do not apply platform add-ons")
@@ -66,12 +62,7 @@ func clusterListCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "list",
 		Short: "List clusters",
-		RunE: func(cmd *cobra.Command, _ []string) error {
-			s, err := openStore()
-			if err != nil {
-				return err
-			}
-			defer s.Close()
+		RunE: withStore(func(cmd *cobra.Command, _ []string, s *store.Store) error {
 			rows, err := s.ListClusters(cmd.Context())
 			if err != nil {
 				return err
@@ -87,7 +78,7 @@ func clusterListCmd() *cobra.Command {
 				fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%d\t%s\n", r.Name, r.State, c.Spec.TalosVersion, c.Spec.KubernetesVersion, len(c.Spec.Nodes), r.UpdatedAt)
 			}
 			return tw.Flush()
-		},
+		}),
 	}
 }
 
@@ -96,19 +87,14 @@ func clusterGetCmd() *cobra.Command {
 		Use:   "get <name>",
 		Short: "Print the stored cluster.yaml",
 		Args:  cobra.ExactArgs(1),
-		RunE: func(cmd *cobra.Command, args []string) error {
-			s, err := openStore()
-			if err != nil {
-				return err
-			}
-			defer s.Close()
+		RunE: withStore(func(cmd *cobra.Command, args []string, s *store.Store) error {
 			r, err := s.GetCluster(cmd.Context(), args[0])
 			if err != nil {
 				return err
 			}
 			_, err = cmd.OutOrStdout().Write(r.Spec)
 			return err
-		},
+		}),
 	}
 }
 
@@ -118,12 +104,7 @@ func clusterCredsCmd(kind string) *cobra.Command {
 		Use:   kind + " <name>",
 		Short: "Write the cluster's " + kind + " to a file (or stdout with -o -)",
 		Args:  cobra.ExactArgs(1),
-		RunE: func(cmd *cobra.Command, args []string) error {
-			s, err := openStore()
-			if err != nil {
-				return err
-			}
-			defer s.Close()
+		RunE: withStore(func(cmd *cobra.Command, args []string, s *store.Store) error {
 			sec, err := s.GetClusterSecrets(cmd.Context(), args[0])
 			if err != nil {
 				return err
@@ -143,7 +124,7 @@ func clusterCredsCmd(kind string) *cobra.Command {
 				out = kind
 			}
 			return os.WriteFile(out, data, 0o600)
-		},
+		}),
 	}
 	cmd.Flags().StringVarP(&out, "out", "o", "", "output file (default ./"+kind+"; - for stdout)")
 	return cmd
@@ -154,18 +135,13 @@ func clusterForgetCmd() *cobra.Command {
 		Use:   "forget <name>",
 		Short: "Drop a cluster and its secrets from the store without touching the nodes",
 		Args:  cobra.ExactArgs(1),
-		RunE: func(cmd *cobra.Command, args []string) error {
-			s, err := openStore()
-			if err != nil {
-				return err
-			}
-			defer s.Close()
+		RunE: withStore(func(cmd *cobra.Command, args []string, s *store.Store) error {
 			if _, err := s.GetCluster(cmd.Context(), args[0]); err != nil {
 				return err
 			}
 			_ = s.Audit(cmd.Context(), args[0], "cluster.forget", "")
 			return s.DeleteCluster(cmd.Context(), args[0])
-		},
+		}),
 	}
 }
 
@@ -175,12 +151,7 @@ func clusterApplyCmd() *cobra.Command {
 		Use:   "apply <name>",
 		Short: "Re-apply machine configs regenerated from the stored cluster.yaml (or -f to update it first)",
 		Args:  cobra.ExactArgs(1),
-		RunE: func(cmd *cobra.Command, args []string) error {
-			m, err := openManager()
-			if err != nil {
-				return err
-			}
-			defer m.Store.Close()
+		RunE: withManager(func(cmd *cobra.Command, args []string, m *cluster.Manager) error {
 			c, _, err := m.LoadCluster(cmd.Context(), args[0])
 			if err != nil {
 				return err
@@ -203,7 +174,7 @@ func clusterApplyCmd() *cobra.Command {
 				return err
 			}
 			return m.ApplyPlatform(cmd.Context(), c.Metadata.Name, printEvents(cmd))
-		},
+		}),
 	}
 	cmd.Flags().StringVarP(&file, "file", "f", "", "updated cluster.yaml to store before applying")
 	return cmd
@@ -215,12 +186,7 @@ func clusterExportCmd() *cobra.Command {
 		Use:   "export <name>",
 		Short: "Write native Talos artefacts and an OpenTofu (siderolabs/talos) root for the cluster",
 		Args:  cobra.ExactArgs(1),
-		RunE: func(cmd *cobra.Command, args []string) error {
-			m, err := openManager()
-			if err != nil {
-				return err
-			}
-			defer m.Store.Close()
+		RunE: withManager(func(cmd *cobra.Command, args []string, m *cluster.Manager) error {
 			if out == "" {
 				out = "export-" + args[0]
 			}
@@ -229,7 +195,7 @@ func clusterExportCmd() *cobra.Command {
 			}
 			fmt.Fprintf(cmd.OutOrStdout(), "exported cluster %s to %s\n", args[0], out)
 			return nil
-		},
+		}),
 	}
 	cmd.Flags().StringVarP(&out, "out", "o", "", "output directory (default ./export-<name>)")
 	return cmd

@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/mikael/kubit/internal/config"
+	"github.com/mikael/kubit/internal/k8s"
 	"github.com/mikael/kubit/internal/talos"
 )
 
@@ -25,11 +26,11 @@ func (m *Manager) findNode(ctx context.Context, name, hostname string) (*config.
 }
 
 func (m *Manager) CordonNode(ctx context.Context, name, hostname string, sink Sink) error {
-	sink.plan(Steps("cordon", "Mark "+hostname+" unschedulable")...)
+	sink.Plan(Steps("cordon", "Mark "+hostname+" unschedulable")...)
 	if _, _, err := m.findNode(ctx, name, hostname); err != nil {
 		return err
 	}
-	return sink.run("cordon", func() error {
+	return sink.Run("cordon", func() error {
 		kc, err := m.KubeClient(ctx, name)
 		if err != nil {
 			return err
@@ -38,17 +39,17 @@ func (m *Manager) CordonNode(ctx context.Context, name, hostname string, sink Si
 			return err
 		}
 		_ = m.Store.Audit(ctx, name, "node.cordon", hostname)
-		sink.emit(Done, "cordon", hostname, "cordoned; new pods will not be scheduled here")
+		sink.Emit(Done, "cordon", hostname, "cordoned; new pods will not be scheduled here")
 		return nil
 	})
 }
 
 func (m *Manager) UncordonNode(ctx context.Context, name, hostname string, sink Sink) error {
-	sink.plan(Steps("uncordon", "Mark "+hostname+" schedulable")...)
+	sink.Plan(Steps("uncordon", "Mark "+hostname+" schedulable")...)
 	if _, _, err := m.findNode(ctx, name, hostname); err != nil {
 		return err
 	}
-	return sink.run("uncordon", func() error {
+	return sink.Run("uncordon", func() error {
 		kc, err := m.KubeClient(ctx, name)
 		if err != nil {
 			return err
@@ -57,17 +58,17 @@ func (m *Manager) UncordonNode(ctx context.Context, name, hostname string, sink 
 			return err
 		}
 		_ = m.Store.Audit(ctx, name, "node.uncordon", hostname)
-		sink.emit(Done, "uncordon", hostname, "schedulable again")
+		sink.Emit(Done, "uncordon", hostname, "schedulable again")
 		return nil
 	})
 }
 
 func (m *Manager) DrainNode(ctx context.Context, name, hostname string, sink Sink) error {
-	sink.plan(Steps("drain", "Cordon and evict pods from "+hostname)...)
+	sink.Plan(Steps("drain", "Cordon and evict pods from "+hostname)...)
 	if _, _, err := m.findNode(ctx, name, hostname); err != nil {
 		return err
 	}
-	return sink.run("drain", func() error {
+	return sink.Run("drain", func() error {
 		kc, err := m.KubeClient(ctx, name)
 		if err != nil {
 			return err
@@ -76,7 +77,7 @@ func (m *Manager) DrainNode(ctx context.Context, name, hostname string, sink Sin
 			return err
 		}
 		_ = m.Store.Audit(ctx, name, "node.drain", hostname)
-		sink.emit(Done, "drain", hostname, "drained; uncordon to schedule pods here again")
+		sink.Emit(Done, "drain", hostname, "drained; uncordon to schedule pods here again")
 		return nil
 	})
 }
@@ -87,59 +88,43 @@ func (m *Manager) RebootNode(ctx context.Context, name, hostname string, drainFi
 		steps = append(Steps("drain", "Cordon and evict pods from "+hostname), steps...)
 		steps = append(steps, Step{ID: "uncordon", Title: "Mark schedulable again"})
 	}
-	sink.plan(steps...)
+	sink.Plan(steps...)
 	_, n, err := m.findNode(ctx, name, hostname)
 	if err != nil {
 		return err
 	}
-	sec, err := m.Store.GetClusterSecrets(ctx, name)
-	if err != nil {
-		return err
-	}
-	kc, err := m.KubeClient(ctx, name)
+	sec, kc, err := m.clusterClients(ctx, name)
 	if err != nil {
 		return err
 	}
 	if drainFirst {
-		if err := sink.run("drain", func() error { return kc.Drain(ctx, hostname, 5*time.Minute, sinkWriter{sink, "drain", hostname}) }); err != nil {
+		if err := sink.Run("drain", func() error { return kc.Drain(ctx, hostname, 5*time.Minute, sinkWriter{sink, "drain", hostname}) }); err != nil {
 			return err
 		}
 	}
-	err = sink.run("reboot", func() error {
-		tc, err := talos.Dial(ctx, n.IP, sec.Talosconfig)
+	err = sink.Run("reboot", func() error {
+		err := m.rebootAndWait(ctx, n.IP, sec.Talosconfig, func() {
+			_ = m.Store.Audit(ctx, name, "node.reboot", hostname)
+			sink.Emit(Info, "reboot", hostname, "reboot requested; waiting for the machine to come back")
+		})
 		if err != nil {
 			return err
 		}
-		bootID, err := readBootID(ctx, tc)
-		if err != nil {
-			tc.Close()
-			return err
-		}
-		err = rebootNode(ctx, tc)
-		tc.Close()
-		if err != nil {
-			return err
-		}
-		_ = m.Store.Audit(ctx, name, "node.reboot", hostname)
-		sink.emit(Info, "reboot", hostname, "reboot requested; waiting for the machine to come back")
-		if err := talos.WaitForReboot(ctx, n.IP, sec.Talosconfig, bootID, m.Timeouts.Install); err != nil {
-			return err
-		}
-		sink.emit(Info, "reboot", hostname, "back up")
+		sink.Emit(Info, "reboot", hostname, "back up")
 		return nil
 	})
 	if err != nil {
 		return err
 	}
-	if err := sink.run("ready", func() error { return kc.WaitReady(ctx, []string{hostname}, m.Timeouts.Ready, nil) }); err != nil {
+	if err := sink.Run("ready", func() error { return kc.WaitReady(ctx, []string{hostname}, m.Timeouts.Ready, nil) }); err != nil {
 		return err
 	}
 	if drainFirst {
-		if err := sink.run("uncordon", func() error { return kc.Uncordon(ctx, hostname) }); err != nil {
+		if err := sink.Run("uncordon", func() error { return kc.Uncordon(ctx, hostname) }); err != nil {
 			return err
 		}
 	}
-	sink.emit(Done, steps[len(steps)-1].ID, hostname, "rebooted and Ready")
+	sink.Emit(Done, steps[len(steps)-1].ID, hostname, "rebooted and Ready")
 	return nil
 }
 
@@ -152,12 +137,8 @@ func (m *Manager) UpgradeNode(ctx context.Context, name, hostname, version strin
 		version = c.Spec.TalosVersion
 	}
 	step := nodeStep(n)
-	sink.plan(Step{ID: step, Title: "Upgrade " + hostname + " to Talos " + version, Node: hostname})
-	sec, err := m.Store.GetClusterSecrets(ctx, name)
-	if err != nil {
-		return err
-	}
-	kc, err := m.KubeClient(ctx, name)
+	sink.Plan(Step{ID: step, Title: "Upgrade " + hostname + " to Talos " + version, Node: hostname})
+	sec, kc, err := m.clusterClients(ctx, name)
 	if err != nil {
 		return err
 	}
@@ -166,38 +147,68 @@ func (m *Manager) UpgradeNode(ctx context.Context, name, hostname, version strin
 	}
 	image := m.Factory.InstallerImage(c.SchematicFor(c.PoolOf(n)), version)
 	_ = m.Store.Audit(ctx, name, "node.upgrade", hostname+" "+version)
-	return sink.run(step, func() error {
-		tc, err := talos.Dial(ctx, n.IP, sec.Talosconfig)
+	return sink.Run(step, func() error {
+		already, err := m.upgradeInPlace(ctx, kc, n, sec.Talosconfig, image, version, false, step, sink)
 		if err != nil {
 			return err
 		}
-		v, err := tc.Version(tc.Context(ctx))
-		if err == nil && len(v.Messages) > 0 && v.Messages[0].Version.Tag == version {
-			tc.Close()
-			sink.emit(Done, step, hostname, "already on %s", version)
-			return nil
+		if already {
+			sink.Emit(Done, step, hostname, "already on %s", version)
+		} else {
+			sink.Emit(Done, step, hostname, "on %s and Ready", version)
 		}
-		bootID, err := readBootID(ctx, tc)
-		if err != nil {
-			tc.Close()
-			return err
-		}
-		sink.emit(Info, step, hostname, "upgrading to %s using %s", version, image)
-		err = upgradeNode(ctx, tc, image)
-		tc.Close()
-		if err != nil {
-			return fmt.Errorf("upgrade: %w", err)
-		}
-		if err := talos.WaitForReboot(ctx, n.IP, sec.Talosconfig, bootID, m.Timeouts.Install); err != nil {
-			return err
-		}
-		sink.emit(Info, step, hostname, "rebooted; waiting for Ready")
-		if err := kc.WaitReady(ctx, []string{hostname}, m.Timeouts.Ready, nil); err != nil {
-			return err
-		}
-		sink.emit(Done, step, hostname, "on %s and Ready", version)
 		return nil
 	})
+}
+
+func (m *Manager) upgradeInPlace(ctx context.Context, kc *k8s.Client, n config.Node, talosconfig []byte, image, version string, force bool, step string, sink Sink) (already bool, err error) {
+	tc, err := talos.Dial(ctx, n.IP, talosconfig)
+	if err != nil {
+		return false, err
+	}
+	v, err := tc.Version(tc.Context(ctx))
+	if err == nil && !force && len(v.Messages) > 0 && v.Messages[0].Version.Tag == version {
+		tc.Close()
+		return true, nil
+	}
+	bootID, err := readBootID(ctx, tc)
+	if err != nil {
+		tc.Close()
+		return false, err
+	}
+	sink.Emit(Info, step, n.Hostname, "upgrading to %s from %s (A/B slot install, then reboot)", version, image)
+	err = upgradeNode(ctx, tc, image)
+	tc.Close()
+	if err != nil {
+		return false, fmt.Errorf("upgrade: %w", err)
+	}
+	if err := talos.WaitForReboot(ctx, n.IP, talosconfig, bootID, m.Timeouts.Install); err != nil {
+		return false, err
+	}
+	sink.Emit(Info, step, n.Hostname, "rebooted; waiting for Ready")
+	if err := kc.WaitReady(ctx, []string{n.Hostname}, m.Timeouts.Ready, nil); err != nil {
+		return false, fmt.Errorf("after upgrade: %w", err)
+	}
+	return false, nil
+}
+
+func (m *Manager) rebootAndWait(ctx context.Context, ip string, talosconfig []byte, requested func()) error {
+	tc, err := talos.Dial(ctx, ip, talosconfig)
+	if err != nil {
+		return err
+	}
+	bootID, err := readBootID(ctx, tc)
+	if err != nil {
+		tc.Close()
+		return err
+	}
+	err = rebootNode(ctx, tc)
+	tc.Close()
+	if err != nil {
+		return err
+	}
+	requested()
+	return talos.WaitForReboot(ctx, ip, talosconfig, bootID, m.Timeouts.Install)
 }
 
 type sinkWriter struct {
@@ -208,7 +219,7 @@ type sinkWriter struct {
 
 func (w sinkWriter) Write(p []byte) (int, error) {
 	if s := string(p); len(s) > 1 {
-		w.sink.emit(Info, w.step, w.node, "%s", strings.TrimRight(s, "\r\n"))
+		w.sink.Emit(Info, w.step, w.node, "%s", strings.TrimRight(s, "\r\n"))
 	}
 	return len(p), nil
 }

@@ -15,7 +15,7 @@ func (m *Manager) ApplyConfigs(ctx context.Context, c *config.Cluster, wantKubel
 	if err != nil {
 		return err
 	}
-	kc, err := m.KubeClient(ctx, name)
+	kc, err := kubeClientOf(name, sec)
 	if err != nil {
 		return err
 	}
@@ -25,11 +25,11 @@ func (m *Manager) ApplyConfigs(ctx context.Context, c *config.Cluster, wantKubel
 	}
 	nodes := orderedNodes(c)
 	if wantKubelet == "" {
-		sink.plan(nodeSteps(nodes, "Apply")...)
+		sink.Plan(nodeSteps(nodes, "Apply")...)
 	}
 	for _, n := range nodes {
 		step := nodeStep(n)
-		err := sink.run(step, func() error {
+		err := sink.Run(step, func() error {
 			if err := m.applyNodeConfig(ctx, n, gen.Nodes[n.Hostname], sec.Talosconfig, step, sink); err != nil {
 				return err
 			}
@@ -40,7 +40,7 @@ func (m *Manager) ApplyConfigs(ctx context.Context, c *config.Cluster, wantKubel
 			} else if err := kc.WaitReady(ctx, []string{n.Hostname}, m.Timeouts.Ready, nil); err != nil {
 				return err
 			}
-			sink.emit(Info, step, n.Hostname, "Ready")
+			sink.Emit(Info, step, n.Hostname, "Ready")
 			return nil
 		})
 		if err != nil {
@@ -69,7 +69,7 @@ func (m *Manager) applyNodeConfig(ctx context.Context, n config.Node, cfg []byte
 	if err := m.Store.PutNodeMachineConfig(ctx, n.IP, cfg, config.HasSystemVolume(cfg)); err != nil {
 		return err
 	}
-	sink.emit(Info, step, n.Hostname, "applied: %s", summarizeDryRun(details))
+	sink.Emit(Info, step, n.Hostname, "applied: %s", summarizeDryRun(details))
 	if wantReboot(details) {
 		return talos.WaitForReboot(ctx, n.IP, talosconfig, bootID, m.Timeouts.Install)
 	}

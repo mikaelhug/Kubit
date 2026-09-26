@@ -2,6 +2,7 @@ package cluster
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -16,9 +17,9 @@ import (
 
 func (m *Manager) Create(ctx context.Context, c *config.Cluster, sink Sink) error {
 	name := c.Metadata.Name
-	sink.plan(createSteps...)
+	sink.Plan(createSteps...)
 	if row, err := m.Store.GetCluster(ctx, name); err == nil {
-		if row.State == StateReady || row.State == StateBootstrapped {
+		if Observable(row.State) {
 			return fmt.Errorf("cluster %q already exists (%s)", name, row.State)
 		}
 		stored, err := config.Parse(row.Spec)
@@ -28,29 +29,29 @@ func (m *Manager) Create(ctx context.Context, c *config.Cluster, sink Sink) erro
 		if !sameNodes(stored, c) {
 			return fmt.Errorf("cluster %q is %s with a different node set; forget it first", name, row.State)
 		}
-		sink.emit(Info, "preflight", "", "resuming %s cluster %s", row.State, name)
-		sink.skip("schematic")
-		sink.skip("secrets")
+		sink.Emit(Info, "preflight", "", "resuming %s cluster %s", row.State, name)
+		sink.Skip("schematic")
+		sink.Skip("secrets")
 		return m.resume(ctx, stored, true, sink)
 	} else if !errors.Is(err, store.ErrNotFound) {
 		return err
 	}
-	if err := sink.run("preflight", func() error { return m.preflight(ctx, c, c.Spec.Nodes, sink) }); err != nil {
+	if err := sink.Run("preflight", func() error { return m.preflight(ctx, c, c.Spec.Nodes, sink) }); err != nil {
 		return err
 	}
 
-	if err := sink.run("schematic", func() error {
-		sink.emit(Info, "schematic", "", "resolving Image Factory schematic for %v", c.Spec.Extensions)
+	if err := sink.Run("schematic", func() error {
+		sink.Emit(Info, "schematic", "", "resolving Image Factory schematic for %v", c.Spec.Extensions)
 		if err := m.EnsureSchematic(ctx, c); err != nil {
 			return err
 		}
-		sink.emit(Info, "schematic", "", "installer %s", m.installerImage(c))
+		sink.Emit(Info, "schematic", "", "installer %s", m.installerImage(c))
 		return nil
 	}); err != nil {
 		return err
 	}
 
-	if err := sink.run("secrets", func() error {
+	if err := sink.Run("secrets", func() error {
 		gen, err := config.Generate(c, nil, m.installer(c))
 		if err != nil {
 			return err
@@ -75,7 +76,7 @@ func (m *Manager) Create(ctx context.Context, c *config.Cluster, sink Sink) erro
 			}
 		}
 		_ = m.Store.Audit(ctx, name, "cluster.create", marshalJSON(c.Spec.Nodes))
-		sink.emit(Info, "secrets", "", "cluster secrets and %d machine configs stored", len(gen.Nodes))
+		sink.Emit(Info, "secrets", "", "cluster secrets and %d machine configs stored", len(gen.Nodes))
 		return nil
 	}); err != nil {
 		return err
@@ -105,7 +106,7 @@ func (m *Manager) resume(ctx context.Context, c *config.Cluster, recheck bool, s
 		return err
 	}
 
-	err = sink.run("install", func() error {
+	err = sink.Run("install", func() error {
 		pending, cfgs, err := m.pendingInstall(ctx, c, sec.Talosconfig, sink)
 		if err != nil {
 			return err
@@ -122,13 +123,13 @@ func (m *Manager) resume(ctx context.Context, c *config.Cluster, recheck bool, s
 	}
 
 	cp1 := c.ControlPlanes()[0]
-	if err := sink.run("bootstrap", func() error {
+	if err := sink.Run("bootstrap", func() error {
 		return m.bootstrap(ctx, cp1, sec.Talosconfig, len(c.ControlPlanes()), sink)
 	}); err != nil {
 		return fail(err)
 	}
 
-	err = sink.run("kubeconfig", func() error {
+	err = sink.Run("kubeconfig", func() error {
 		if sec.Kubeconfig == nil {
 			kubeconfig, err := m.fetchKubeconfig(ctx, cp1, sec.Talosconfig, sink)
 			if err != nil {
@@ -138,7 +139,7 @@ func (m *Manager) resume(ctx context.Context, c *config.Cluster, recheck bool, s
 				return err
 			}
 		} else {
-			sink.emit(Info, "kubeconfig", "", "kubeconfig already stored")
+			sink.Emit(Info, "kubeconfig", "", "kubeconfig already stored")
 		}
 		return m.Store.SetClusterState(ctx, name, StateBootstrapped)
 	})
@@ -146,11 +147,11 @@ func (m *Manager) resume(ctx context.Context, c *config.Cluster, recheck bool, s
 		return fail(err)
 	}
 
-	if err := sink.run("ready", func() error { return m.waitReady(ctx, c, c.Spec.Nodes, sink) }); err != nil {
-		sink.emit(Warn, "ready", "", "%v — the cluster is up (etcd + API) but not all nodes are Ready yet; it stays usable and Create can be re-run", err)
+	if err := sink.Run("ready", func() error { return m.waitReady(ctx, c, c.Spec.Nodes, sink) }); err != nil {
+		sink.Emit(Warn, "ready", "", "%v — the cluster is up (etcd + API) but not all nodes are Ready yet; it stays usable and Create can be re-run", err)
 		return err
 	}
-	sink.emit(Done, "ready", "", "cluster %s is up: %d control planes, %d workers", name, len(c.ControlPlanes()), len(c.Workers()))
+	sink.Emit(Done, "ready", "", "cluster %s is up: %d control planes, %d workers", name, len(c.ControlPlanes()), len(c.Workers()))
 	return nil
 }
 
@@ -163,7 +164,7 @@ func (m *Manager) pendingInstall(ctx context.Context, c *config.Cluster, talosco
 		stage, err := talos.Stage(probe, n.TargetIP(), talosconfig)
 		cancel()
 		if err == nil && stage != "maintenance" {
-			sink.emit(Info, "install", n.Hostname, "already installed (stage %s)", stage)
+			sink.Emit(Info, "install", n.Hostname, "already installed (stage %s)", stage)
 			if target := n.TargetIP(); target != n.IP {
 				c.Spec.Nodes[i].IP = target
 				n.IP = target
@@ -181,7 +182,7 @@ func (m *Manager) pendingInstall(ctx context.Context, c *config.Cluster, talosco
 		pending = append(pending, n)
 	}
 	if moved {
-		if err := m.SaveCluster(ctx, c, ""); err != nil {
+		if err := m.saveExisting(ctx, c); err != nil {
 			return nil, nil, fmt.Errorf("record the new addresses: %w", err)
 		}
 	}
@@ -223,11 +224,11 @@ func (m *Manager) preflight(ctx context.Context, c *config.Cluster, nodes []conf
 		case r.Inventory.Arch != string(n.Arch):
 			return fmt.Errorf("%s (%s) is %s, declared %s", n.Hostname, n.IP, r.Inventory.Arch, n.Arch)
 		case n.Role == config.RoleControlPlane && r.Inventory.MemoryBytes > 0 && r.Inventory.MemoryBytes < minControlPlaneBytes:
-			return fmt.Errorf("%s (%s) is a control plane with only %s RAM; a control plane needs at least 2 GiB (etcd + API server) — give it more or make it a worker", n.Hostname, n.IP, humanBytes(r.Inventory.MemoryBytes))
+			return fmt.Errorf("%s (%s) is a control plane with only %s RAM; a control plane needs at least 2 GiB (etcd + API server) — give it more or make it a worker", n.Hostname, n.IP, HumanBytes(r.Inventory.MemoryBytes))
 		case n.Role == config.RoleWorker && c.Spec.Platform.AddOns() && r.Inventory.MemoryBytes > 0 && r.Inventory.MemoryBytes < config.MinWorkerBytes:
-			return fmt.Errorf("%s (%s) is a worker with only %s RAM; Talos and the kubelet leave it too little for the platform add-ons — give it at least 2 GiB", n.Hostname, n.IP, humanBytes(r.Inventory.MemoryBytes))
+			return fmt.Errorf("%s (%s) is a worker with only %s RAM; Talos and the kubelet leave it too little for the platform add-ons — give it at least 2 GiB", n.Hostname, n.IP, HumanBytes(r.Inventory.MemoryBytes))
 		}
-		sink.emit(Info, "preflight", n.Hostname, "%s in maintenance mode, Talos %s %s, %d CPU, %s RAM", n.IP, r.Inventory.TalosVersion, r.Inventory.Arch, r.Inventory.CPUs, humanBytes(r.Inventory.MemoryBytes))
+		sink.Emit(Info, "preflight", n.Hostname, "%s in maintenance mode, Talos %s %s, %d CPU, %s RAM", n.IP, r.Inventory.TalosVersion, r.Inventory.Arch, r.Inventory.CPUs, HumanBytes(r.Inventory.MemoryBytes))
 	}
 	return nil
 }
@@ -267,7 +268,7 @@ func (m *Manager) installAll(ctx context.Context, c *config.Cluster, nodes []con
 	}
 	wg.Wait()
 	if moved {
-		if err := m.SaveCluster(ctx, c, ""); err != nil {
+		if err := m.saveExisting(ctx, c); err != nil {
 			errs = append(errs, err)
 		}
 	}
@@ -292,7 +293,7 @@ func (m *Manager) installOne(ctx context.Context, n config.Node, cfg []byte, tal
 			return fmt.Errorf("%s: switch to disk boot: %w", n.Hostname, derr)
 		}
 		if switched {
-			sink.emit(Info, "install", n.Hostname, "lab VM set to boot from disk")
+			sink.Emit(Info, "install", n.Hostname, "lab VM set to boot from disk")
 		}
 	}
 	err = applyConfig(ctx, tc, cfg)
@@ -302,14 +303,14 @@ func (m *Manager) installOne(ctx context.Context, n config.Node, cfg []byte, tal
 	}
 	target := n.TargetIP()
 	if target != n.IP {
-		sink.emit(Info, "install", n.Hostname, "config applied, installing to disk and rebooting; expecting it on static %s", target)
+		sink.Emit(Info, "install", n.Hostname, "config applied, installing to disk and rebooting; expecting it on static %s", target)
 	} else {
-		sink.emit(Info, "install", n.Hostname, "config applied, installing to disk and rebooting")
+		sink.Emit(Info, "install", n.Hostname, "config applied, installing to disk and rebooting")
 	}
 	if err := talos.WaitForReboot(ctx, target, talosconfig, bootID, m.Timeouts.Install); err != nil {
 		return err
 	}
-	sink.emit(Info, "install", n.Hostname, "rebooted into the installed system at %s", target)
+	sink.Emit(Info, "install", n.Hostname, "rebooted into the installed system at %s", target)
 	return nil
 }
 
@@ -323,9 +324,9 @@ func (m *Manager) bootstrap(ctx context.Context, cp config.Node, talosconfig []b
 	healthy, _ := tc.ServiceHealthy(probe, "etcd")
 	cancel()
 	if healthy {
-		sink.emit(Info, "bootstrap", cp.Hostname, "etcd already bootstrapped")
+		sink.Emit(Info, "bootstrap", cp.Hostname, "etcd already bootstrapped")
 	} else {
-		sink.emit(Info, "bootstrap", cp.Hostname, "bootstrapping etcd")
+		sink.Emit(Info, "bootstrap", cp.Hostname, "bootstrapping etcd")
 		err = talos.Retry(ctx, m.Timeouts.Bootstrap, 5*time.Second, func() error {
 			call, cancel := context.WithTimeout(ctx, 30*time.Second)
 			defer cancel()
@@ -335,8 +336,16 @@ func (m *Manager) bootstrap(ctx context.Context, cp config.Node, talosconfig []b
 			return fmt.Errorf("bootstrap: %w", err)
 		}
 	}
-	sink.emit(Info, "bootstrap", cp.Hostname, "waiting for etcd (%d members expected)", wantMembers)
-	err = talos.Retry(ctx, m.Timeouts.Bootstrap, 5*time.Second, func() error {
+	sink.Emit(Info, "bootstrap", cp.Hostname, "waiting for etcd (%d members expected)", wantMembers)
+	if err := m.waitEtcdMembers(ctx, tc, wantMembers); err != nil {
+		return fmt.Errorf("etcd: %w", err)
+	}
+	sink.Emit(Info, "bootstrap", cp.Hostname, "etcd healthy with %d members", wantMembers)
+	return nil
+}
+
+func (m *Manager) waitEtcdMembers(ctx context.Context, tc *talos.Client, want int) error {
+	return talos.Retry(ctx, m.Timeouts.Bootstrap, 5*time.Second, func() error {
 		call, cancel := context.WithTimeout(ctx, 15*time.Second)
 		defer cancel()
 		ok, err := tc.ServiceHealthy(call, "etcd")
@@ -350,16 +359,11 @@ func (m *Manager) bootstrap(ctx context.Context, cp config.Node, talosconfig []b
 		if err != nil {
 			return err
 		}
-		if n < wantMembers {
-			return talos.NotReady(fmt.Sprintf("etcd has %d/%d members", n, wantMembers))
+		if n < want {
+			return talos.NotReady(fmt.Sprintf("etcd has %d/%d members", n, want))
 		}
 		return nil
 	})
-	if err != nil {
-		return fmt.Errorf("etcd: %w", err)
-	}
-	sink.emit(Info, "bootstrap", cp.Hostname, "etcd healthy with %d members", wantMembers)
-	return nil
 }
 
 func (m *Manager) fetchKubeconfig(ctx context.Context, cp config.Node, talosconfig []byte, sink Sink) ([]byte, error) {
@@ -379,7 +383,7 @@ func (m *Manager) fetchKubeconfig(ctx context.Context, cp config.Node, talosconf
 	if err != nil {
 		return nil, fmt.Errorf("kubeconfig: %w", err)
 	}
-	sink.emit(Info, "kubeconfig", cp.Hostname, "admin kubeconfig stored")
+	sink.Emit(Info, "kubeconfig", cp.Hostname, "admin kubeconfig stored")
 	return kc, nil
 }
 
@@ -392,9 +396,9 @@ func (m *Manager) waitReady(ctx context.Context, c *config.Cluster, nodes []conf
 	for _, n := range nodes {
 		names = append(names, n.Hostname)
 	}
-	sink.emit(Info, "ready", "", "waiting for %d nodes to register and become Ready", len(names))
+	sink.Emit(Info, "ready", "", "waiting for %d nodes to register and become Ready", len(names))
 	err = kc.WaitReady(ctx, names, m.Timeouts.Ready, func(ready, total int) {
-		sink.emit(Info, "ready", "", "%d/%d nodes Ready", ready, total)
+		sink.Emit(Info, "ready", "", "%d/%d nodes Ready", ready, total)
 	})
 	if err != nil {
 		return err
@@ -408,7 +412,38 @@ func (m *Manager) waitReady(ctx context.Context, c *config.Cluster, nodes []conf
 	return nil
 }
 
-func humanBytes(b uint64) string {
+func RowFromScan(res talos.ScanResult) store.NodeRow {
+	row := store.NodeRow{IP: res.IP, Source: "scan", State: string(res.State)}
+	if inv := res.Inventory; inv != nil {
+		row.MAC, row.Arch, row.TalosVersion = inv.PrimaryMAC(), inv.Arch, inv.TalosVersion
+		row.UUID, row.Serial = inv.UUID, inv.Serial
+		row.Hardware, _ = json.Marshal(inv)
+	}
+	return row
+}
+
+func RecordScan(ctx context.Context, st *store.Store, results []talos.ScanResult, note func(res talos.ScanResult, vipOf string)) (int, error) {
+	vips := st.ClusterVIPs(ctx)
+	found := 0
+	for _, res := range results {
+		if res.Err != nil {
+			continue
+		}
+		name, isVIP := vips[res.IP]
+		if !isVIP {
+			if err := st.UpsertNode(ctx, RowFromScan(res)); err != nil {
+				return found, err
+			}
+			found++
+		}
+		if note != nil {
+			note(res, name)
+		}
+	}
+	return found, nil
+}
+
+func HumanBytes(b uint64) string {
 	const unit = 1024
 	if b < unit {
 		return fmt.Sprintf("%dB", b)

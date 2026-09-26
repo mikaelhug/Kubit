@@ -6,6 +6,7 @@ import (
 	"io"
 	"sort"
 	"strings"
+	"time"
 
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -27,35 +28,33 @@ type Workload struct {
 
 func (c *Client) Workloads(ctx context.Context) ([]Workload, error) {
 	var out []Workload
-	age := func(t metav1.Time) string { return metav1.Now().Sub(t.Time).Truncate(1e9).String() }
-	secs := func(t metav1.Time) int64 { return int64(metav1.Now().Sub(t.Time).Seconds()) }
 	deps, err := c.AppsV1().Deployments("").List(ctx, metav1.ListOptions{})
 	if err != nil {
 		return nil, err
 	}
 	for _, d := range deps.Items {
-		out = append(out, Workload{Kind: "Deployment", Namespace: d.Namespace, Name: d.Name, Ready: d.Status.ReadyReplicas, Desired: *d.Spec.Replicas, Available: d.Status.AvailableReplicas == *d.Spec.Replicas, Images: images(d.Spec.Template.Spec), Age: age(d.CreationTimestamp), AgeSec: secs(d.CreationTimestamp), Selector: metav1.FormatLabelSelector(d.Spec.Selector)})
+		out = append(out, aged(Workload{Kind: "Deployment", Namespace: d.Namespace, Name: d.Name, Ready: d.Status.ReadyReplicas, Desired: *d.Spec.Replicas, Available: d.Status.AvailableReplicas == *d.Spec.Replicas, Images: images(d.Spec.Template.Spec), Selector: metav1.FormatLabelSelector(d.Spec.Selector)}, d.CreationTimestamp))
 	}
 	dss, err := c.AppsV1().DaemonSets("").List(ctx, metav1.ListOptions{})
 	if err != nil {
 		return nil, err
 	}
 	for _, d := range dss.Items {
-		out = append(out, Workload{Kind: "DaemonSet", Namespace: d.Namespace, Name: d.Name, Ready: d.Status.NumberReady, Desired: d.Status.DesiredNumberScheduled, Available: d.Status.NumberReady == d.Status.DesiredNumberScheduled, Images: images(d.Spec.Template.Spec), Age: age(d.CreationTimestamp), AgeSec: secs(d.CreationTimestamp), Selector: metav1.FormatLabelSelector(d.Spec.Selector)})
+		out = append(out, aged(Workload{Kind: "DaemonSet", Namespace: d.Namespace, Name: d.Name, Ready: d.Status.NumberReady, Desired: d.Status.DesiredNumberScheduled, Available: d.Status.NumberReady == d.Status.DesiredNumberScheduled, Images: images(d.Spec.Template.Spec), Selector: metav1.FormatLabelSelector(d.Spec.Selector)}, d.CreationTimestamp))
 	}
 	sts, err := c.AppsV1().StatefulSets("").List(ctx, metav1.ListOptions{})
 	if err != nil {
 		return nil, err
 	}
 	for _, d := range sts.Items {
-		out = append(out, Workload{Kind: "StatefulSet", Namespace: d.Namespace, Name: d.Name, Ready: d.Status.ReadyReplicas, Desired: *d.Spec.Replicas, Available: d.Status.ReadyReplicas == *d.Spec.Replicas, Images: images(d.Spec.Template.Spec), Age: age(d.CreationTimestamp), AgeSec: secs(d.CreationTimestamp), Selector: metav1.FormatLabelSelector(d.Spec.Selector)})
+		out = append(out, aged(Workload{Kind: "StatefulSet", Namespace: d.Namespace, Name: d.Name, Ready: d.Status.ReadyReplicas, Desired: *d.Spec.Replicas, Available: d.Status.ReadyReplicas == *d.Spec.Replicas, Images: images(d.Spec.Template.Spec), Selector: metav1.FormatLabelSelector(d.Spec.Selector)}, d.CreationTimestamp))
 	}
 	jobs, err := c.BatchV1().Jobs("").List(ctx, metav1.ListOptions{})
 	if err != nil {
 		return nil, err
 	}
 	for _, j := range jobs.Items {
-		out = append(out, Workload{Kind: "Job", Namespace: j.Namespace, Name: j.Name, Ready: j.Status.Succeeded, Desired: 1, Available: j.Status.Succeeded > 0, Images: images(j.Spec.Template.Spec), Age: age(j.CreationTimestamp), AgeSec: secs(j.CreationTimestamp)})
+		out = append(out, aged(Workload{Kind: "Job", Namespace: j.Namespace, Name: j.Name, Ready: j.Status.Succeeded, Desired: 1, Available: j.Status.Succeeded > 0, Images: images(j.Spec.Template.Spec)}, j.CreationTimestamp))
 	}
 	crons, err := c.BatchV1().CronJobs("").List(ctx, metav1.ListOptions{})
 	if err != nil {
@@ -74,7 +73,17 @@ func (c *Client) Workloads(ctx context.Context) ([]Workload, error) {
 }
 
 func cronWorkload(j batchv1.CronJob) Workload {
-	return Workload{Kind: "CronJob", Namespace: j.Namespace, Name: j.Name, Ready: int32(len(j.Status.Active)), Available: true, Images: images(j.Spec.JobTemplate.Spec.Template.Spec), Age: metav1.Now().Sub(j.CreationTimestamp.Time).Truncate(1e9).String(), AgeSec: int64(metav1.Now().Sub(j.CreationTimestamp.Time).Seconds())}
+	return aged(Workload{Kind: "CronJob", Namespace: j.Namespace, Name: j.Name, Ready: int32(len(j.Status.Active)), Available: true, Images: images(j.Spec.JobTemplate.Spec.Template.Spec)}, j.CreationTimestamp)
+}
+
+func aged(w Workload, created metav1.Time) Workload {
+	w.Age, w.AgeSec = age(created)
+	return w
+}
+
+func age(created metav1.Time) (string, int64) {
+	d := metav1.Now().Sub(created.Time)
+	return d.Truncate(time.Second).String(), int64(d.Seconds())
 }
 
 type Namespace struct {
@@ -98,7 +107,9 @@ func (c *Client) Namespaces(ctx context.Context) ([]Namespace, error) {
 }
 
 func namespaceOf(n corev1.Namespace) Namespace {
-	return Namespace{Name: n.Name, Phase: string(n.Status.Phase), Security: n.Labels["pod-security.kubernetes.io/enforce"], AgeSec: int64(metav1.Now().Sub(n.CreationTimestamp.Time).Seconds())}
+	ns := Namespace{Name: n.Name, Phase: string(n.Status.Phase), Security: n.Labels["pod-security.kubernetes.io/enforce"]}
+	_, ns.AgeSec = age(n.CreationTimestamp)
+	return ns
 }
 
 func images(spec corev1.PodSpec) string {
@@ -127,7 +138,8 @@ func (c *Client) Pods(ctx context.Context, namespace, selector string) ([]PodSum
 }
 
 func podSummary(p *corev1.Pod) PodSummary {
-	ps := PodSummary{Namespace: p.Namespace, Name: p.Name, Phase: string(p.Status.Phase), Node: p.Spec.NodeName, Age: metav1.Now().Sub(p.CreationTimestamp.Time).Truncate(1e9).String(), AgeSec: int64(metav1.Now().Sub(p.CreationTimestamp.Time).Seconds())}
+	ps := PodSummary{Namespace: p.Namespace, Name: p.Name, Phase: string(p.Status.Phase), Node: p.Spec.NodeName}
+	ps.Age, ps.AgeSec = age(p.CreationTimestamp)
 	ready := 0
 	for _, cs := range p.Status.ContainerStatuses {
 		if cs.Ready {

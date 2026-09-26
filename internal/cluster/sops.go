@@ -70,7 +70,7 @@ func (m *Manager) installSOPSKey(ctx context.Context, name string, sink Sink) er
 	if !c.Spec.Platform.Flux.Enabled {
 		err := kc.CoreV1().Secrets(tofu.SOPSNamespace).Delete(ctx, tofu.SOPSSecret, metav1.DeleteOptions{})
 		if err == nil {
-			sink.emit(Info, "apply", "", "removed the SOPS key from the cluster")
+			sink.Emit(Info, "apply", "", "removed the SOPS key from the cluster")
 		}
 		if err != nil && !apierrors.IsNotFound(err) {
 			return fmt.Errorf("remove SOPS key: %w", err)
@@ -92,6 +92,6 @@ func (m *Manager) installSOPSKey(ctx context.Context, name string, sink Sink) er
 	if err := kc.ServerSideApply(ctx, objects); err != nil {
 		return fmt.Errorf("install SOPS key: %w", err)
 	}
-	sink.emit(Info, "apply", "", "SOPS key installed (%s)", k.Recipient)
+	sink.Emit(Info, "apply", "", "SOPS key installed (%s)", k.Recipient)
 	return nil
 }

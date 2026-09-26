@@ -2,8 +2,12 @@ package api
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/mikael/kubit/internal/config"
@@ -50,6 +54,25 @@ func (s *Server) editCluster(w http.ResponseWriter, r *http.Request, action, det
 	_ = s.store.Audit(r.Context(), name, action, detail)
 	return c, true
 }
+
+func decodeJSON(w http.ResponseWriter, r *http.Request, v any) bool {
+	return decodeBody(w, r, v, false)
+}
+
+func decodeOptionalJSON(w http.ResponseWriter, r *http.Request, v any) bool {
+	return decodeBody(w, r, v, true)
+}
+
+func decodeBody(w http.ResponseWriter, r *http.Request, v any, optional bool) bool {
+	err := json.NewDecoder(r.Body).Decode(v)
+	if err == nil || (optional && errors.Is(err, io.EOF)) {
+		return true
+	}
+	writeErr(w, &statusError{http.StatusBadRequest, "body: " + err.Error()})
+	return false
+}
+
+func pathMAC(r *http.Request) string { return strings.ToLower(r.PathValue("mac")) }
 
 func unprocessable(err error) error {
 	return &statusError{http.StatusUnprocessableEntity, err.Error()}

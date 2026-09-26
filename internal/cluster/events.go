@@ -60,14 +60,14 @@ func (e Event) String() string {
 
 type Sink func(Event)
 
-func (s Sink) emit(level Level, step, node, format string, args ...any) {
+func (s Sink) Emit(level Level, step, node, format string, args ...any) {
 	if s == nil {
 		return
 	}
 	s(Event{Time: time.Now(), Kind: KindLog, Level: level, Step: step, Node: node, Message: fmt.Sprintf(format, args...)})
 }
 
-func (s Sink) plan(steps ...Step) {
+func (s Sink) Plan(steps ...Step) {
 	if s == nil {
 		return
 	}
@@ -79,19 +79,19 @@ func (s Sink) plan(steps ...Step) {
 	s(Event{Time: time.Now(), Kind: KindSteps, Level: Info, Steps: steps})
 }
 
-func (s Sink) begin(step string) {
+func (s Sink) Begin(step string) {
 	s.transition(step, StepRunning)
 }
 
-func (s Sink) end(step string) {
+func (s Sink) End(step string) {
 	s.transition(step, StepDone)
 }
 
-func (s Sink) fail(step string) {
+func (s Sink) Fail(step string) {
 	s.transition(step, StepFailed)
 }
 
-func (s Sink) skip(step string) {
+func (s Sink) Skip(step string) {
 	s.transition(step, StepSkipped)
 }
 
@@ -110,13 +110,13 @@ func Steps(pairs ...string) []Step {
 	return out
 }
 
-func (s Sink) run(step string, fn func() error) error {
-	s.begin(step)
+func (s Sink) Run(step string, fn func() error) error {
+	s.Begin(step)
 	if err := fn(); err != nil {
-		s.fail(step)
+		s.Fail(step)
 		return err
 	}
-	s.end(step)
+	s.End(step)
 	return nil
 }
 

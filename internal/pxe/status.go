@@ -32,6 +32,10 @@ type Status struct {
 	Log          []string  `json:"log"`
 }
 
+func (st Status) BaseURL() string {
+	return BaseURL(st.IP, st.HTTPPort)
+}
+
 type tracker struct {
 	mu      sync.Mutex
 	started time.Time

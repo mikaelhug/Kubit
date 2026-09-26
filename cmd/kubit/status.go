@@ -16,12 +16,7 @@ func statusCmd() *cobra.Command {
 		Use:   "status <cluster>",
 		Short: "Live cluster overview: nodes, etcd, resources, platform",
 		Args:  cobra.ExactArgs(1),
-		RunE: func(cmd *cobra.Command, args []string) error {
-			m, err := openManager()
-			if err != nil {
-				return err
-			}
-			defer m.Store.Close()
+		RunE: withManager(func(cmd *cobra.Command, args []string, m *cluster.Manager) error {
 			st, err := m.Status(cmd.Context(), args[0])
 			if err != nil {
 				return err
@@ -37,7 +32,7 @@ func statusCmd() *cobra.Command {
 			}
 			printStatus(cmd, st, gvisor)
 			return nil
-		},
+		}),
 	}
 	cmd.Flags().BoolVar(&asJSON, "json", false, "print JSON")
 	return cmd
@@ -49,7 +44,7 @@ func printStatus(cmd *cobra.Command, st *cluster.Status, gvisor bool) {
 		st.Name, st.State, st.TalosVersion, st.KubernetesVersion, st.Endpoint, st.APIReachable)
 	t := st.Totals
 	fmt.Fprintf(w, "CPU %s / %s   RAM %s / %s   Pods %d / %d   Nodes Ready %d/%d   etcd %d/%d healthy=%v leader=%s\n",
-		milli(t.CPUMilli), milli(t.CPUCapMilli), humanBytes(uint64(t.MemBytes)), humanBytes(uint64(t.MemCapBytes)),
+		milli(t.CPUMilli), milli(t.CPUCapMilli), cluster.HumanBytes(uint64(t.MemBytes)), cluster.HumanBytes(uint64(t.MemCapBytes)),
 		t.Pods, t.PodCap, t.NodesReady, t.Nodes, st.Etcd.Members, st.Etcd.Expected, st.Etcd.Healthy, st.Etcd.Leader)
 	if len(st.Etcd.Alarms) > 0 {
 		fmt.Fprintf(w, "etcd alarms: %s\n", strings.Join(st.Etcd.Alarms, ", "))
@@ -81,7 +76,7 @@ func printStatus(cmd *cobra.Command, st *cluster.Status, gvisor bool) {
 		}
 		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s/%s\t%s/%s\t%d",
 			n.Hostname, n.IP, n.Role, ready, n.Stage, n.TalosVersion, n.KubeletVersion,
-			milli(n.CPUMilli), milli(n.CPUCapMilli), humanBytes(uint64(n.MemBytes)), humanBytes(uint64(n.MemCapBytes)), n.Pods)
+			milli(n.CPUMilli), milli(n.CPUCapMilli), cluster.HumanBytes(uint64(n.MemBytes)), cluster.HumanBytes(uint64(n.MemCapBytes)), n.Pods)
 		if gvisor {
 			fmt.Fprintf(tw, "\t%v", n.GVisor)
 		}

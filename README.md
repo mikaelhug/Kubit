@@ -732,7 +732,8 @@ heartbeat that stops arriving means the daemon is down — the dead-man's switch
   `healthResolved` — alongside `status` (watcher tick), `health`, `operation`/`event`
   and `refresh {cluster, scope}` from Kubernetes informers (pods, workloads, services,
   endpoint slices, ingresses, claims, volumes, classes, nodes; debounced 1 s; running
-  from `bootstrapped` on), the daemon-side PXE watch, the watcher's service-health
+  from `bootstrapped` on; workload changes in an add-on namespace also fire `addons`),
+  the daemon-side PXE watch, the watcher's service-health
   collection (`services`, per cluster), off-site status changes (`offsite`, Kubit-wide)
   and the hourly `versions` check (the console then refetches `/versions` once into the
   store). The console keeps normalized live state (`web/src/store.ts`) that every view

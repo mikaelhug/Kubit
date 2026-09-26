@@ -1,7 +1,6 @@
 package api
 
 import (
-	"encoding/json"
 	"fmt"
 	"net/http"
 
@@ -19,14 +18,13 @@ type addonUpdate struct {
 func (s *Server) handleAddonUpdate(w http.ResponseWriter, r *http.Request) {
 	name, key := r.PathValue("name"), r.PathValue("addon")
 	var req addonUpdate
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeErr(w, err)
+	if !decodeJSON(w, r, &req) {
 		return
 	}
 	var values map[string]any
 	if req.ValuesYAML != nil {
 		if err := yaml.Unmarshal([]byte(*req.ValuesYAML), &values); err != nil {
-			writeJSON(w, http.StatusUnprocessableEntity, map[string]string{"error": "values: " + err.Error()})
+			writeErr(w, &statusError{http.StatusUnprocessableEntity, "values: " + err.Error()})
 			return
 		}
 	}

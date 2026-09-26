@@ -56,8 +56,16 @@ func isIPXE(m *dhcpv4.DHCPv4) bool {
 	return m.Options.Has(dhcpv4.GenericOptionCode(175))
 }
 
+func BaseURL(ip string, port int) string {
+	return fmt.Sprintf("http://%s:%d", ip, port)
+}
+
+func (c Config) BaseURL() string {
+	return BaseURL(c.IP.String(), c.HTTPPort)
+}
+
 func (c Config) ScriptURL() string {
-	return fmt.Sprintf("http://%s:%d/boot.ipxe", c.IP, c.HTTPPort)
+	return c.BaseURL() + "/boot.ipxe"
 }
 
 func (c Config) handle(conn net.PacketConn, peer net.Addr, m *dhcpv4.DHCPv4) {

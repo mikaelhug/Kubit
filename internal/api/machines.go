@@ -10,6 +10,7 @@ import (
 
 	"github.com/mikael/kubit/internal/cluster"
 	"github.com/mikael/kubit/internal/config"
+	"github.com/mikael/kubit/internal/store"
 	"github.com/mikael/kubit/internal/talos"
 )
 
@@ -135,14 +136,13 @@ type designResponse struct {
 
 func (s *Server) handleDesign(w http.ResponseWriter, r *http.Request) {
 	var req designRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeErr(w, err)
+	if !decodeJSON(w, r, &req) {
 		return
 	}
 	if req.Name == "" {
 		req.Name = "cluster"
 	}
-	machines, err := s.designMachines(r, req.MACs)
+	machines, err := s.designMachines(r.Context(), req.MACs, false)
 	if err != nil {
 		writeErr(w, err)
 		return
@@ -151,21 +151,19 @@ func (s *Server) handleDesign(w http.ResponseWriter, r *http.Request) {
 	if warnings == nil {
 		warnings = []config.Warning{}
 	}
-	out, _ := c.Marshal()
-	writeJSON(w, http.StatusOK, designResponse{YAML: string(out), Cluster: c, Warnings: warnings, Topology: config.Recommend(len(machines)), Overlaps: s.rangeOverlaps(r, c)})
+	writeJSON(w, http.StatusOK, designResponse{YAML: mustYAML(c), Cluster: c, Warnings: warnings, Topology: config.Recommend(len(machines)), Overlaps: s.rangeOverlaps(r, c)})
 }
 
 func (s *Server) handleLint(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		YAML string `json:"yaml"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeErr(w, err)
+	if !decodeJSON(w, r, &req) {
 		return
 	}
 	c, err := config.Parse([]byte(req.YAML))
 	if err != nil {
-		writeJSON(w, http.StatusUnprocessableEntity, map[string]string{"error": err.Error()})
+		writeErr(w, unprocessable(err))
 		return
 	}
 	var macs []string
@@ -174,7 +172,7 @@ func (s *Server) handleLint(w http.ResponseWriter, r *http.Request) {
 			macs = append(macs, n.MAC)
 		}
 	}
-	machines, _ := s.designMachines(r, macs)
+	machines, _ := s.designMachines(r.Context(), macs, false)
 	warnings := config.Lint(c, machines)
 	for _, o := range s.rangeOverlaps(r, c) {
 		warnings = append(warnings, config.Warning{Level: "warn", Code: "metallb-overlap", Message: fmt.Sprintf("MetalLB range overlaps cluster %s's range on the same LAN.", o)})
@@ -188,23 +186,60 @@ func (s *Server) handleLint(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"warnings": warnings, "yaml": mustYAML(c)})
 }
 
-func (s *Server) designMachines(r *http.Request, macs []string) ([]config.Machine, error) {
+func (s *Server) designMachines(ctx context.Context, macs []string, labVMs bool) ([]config.Machine, error) {
 	var out []config.Machine
 	for _, mac := range macs {
-		m, err := s.store.GetMachine(r.Context(), mac)
+		m, err := s.store.GetMachine(ctx, mac)
 		if err != nil {
 			return nil, err
 		}
-		var inv talos.Inventory
-		_ = json.Unmarshal(m.Hardware, &inv)
-		cm := config.Machine{IP: m.IP, MAC: m.MAC, UUID: m.UUID, Arch: config.Arch(m.Arch), CPUs: inv.CPUs, MemBytes: inv.MemoryBytes, KVM: inv.KVM, Virtual: inv.Virtual || talos.IsVirtual(inv.Manufacturer, inv.Product), Host: m.Host, Model: strings.TrimSpace(inv.Manufacturer + " " + inv.Product)}
-		if cm.Arch == "" {
-			cm.Arch = config.ArchAMD64
-		}
-		cm.Disks = designDisks(inv, m.Host != "")
-		out = append(out, cm)
+		out = append(out, designMachine(m, labVMs))
 	}
 	return out, nil
+}
+
+func designMachine(m *store.Machine, labVM bool) config.Machine {
+	inv, _ := inventoryOf(m)
+	cm := config.Machine{IP: m.IP, MAC: m.MAC, UUID: m.UUID, Arch: config.Arch(m.Arch), CPUs: inv.CPUs, MemBytes: inv.MemoryBytes, KVM: inv.KVM, Virtual: inv.Virtual || talos.IsVirtual(inv.Manufacturer, inv.Product), Host: m.Host, Model: strings.TrimSpace(inv.Manufacturer + " " + inv.Product)}
+	if labVM {
+		cm.Virtual, cm.Model = true, "Kubit lab VM"
+	}
+	if cm.Arch == "" {
+		cm.Arch = config.ArchAMD64
+	}
+	cm.Disks = designDisks(inv, labVM || m.Host != "")
+	return cm
+}
+
+func inventoryOf(m *store.Machine) (talos.Inventory, bool) {
+	var inv talos.Inventory
+	if len(m.Hardware) <= 2 {
+		return inv, false
+	}
+	return inv, json.Unmarshal(m.Hardware, &inv) == nil
+}
+
+type hostnamer struct {
+	name         string
+	cps, workers int
+}
+
+func (h *hostnamer) assign(n *config.Node, controlPlane bool) {
+	if controlPlane {
+		h.cps++
+		n.Role, n.Hostname = config.RoleControlPlane, fmt.Sprintf("%s-cp-%02d", h.name, h.cps)
+		return
+	}
+	h.workers++
+	n.Role, n.Hostname = config.RoleWorker, fmt.Sprintf("%s-worker-%02d", h.name, h.workers)
+}
+
+func reparse(c *config.Cluster) (*config.Cluster, error) {
+	b, err := c.Marshal()
+	if err != nil {
+		return nil, err
+	}
+	return config.Parse(b)
 }
 
 func (s *Server) rangeOverlaps(r *http.Request, c *config.Cluster) []string {
@@ -261,14 +296,9 @@ func (s *Server) handleNodeRename(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, `body must be {"to": "<new-hostname>"}`, http.StatusBadRequest)
 		return
 	}
-	id, err := s.runOperation(name, "node.rename", map[string]string{"hostname": hostname, "to": req.To}, func(ctx context.Context, sink cluster.Sink) (any, error) {
+	s.startOp(w, name, "node.rename", map[string]string{"hostname": hostname, "to": req.To}, func(ctx context.Context, sink cluster.Sink) (any, error) {
 		return nil, s.manager.RenameNode(ctx, name, hostname, req.To, sink)
 	})
-	if err != nil {
-		writeErr(w, err)
-		return
-	}
-	writeJSON(w, http.StatusAccepted, map[string]any{"operationId": id})
 }
 
 func (s *Server) handleNodePool(w http.ResponseWriter, r *http.Request) {
@@ -280,14 +310,9 @@ func (s *Server) handleNodePool(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, `body must be {"pool": "<pool>"}`, http.StatusBadRequest)
 		return
 	}
-	id, err := s.runOperation(name, "node.pool", map[string]string{"hostname": hostname, "pool": req.Pool}, func(ctx context.Context, sink cluster.Sink) (any, error) {
+	s.startOp(w, name, "node.pool", map[string]string{"hostname": hostname, "pool": req.Pool}, func(ctx context.Context, sink cluster.Sink) (any, error) {
 		return nil, s.manager.MoveNodeToPool(ctx, name, hostname, req.Pool, sink)
 	})
-	if err != nil {
-		writeErr(w, err)
-		return
-	}
-	writeJSON(w, http.StatusAccepted, map[string]any{"operationId": id})
 }
 
 func (s *Server) handleNodeReaddress(w http.ResponseWriter, r *http.Request) {
@@ -296,8 +321,7 @@ func (s *Server) handleNodeReaddress(w http.ResponseWriter, r *http.Request) {
 		Network *config.NodeNetwork `json:"network"`
 		IP      string              `json:"ip"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeErr(w, err)
+	if !decodeJSON(w, r, &req) {
 		return
 	}
 	if req.IP == "" && req.Network != nil && len(req.Network.Addresses) > 0 {
@@ -305,14 +329,9 @@ func (s *Server) handleNodeReaddress(w http.ResponseWriter, r *http.Request) {
 			req.IP = pfx
 		}
 	}
-	id, err := s.runOperation(name, "node.readdress", req, func(ctx context.Context, sink cluster.Sink) (any, error) {
+	s.startOp(w, name, "node.readdress", req, func(ctx context.Context, sink cluster.Sink) (any, error) {
 		return nil, s.manager.ReaddressNode(ctx, name, hostname, req.Network, req.IP, sink)
 	})
-	if err != nil {
-		writeErr(w, err)
-		return
-	}
-	writeJSON(w, http.StatusAccepted, map[string]any{"operationId": id})
 }
 
 func parsePrefix(cidr string) (string, error) {
@@ -325,8 +344,7 @@ func parsePrefix(cidr string) (string, error) {
 
 func (s *Server) handlePoolsSave(w http.ResponseWriter, r *http.Request) {
 	var pools []config.Pool
-	if err := json.NewDecoder(r.Body).Decode(&pools); err != nil {
-		writeErr(w, err)
+	if !decodeJSON(w, r, &pools) {
 		return
 	}
 	c, ok := s.editCluster(w, r, "pools.save", "", func(c *config.Cluster) error {

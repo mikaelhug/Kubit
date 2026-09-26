@@ -68,14 +68,16 @@ func (s *Store) Checkpoint(ctx context.Context) error {
 	return err
 }
 
+const sqlNow = `strftime('%Y-%m-%dT%H:%M:%fZ','now')`
+
 var migrations = []string{
 	`CREATE TABLE clusters (
 		name          TEXT PRIMARY KEY,
 		spec          TEXT NOT NULL,            -- cluster.yaml as stored
 		schematic_id  TEXT NOT NULL DEFAULT '',
 		state         TEXT NOT NULL DEFAULT 'declared',
-		created_at    TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
-		updated_at    TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+		created_at    TEXT NOT NULL DEFAULT (` + sqlNow + `),
+		updated_at    TEXT NOT NULL DEFAULT (` + sqlNow + `)
 	);
 	CREATE TABLE cluster_secrets (
 		cluster        TEXT PRIMARY KEY REFERENCES clusters(name) ON DELETE CASCADE,
@@ -96,7 +98,7 @@ var migrations = []string{
 		talos_version TEXT NOT NULL DEFAULT '',
 		machine_config BLOB,                     -- sealed, last applied
 		last_seen    TEXT,
-		updated_at   TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+		updated_at   TEXT NOT NULL DEFAULT (` + sqlNow + `)
 	);
 	CREATE TABLE operations (
 		id          INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -104,12 +106,12 @@ var migrations = []string{
 		kind        TEXT NOT NULL,
 		status      TEXT NOT NULL DEFAULT 'running',
 		log         TEXT NOT NULL DEFAULT '',
-		started_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+		started_at  TEXT NOT NULL DEFAULT (` + sqlNow + `),
 		finished_at TEXT
 	);
 	CREATE TABLE audit_log (
 		id      INTEGER PRIMARY KEY AUTOINCREMENT,
-		at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+		at      TEXT NOT NULL DEFAULT (` + sqlNow + `),
 		cluster TEXT NOT NULL DEFAULT '',
 		action  TEXT NOT NULL,
 		detail  TEXT NOT NULL DEFAULT ''
@@ -133,7 +135,7 @@ var migrations = []string{
 	CREATE INDEX samples_cluster_ts ON samples (cluster, node, ts);
 	CREATE TABLE events (
 		id       INTEGER PRIMARY KEY AUTOINCREMENT,
-		ts       TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+		ts       TEXT NOT NULL DEFAULT (` + sqlNow + `),
 		cluster  TEXT NOT NULL,
 		node     TEXT NOT NULL DEFAULT '',
 		severity TEXT NOT NULL,              -- info | warn | critical
@@ -160,9 +162,9 @@ var migrations = []string{
 		talos_version  TEXT NOT NULL DEFAULT '',
 		machine_config BLOB,
 		wol            INTEGER NOT NULL DEFAULT 0,
-		first_seen     TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+		first_seen     TEXT NOT NULL DEFAULT (` + sqlNow + `),
 		last_seen      TEXT,
-		updated_at     TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+		updated_at     TEXT NOT NULL DEFAULT (` + sqlNow + `)
 	);
 	INSERT INTO machines (mac, ip, cluster, hostname, role, arch, source, state, hardware, talos_version, machine_config, last_seen, updated_at)
 		SELECT CASE WHEN mac = '' THEN 'ip:' || ip ELSE lower(mac) END, ip, cluster, hostname, role, arch, source, state, hardware, talos_version, machine_config, last_seen, updated_at
@@ -171,7 +173,7 @@ var migrations = []string{
 	`CREATE TABLE snapshots (
 		id            INTEGER PRIMARY KEY AUTOINCREMENT,
 		cluster       TEXT NOT NULL REFERENCES clusters(name) ON DELETE CASCADE,
-		ts            TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+		ts            TEXT NOT NULL DEFAULT (` + sqlNow + `),
 		node          TEXT NOT NULL,               -- control plane the snapshot was taken from
 		path          TEXT NOT NULL,               -- sealed file under $KUBIT_HOME
 		size_bytes    INTEGER NOT NULL,            -- of the plain snapshot
@@ -199,7 +201,7 @@ var migrations = []string{
 		role          TEXT NOT NULL DEFAULT 'viewer',
 		disabled      INTEGER NOT NULL DEFAULT 0,
 		source        TEXT NOT NULL DEFAULT 'local',
-		created_at    TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+		created_at    TEXT NOT NULL DEFAULT (` + sqlNow + `),
 		last_login    TEXT NOT NULL DEFAULT ''
 	);
 	CREATE TABLE sessions (
@@ -207,7 +209,7 @@ var migrations = []string{
 		user_id    INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
 		kind       TEXT NOT NULL DEFAULT 'session',
 		name       TEXT NOT NULL DEFAULT '',
-		created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+		created_at TEXT NOT NULL DEFAULT (` + sqlNow + `),
 		expires_at TEXT NOT NULL DEFAULT '',
 		last_used  TEXT NOT NULL DEFAULT ''
 	);
@@ -216,7 +218,7 @@ var migrations = []string{
 		cluster    TEXT PRIMARY KEY,
 		identity   BLOB NOT NULL,
 		recipient  TEXT NOT NULL,
-		created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+		created_at TEXT NOT NULL DEFAULT (` + sqlNow + `)
 	);`,
 	`UPDATE clusters SET platform = json_remove(platform, '$.outputs.argocd_admin_password', '$.outputs.argocd_ip') WHERE json_valid(platform);`,
 	`ALTER TABLE machines ADD COLUMN system_split INTEGER NOT NULL DEFAULT 0;`,

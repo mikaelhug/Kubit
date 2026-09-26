@@ -20,6 +20,14 @@ func (m *Manager) ClusterDir(name string) string {
 	return filepath.Join(m.Home, "clusters", name)
 }
 
+func (m *Manager) platformDir(name string) string {
+	return filepath.Join(m.ClusterDir(name), "infra", "platform")
+}
+
+func (m *Manager) tofuBin(ctx context.Context) (string, error) {
+	return tofu.Binary(ctx, filepath.Join(m.Home, "bin"))
+}
+
 func (m *Manager) writeCredentials(ctx context.Context, name string) (kubeconfigPath string, err error) {
 	sec, err := m.Store.GetClusterSecrets(ctx, name)
 	if err != nil {
@@ -43,8 +51,8 @@ func (m *Manager) writeCredentials(ctx context.Context, name string) (kubeconfig
 }
 
 func (m *Manager) platformRunner(ctx context.Context, name string, sink Sink) (*tofu.Runner, error) {
-	sink.plan(platformSteps...)
-	sink.begin("render")
+	sink.Plan(platformSteps...)
+	sink.Begin("render")
 	c, row, err := m.LoadCluster(ctx, name)
 	if err != nil {
 		return nil, err
@@ -54,7 +62,7 @@ func (m *Manager) platformRunner(ctx context.Context, name string, sink Sink) (*
 	}
 	if c.Spec.Platform.Longhorn.Enabled {
 		if id, pools, err := m.desiredSchematics(ctx, c); err != nil {
-			sink.emit(Warn, "render", "", "could not check the node image for Longhorn's extensions: %v", err)
+			sink.Emit(Warn, "render", "", "could not check the node image for Longhorn's extensions: %v", err)
 		} else if imageOutdated(c, id, pools) {
 			return nil, fmt.Errorf("Longhorn needs the Talos extensions %s on every node first: upgrade Talos (Lifecycle), then plan again", strings.Join(config.LonghornExtensions, " and "))
 		}
@@ -68,25 +76,25 @@ func (m *Manager) platformRunner(ctx context.Context, name string, sink Sink) (*
 	if err != nil {
 		return nil, err
 	}
-	dir := filepath.Join(m.ClusterDir(name), "infra", "platform")
+	dir := m.platformDir(name)
 	if err := tofu.Render(dir, c, kubeconfig); err != nil {
 		return nil, err
 	}
-	bin, err := tofu.Binary(ctx, filepath.Join(m.Home, "bin"))
+	bin, err := m.tofuBin(ctx)
 	if err != nil {
 		return nil, err
 	}
-	sink.emit(Info, "render", "", "rendered %s (tofu %s)", dir, bin)
+	sink.Emit(Info, "render", "", "rendered %s (tofu %s)", dir, bin)
 	if c.Spec.Platform.Flux.Enabled {
 		k, err := m.SOPSKey(ctx, name)
 		if err != nil {
 			return nil, err
 		}
-		sink.emit(Info, "render", "", "SOPS key %s goes to %s/%s on apply", k.Recipient, tofu.SOPSNamespace, tofu.SOPSSecret)
+		sink.Emit(Info, "render", "", "SOPS key %s goes to %s/%s on apply", k.Recipient, tofu.SOPSNamespace, tofu.SOPSSecret)
 	}
-	sink.end("render")
+	sink.End("render")
 	r := &tofu.Runner{Bin: bin, Dir: dir, Log: tofuLogger(sink)}
-	if err := sink.run("init", func() error { return r.Init(ctx) }); err != nil {
+	if err := sink.Run("init", func() error { return r.Init(ctx) }); err != nil {
 		return nil, err
 	}
 	return r, nil
@@ -105,7 +113,7 @@ func (m *Manager) PlanPlatform(ctx context.Context, name string, sink Sink) (*to
 		return nil, err
 	}
 	var diff *tofu.PlanDiff
-	err = sink.run("plan", func() error {
+	err = sink.Run("plan", func() error {
 		sum, err := r.Plan(ctx)
 		if err != nil {
 			return err
@@ -113,22 +121,22 @@ func (m *Manager) PlanPlatform(ctx context.Context, name string, sink Sink) (*to
 		if diff, err = r.ShowPlan(ctx, r.Warnings()); err != nil {
 			return err
 		}
-		sink.emit(Info, "plan", "", "%s", sum)
+		sink.Emit(Info, "plan", "", "%s", sum)
 		return nil
 	})
 	if err != nil {
 		return nil, err
 	}
-	sink.skip("apply")
+	sink.Skip("apply")
 	return diff, nil
 }
 
 var errStalePlan = errors.New("plan is stale: cluster.yaml changed since it was made; plan again")
 
 func (m *Manager) ApplyPlan(ctx context.Context, name string, planTime string, sink Sink) error {
-	sink.plan(platformSteps...)
-	sink.skip("render")
-	sink.skip("plan")
+	sink.Plan(platformSteps...)
+	sink.Skip("render")
+	sink.Skip("plan")
 	row, err := m.Store.GetCluster(ctx, name)
 	if err != nil {
 		return err
@@ -136,16 +144,16 @@ func (m *Manager) ApplyPlan(ctx context.Context, name string, planTime string, s
 	if planTime != "" && row.UpdatedAt > planTime {
 		return errStalePlan
 	}
-	dir := filepath.Join(m.ClusterDir(name), "infra", "platform")
+	dir := m.platformDir(name)
 	if _, err := os.Stat(filepath.Join(dir, "plan.tfplan")); err != nil {
 		return fmt.Errorf("no saved plan for %s; plan first", name)
 	}
-	bin, err := tofu.Binary(ctx, filepath.Join(m.Home, "bin"))
+	bin, err := m.tofuBin(ctx)
 	if err != nil {
 		return err
 	}
 	r := &tofu.Runner{Bin: bin, Dir: dir, Log: tofuLogger(sink)}
-	if err := sink.run("init", func() error { return r.Init(ctx) }); err != nil {
+	if err := sink.Run("init", func() error { return r.Init(ctx) }); err != nil {
 		return err
 	}
 	return m.applyWith(ctx, name, r, sink)
@@ -157,14 +165,14 @@ func (m *Manager) ApplyPlatform(ctx context.Context, name string, sink Sink) err
 		return err
 	}
 	var sum tofu.Summary
-	err = sink.run("plan", func() error {
+	err = sink.Run("plan", func() error {
 		var err error
 		sum, err = r.Plan(ctx)
 		if err != nil {
 			_ = m.Store.SetPlatformStatus(ctx, name, store.PlatformStatus{Error: err.Error()})
 			return err
 		}
-		sink.emit(Info, "plan", "", "%s", sum)
+		sink.Emit(Info, "plan", "", "%s", sum)
 		return nil
 	})
 	if err != nil {
@@ -174,8 +182,8 @@ func (m *Manager) ApplyPlatform(ctx context.Context, name string, sink Sink) err
 		if err := m.installSOPSKey(ctx, name, sink); err != nil {
 			return err
 		}
-		sink.emit(Info, "apply", "", "no changes")
-		sink.skip("apply")
+		sink.Emit(Info, "apply", "", "no changes")
+		sink.Skip("apply")
 		return m.recordPlatform(ctx, name, r, sum, sink)
 	}
 	return m.applyWith(ctx, name, r, sink)
@@ -183,7 +191,7 @@ func (m *Manager) ApplyPlatform(ctx context.Context, name string, sink Sink) err
 
 func (m *Manager) applyWith(ctx context.Context, name string, r *tofu.Runner, sink Sink) error {
 	var sum tofu.Summary
-	err := sink.run("apply", func() error {
+	err := sink.Run("apply", func() error {
 		if err := m.installSOPSKey(ctx, name, sink); err != nil {
 			return err
 		}
@@ -214,10 +222,10 @@ func (m *Manager) recordPlatform(ctx context.Context, name string, r *tofu.Runne
 	_ = m.Store.Audit(ctx, name, "platform.apply", sum.String())
 	for k, v := range outputs {
 		if v != "" {
-			sink.emit(Info, "apply", "", "%s = %s", k, v)
+			sink.Emit(Info, "apply", "", "%s = %s", k, v)
 		}
 	}
-	sink.emit(Done, "apply", "", "platform converged: %s", sum)
+	sink.Emit(Done, "apply", "", "platform converged: %s", sum)
 	return nil
 }
 
@@ -226,16 +234,16 @@ func tofuLogger(sink Sink) func(tofu.Line) {
 		step := l.Phase
 		switch {
 		case l.Diagnostic != nil && l.Diagnostic.Severity == "error":
-			sink.emit(Error, step, "", "%s: %s", l.Diagnostic.Summary, l.Diagnostic.Detail)
+			sink.Emit(Error, step, "", "%s: %s", l.Diagnostic.Summary, l.Diagnostic.Detail)
 		case l.Diagnostic != nil:
 		case l.Type == "planned_change" && l.Change != nil:
-			sink.emit(Info, step, l.Change.Resource.Addr, "will %s", l.Change.Action)
+			sink.Emit(Info, step, l.Change.Resource.Addr, "will %s", l.Change.Action)
 		case l.Type == "apply_start" && l.Hook != nil:
-			sink.emit(Info, step, l.Hook.Resource.Addr, "%s...", l.Hook.Action)
+			sink.Emit(Info, step, l.Hook.Resource.Addr, "%s...", l.Hook.Action)
 		case l.Type == "apply_complete" && l.Hook != nil:
-			sink.emit(Info, step, l.Hook.Resource.Addr, "%s done in %ds", l.Hook.Action, l.Hook.ElapsedSeconds)
+			sink.Emit(Info, step, l.Hook.Resource.Addr, "%s done in %ds", l.Hook.Action, l.Hook.ElapsedSeconds)
 		case l.Type == "apply_errored" && l.Hook != nil:
-			sink.emit(Error, step, l.Hook.Resource.Addr, "%s failed", l.Hook.Action)
+			sink.Emit(Error, step, l.Hook.Resource.Addr, "%s failed", l.Hook.Action)
 		}
 	}
 }

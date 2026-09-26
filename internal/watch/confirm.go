@@ -2,6 +2,7 @@ package watch
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/mikael/kubit/internal/cluster"
 	"github.com/mikael/kubit/internal/store"
@@ -57,12 +58,8 @@ func (c *confirm) Apply(name string, cur *cluster.Status) []store.EventRow {
 }
 
 func splitKey(key string) (kind, node string) {
-	for i := 0; i < len(key); i++ {
-		if key[i] == '|' {
-			return key[:i], key[i+1:]
-		}
-	}
-	return key, ""
+	kind, node, _ = strings.Cut(key, "|")
+	return kind, node
 }
 
 func recovery(name, kind, node string) store.EventRow {

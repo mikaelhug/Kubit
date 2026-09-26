@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"net/http"
 	"runtime/debug"
 	"slices"
 	"strings"
@@ -221,6 +222,19 @@ func (t *stepTracker) json() []byte {
 	defer t.mu.Unlock()
 	b, _ := json.Marshal(t.steps)
 	return b
+}
+
+func (s *Server) startOp(w http.ResponseWriter, cluster, kind string, request any, fn opFunc) {
+	id, err := s.runOperation(cluster, kind, request, fn)
+	accepted(w, id, err)
+}
+
+func accepted(w http.ResponseWriter, id int64, err error) {
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+	writeJSON(w, http.StatusAccepted, map[string]any{"operationId": id})
 }
 
 func (s *Server) runOperation(cluster, kind string, request any, fn opFunc) (int64, error) {

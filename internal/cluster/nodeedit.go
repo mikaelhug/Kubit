@@ -10,7 +10,7 @@ import (
 )
 
 func (m *Manager) RenameNode(ctx context.Context, name, hostname, newName string, sink Sink) error {
-	sink.plan(Steps(
+	sink.Plan(Steps(
 		"check", "Validate the new name",
 		"drain", "Cordon and drain "+hostname,
 		"apply", "Apply the new hostname",
@@ -21,7 +21,7 @@ func (m *Manager) RenameNode(ctx context.Context, name, hostname, newName string
 	if err != nil {
 		return err
 	}
-	err = sink.run("check", func() error {
+	err = sink.Run("check", func() error {
 		if newName == hostname {
 			return fmt.Errorf("new name equals the current one")
 		}
@@ -46,11 +46,11 @@ func (m *Manager) RenameNode(ctx context.Context, name, hostname, newName string
 	if err != nil {
 		return err
 	}
-	kc, err := m.KubeClient(ctx, name)
+	kc, err := kubeClientOf(name, sec)
 	if err != nil {
 		return err
 	}
-	if err := sink.run("drain", func() error { return kc.Drain(ctx, hostname, 5*time.Minute, sinkWriter{sink, "drain", hostname}) }); err != nil {
+	if err := sink.Run("drain", func() error { return kc.Drain(ctx, hostname, 5*time.Minute, sinkWriter{sink, "drain", hostname}) }); err != nil {
 		return err
 	}
 	for i := range c.Spec.Nodes {
@@ -59,7 +59,7 @@ func (m *Manager) RenameNode(ctx context.Context, name, hostname, newName string
 			n = c.Spec.Nodes[i]
 		}
 	}
-	err = sink.run("apply", func() error {
+	err = sink.Run("apply", func() error {
 		gen, err := config.Generate(c, bundle, m.installer(c))
 		if err != nil {
 			return err
@@ -75,30 +75,27 @@ func (m *Manager) RenameNode(ctx context.Context, name, hostname, newName string
 		if err := m.Store.PutNodeMachineConfig(ctx, n.IP, gen.Nodes[newName], config.HasSystemVolume(gen.Nodes[newName])); err != nil {
 			return err
 		}
-		sink.emit(Info, "apply", newName, "hostname applied without reboot; kubelet re-registers")
+		sink.Emit(Info, "apply", newName, "hostname applied without reboot; kubelet re-registers")
 		return nil
 	})
 	if err != nil {
 		return err
 	}
-	if err := sink.run("register", func() error { return kc.WaitReady(ctx, []string{newName}, m.Timeouts.Ready, nil) }); err != nil {
+	if err := sink.Run("register", func() error { return kc.WaitReady(ctx, []string{newName}, m.Timeouts.Ready, nil) }); err != nil {
 		return err
 	}
-	return sink.run("cleanup", func() error {
+	return sink.Run("cleanup", func() error {
 		if err := kc.DeleteNode(ctx, hostname); err != nil {
 			return fmt.Errorf("delete old node object: %w", err)
 		}
-		if _, err := m.Store.GetCluster(ctx, name); err != nil {
-			return err
-		}
-		if err := m.SaveCluster(ctx, c, ""); err != nil {
+		if err := m.saveExisting(ctx, c); err != nil {
 			return err
 		}
 		if err := m.Store.AssignNode(ctx, n.IP, name, newName, string(n.Role)); err != nil {
 			return err
 		}
 		_ = m.Store.Audit(ctx, name, "node.rename", hostname+" → "+newName)
-		sink.emit(Done, "cleanup", newName, "renamed from %s", hostname)
+		sink.Emit(Done, "cleanup", newName, "renamed from %s", hostname)
 		return nil
 	})
 }
@@ -129,7 +126,7 @@ func (m *Manager) MoveNodeToPool(ctx context.Context, name, hostname, pool strin
 	if reimage {
 		steps = append(Steps(nodeStep(n), "Install the pool's Talos image (reboot)"), steps...)
 	}
-	sink.plan(steps...)
+	sink.Plan(steps...)
 	for i := range c.Spec.Nodes {
 		if c.Spec.Nodes[i].Hostname == hostname {
 			c.Spec.Nodes[i].Pool = pool
@@ -139,10 +136,7 @@ func (m *Manager) MoveNodeToPool(ctx context.Context, name, hostname, pool strin
 			n = c.Spec.Nodes[i]
 		}
 	}
-	if _, err := m.Store.GetCluster(ctx, name); err != nil {
-		return err
-	}
-	if err := m.SaveCluster(ctx, c, ""); err != nil {
+	if err := m.saveExisting(ctx, c); err != nil {
 		return err
 	}
 	if reimage {
@@ -155,12 +149,12 @@ func (m *Manager) MoveNodeToPool(ctx context.Context, name, hostname, pool strin
 	}
 	_ = m.Store.UpsertNode(ctx, storeRow(c, n))
 	_ = m.Store.Audit(ctx, name, "node.pool", hostname+" → "+pool)
-	sink.emit(Done, "ready", hostname, "now in pool %s", pool)
+	sink.Emit(Done, "ready", hostname, "now in pool %s", pool)
 	return nil
 }
 
 func (m *Manager) ReaddressNode(ctx context.Context, name, hostname string, network *config.NodeNetwork, newIP string, sink Sink) error {
-	sink.plan(Steps("apply", "Apply the new network configuration", "reach", "Wait for the node on its new address", "kubelet", "Restart the kubelet so the Node advertises the new address", "reboot", "Reboot the control plane so etcd re-advertises", "ready", "Wait for Ready")...)
+	sink.Plan(Steps("apply", "Apply the new network configuration", "reach", "Wait for the node on its new address", "kubelet", "Restart the kubelet so the Node advertises the new address", "reboot", "Reboot the control plane so etcd re-advertises", "ready", "Wait for Ready")...)
 	c, n, err := m.findNode(ctx, name, hostname)
 	if err != nil {
 		return err
@@ -191,7 +185,7 @@ func (m *Manager) ReaddressNode(ctx context.Context, name, hostname string, netw
 	if newIP != "" {
 		target = newIP
 	}
-	err = sink.run("apply", func() error {
+	err = sink.Run("apply", func() error {
 		var err error
 		for _, addr := range []string{n.IP, target} {
 			var tc *talos.Client
@@ -205,7 +199,7 @@ func (m *Manager) ReaddressNode(ctx context.Context, name, hostname string, netw
 			tc.Close()
 			if err == nil {
 				if addr != n.IP {
-					sink.emit(Info, "apply", hostname, "%s did not answer; applied via %s", n.IP, addr)
+					sink.Emit(Info, "apply", hostname, "%s did not answer; applied via %s", n.IP, addr)
 				}
 				return nil
 			}
@@ -215,7 +209,7 @@ func (m *Manager) ReaddressNode(ctx context.Context, name, hostname string, netw
 	if err != nil {
 		return err
 	}
-	err = sink.run("reach", func() error {
+	err = sink.Run("reach", func() error {
 		return talos.Retry(ctx, m.Timeouts.Install, 3*time.Second, func() error {
 			probe, cancel := context.WithTimeout(ctx, 8*time.Second)
 			defer cancel()
@@ -226,36 +220,23 @@ func (m *Manager) ReaddressNode(ctx context.Context, name, hostname string, netw
 	if err != nil {
 		return err
 	}
-	kc, err := m.KubeClient(ctx, name)
+	kc, err := kubeClientOf(name, sec)
 	if err != nil {
 		return err
 	}
 	if target == n.IP {
-		sink.skip("kubelet")
-		sink.skip("reboot")
+		sink.Skip("kubelet")
+		sink.Skip("reboot")
 	} else if n.Role == config.RoleControlPlane {
-		sink.skip("kubelet")
-		if err := sink.run("reboot", func() error {
-			tc, err := talos.Dial(ctx, target, sec.Talosconfig)
-			if err != nil {
-				return err
-			}
-			bootID, err := readBootID(ctx, tc)
-			if err != nil {
-				tc.Close()
-				return err
-			}
-			err = rebootNode(ctx, tc)
-			tc.Close()
-			if err != nil {
-				return err
-			}
-			sink.emit(Info, "reboot", hostname, "rebooting so etcd, the API server and the kubelet start on %s", target)
-			return talos.WaitForReboot(ctx, target, sec.Talosconfig, bootID, m.Timeouts.Install)
+		sink.Skip("kubelet")
+		if err := sink.Run("reboot", func() error {
+			return m.rebootAndWait(ctx, target, sec.Talosconfig, func() {
+				sink.Emit(Info, "reboot", hostname, "rebooting so etcd, the API server and the kubelet start on %s", target)
+			})
 		}); err != nil {
 			return err
 		}
-	} else if err := sink.run("kubelet", func() error {
+	} else if err := sink.Run("kubelet", func() error {
 		tc, err := talos.Dial(ctx, target, sec.Talosconfig)
 		if err != nil {
 			return err
@@ -277,15 +258,12 @@ func (m *Manager) ReaddressNode(ctx context.Context, name, hostname string, netw
 	}); err != nil {
 		return err
 	} else {
-		sink.skip("reboot")
+		sink.Skip("reboot")
 	}
-	if err := sink.run("ready", func() error { return kc.WaitReady(ctx, []string{hostname}, m.Timeouts.Ready, nil) }); err != nil {
+	if err := sink.Run("ready", func() error { return kc.WaitReady(ctx, []string{hostname}, m.Timeouts.Ready, nil) }); err != nil {
 		return err
 	}
-	if _, err := m.Store.GetCluster(ctx, name); err != nil {
-		return err
-	}
-	if err := m.SaveCluster(ctx, c, ""); err != nil {
+	if err := m.saveExisting(ctx, c); err != nil {
 		return err
 	}
 	for _, x := range c.Spec.Nodes {
@@ -295,6 +273,6 @@ func (m *Manager) ReaddressNode(ctx context.Context, name, hostname string, netw
 		}
 	}
 	_ = m.Store.Audit(ctx, name, "node.readdress", hostname+" → "+target)
-	sink.emit(Done, "ready", hostname, "reachable at %s", target)
+	sink.Emit(Done, "ready", hostname, "reachable at %s", target)
 	return nil
 }

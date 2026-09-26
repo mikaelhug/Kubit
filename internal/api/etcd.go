@@ -2,7 +2,6 @@ package api
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"log"
 	"net/http"
@@ -109,20 +108,17 @@ func (s *Server) handleSnapshotTake(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Source string `json:"source"`
 	}
-	_ = json.NewDecoder(r.Body).Decode(&req)
+	if !decodeOptionalJSON(w, r, &req) {
+		return
+	}
 	if req.Source == "" {
 		req.Source = "manual"
 	}
-	id, err := s.runOperation(name, "etcd.snapshot", req, func(ctx context.Context, sink cluster.Sink) (any, error) {
+	s.startOp(w, name, "etcd.snapshot", req, func(ctx context.Context, sink cluster.Sink) (any, error) {
 		sn, err := s.manager.SnapshotEtcd(ctx, name, req.Source, sink)
 		s.snapshotOffsiteResult(ctx, name, sn, err)
 		return sn, err
 	})
-	if err != nil {
-		writeErr(w, err)
-		return
-	}
-	writeJSON(w, http.StatusAccepted, map[string]any{"operationId": id})
 }
 
 func (s *Server) snapshotOf(r *http.Request) (*store.Snapshot, error) {
@@ -193,17 +189,14 @@ func (s *Server) handleSnapshotRestore(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Confirm string `json:"confirm"`
 	}
-	_ = json.NewDecoder(r.Body).Decode(&req)
+	if !decodeOptionalJSON(w, r, &req) {
+		return
+	}
 	if req.Confirm != sn.Cluster {
 		http.Error(w, `body must be {"confirm": "<cluster name>"}: restoring wipes etcd on every control plane`, http.StatusBadRequest)
 		return
 	}
-	id, err := s.runOperation(sn.Cluster, "etcd.restore", map[string]any{"snapshot": sn.ID}, func(ctx context.Context, sink cluster.Sink) (any, error) {
+	s.startOp(w, sn.Cluster, "etcd.restore", map[string]any{"snapshot": sn.ID}, func(ctx context.Context, sink cluster.Sink) (any, error) {
 		return nil, s.manager.RestoreEtcd(ctx, sn.Cluster, sn.ID, sink)
 	})
-	if err != nil {
-		writeErr(w, err)
-		return
-	}
-	writeJSON(w, http.StatusAccepted, map[string]any{"operationId": id})
 }

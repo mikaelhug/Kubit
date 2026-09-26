@@ -3,8 +3,6 @@ package store
 import (
 	"context"
 	"database/sql"
-	"errors"
-	"fmt"
 	"strconv"
 )
 
@@ -66,10 +64,7 @@ func (s *Store) ListSnapshots(ctx context.Context, cluster string) ([]Snapshot, 
 
 func (s *Store) GetSnapshot(ctx context.Context, id int64) (*Snapshot, error) {
 	sn, err := scanSnapshot(s.db.QueryRowContext(ctx, `SELECT `+snapshotCols+` FROM snapshots WHERE id = ?`, id))
-	if errors.Is(err, sql.ErrNoRows) {
-		return nil, fmt.Errorf("snapshot %d: %w", id, ErrNotFound)
-	}
-	return sn, err
+	return sn, notFound(err, "snapshot %d", id)
 }
 
 func (s *Store) SetSnapshotOffsite(ctx context.Context, id int64, key string) error {

@@ -7,6 +7,7 @@ import (
 
 	"github.com/mikael/kubit/internal/cluster"
 	"github.com/mikael/kubit/internal/config"
+	"github.com/mikael/kubit/internal/store"
 	"github.com/mikael/kubit/internal/talos"
 	"github.com/spf13/cobra"
 )
@@ -22,12 +23,7 @@ func nodeListCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "list",
 		Short: "List known nodes (discovered and cluster members)",
-		RunE: func(cmd *cobra.Command, _ []string) error {
-			s, err := openStore()
-			if err != nil {
-				return err
-			}
-			defer s.Close()
+		RunE: withStore(func(cmd *cobra.Command, _ []string, s *store.Store) error {
 			rows, err := s.ListNodes(cmd.Context(), clusterName)
 			if err != nil {
 				return err
@@ -38,10 +34,10 @@ func nodeListCmd() *cobra.Command {
 				var inv talos.Inventory
 				_ = json.Unmarshal(r.Hardware, &inv)
 				fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%d\t%s\t%v\t%s\n",
-					r.IP, r.Cluster, r.Hostname, r.Role, r.State, r.Arch, r.MAC, inv.CPUs, humanBytes(inv.MemoryBytes), inv.KVM, r.LastSeen)
+					r.IP, r.Cluster, r.Hostname, r.Role, r.State, r.Arch, r.MAC, inv.CPUs, cluster.HumanBytes(inv.MemoryBytes), inv.KVM, r.LastSeen)
 			}
 			return tw.Flush()
-		},
+		}),
 	}
 	cmd.Flags().StringVar(&clusterName, "cluster", "", "only nodes of this cluster")
 	return cmd
@@ -58,22 +54,17 @@ func nodeAddCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "add",
 		Short: "Join a maintenance-mode machine to an existing cluster",
-		RunE: func(cmd *cobra.Command, _ []string) error {
+		RunE: withManager(func(cmd *cobra.Command, _ []string, m *cluster.Manager) error {
 			n.Role = config.Role(role)
 			n.Arch = config.Arch(arch)
 			n.InstallDisk = config.InstallDisk{Path: disk}
-			m, err := openManager()
-			if err != nil {
-				return err
-			}
-			defer m.Store.Close()
 			if n.MAC == "" {
 				if row, err := m.Store.GetNode(cmd.Context(), n.IP); err == nil {
 					n.MAC = row.MAC
 				}
 			}
 			return m.AddNode(cmd.Context(), clusterName, n, printEvents(cmd))
-		},
+		}),
 	}
 	cmd.Flags().StringVar(&clusterName, "cluster", "", "target cluster")
 	cmd.Flags().StringVar(&n.IP, "ip", "", "node IP (in maintenance mode)")
@@ -96,14 +87,9 @@ func nodeRemoveCmd() *cobra.Command {
 		Use:   "remove <hostname>",
 		Short: "Drain a node, delete it from Kubernetes and reset Talos back to maintenance mode",
 		Args:  cobra.ExactArgs(1),
-		RunE: func(cmd *cobra.Command, args []string) error {
-			m, err := openManager()
-			if err != nil {
-				return err
-			}
-			defer m.Store.Close()
+		RunE: withManager(func(cmd *cobra.Command, args []string, m *cluster.Manager) error {
 			return m.RemoveNode(cmd.Context(), clusterName, args[0], cluster.RemoveOptions{Force: force}, printEvents(cmd))
-		},
+		}),
 	}
 	cmd.Flags().StringVar(&clusterName, "cluster", "", "cluster the node belongs to")
 	cmd.Flags().BoolVar(&force, "force", false, "skip the quorum guard and tolerate an unreachable node")

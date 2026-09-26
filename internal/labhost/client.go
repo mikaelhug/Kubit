@@ -148,12 +148,7 @@ func (c *Client) Capacity(ctx context.Context) (Capacity, error) {
 	if err != nil {
 		return Capacity{}, err
 	}
-	kv := map[string]string{}
-	for _, line := range strings.Split(out, "\n") {
-		if i := strings.Index(line, "="); i > 0 {
-			kv[line[:i]] = strings.TrimSpace(line[i+1:])
-		}
-	}
+	kv := keyValues(out)
 	cp := Capacity{Kernel: kv["kernel"], Libvirt: kv["libvirt"], Hostname: kv["host"], Bridge: kv["bridge"], KVM: kv["kvm"] == "yes", Ready: kv["ready"] == "yes", CheckedAt: time.Now().UTC().Format(time.RFC3339)}
 	cp.CPUs, _ = strconv.Atoi(kv["cpus"])
 	cp.MemMiB, _ = strconv.Atoi(kv["mem"])

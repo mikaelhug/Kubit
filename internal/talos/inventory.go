@@ -89,8 +89,8 @@ func (c *Client) Inspect(ctx context.Context) (*Inventory, error) {
 		inv.Arch = v.Messages[0].Version.Arch
 		inv.Platform = v.Messages[0].Platform.Name
 	}
-	if st, err := safe.StateGetByID[*runtime.MachineStatus](ctx, c.COSI, runtime.MachineStatusID); err == nil {
-		inv.Stage = st.TypedSpec().Stage.String()
+	if stage, err := c.Stage(ctx); err == nil {
+		inv.Stage = stage
 	}
 	if hn, err := safe.StateGetByID[*network.HostnameStatus](ctx, c.COSI, network.HostnameID); err == nil {
 		inv.Hostname = hn.TypedSpec().Hostname

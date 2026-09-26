@@ -77,3 +77,24 @@ func TestDomainXMLAndMAC(t *testing.T) {
 		t.Errorf("key generation: %v %q", err, pub)
 	}
 }
+
+func TestTalosKernelArgsAreShared(t *testing.T) {
+	want := "talos.platform=metal console=ttyS0 console=tty0 init_on_alloc=1 slab_nomerge pti=on"
+	if got := vmCmdline("amd64"); got != want {
+		t.Errorf("amd64 cmdline %q", got)
+	}
+	if got := vmCmdline("arm64"); !strings.HasPrefix(got, "talos.platform=metal console=ttyAMA0 console=tty0 ") {
+		t.Errorf("arm64 cmdline %q", got)
+	}
+	xml, err := DomainXML(VMSpec{Name: "v", MAC: MAC(1, 9), CPUs: 1, MemMiB: 1024, DiskGiB: 10, Kernel: "/k", Initrd: "/i", Arch: "amd64"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(xml, "<cmdline>"+want+"</cmdline>") {
+		t.Errorf("domain XML must carry the shared cmdline:\n%s", xml)
+	}
+	pxe := strings.Join(TalosKernelArgs("console=tty0", "console=ttyS0"), " ")
+	if pxe != "talos.platform=metal console=tty0 console=ttyS0 init_on_alloc=1 slab_nomerge pti=on" {
+		t.Errorf("pxe args %q", pxe)
+	}
+}

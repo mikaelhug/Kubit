@@ -137,6 +137,10 @@ func Stage(ctx context.Context, ip string, talosconfig []byte) (string, error) {
 		return "", err
 	}
 	defer c.Close()
+	return c.Stage(ctx)
+}
+
+func (c *Client) Stage(ctx context.Context) (string, error) {
 	st, err := safe.StateGetByID[*runtime.MachineStatus](c.Context(ctx), c.COSI, runtime.MachineStatusID)
 	if err != nil {
 		return "", err

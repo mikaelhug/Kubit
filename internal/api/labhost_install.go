@@ -2,27 +2,25 @@ package api
 
 import (
 	"context"
-	"encoding/json"
+	"errors"
 	"fmt"
-	"io"
 	"net"
 	"net/http"
 	"strings"
 	"time"
 
 	"github.com/mikael/kubit/internal/cluster"
-	"github.com/mikael/kubit/internal/httpx"
 	"github.com/mikael/kubit/internal/labhost"
 	"github.com/mikael/kubit/internal/pxe"
 	"github.com/mikael/kubit/internal/store"
+	"github.com/mikael/kubit/internal/talos"
 )
 
 func (s *Server) handleMachineAdd(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		MAC, IP, Hostname, Arch string
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeErr(w, err)
+	if !decodeJSON(w, r, &req) {
 		return
 	}
 	mac := strings.ToLower(strings.TrimSpace(req.MAC))
@@ -61,23 +59,6 @@ func (s *Server) handleLabProgress(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-func (s *Server) pxeStatus(ctx context.Context) (*pxe.Status, error) {
-	v, err := s.store.GetSettings(ctx)
-	if err != nil || v.PXEStatusURL == "" {
-		return nil, fmt.Errorf("no PXE status URL")
-	}
-	resp, err := httpx.Get(ctx, v.PXEStatusURL, pxeStatusWait)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-	var st pxe.Status
-	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&st); err != nil {
-		return nil, err
-	}
-	return &st, nil
-}
-
 type pxeWatch struct {
 	s     *Server
 	mac   string
@@ -112,11 +93,35 @@ func (p *pxeWatch) poll(ctx context.Context) *pxe.Boot {
 	}
 	for _, line := range st.Log[p.seen:] {
 		if strings.Contains(line, p.mac) || (p.ip != "" && strings.Contains(line, p.ip+" ")) {
-			p.sink(cluster.Event{Time: time.Now(), Kind: "log", Level: cluster.Info, Step: p.step, Node: p.mac, Message: "pxe: " + strings.TrimSpace(line)})
+			p.sink.Emit(cluster.Info, p.step, p.mac, "pxe: %s", strings.TrimSpace(line))
 		}
 	}
 	p.seen = len(st.Log)
 	return boot
+}
+
+func (p *pxeWatch) wait(ctx context.Context, step string, budget time.Duration, check func() (bool, string)) error {
+	p.step = step
+	p.sink.Begin(step)
+	deadline := time.Now().Add(budget)
+	for {
+		done, note := check()
+		if done {
+			if note != "" {
+				p.sink.Emit(cluster.Done, step, p.mac, "%s", note)
+			}
+			p.sink.End(step)
+			return nil
+		}
+		if time.Now().After(deadline) {
+			return errors.New(note)
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(labPollEvery):
+		}
+	}
 }
 
 var (
@@ -129,29 +134,8 @@ var (
 )
 
 func (s *Server) labWaitBoot(ctx context.Context, watch *pxeWatch) error {
-	sink, mac := watch.sink, watch.mac
-	wait := func(step string, budget time.Duration, check func() (bool, string)) error {
-		watch.step = step
-		sink(cluster.Event{Time: time.Now(), Kind: "step", Step: step, Status: cluster.StepRunning})
-		deadline := time.Now().Add(budget)
-		for {
-			done, note := check()
-			if done {
-				sink(cluster.Event{Time: time.Now(), Kind: "log", Level: cluster.Done, Step: step, Node: mac, Message: note})
-				sink(cluster.Event{Time: time.Now(), Kind: "step", Step: step, Status: cluster.StepDone})
-				return nil
-			}
-			if time.Now().After(deadline) {
-				return fmt.Errorf("%s", note)
-			}
-			select {
-			case <-ctx.Done():
-				return ctx.Err()
-			case <-time.After(labPollEvery):
-			}
-		}
-	}
-	if err := wait("boot", labBootWait, func() (bool, string) {
+	mac := watch.mac
+	if err := watch.wait(ctx, "boot", labBootWait, func() (bool, string) {
 		if b := watch.poll(ctx); b != nil && b.Stage != "nopxe" {
 			return true, fmt.Sprintf("network boot request from %s (%s firmware)", mac, b.Arch)
 		} else if b != nil {
@@ -161,7 +145,7 @@ func (s *Server) labWaitBoot(ctx context.Context, watch *pxeWatch) error {
 	}); err != nil {
 		return err
 	}
-	return wait("ipxe", labIPXEWait, func() (bool, string) {
+	return watch.wait(ctx, "ipxe", labIPXEWait, func() (bool, string) {
 		if b := watch.poll(ctx); b != nil && b.Stage == "kernel" {
 			return true, "kernel and initrd fetched"
 		}
@@ -182,30 +166,11 @@ func (s *Server) labWaitInstall(ctx context.Context, m *store.Machine, manual bo
 	}
 	stageRank := map[string]int{"installer": 1, "partitioning": 2, "packages": 3, "late-done": 4, "booted": 5}
 	wait := func(step string, budget time.Duration, check func() (bool, string)) error {
-		watch.step = step
-		sink(cluster.Event{Time: time.Now(), Kind: "step", Step: step, Status: cluster.StepRunning})
-		deadline := time.Now().Add(budget)
-		for {
+		return watch.wait(ctx, step, budget, func() (bool, string) {
 			watch.poll(ctx)
-			done, note := check()
-			if done {
-				if note != "" {
-					sink(cluster.Event{Time: time.Now(), Kind: "log", Level: cluster.Done, Step: step, Node: mac, Message: note})
-				}
-				sink(cluster.Event{Time: time.Now(), Kind: "step", Step: step, Status: cluster.StepDone})
-				return nil
-			}
-			if time.Now().After(deadline) {
-				return fmt.Errorf("%s", note)
-			}
-			select {
-			case <-ctx.Done():
-				return ctx.Err()
-			case <-time.After(labPollEvery):
-			}
-		}
+			return check()
+		})
 	}
-
 	if !manual {
 		if err := s.labWaitBoot(ctx, watch); err != nil {
 			return nil, err
@@ -244,22 +209,11 @@ func (s *Server) labWaitInstall(ctx context.Context, m *store.Machine, manual bo
 			if ip == "" {
 				continue
 			}
-			d := net.Dialer{Timeout: 2 * time.Second}
-			conn, err := d.DialContext(ctx, "tcp", net.JoinHostPort(ip, "22"))
-			if err != nil {
-				continue
-			}
-			conn.Close()
-			cl, err := labhost.Dial(ctx, ip, priv)
-			if err != nil {
-				continue
-			}
-			if _, err := cl.Run(ctx, "test -f /var/lib/kubit/READY"); err == nil {
+			if cl := sshReady(ctx, ip, func() (*labhost.Client, error) { return labhost.Dial(ctx, ip, priv) }); cl != nil {
 				lc = cl
 				m.IP = ip
 				return true, "SSH answers at " + ip + " as " + labhost.User
 			}
-			cl.Close()
 		}
 		if st == "booted" {
 			return false, "Debian booted and reported in, but SSH with Kubit's key is refused: the key was not installed (late_command failed) or sshd is not running"
@@ -269,4 +223,19 @@ func (s *Server) labWaitInstall(ctx context.Context, m *store.Machine, manual bo
 		return nil, err
 	}
 	return lc, nil
+}
+
+func sshReady(ctx context.Context, ip string, dial func() (*labhost.Client, error)) *labhost.Client {
+	if talos.TCPErr(ctx, ip, "22", 2*time.Second) != nil {
+		return nil
+	}
+	lc, err := dial()
+	if err != nil {
+		return nil
+	}
+	if _, err := lc.Run(ctx, "test -f /var/lib/kubit/READY"); err != nil {
+		lc.Close()
+		return nil
+	}
+	return lc
 }

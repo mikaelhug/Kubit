@@ -24,7 +24,7 @@ func (s *Server) oobRoutes() {
 }
 
 func (s *Server) oobConfig(ctx context.Context, mac string, submitted oob.Config) oob.Config {
-	if submitted.Password == "•••" || submitted.Password == "" {
+	if submitted.Password == store.Masked || submitted.Password == "" {
 		if cur, err := s.store.MachineOOB(ctx, mac); err == nil {
 			submitted.Password = cur.Password
 		}
@@ -33,10 +33,9 @@ func (s *Server) oobConfig(ctx context.Context, mac string, submitted oob.Config
 }
 
 func (s *Server) handleOOBSave(w http.ResponseWriter, r *http.Request) {
-	mac := strings.ToLower(r.PathValue("mac"))
+	mac := pathMAC(r)
 	var c oob.Config
-	if err := json.NewDecoder(r.Body).Decode(&c); err != nil {
-		writeErr(w, err)
+	if !decodeJSON(w, r, &c) {
 		return
 	}
 	if c.Type == "" {
@@ -49,7 +48,7 @@ func (s *Server) handleOOBSave(w http.ResponseWriter, r *http.Request) {
 	}
 	c = s.oobConfig(r.Context(), mac, c)
 	if _, err := oob.Open(c); err != nil {
-		writeJSON(w, http.StatusUnprocessableEntity, map[string]string{"error": err.Error()})
+		writeErr(w, unprocessable(err))
 		return
 	}
 	if err := s.store.SetMachineOOB(r.Context(), mac, &c); err != nil {
@@ -61,9 +60,11 @@ func (s *Server) handleOOBSave(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleOOBTest(w http.ResponseWriter, r *http.Request) {
-	mac := strings.ToLower(r.PathValue("mac"))
+	mac := pathMAC(r)
 	var c oob.Config
-	_ = json.NewDecoder(r.Body).Decode(&c)
+	if !decodeOptionalJSON(w, r, &c) {
+		return
+	}
 	if c.Type == "" {
 		if cur, err := s.store.MachineOOB(r.Context(), mac); err == nil {
 			c = *cur
@@ -91,13 +92,12 @@ func (s *Server) handleOOBTest(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleOOBAdd(w http.ResponseWriter, r *http.Request) {
 	var c oob.Config
-	if err := json.NewDecoder(r.Body).Decode(&c); err != nil {
-		writeErr(w, err)
+	if !decodeJSON(w, r, &c) {
 		return
 	}
 	mgr, err := oob.Open(c)
 	if err != nil {
-		writeJSON(w, http.StatusUnprocessableEntity, map[string]string{"error": err.Error()})
+		writeErr(w, unprocessable(err))
 		return
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
@@ -139,7 +139,7 @@ func (s *Server) handleOOBAdd(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleOOBPower(w http.ResponseWriter, r *http.Request) {
-	mac := strings.ToLower(r.PathValue("mac"))
+	mac := pathMAC(r)
 	var req struct {
 		Action oob.Action `json:"action"`
 	}
@@ -170,21 +170,21 @@ func (s *Server) handleOOBPower(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if req.Action == oob.BootPXE && !s.pxeRunning(r.Context()) {
-		writeJSON(w, http.StatusConflict, map[string]string{"error": "The PXE server is not running, so the machine would find nothing to boot. Start it in a terminal (it can stay open): " + pxeCommand(r.Host), "code": "pxe-down", "command": pxeCommand(r.Host)})
+		pxeDown(w, pxeCommand(r.Host, false))
 		return
 	}
-	id, err := s.runOperation(m.Cluster, "machine.power", map[string]string{"mac": mac, "action": string(req.Action), "hostname": m.Hostname}, func(ctx context.Context, sink cluster.Sink) (result any, err error) {
+	s.startOp(w, m.Cluster, "machine.power", map[string]string{"mac": mac, "action": string(req.Action), "hostname": m.Hostname}, func(ctx context.Context, sink cluster.Sink) (result any, err error) {
 		if req.Action == oob.BootPXE {
 			defer func() {
 				if err != nil {
 					_ = s.store.SetMachineProvision(context.Background(), mac, false)
 				}
 			}()
-			sink(cluster.Event{Time: time.Now(), Kind: "steps", Level: "info", Steps: cluster.Steps("power", "Arm a network boot and reset via "+oob.Label(c.Type), "boot", "Network boot request seen", "ipxe", "Talos kernel fetched", "wait", "Wait for Talos maintenance mode")})
+			sink.Plan(cluster.Steps("power", "Arm a network boot and reset via "+oob.Label(c.Type), "boot", "Network boot request seen", "ipxe", "Talos kernel fetched", "wait", "Wait for Talos maintenance mode")...)
 		}
-		sink(cluster.Event{Time: time.Now(), Kind: "step", Step: "power", Status: cluster.StepRunning})
+		sink.Begin("power")
 		mgr, err := oob.Open(*c, oob.WithTrace(func(line string) {
-			sink(cluster.Event{Time: time.Now(), Kind: "log", Level: "info", Step: "power", Message: c.Type + ": " + line})
+			sink.Emit(cluster.Info, "power", "", "%s: %s", c.Type, line)
 		}))
 		if err != nil {
 			return nil, err
@@ -193,14 +193,14 @@ func (s *Server) handleOOBPower(w http.ResponseWriter, r *http.Request) {
 			if err := s.store.SetMachineProvision(ctx, mac, true); err != nil {
 				return nil, err
 			}
-			sink(cluster.Event{Time: time.Now(), Kind: "log", Level: "info", Step: "power", Message: "armed: Kubit's PXE server hands Talos to " + mac + " on its next boot"})
+			sink.Emit(cluster.Info, "power", "", "armed: Kubit's PXE server hands Talos to %s on its next boot", mac)
 		}
-		sink(cluster.Event{Time: time.Now(), Kind: "log", Level: "info", Step: "power", Message: fmt.Sprintf("%s via %s at %s", req.Action, c.Type, c.Host)})
+		sink.Emit(cluster.Info, "power", "", "%s via %s at %s", req.Action, c.Type, c.Host)
 		if err := mgr.Power(ctx, req.Action); err != nil {
 			return nil, err
 		}
 		_ = s.store.Audit(ctx, m.Cluster, "machine.power", mac+" "+string(req.Action))
-		sink(cluster.Event{Time: time.Now(), Kind: "step", Step: "power", Status: cluster.StepDone})
+		sink.End("power")
 		if req.Action != oob.BootPXE {
 			return nil, nil
 		}
@@ -208,7 +208,7 @@ func (s *Server) handleOOBPower(w http.ResponseWriter, r *http.Request) {
 		if err := s.labWaitBoot(ctx, watch); err != nil {
 			return nil, err
 		}
-		sink(cluster.Event{Time: time.Now(), Kind: "step", Step: "wait", Status: cluster.StepRunning})
+		sink.Begin("wait")
 		candidates := []string{m.IP, c.Host}
 		deadline := time.Now().Add(8 * time.Minute)
 		for time.Now().Before(deadline) {
@@ -220,9 +220,9 @@ func (s *Server) handleOOBPower(w http.ResponseWriter, r *http.Request) {
 				}
 				res := talos.Probe(ctx, ip, 2*time.Second)
 				if res.Err == nil && res.State == talos.StateMaintenance {
-					_ = s.store.UpsertNode(ctx, rowFromScan(res))
-					sink(cluster.Event{Time: time.Now(), Kind: "log", Level: "done", Step: "wait", Node: ip, Message: fmt.Sprintf("Talos %s in maintenance mode at %s; the machine can now be adopted or used in a new cluster", res.Inventory.TalosVersion, ip)})
-					sink(cluster.Event{Time: time.Now(), Kind: "step", Step: "wait", Status: cluster.StepDone})
+					_ = s.store.UpsertNode(ctx, cluster.RowFromScan(res))
+					sink.Emit(cluster.Done, "wait", ip, "Talos %s in maintenance mode at %s; the machine can now be adopted or used in a new cluster", res.Inventory.TalosVersion, ip)
+					sink.End("wait")
 					return nil, nil
 				}
 			}
@@ -234,11 +234,6 @@ func (s *Server) handleOOBPower(w http.ResponseWriter, r *http.Request) {
 		}
 		return nil, fmt.Errorf("no Talos maintenance mode at %s within 8 minutes: is kubit pxe running on this LAN, and did the machine network-boot (Network boot page shows its MAC)?", strings.Join(candidates, " / "))
 	})
-	if err != nil {
-		writeErr(w, err)
-		return
-	}
-	writeJSON(w, http.StatusAccepted, map[string]any{"operationId": id})
 }
 
 func (s *Server) handlePXEDecide(w http.ResponseWriter, r *http.Request) {
@@ -272,10 +267,9 @@ func (s *Server) pxeDecision(ctx context.Context, mac string) (string, string) {
 }
 
 func oobHardware(info oob.Info) []byte {
-	disks := make([]map[string]any, 0, len(info.Disks))
+	inv := talos.Inventory{Manufacturer: info.Manufacturer, Product: info.Model, Serial: info.Serial, UUID: info.UUID, CPUs: info.CPUs, MemoryBytes: uint64(max(info.MemoryBytes, 0)), Disks: make([]talos.Disk, 0, len(info.Disks))}
 	for _, d := range info.Disks {
-		disks = append(disks, map[string]any{"devPath": "", "model": d.Model, "serial": d.Serial, "sizeBytes": d.SizeBytes, "transport": d.Transport, "rotational": d.Media == "hdd"})
+		inv.Disks = append(inv.Disks, talos.Disk{Model: d.Model, SizeBytes: uint64(max(d.SizeBytes, 0)), Transport: d.Transport, Rotational: d.Media == "hdd"})
 	}
-	hw, _ := json.Marshal(map[string]any{"manufacturer": info.Manufacturer, "product": info.Model, "serial": info.Serial, "uuid": info.UUID, "cpus": info.CPUs, "memoryBytes": info.MemoryBytes, "disks": disks, "links": []any{}})
-	return hw
+	return placeholderHardware(inv)
 }

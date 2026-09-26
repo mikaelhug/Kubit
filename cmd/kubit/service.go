@@ -233,7 +233,6 @@ WantedBy={{if .User}}multi-user.target{{else}}default.target{{end}}
 `))
 
 func renderUnit(goos string, u unit, system bool) (string, error) {
-	var b strings.Builder
 	switch goos {
 	case "darwin":
 		return execTemplate(launchdPlist, u)
@@ -241,10 +240,7 @@ func renderUnit(goos string, u unit, system bool) (string, error) {
 		if !system {
 			u.User = ""
 		}
-		if err := systemdUnit.Execute(&b, u); err != nil {
-			return "", err
-		}
-		return b.String(), nil
+		return execTemplate(systemdUnit, u)
 	}
 	return "", fmt.Errorf("no service manager support on %s; run `kubit serve` under your own supervisor", goos)
 }

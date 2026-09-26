@@ -1,12 +1,15 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
 	"text/tabwriter"
 
+	"github.com/mikael/kubit/internal/store"
 	"github.com/mikael/kubit/internal/talos"
+	"github.com/siderolabs/talos/pkg/machinery/api/common"
 	"github.com/spf13/cobra"
 )
 
@@ -16,17 +19,8 @@ func nodeServicesCmd() *cobra.Command {
 		Use:   "services <ip>",
 		Short: "Show Talos service states on a cluster node",
 		Args:  cobra.ExactArgs(1),
-		RunE: func(cmd *cobra.Command, args []string) error {
-			s, err := openStore()
-			if err != nil {
-				return err
-			}
-			defer s.Close()
-			sec, err := s.GetClusterSecrets(cmd.Context(), clusterName)
-			if err != nil {
-				return err
-			}
-			tc, err := talos.Dial(cmd.Context(), args[0], sec.Talosconfig)
+		RunE: withStore(func(cmd *cobra.Command, args []string, s *store.Store) error {
+			tc, err := dialNode(cmd.Context(), s, clusterName, args[0])
 			if err != nil {
 				return err
 			}
@@ -52,7 +46,7 @@ func nodeServicesCmd() *cobra.Command {
 				}
 			}
 			return tw.Flush()
-		},
+		}),
 	}
 	cmd.Flags().StringVar(&clusterName, "cluster", "", "cluster the node belongs to")
 	_ = cmd.MarkFlagRequired("cluster")
@@ -66,46 +60,23 @@ func nodeLogsCmd() *cobra.Command {
 		Use:   "logs <ip>",
 		Short: "Print dmesg (default) or a Talos service log from a cluster node",
 		Args:  cobra.ExactArgs(1),
-		RunE: func(cmd *cobra.Command, args []string) error {
-			s, err := openStore()
-			if err != nil {
-				return err
-			}
-			defer s.Close()
-			sec, err := s.GetClusterSecrets(cmd.Context(), clusterName)
-			if err != nil {
-				return err
-			}
-			tc, err := talos.Dial(cmd.Context(), args[0], sec.Talosconfig)
+		RunE: withStore(func(cmd *cobra.Command, args []string, s *store.Store) error {
+			tc, err := dialNode(cmd.Context(), s, clusterName, args[0])
 			if err != nil {
 				return err
 			}
 			defer tc.Close()
+			var st dataStream
 			if service == "" {
-				st, err := tc.Dmesg(tc.Context(cmd.Context()), false, false)
-				if err != nil {
-					return err
-				}
-				return drain(cmd.OutOrStdout(), func() ([]byte, error) {
-					m, err := st.Recv()
-					if err != nil {
-						return nil, err
-					}
-					return m.Bytes, nil
-				})
+				st, err = tc.Dmesg(tc.Context(cmd.Context()), false, false)
+			} else {
+				st, err = tc.Logs(tc.Context(cmd.Context()), "system", 0, service, false, tail)
 			}
-			st, err := tc.Logs(tc.Context(cmd.Context()), "system", 0, service, false, tail)
 			if err != nil {
 				return err
 			}
-			return drain(cmd.OutOrStdout(), func() ([]byte, error) {
-				m, err := st.Recv()
-				if err != nil {
-					return nil, err
-				}
-				return m.Bytes, nil
-			})
-		},
+			return drain(cmd.OutOrStdout(), st)
+		}),
 	}
 	cmd.Flags().StringVar(&clusterName, "cluster", "", "cluster the node belongs to")
 	cmd.Flags().StringVar(&service, "service", "", "Talos service id (kubelet, etcd, apid, ...); empty = dmesg")
@@ -114,15 +85,27 @@ func nodeLogsCmd() *cobra.Command {
 	return cmd
 }
 
-func drain(w io.Writer, recv func() ([]byte, error)) error {
+func dialNode(ctx context.Context, s *store.Store, clusterName, ip string) (*talos.Client, error) {
+	sec, err := s.GetClusterSecrets(ctx, clusterName)
+	if err != nil {
+		return nil, err
+	}
+	return talos.Dial(ctx, ip, sec.Talosconfig)
+}
+
+type dataStream interface {
+	Recv() (*common.Data, error)
+}
+
+func drain(w io.Writer, st dataStream) error {
 	for {
-		b, err := recv()
+		m, err := st.Recv()
 		if errors.Is(err, io.EOF) {
 			return nil
 		}
 		if err != nil {
 			return err
 		}
-		w.Write(b)
+		w.Write(m.Bytes)
 	}
 }

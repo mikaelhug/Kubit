@@ -3,7 +3,6 @@ package api
 import (
 	"context"
 	"crypto/subtle"
-	"encoding/json"
 	"errors"
 	"net"
 	"net/http"
@@ -169,8 +168,7 @@ func (s *Server) handleAuthSetup(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var c credentials
-	if err := json.NewDecoder(r.Body).Decode(&c); err != nil {
-		writeErr(w, err)
+	if !decodeJSON(w, r, &c) {
 		return
 	}
 	u, err := s.store.CreateUser(r.Context(), c.Name, c.Password, store.RoleAdmin, "local")
@@ -186,8 +184,7 @@ func (s *Server) handleAuthSetup(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleAuthLogin(w http.ResponseWriter, r *http.Request) {
 	var c credentials
-	if err := json.NewDecoder(r.Body).Decode(&c); err != nil {
-		writeErr(w, err)
+	if !decodeJSON(w, r, &c) {
 		return
 	}
 	u, err := s.store.Authenticate(r.Context(), c.Name, c.Password)
@@ -232,8 +229,7 @@ type userRequest struct {
 
 func (s *Server) handleUserCreate(w http.ResponseWriter, r *http.Request) {
 	var req userRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeErr(w, err)
+	if !decodeJSON(w, r, &req) {
 		return
 	}
 	role, err := store.ParseRole(req.Role)
@@ -257,8 +253,7 @@ func (s *Server) handleUserCreate(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleUserUpdate(w http.ResponseWriter, r *http.Request) {
 	name := strings.ToLower(r.PathValue("name"))
 	var req userRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeErr(w, err)
+	if !decodeJSON(w, r, &req) {
 		return
 	}
 	var role *store.Role
@@ -351,7 +346,9 @@ func (s *Server) handleTokenCreate(w http.ResponseWriter, r *http.Request) {
 		Name string `json:"name"`
 		Days int    `json:"days"`
 	}
-	_ = json.NewDecoder(r.Body).Decode(&req)
+	if !decodeOptionalJSON(w, r, &req) {
+		return
+	}
 	if req.Name == "" {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "name is required"})
 		return

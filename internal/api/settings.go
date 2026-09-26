@@ -3,14 +3,17 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"net/url"
 	"os"
+	"slices"
 	"time"
 
 	"github.com/mikael/kubit/internal/httpx"
+	"github.com/mikael/kubit/internal/pxe"
 	"github.com/mikael/kubit/internal/store"
 )
 
@@ -34,57 +37,44 @@ func (s *Server) handleGetSettings(w http.ResponseWriter, r *http.Request) {
 }
 
 func redactSettings(v store.Settings) store.Settings {
-	if v.Alerts.SMTP.Password != "" {
-		v.Alerts.SMTP.Password = "•••"
-	}
-	if v.Offsite.SecretKey != "" {
-		v.Offsite.SecretKey = "•••"
-	}
-	if v.AMT.Password != "" {
-		v.AMT.Password = "•••"
-	}
-	if v.BMC.Password != "" {
-		v.BMC.Password = "•••"
-	}
-	if v.Auth.OIDC.ClientSecret != "" {
-		v.Auth.OIDC.ClientSecret = "•••"
+	for _, p := range v.Secrets() {
+		if *p != "" {
+			*p = store.Masked
+		}
 	}
 	return v
 }
 
+func (s *Server) unmaskSettings(ctx context.Context, v *store.Settings) {
+	next := v.Secrets()
+	if !slices.ContainsFunc(next, func(p *string) bool { return *p == store.Masked }) {
+		return
+	}
+	cur, err := s.store.GetSettings(ctx)
+	if err != nil {
+		return
+	}
+	for i, p := range cur.Secrets() {
+		if *next[i] == store.Masked {
+			*next[i] = *p
+		}
+	}
+}
+
 func (s *Server) handlePutSettings(w http.ResponseWriter, r *http.Request) {
 	var v store.Settings
-	if err := json.NewDecoder(r.Body).Decode(&v); err != nil {
-		writeErr(w, err)
+	if !decodeJSON(w, r, &v) {
 		return
 	}
 	if u, err := url.Parse(v.FactoryURL); err != nil || u.Scheme == "" || u.Host == "" {
-		writeJSON(w, http.StatusUnprocessableEntity, map[string]string{"error": "factoryUrl must be an absolute URL"})
+		writeErr(w, &statusError{http.StatusUnprocessableEntity, "factoryUrl must be an absolute URL"})
 		return
 	}
 	if v.WatchIntervalSec < 5 {
-		writeJSON(w, http.StatusUnprocessableEntity, map[string]string{"error": "watchIntervalSec must be at least 5"})
+		writeErr(w, &statusError{http.StatusUnprocessableEntity, "watchIntervalSec must be at least 5"})
 		return
 	}
-	if v.Alerts.SMTP.Password == "•••" || v.Offsite.SecretKey == "•••" || v.AMT.Password == "•••" || v.BMC.Password == "•••" || v.Auth.OIDC.ClientSecret == "•••" {
-		if cur, err := s.store.GetSettings(r.Context()); err == nil {
-			if v.Alerts.SMTP.Password == "•••" {
-				v.Alerts.SMTP.Password = cur.Alerts.SMTP.Password
-			}
-			if v.Offsite.SecretKey == "•••" {
-				v.Offsite.SecretKey = cur.Offsite.SecretKey
-			}
-			if v.AMT.Password == "•••" {
-				v.AMT.Password = cur.AMT.Password
-			}
-			if v.BMC.Password == "•••" {
-				v.BMC.Password = cur.BMC.Password
-			}
-			if v.Auth.OIDC.ClientSecret == "•••" {
-				v.Auth.OIDC.ClientSecret = cur.Auth.OIDC.ClientSecret
-			}
-		}
-	}
+	s.unmaskSettings(r.Context(), &v)
 	if err := s.store.PutSettings(r.Context(), v); err != nil {
 		writeErr(w, err)
 		return
@@ -103,33 +93,60 @@ func (s *Server) applySettings(v store.Settings) {
 	}
 }
 
-func pxeCommand(host string) string {
+func pxeCommand(host string, httpOnly bool) string {
 	bin := "kubit"
 	if p, err := os.Executable(); err == nil {
 		bin = p
+	}
+	if httpOnly {
+		return fmt.Sprintf("%s pxe --http-only --iface en0 --kubit-url http://%s", bin, host)
 	}
 	return fmt.Sprintf("sudo %s pxe --iface en0 --kubit-url http://%s", bin, host)
 }
 
-func pxeHTTPCommand(host string) string {
-	bin := "kubit"
-	if p, err := os.Executable(); err == nil {
-		bin = p
+func pxeDown(w http.ResponseWriter, cmd string) {
+	writeJSON(w, http.StatusConflict, map[string]string{"error": "The PXE server is not running, so the machine would find nothing to boot. Start it in a terminal (it can stay open): " + cmd, "code": "pxe-down", "command": cmd})
+}
+
+func (s *Server) pxeFetch(ctx context.Context) (string, []byte, error) {
+	v, err := s.store.GetSettings(ctx)
+	if err != nil {
+		return "", nil, err
 	}
-	return fmt.Sprintf("%s pxe --http-only --iface en0 --kubit-url http://%s", bin, host)
+	if v.PXEStatusURL == "" {
+		return "", nil, errors.New("no PXE status URL")
+	}
+	body, err := fetchPXE(ctx, v.PXEStatusURL)
+	return v.PXEStatusURL, body, err
+}
+
+func fetchPXE(ctx context.Context, statusURL string) ([]byte, error) {
+	resp, err := httpx.Get(ctx, statusURL, pxeStatusWait)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("%s: %s", statusURL, resp.Status)
+	}
+	return io.ReadAll(io.LimitReader(resp.Body, 4<<20))
+}
+
+func (s *Server) pxeStatus(ctx context.Context) (*pxe.Status, error) {
+	_, body, err := s.pxeFetch(ctx)
+	if err != nil {
+		return nil, err
+	}
+	var st pxe.Status
+	if err := json.Unmarshal(body, &st); err != nil {
+		return nil, err
+	}
+	return &st, nil
 }
 
 func (s *Server) pxeRunning(ctx context.Context) bool {
-	v, err := s.store.GetSettings(ctx)
-	if err != nil || v.PXEStatusURL == "" {
-		return false
-	}
-	resp, err := httpx.Get(ctx, v.PXEStatusURL, pxeStatusWait)
-	if err != nil {
-		return false
-	}
-	resp.Body.Close()
-	return resp.StatusCode == http.StatusOK
+	_, _, err := s.pxeFetch(ctx)
+	return err == nil
 }
 
 func (s *Server) handlePXEStatus(w http.ResponseWriter, r *http.Request) {
@@ -138,14 +155,12 @@ func (s *Server) handlePXEStatus(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, err)
 		return
 	}
-	resp, err := httpx.Get(r.Context(), v.PXEStatusURL, pxeStatusWait)
+	body, err := fetchPXE(r.Context(), v.PXEStatusURL)
 	if err != nil {
 		writeJSON(w, http.StatusOK, map[string]any{"running": false, "statusUrl": v.PXEStatusURL, "error": err.Error(),
-			"command": pxeCommand(r.Host), "serviceCommand": fmt.Sprintf("sudo kubit service install --pxe --iface en0 --kubit-url http://%s", r.Host)})
+			"command": pxeCommand(r.Host, false), "serviceCommand": fmt.Sprintf("sudo kubit service install --pxe --iface en0 --kubit-url http://%s", r.Host)})
 		return
 	}
-	defer resp.Body.Close()
-	body, _ := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
 	var st map[string]any
 	if err := json.Unmarshal(body, &st); err != nil {
 		writeJSON(w, http.StatusOK, map[string]any{"running": false, "statusUrl": v.PXEStatusURL, "error": "unexpected response from " + v.PXEStatusURL})

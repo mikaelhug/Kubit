@@ -10,7 +10,7 @@ import (
 )
 
 func (m *Manager) AddNode(ctx context.Context, name string, n config.Node, sink Sink) error {
-	sink.plan(Steps(
+	sink.Plan(Steps(
 		"preflight", "Check node is in maintenance mode",
 		"secrets", "Generate machine config from cluster secrets",
 		"install", "Apply config and install to disk",
@@ -20,7 +20,7 @@ func (m *Manager) AddNode(ctx context.Context, name string, n config.Node, sink 
 	if err != nil {
 		return err
 	}
-	if row.State != StateReady && row.State != StateBootstrapped {
+	if !Observable(row.State) {
 		return fmt.Errorf("cluster %s is %s; nodes can only join a bootstrapped cluster", name, row.State)
 	}
 	for _, existing := range c.Spec.Nodes {
@@ -32,12 +32,12 @@ func (m *Manager) AddNode(ctx context.Context, name string, n config.Node, sink 
 	if err := c.Validate(); err != nil {
 		return err
 	}
-	if err := sink.run("preflight", func() error { return m.preflight(ctx, c, []config.Node{n}, sink) }); err != nil {
+	if err := sink.Run("preflight", func() error { return m.preflight(ctx, c, []config.Node{n}, sink) }); err != nil {
 		return err
 	}
 	var sec *store.ClusterSecrets
 	var gen *config.Generated
-	err = sink.run("secrets", func() error {
+	err = sink.Run("secrets", func() error {
 		var bundle *secrets.Bundle
 		var err error
 		if sec, bundle, err = m.loadSecrets(ctx, name); err != nil {
@@ -56,20 +56,20 @@ func (m *Manager) AddNode(ctx context.Context, name string, n config.Node, sink 
 			return err
 		}
 		_ = m.Store.Audit(ctx, name, "node.add", marshalJSON(n))
-		sink.emit(Info, "secrets", n.Hostname, "machine config generated with cluster %s secrets", name)
+		sink.Emit(Info, "secrets", n.Hostname, "machine config generated with cluster %s secrets", name)
 		return nil
 	})
 	if err != nil {
 		return err
 	}
-	if err := sink.run("install", func() error {
+	if err := sink.Run("install", func() error {
 		return m.installAll(ctx, c, []config.Node{n}, gen.Nodes, sec.Talosconfig, sink)
 	}); err != nil {
 		return err
 	}
-	if err := sink.run("ready", func() error { return m.waitReady(ctx, c, []config.Node{n}, sink) }); err != nil {
+	if err := sink.Run("ready", func() error { return m.waitReady(ctx, c, []config.Node{n}, sink) }); err != nil {
 		return err
 	}
-	sink.emit(Done, "ready", n.Hostname, "joined cluster %s as %s", name, n.Role)
+	sink.Emit(Done, "ready", n.Hostname, "joined cluster %s as %s", name, n.Role)
 	return nil
 }

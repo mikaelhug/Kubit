@@ -312,7 +312,4 @@
     seen on first contact and refuse a change.
   - JSON handlers accept any Content-Type (hack scripts post with `curl -d`); requiring
     `application/json` would close form-post CSRF from other origins.
-- `TestLabWaitBootPhases` flakes under load (about 1 in 10 full-package runs): the
-  "healthy boot" step's 300 ms budget and `LastSeen.After(since)` race with the fake
-  PXE status; widen the budget or set `LastSeen` explicitly after `since`.
 - `hack/**/*.go` still carries comments (phase 2 stripped only `internal/` and `cmd/`).

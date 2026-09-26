@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"text/template"
@@ -55,6 +56,14 @@ func serialConsole(arch string) string {
 	return "console=ttyS0"
 }
 
+func TalosKernelArgs(consoles ...string) []string {
+	return slices.Concat([]string{"talos.platform=metal"}, consoles, []string{"init_on_alloc=1", "slab_nomerge", "pti=on"})
+}
+
+func vmCmdline(arch string) string {
+	return strings.Join(TalosKernelArgs(serialConsole(arch), "console=tty0"), " ")
+}
+
 var domainTmpl = template.Must(template.New("domain").Parse(`<domain type='{{.Type}}'>
   <name>{{.Name}}</name>
   <memory unit='MiB'>{{.MemMiB}}</memory>
@@ -65,7 +74,7 @@ var domainTmpl = template.Must(template.New("domain").Parse(`<domain type='{{.Ty
     <nvram template='{{.Vars}}'>{{.NVRAM}}</nvram>
 {{if .Kernel}}    <kernel>{{.Kernel}}</kernel>
     <initrd>{{.Initrd}}</initrd>
-    <cmdline>talos.platform=metal {{.Console}} console=tty0 init_on_alloc=1 slab_nomerge pti=on</cmdline>
+    <cmdline>{{.Cmdline}}</cmdline>
 {{else}}    <boot dev='hd'/>
 {{end}}  </os>
   <features><acpi/><apic/></features>
@@ -114,8 +123,8 @@ func DomainXML(s VMSpec) (string, error) {
 	}
 	data := struct {
 		VMSpec
-		QemuArch, Machine, Emulator, Disk, Data, Bridge, Type, CPUMode, Loader, Vars, NVRAM, Console string
-	}{s, qarch, machine, emulator, diskPath(s.Name), "", bridge, typ, cpu, loader, vars, vmDir + "/" + s.Name + ".nvram", serialConsole(s.Arch)}
+		QemuArch, Machine, Emulator, Disk, Data, Bridge, Type, CPUMode, Loader, Vars, NVRAM, Cmdline string
+	}{s, qarch, machine, emulator, diskPath(s.Name), "", bridge, typ, cpu, loader, vars, vmDir + "/" + s.Name + ".nvram", vmCmdline(s.Arch)}
 	if s.DataGiB > 0 {
 		data.Data = dataPath(s.Name)
 	}
@@ -134,20 +143,15 @@ func (c *Client) Define(ctx context.Context, s VMSpec) error {
 	if err != nil {
 		return err
 	}
-	disk := diskPath(s.Name)
-	if _, err := c.Run(ctx, fmt.Sprintf("[ -f %s ] || qemu-img create -q -f qcow2 %s %dG", disk, disk, s.DiskGiB)); err != nil {
+	if err := c.qcow2(ctx, diskPath(s.Name), s.DiskGiB); err != nil {
 		return err
 	}
 	if s.DataGiB > 0 {
-		data := dataPath(s.Name)
-		if _, err := c.Run(ctx, fmt.Sprintf("[ -f %s ] || qemu-img create -q -f qcow2 %s %dG", data, data, s.DataGiB)); err != nil {
+		if err := c.qcow2(ctx, dataPath(s.Name), s.DataGiB); err != nil {
 			return err
 		}
 	}
-	if err := c.Put(ctx, vmDir+"/"+s.Name+".xml", []byte(xml), "644"); err != nil {
-		return err
-	}
-	if _, err := c.Run(ctx, "virsh define "+vmDir+"/"+s.Name+".xml >/dev/null"); err != nil {
+	if err := c.defineXML(ctx, s.Name, xml); err != nil {
 		return err
 	}
 	if _, err := c.Run(ctx, "virsh autostart "+s.Name+" >/dev/null"); err != nil {
@@ -191,49 +195,58 @@ func (c *Client) EnsureRouted(ctx context.Context) error {
 	return err
 }
 
-func (c *Client) SetDiskBoot(ctx context.Context, name string) error {
+func (c *Client) qcow2(ctx context.Context, path string, gib int) error {
+	_, err := c.Run(ctx, fmt.Sprintf("[ -f %s ] || qemu-img create -q -f qcow2 %s %dG", path, path, gib))
+	return err
+}
+
+func (c *Client) defineXML(ctx context.Context, name, xml string) error {
+	if err := c.Put(ctx, vmDir+"/"+name+".xml", []byte(xml), "644"); err != nil {
+		return err
+	}
+	_, err := c.Run(ctx, "virsh define "+vmDir+"/"+name+".xml >/dev/null")
+	return err
+}
+
+func (c *Client) redefine(ctx context.Context, name string, edit func(xml string) (string, error), wantKernel bool, stuck string) error {
 	out, err := c.Run(ctx, "virsh dumpxml "+name+" --inactive")
 	if err != nil {
 		return err
 	}
-	xml := kernelBlock.ReplaceAllString(out, "<boot dev='hd'/>")
-	if xml == out {
-		return fmt.Errorf("%s: no Talos kernel block found in the domain XML — cannot switch to disk boot (libvirt XML format may have changed)", name)
-	}
-	if err := c.Put(ctx, vmDir+"/"+name+".xml", []byte(xml), "644"); err != nil {
+	xml, err := edit(out)
+	if err != nil {
 		return err
 	}
-	if _, err := c.Run(ctx, "virsh define "+vmDir+"/"+name+".xml >/dev/null"); err != nil {
+	if err := c.defineXML(ctx, name, xml); err != nil {
 		return err
 	}
-	if after, err := c.Run(ctx, "virsh dumpxml "+name+" --inactive"); err == nil && strings.Contains(after, "<kernel>") {
-		return fmt.Errorf("%s: disk boot did not take — the domain still has a Talos kernel after redefine", name)
+	if after, err := c.Run(ctx, "virsh dumpxml "+name+" --inactive"); err == nil && strings.Contains(after, "<kernel>") != wantKernel {
+		return fmt.Errorf("%s: %s", name, stuck)
 	}
 	return nil
+}
+
+func (c *Client) SetDiskBoot(ctx context.Context, name string) error {
+	return c.redefine(ctx, name, func(out string) (string, error) {
+		xml := kernelBlock.ReplaceAllString(out, "<boot dev='hd'/>")
+		if xml == out {
+			return "", fmt.Errorf("%s: no Talos kernel block found in the domain XML — cannot switch to disk boot (libvirt XML format may have changed)", name)
+		}
+		return xml, nil
+	}, false, "disk boot did not take — the domain still has a Talos kernel after redefine")
 }
 
 var kernelBlock = regexp.MustCompile(`(?s)<kernel>.*?</kernel>\s*<initrd>.*?</initrd>\s*<cmdline>.*?</cmdline>`)
 
 func (c *Client) SetTalosBoot(ctx context.Context, name string, b Boot, arch string) error {
-	out, err := c.Run(ctx, "virsh dumpxml "+name+" --inactive")
-	if err != nil {
-		return err
-	}
-	block := fmt.Sprintf("<kernel>%s</kernel>\n    <initrd>%s</initrd>\n    <cmdline>talos.platform=metal %s console=tty0</cmdline>", b.Kernel, b.Initrd, serialConsole(arch))
-	xml := strings.Replace(out, "<boot dev='hd'/>", block, 1)
-	if xml == out {
-		return fmt.Errorf("%s: no <boot dev='hd'/> found in the domain XML — cannot switch to Talos boot (libvirt XML format may have changed)", name)
-	}
-	if err := c.Put(ctx, vmDir+"/"+name+".xml", []byte(xml), "644"); err != nil {
-		return err
-	}
-	if _, err := c.Run(ctx, "virsh define "+vmDir+"/"+name+".xml >/dev/null"); err != nil {
-		return err
-	}
-	if after, err := c.Run(ctx, "virsh dumpxml "+name+" --inactive"); err == nil && !strings.Contains(after, "<kernel>") {
-		return fmt.Errorf("%s: Talos boot did not take — the domain has no kernel after redefine", name)
-	}
-	return nil
+	return c.redefine(ctx, name, func(out string) (string, error) {
+		block := fmt.Sprintf("<kernel>%s</kernel>\n    <initrd>%s</initrd>\n    <cmdline>%s</cmdline>", b.Kernel, b.Initrd, vmCmdline(arch))
+		xml := strings.Replace(out, "<boot dev='hd'/>", block, 1)
+		if xml == out {
+			return "", fmt.Errorf("%s: no <boot dev='hd'/> found in the domain XML — cannot switch to Talos boot (libvirt XML format may have changed)", name)
+		}
+		return xml, nil
+	}, true, "Talos boot did not take — the domain has no kernel after redefine")
 }
 
 func (c *Client) Start(ctx context.Context, name string) error {

@@ -2,8 +2,6 @@ package store
 
 import (
 	"context"
-	"database/sql"
-	"errors"
 	"fmt"
 )
 
@@ -18,10 +16,7 @@ func (s *Store) GetSOPSKey(ctx context.Context, cluster string) (*SOPSKey, error
 	k := SOPSKey{Cluster: cluster}
 	var sealed []byte
 	err := s.db.QueryRowContext(ctx, `SELECT identity, recipient, created_at FROM sops_keys WHERE cluster = ?`, cluster).Scan(&sealed, &k.Recipient, &k.CreatedAt)
-	if errors.Is(err, sql.ErrNoRows) {
-		return nil, fmt.Errorf("sops key for cluster %q: %w", cluster, ErrNotFound)
-	}
-	if err != nil {
+	if err := notFound(err, "sops key for cluster %q", cluster); err != nil {
 		return nil, err
 	}
 	if k.Identity, err = s.crypto.Open(sealed); err != nil {
@@ -38,7 +33,7 @@ func (s *Store) PutSOPSKey(ctx context.Context, cluster string, identity []byte,
 	_, err = s.db.ExecContext(ctx, `
 		INSERT INTO sops_keys (cluster, identity, recipient) VALUES (?, ?, ?)
 		ON CONFLICT(cluster) DO UPDATE SET identity = excluded.identity, recipient = excluded.recipient,
-			created_at = strftime('%Y-%m-%dT%H:%M:%fZ','now')`,
+			created_at = `+sqlNow,
 		cluster, sealed, recipient)
 	return s.done(err, Change{Table: "sops", Cluster: cluster, Key: cluster, Op: "put"})
 }

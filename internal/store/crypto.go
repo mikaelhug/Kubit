@@ -53,13 +53,19 @@ func LoadCrypto() (*Crypto, error) {
 	return NewCrypto(key)
 }
 
-func LoadMasterKey() ([]byte, error) {
-	dir := os.Getenv("KUBIT_HOME")
-	if dir == "" {
-		if u, err := os.UserHomeDir(); err == nil {
-			dir = filepath.Join(u, ".kubit")
-		}
+func HomeDir() (string, error) {
+	if h := os.Getenv("KUBIT_HOME"); h != "" {
+		return h, nil
 	}
+	u, err := os.UserHomeDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(u, ".kubit"), nil
+}
+
+func LoadMasterKey() ([]byte, error) {
+	dir, _ := HomeDir()
 	return LoadMasterKeyIn(dir)
 }
 

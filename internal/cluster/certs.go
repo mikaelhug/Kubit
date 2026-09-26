@@ -118,7 +118,7 @@ func kubeconfigClientCert(kubeconfig []byte) ([]byte, error) {
 }
 
 func (m *Manager) RotateCredential(ctx context.Context, name, which string, sink Sink) error {
-	sink.plan(Steps("rotate", "Issue a new "+which, "store", "Replace the stored copy")...)
+	sink.Plan(Steps("rotate", "Issue a new "+which, "store", "Replace the stored copy")...)
 	c, _, err := m.LoadCluster(ctx, name)
 	if err != nil {
 		return err
@@ -132,40 +132,32 @@ func (m *Manager) RotateCredential(ctx context.Context, name, which string, sink
 		return fmt.Errorf("no control planes")
 	}
 	var fresh []byte
-	err = sink.run("rotate", func() error {
-		var last error
-		for _, cp := range cps {
-			tc, err := talos.Dial(ctx, cp.IP, sec.Talosconfig)
-			if err != nil {
-				last = err
-				continue
-			}
-			call, cancel := context.WithTimeout(ctx, 60*time.Second)
-			switch which {
-			case "talosconfig":
-				fresh, err = tc.GenerateTalosconfig(call, 365*24*time.Hour)
-			case "kubeconfig":
-				fresh, err = tc.Kubeconfig(tc.Context(call))
-			default:
-				err = fmt.Errorf("unknown credential %q (talosconfig | kubeconfig)", which)
-			}
-			cancel()
-			tc.Close()
-			if err == nil {
-				sink.emit(Info, "rotate", cp.Hostname, "new %s issued, valid one year", which)
-				return nil
-			}
-			last = err
-			if which != "talosconfig" && which != "kubeconfig" {
-				return err
-			}
+	err = sink.Run("rotate", func() error {
+		if which != "talosconfig" && which != "kubeconfig" {
+			return fmt.Errorf("unknown credential %q (talosconfig | kubeconfig)", which)
 		}
-		return last
+		cp, tc, err := firstControlPlane(ctx, cps, sec.Talosconfig, func(_ config.Node, tc *talos.Client) error {
+			call, cancel := context.WithTimeout(ctx, 60*time.Second)
+			defer cancel()
+			var err error
+			if which == "talosconfig" {
+				fresh, err = tc.GenerateTalosconfig(call, 365*24*time.Hour)
+			} else {
+				fresh, err = tc.Kubeconfig(tc.Context(call))
+			}
+			return err
+		})
+		if err != nil {
+			return err
+		}
+		tc.Close()
+		sink.Emit(Info, "rotate", cp.Hostname, "new %s issued, valid one year", which)
+		return nil
 	})
 	if err != nil {
 		return err
 	}
-	return sink.run("store", func() error {
+	return sink.Run("store", func() error {
 		switch which {
 		case "talosconfig":
 			fresh = rewriteTalosconfigEndpoints(fresh, c)
@@ -178,7 +170,7 @@ func (m *Manager) RotateCredential(ctx context.Context, name, which string, sink
 			}
 		}
 		_ = m.Store.Audit(ctx, name, "cert.rotate", which)
-		sink.emit(Done, "store", "", "%s replaced; export or download it again where it is used outside Kubit", which)
+		sink.Emit(Done, "store", "", "%s replaced; export or download it again where it is used outside Kubit", which)
 		return nil
 	})
 }

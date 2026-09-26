@@ -3,15 +3,14 @@ package watch
 import (
 	"bytes"
 	"context"
-	"encoding/json"
 	"fmt"
-	"github.com/mikael/kubit/internal/talos"
 	"log"
-	"net"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/mikael/kubit/internal/talos"
 
 	"github.com/mikael/kubit/internal/cluster"
 	"github.com/mikael/kubit/internal/k8s"
@@ -171,7 +170,7 @@ func (w *Watcher) Run(ctx context.Context) {
 		}
 		want := map[string]bool{}
 		for _, r := range rows {
-			if r.State == cluster.StateReady || r.State == cluster.StateBootstrapped {
+			if cluster.Observable(r.State) {
 				want[r.Name] = true
 			}
 		}
@@ -295,18 +294,14 @@ func (w *Watcher) serviceEvery() int {
 }
 
 func (w *Watcher) watchKubernetes(ctx context.Context, name string) {
-	deb := k8s.NewDebouncer(300*time.Millisecond, time.Second, func(scope string) {
-		if w.OnRefresh != nil {
-			w.OnRefresh(name, scope)
-		}
-	})
+	deb := k8s.NewDebouncer(300*time.Millisecond, time.Second, func(scope string) { w.refresh(name, scope) })
 	defer deb.Stop()
 	changed := w.kubeSignal(name)
 	defer w.dropKubeSignal(name, changed)
 	backoff := 5 * time.Second
 	for ctx.Err() == nil {
 		st := w.Latest(name)
-		if st == nil || !st.APIReachable || (st.State != cluster.StateReady && st.State != cluster.StateBootstrapped) {
+		if st == nil || !st.APIReachable || !cluster.Observable(st.State) {
 			select {
 			case <-ctx.Done():
 				return
@@ -357,7 +352,11 @@ func (w *Watcher) runInformers(ctx context.Context, name string, kc *k8s.Client,
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		kc.WatchScopes(wctx, hit)
+		kc.WatchScopes(wctx, func(scope, namespace string) {
+			for _, sc := range kubeScopes(scope, namespace) {
+				hit(sc)
+			}
+		})
 	}()
 	for {
 		select {
@@ -373,6 +372,21 @@ func (w *Watcher) runInformers(ctx context.Context, name string, kc *k8s.Client,
 			<-done
 			return true
 		}
+	}
+}
+
+func kubeScopes(scope, namespace string) []string {
+	if scope == k8s.ScopeWorkloads {
+		if key, ok := cluster.PlatformNamespace(namespace); ok && key != "kubernetes" {
+			return []string{scope, k8s.ScopeAddons}
+		}
+	}
+	return []string{scope}
+}
+
+func (w *Watcher) refresh(name, scope string) {
+	if w.OnRefresh != nil {
+		w.OnRefresh(name, scope)
 	}
 }
 
@@ -431,7 +445,7 @@ func (w *Watcher) candidateLoop(ctx context.Context) {
 				res := talos.Probe(pctx, m.IP, 2*time.Second)
 				cancel()
 				if res.Err == nil {
-					_ = w.Store.UpsertNode(ctx, rowFromScan(res))
+					_ = w.Store.UpsertNode(ctx, cluster.RowFromScan(res))
 				}
 			case store.KindUnbooted:
 				switch {
@@ -442,7 +456,7 @@ func (w *Watcher) candidateLoop(ctx context.Context) {
 					if ok {
 						_ = w.Store.UpsertNode(ctx, store.NodeRow{MAC: m.MAC, IP: m.IP, Source: "redfish", State: m.State})
 					}
-				case m.OOB != nil && portOpen(ctx, m.OOB.Host, "16992"), portOpen(ctx, m.IP, "16992"):
+				case m.OOB != nil && portOpen(ctx, m.OOB.Host, oob.AMTPort), portOpen(ctx, m.IP, oob.AMTPort):
 					_ = w.Store.UpsertNode(ctx, store.NodeRow{MAC: m.MAC, IP: m.IP, Source: "amt", State: m.State})
 				}
 			}
@@ -451,16 +465,7 @@ func (w *Watcher) candidateLoop(ctx context.Context) {
 }
 
 func portOpen(ctx context.Context, host, port string) bool {
-	if host == "" {
-		return false
-	}
-	d := net.Dialer{Timeout: 2 * time.Second}
-	c, err := d.DialContext(ctx, "tcp", net.JoinHostPort(host, port))
-	if err != nil {
-		return false
-	}
-	c.Close()
-	return true
+	return host != "" && talos.TCPErr(ctx, host, port, 2*time.Second) == nil
 }
 
 func (w *Watcher) labLoop(ctx context.Context) {
@@ -556,7 +561,7 @@ func (w *Watcher) labTick(ctx context.Context, host *store.Machine) {
 		if vm.State == "running" && vm.IP != "" && (row.State == "booting" || row.IP == "") {
 			res := talos.Probe(tctx, vm.IP, 2*time.Second)
 			if res.Err == nil {
-				r := rowFromScan(res)
+				r := cluster.RowFromScan(res)
 				r.Source = "lab"
 				_ = w.Store.UpsertNode(tctx, r)
 				_ = w.Store.SetMachineHost(tctx, vm.MAC, host.MAC)
@@ -677,16 +682,6 @@ func staleBy(ts string, d time.Duration) bool {
 	return err != nil || time.Since(t) > d
 }
 
-func rowFromScan(res talos.ScanResult) store.NodeRow {
-	row := store.NodeRow{IP: res.IP, Source: "scan", State: string(res.State)}
-	if inv := res.Inventory; inv != nil {
-		row.MAC, row.Arch, row.TalosVersion = inv.PrimaryMAC(), inv.Arch, inv.TalosVersion
-		row.UUID, row.Serial = inv.UUID, inv.Serial
-		row.Hardware, _ = json.Marshal(inv)
-	}
-	return row
-}
-
 var disruptive = []string{"cluster.create", "cluster.apply", "etcd.restore", "upgrade.talos", "upgrade.kubernetes", "node.add", "node.remove", "node.reboot", "node.rename", "node.pool", "node.readdress", "node.upgrade", "platform.apply", "labhost.update", "labhost.reboot"}
 
 const quietAfterOperation = 10 * time.Minute
@@ -707,6 +702,7 @@ func (w *Watcher) serviceTick(ctx context.Context, name string) {
 	w.mu.Lock()
 	w.lastServices[name] = sh
 	w.mu.Unlock()
+	w.refresh(name, k8s.ScopeServices)
 	if last := w.Store.LastFinished(ctx, name, disruptive); time.Since(last) < quietAfterOperation {
 		return
 	}

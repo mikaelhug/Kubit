@@ -4,8 +4,6 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
-	"errors"
-	"fmt"
 	"strconv"
 	"time"
 )
@@ -47,27 +45,34 @@ func (s *Store) AppendOperationLog(ctx context.Context, id int64, line string) e
 }
 
 func (s *Store) FinishOperation(ctx context.Context, id int64, status string) error {
-	_, err := s.db.ExecContext(ctx, `UPDATE operations SET status = ?, finished_at = strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id = ?`, status, id)
+	_, err := s.db.ExecContext(ctx, `UPDATE operations SET status = ?, finished_at = `+sqlNow+` WHERE id = ?`, status, id)
 	return err
 }
 
-func (s *Store) GetOperation(ctx context.Context, id int64) (*OperationRow, error) {
+const operationCols = `id, cluster, kind, status, started_at, finished_at, steps`
+
+func scanOperation(sc interface{ Scan(...any) error }, more ...any) (*OperationRow, error) {
 	var o OperationRow
 	var finished sql.NullString
-	var steps, artifact, request string
-	err := s.db.QueryRowContext(ctx, `SELECT id, cluster, kind, status, log, started_at, finished_at, steps, artifact, request FROM operations WHERE id = ?`, id).
-		Scan(&o.ID, &o.Cluster, &o.Kind, &o.Status, &o.Log, &o.StartedAt, &finished, &steps, &artifact, &request)
-	if errors.Is(err, sql.ErrNoRows) {
-		return nil, fmt.Errorf("operation %d: %w", id, ErrNotFound)
-	}
-	if err != nil {
+	var steps string
+	if err := sc.Scan(append([]any{&o.ID, &o.Cluster, &o.Kind, &o.Status, &o.StartedAt, &finished, &steps}, more...)...); err != nil {
 		return nil, err
 	}
 	o.FinishedAt = finished.String
 	o.Steps = rawOrNull(steps, "[]")
+	return &o, nil
+}
+
+func (s *Store) GetOperation(ctx context.Context, id int64) (*OperationRow, error) {
+	var log, artifact, request string
+	o, err := scanOperation(s.db.QueryRowContext(ctx, `SELECT `+operationCols+`, log, artifact, request FROM operations WHERE id = ?`, id), &log, &artifact, &request)
+	if err := notFound(err, "operation %d", id); err != nil {
+		return nil, err
+	}
+	o.Log = log
 	o.Artifact = rawOrNull(artifact, "")
 	o.Request = rawOrNull(request, "")
-	return &o, nil
+	return o, nil
 }
 
 func (s *Store) LastFinished(ctx context.Context, cluster string, kinds []string) time.Time {
@@ -84,22 +89,18 @@ func (s *Store) LastFinished(ctx context.Context, cluster string, kinds []string
 }
 
 func (s *Store) ListOperations(ctx context.Context, limit int) ([]OperationRow, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT id, cluster, kind, status, started_at, finished_at, steps FROM operations ORDER BY id DESC LIMIT ?`, limit)
+	rows, err := s.db.QueryContext(ctx, `SELECT `+operationCols+` FROM operations ORDER BY id DESC LIMIT ?`, limit)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 	var out []OperationRow
 	for rows.Next() {
-		var o OperationRow
-		var finished sql.NullString
-		var steps string
-		if err := rows.Scan(&o.ID, &o.Cluster, &o.Kind, &o.Status, &o.StartedAt, &finished, &steps); err != nil {
+		o, err := scanOperation(rows)
+		if err != nil {
 			return nil, err
 		}
-		o.FinishedAt = finished.String
-		o.Steps = rawOrNull(steps, "[]")
-		out = append(out, o)
+		out = append(out, *o)
 	}
 	return out, rows.Err()
 }
@@ -115,6 +116,6 @@ func rawOrNull(v, fallback string) json.RawMessage {
 }
 
 func (s *Store) MarkStaleOperations(ctx context.Context) error {
-	_, err := s.db.ExecContext(ctx, `UPDATE operations SET status = 'failed', finished_at = strftime('%Y-%m-%dT%H:%M:%fZ','now'), log = log || 'kubit restarted while this operation was running' || char(10) WHERE status = 'running'`)
+	_, err := s.db.ExecContext(ctx, `UPDATE operations SET status = 'failed', finished_at = `+sqlNow+`, log = log || 'kubit restarted while this operation was running' || char(10) WHERE status = 'running'`)
 	return err
 }

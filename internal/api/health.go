@@ -2,7 +2,6 @@ package api
 
 import (
 	"context"
-	"io"
 	"net/http"
 	"sort"
 	"strconv"
@@ -11,11 +10,11 @@ import (
 
 	"github.com/mikael/kubit/internal/cluster"
 	"github.com/mikael/kubit/internal/config"
-	"github.com/mikael/kubit/internal/httpx"
 	"github.com/mikael/kubit/internal/store"
 	"github.com/mikael/kubit/internal/watch"
 	"github.com/siderolabs/talos/pkg/machinery/constants"
 	"github.com/siderolabs/talos/pkg/machinery/gendata"
+	utilversion "k8s.io/apimachinery/pkg/util/version"
 )
 
 func defaultTalosVersion() string { return gendata.VersionTag }
@@ -87,17 +86,11 @@ func (s *Server) watchPXE(ctx context.Context) {
 			return
 		case <-t.C:
 		}
-		v, err := s.store.GetSettings(ctx)
-		if err != nil || v.PXEStatusURL == "" {
+		statusURL, b, _ := s.pxeFetch(ctx)
+		if statusURL == "" {
 			continue
 		}
-		body := ""
-		if resp, err := httpx.Get(ctx, v.PXEStatusURL, pxeStatusWait); err == nil {
-			b, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
-			resp.Body.Close()
-			body = string(b)
-		}
-		if body != last {
+		if body := string(b); body != last {
 			last = body
 			s.refresh("", "pxe")
 		}
@@ -214,9 +207,10 @@ func (s *Server) handleVersions(w http.ResponseWriter, r *http.Request) {
 		v.TalosSource = s.manager.Factory.BaseURL()
 	}
 	sort.Slice(v.Talos, func(i, j int) bool { return versionLess(v.Talos[j], v.Talos[i]) })
-	major, minor := parseMinor(constants.DefaultKubernetesVersion)
-	for i := 0; i < constants.SupportedKubernetesVersions; i++ {
-		v.KubernetesMinor = append(v.KubernetesMinor, "v"+strconv.Itoa(major)+"."+strconv.Itoa(minor-i))
+	if kv, err := utilversion.ParseMajorMinor(constants.DefaultKubernetesVersion); err == nil {
+		for i := 0; i < constants.SupportedKubernetesVersions; i++ {
+			v.KubernetesMinor = append(v.KubernetesMinor, "v"+strconv.Itoa(int(kv.Major()))+"."+strconv.Itoa(int(kv.Minor())-i))
+		}
 	}
 	writeJSON(w, http.StatusOK, v)
 }
@@ -266,16 +260,6 @@ func (s *Server) updatesAvailable(ctx context.Context) []string {
 		}
 	}
 	return out
-}
-
-func parseMinor(v string) (int, int) {
-	parts := strings.SplitN(strings.TrimPrefix(v, "v"), ".", 3)
-	if len(parts) < 2 {
-		return 0, 0
-	}
-	a, _ := strconv.Atoi(parts[0])
-	b, _ := strconv.Atoi(parts[1])
-	return a, b
 }
 
 func talosAtLeast(v, min string) bool { return !versionLess(v, min) }

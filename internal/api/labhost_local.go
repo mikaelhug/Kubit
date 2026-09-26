@@ -15,6 +15,7 @@ import (
 	"github.com/mikael/kubit/internal/labhost"
 	"github.com/mikael/kubit/internal/labhost/vfkit"
 	"github.com/mikael/kubit/internal/store"
+	"github.com/mikael/kubit/internal/talos"
 )
 
 func (s *Server) localDriver() (labhost.Driver, error) {
@@ -100,7 +101,7 @@ func (s *Server) handleLabLocalCreate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if plan.VMs != nil {
-		if need, free := plan.VMs.totalMem(), capa.MemMiB-capa.Reserve(); need > free {
+		if need, free := plan.VMs.totalMem(), freeMiB(capa, nil); need > free {
 			http.Error(w, fmt.Sprintf("%d MiB requested, %d MiB free (this Mac keeps %s)", need, free, mib(capa.Reserve())), http.StatusUnprocessableEntity)
 			return
 		}
@@ -119,7 +120,7 @@ func (s *Server) handleLabLocalCreate(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "This Mac's machine record is in use; retire it first.", http.StatusConflict)
 		return
 	}
-	hw, _ := json.Marshal(map[string]any{"manufacturer": "Apple", "product": capa.Model, "cpus": capa.CPUs, "memoryBytes": int64(capa.MemMiB) << 20, "disks": []any{}, "links": []any{}})
+	hw := placeholderHardware(talos.Inventory{Manufacturer: "Apple", Product: capa.Model, CPUs: capa.CPUs, MemoryBytes: uint64(capa.MemMiB) << 20})
 	if err := s.store.UpsertNode(r.Context(), store.NodeRow{MAC: mac, IP: vfkit.Gateway, Hostname: capa.Hostname, Source: "labhost", State: "labhost", Arch: capa.Arch, Hardware: hw}); err != nil {
 		writeErr(w, err)
 		return
@@ -133,12 +134,12 @@ func (s *Server) handleLabLocalCreate(w http.ResponseWriter, r *http.Request) {
 			if err == nil {
 				return
 			}
-			sink(cluster.Event{Time: time.Now(), Kind: "log", Level: cluster.Warn, Message: "setup failed, removing the lab host: " + err.Error()})
+			sink.Emit(cluster.Warn, "", "", "setup failed, removing the lab host: %v", err)
 			rctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 			defer cancel()
 			if host, e := s.store.GetMachine(rctx, mac); e == nil {
 				if rerr := s.releaseLabHost(rctx, host); rerr != nil {
-					sink(cluster.Event{Time: time.Now(), Kind: "log", Level: cluster.Warn, Message: "release: " + rerr.Error()})
+					sink.Emit(cluster.Warn, "", "", "release: %v", rerr)
 				}
 			}
 		}()
@@ -151,8 +152,8 @@ func (s *Server) handleLabLocalCreate(w http.ResponseWriter, r *http.Request) {
 		if plan.Cluster != nil {
 			steps = append(steps, cluster.Steps("cluster", "Design and create the cluster")...)
 		}
-		sink(cluster.Event{Time: time.Now(), Kind: "steps", Level: "info", Steps: steps})
-		sink(cluster.Event{Time: time.Now(), Kind: "step", Step: "setup", Status: cluster.StepRunning})
+		sink.Plan(steps...)
+		sink.Begin("setup")
 		host, err := s.store.GetMachine(ctx, mac)
 		if err != nil {
 			return nil, err
@@ -167,8 +168,8 @@ func (s *Server) handleLabLocalCreate(w http.ResponseWriter, r *http.Request) {
 			return nil, err
 		}
 		_ = s.store.Audit(ctx, "", "labhost.local", mac)
-		sink(cluster.Event{Time: time.Now(), Kind: "log", Level: "done", Step: "setup", Message: fmt.Sprintf("lab host ready: %d CPUs, %d MiB RAM (%s kept for macOS), %d GiB free for VMs", lh.Capacity.CPUs, lh.Capacity.MemMiB, mib(lh.Capacity.Reserve()), lh.Capacity.DiskGiB)})
-		sink(cluster.Event{Time: time.Now(), Kind: "step", Step: "setup", Status: cluster.StepDone})
+		sink.Emit(cluster.Done, "setup", "", "lab host ready: %d CPUs, %d MiB RAM (%s kept for macOS), %d GiB free for VMs", lh.Capacity.CPUs, lh.Capacity.MemMiB, mib(lh.Capacity.Reserve()), lh.Capacity.DiskGiB)
+		sink.End("setup")
 		if plan.VMs == nil {
 			return lh, nil
 		}

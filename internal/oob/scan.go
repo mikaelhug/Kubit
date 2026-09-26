@@ -12,6 +12,8 @@ import (
 	"time"
 )
 
+const AMTPort = "16992"
+
 type ScanResult struct {
 	IP   string
 	Type string
@@ -37,7 +39,7 @@ func Scan(ctx context.Context, addrs []netip.Addr, amtCreds, bmcCreds Config, ti
 			defer wg.Done()
 			defer func() { <-sem }()
 			d := net.Dialer{Timeout: timeout}
-			conn, err := d.DialContext(ctx, "tcp", net.JoinHostPort(ip, "16992"))
+			conn, err := d.DialContext(ctx, "tcp", net.JoinHostPort(ip, AMTPort))
 			var r ScanResult
 			var creds Config
 			if err == nil {

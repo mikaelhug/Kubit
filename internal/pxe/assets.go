@@ -3,13 +3,13 @@ package pxe
 import (
 	"context"
 	"fmt"
-	"io"
-	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/mikael/kubit/internal/httpx"
 )
 
 var ipxeURLs = map[string]string{
@@ -56,34 +56,10 @@ func (c *Cache) Path(ctx context.Context, url string) (string, error) {
 	}
 	dctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Minute)
 	defer cancel()
-	req, err := http.NewRequestWithContext(dctx, http.MethodGet, url, nil)
-	if err != nil {
+	if err := httpx.FetchFile(dctx, httpx.Download, url, path, 0o644); err != nil {
 		return "", err
 	}
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		return "", err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("%s: %s", url, resp.Status)
-	}
-	tmp := path + ".part"
-	f, err := os.Create(tmp)
-	if err != nil {
-		return "", err
-	}
-	n, err := io.Copy(f, resp.Body)
-	f.Close()
-	if err != nil {
-		os.Remove(tmp)
-		return "", err
-	}
-	if n == 0 {
-		os.Remove(tmp)
-		return "", fmt.Errorf("%s: empty response body", url)
-	}
-	return path, os.Rename(tmp, path)
+	return path, nil
 }
 
 func (c *Cache) IPXEBinary(ctx context.Context, name string) (string, error) {

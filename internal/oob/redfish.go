@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"slices"
 	"strings"
 	"time"
 )
@@ -329,20 +330,11 @@ func (r *redfish) Power(ctx context.Context, act Action) error {
 	return nil
 }
 
-func contains(list []string, s string) bool {
-	for _, a := range list {
-		if a == s {
-			return true
-		}
-	}
-	return false
-}
-
 func pickReset(want string, allowed []string) string {
 	if len(allowed) == 0 {
 		return want
 	}
-	has := func(s string) bool { return contains(allowed, s) }
+	has := func(s string) bool { return slices.Contains(allowed, s) }
 	if has(want) {
 		return want
 	}
@@ -366,7 +358,7 @@ func pickReset(want string, allowed []string) string {
 }
 
 func (r *redfish) forcePXE(ctx context.Context, path string, sys *redfishSystem) error {
-	if len(sys.Boot.Allowed) > 0 && !contains(sys.Boot.Allowed, "Pxe") {
+	if len(sys.Boot.Allowed) > 0 && !slices.Contains(sys.Boot.Allowed, "Pxe") {
 		return fmt.Errorf("BMC at %s: this system does not offer a PXE boot override (allowed: %s)", r.c.Host, strings.Join(sys.Boot.Allowed, ", "))
 	}
 	body := map[string]any{"Boot": map[string]string{"BootSourceOverrideEnabled": "Once", "BootSourceOverrideTarget": "Pxe"}}

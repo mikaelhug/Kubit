@@ -5,12 +5,11 @@ import (
 	"encoding/json"
 	"log"
 	"net/http"
-	"os"
-	"runtime"
 	"strconv"
 	"time"
 
 	"github.com/coder/websocket"
+	"github.com/mikael/kubit/internal/k8s"
 	"github.com/mikael/kubit/internal/store"
 )
 
@@ -57,10 +56,14 @@ func (s *Server) onChange(ctx context.Context, c store.Change) {
 		id, _ := strconv.ParseInt(c.Key, 10, 64)
 		if c.Op == "delete" {
 			s.hub.publish(Message{Kind: "snapshotRemoved", Cluster: c.Cluster, Key: c.Key})
+			s.refresh("", k8s.ScopeOffsite)
 			return
 		}
 		if sn, err := s.store.GetSnapshot(ctx, id); err == nil {
 			s.hub.publish(Message{Kind: "snapshot", Cluster: sn.Cluster, Snapshot: sn})
+			if sn.Offsite != "" {
+				s.refresh("", k8s.ScopeOffsite)
+			}
 		}
 	case "audit":
 		if rows, err := s.store.ListAudit(ctx, "", 1); err == nil && len(rows) == 1 {
@@ -71,6 +74,9 @@ func (s *Server) onChange(ctx context.Context, c store.Change) {
 	case "sops":
 		s.hub.publish(Message{Kind: "refresh", Cluster: c.Cluster, Scope: "sops"})
 	case "settings":
+		if offsiteKeys[c.Key] {
+			s.refresh("", k8s.ScopeOffsite)
+		}
 		if v, err := s.store.GetSettings(ctx); err == nil {
 			v = redactSettings(v)
 			s.hub.publish(Message{Kind: "settings", Settings: &v})
@@ -88,6 +94,8 @@ func (s *Server) onChange(ctx context.Context, c store.Change) {
 		}
 	}
 }
+
+var offsiteKeys = map[string]bool{"kubit": true, "offsite.lastBackup": true}
 
 var devOrigins = []string{"localhost:5173", "127.0.0.1:5173"}
 
@@ -110,7 +118,9 @@ func (s *Server) handleLive(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 	since, _ := strconv.ParseInt(r.URL.Query().Get("since"), 10, 64)
 	missed, head, ok := s.hub.since(since)
-	if err := send(Message{Kind: "hello", Hello: &Hello{Seq: head, Version: s.version, StartedAt: s.started.UTC().Format(time.RFC3339), Service: os.Getenv("KUBIT_SERVICE") != "", PID: os.Getpid(), OS: runtime.GOOS}}); err != nil {
+	hello := s.hello()
+	hello.Seq = head
+	if err := send(Message{Kind: "hello", Hello: &hello}); err != nil {
 		return
 	}
 	if !ok {

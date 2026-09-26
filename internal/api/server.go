@@ -129,7 +129,12 @@ func Loopback(addr string) bool {
 }
 
 func (s *Server) handleVersion(w http.ResponseWriter, _ *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]any{"kubit": s.version, "startedAt": s.started.UTC().Format(time.RFC3339), "service": os.Getenv("KUBIT_SERVICE") != "", "pid": os.Getpid(), "os": runtime.GOOS})
+	h := s.hello()
+	writeJSON(w, http.StatusOK, map[string]any{"kubit": h.Version, "startedAt": h.StartedAt, "service": h.Service, "pid": h.PID, "os": h.OS})
+}
+
+func (s *Server) hello() Hello {
+	return Hello{Version: s.version, StartedAt: s.started.UTC().Format(time.RFC3339), Service: os.Getenv("KUBIT_SERVICE") != "", PID: os.Getpid(), OS: runtime.GOOS}
 }
 
 func (s *Server) handleOperations(w http.ResponseWriter, r *http.Request) {
@@ -184,21 +189,11 @@ func (s *Server) handleOperationRetry(w http.ResponseWriter, r *http.Request) {
 			writeErr(w, err)
 			return
 		}
-		newID, err = s.runOperation(c.Metadata.Name, op.Kind, req, func(ctx context.Context, sink cluster.Sink) (any, error) {
-			if err := s.manager.Create(ctx, c, sink); err != nil {
-				return nil, err
-			}
-			if req.SkipPlatform {
-				return nil, nil
-			}
-			return nil, s.manager.ApplyPlatform(ctx, c.Metadata.Name, sink)
-		})
+		newID, err = s.startCreate(c, req.SkipPlatform, req)
 	case "node.add":
 		var n config.Node
 		_ = json.Unmarshal(op.Request, &n)
-		newID, err = s.runOperation(op.Cluster, op.Kind, n, func(ctx context.Context, sink cluster.Sink) (any, error) {
-			return nil, s.manager.AddNode(ctx, op.Cluster, n, sink)
-		})
+		newID, err = s.startNodeAdd(op.Cluster, n)
 	case "platform.apply", "platform.plan":
 		newID, err = s.runOperation(op.Cluster, op.Kind, nil, func(ctx context.Context, sink cluster.Sink) (any, error) {
 			if op.Kind == "platform.plan" {
@@ -207,24 +202,14 @@ func (s *Server) handleOperationRetry(w http.ResponseWriter, r *http.Request) {
 			return nil, s.manager.ApplyPlatform(ctx, op.Cluster, sink)
 		})
 	case "discover":
-		var req struct {
-			Targets []string `json:"targets"`
-		}
+		var req discoverRequest
 		_ = json.Unmarshal(op.Request, &req)
-		body, _ := json.Marshal(req)
-		r2 := r.Clone(r.Context())
-		r2.Body = io.NopCloser(strings.NewReader(string(body)))
-		s.handleDiscover(w, r2)
-		return
+		newID, err = s.startDiscover(req.Targets)
 	default:
 		http.Error(w, "this kind of operation cannot be retried; start it again from its page", http.StatusBadRequest)
 		return
 	}
-	if err != nil {
-		writeErr(w, err)
-		return
-	}
-	writeJSON(w, http.StatusAccepted, map[string]any{"operationId": newID})
+	accepted(w, newID, err)
 }
 
 type clusterSummary struct {
@@ -289,7 +274,7 @@ func (s *Server) handleClusterYAMLSave(w http.ResponseWriter, r *http.Request) {
 	}
 	updated, err := config.Parse(body)
 	if err != nil {
-		writeJSON(w, http.StatusUnprocessableEntity, map[string]string{"error": err.Error()})
+		writeErr(w, unprocessable(err))
 		return
 	}
 	c, ok := s.editCluster(w, r, "cluster.yaml.save", "", func(c *config.Cluster) error {
@@ -302,8 +287,7 @@ func (s *Server) handleClusterYAMLSave(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	out, _ := c.Marshal()
-	writeJSON(w, http.StatusOK, map[string]string{"yaml": string(out)})
+	writeJSON(w, http.StatusOK, map[string]string{"yaml": mustYAML(c)})
 }
 
 func (s *Server) handleClusterKubeconfig(w http.ResponseWriter, r *http.Request) {
@@ -328,8 +312,7 @@ type createRequest struct {
 
 func (s *Server) handleClusterCreate(w http.ResponseWriter, r *http.Request) {
 	var req createRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeErr(w, err)
+	if !decodeJSON(w, r, &req) {
 		return
 	}
 	c, err := config.Parse([]byte(req.YAML))
@@ -337,20 +320,24 @@ func (s *Server) handleClusterCreate(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, err)
 		return
 	}
-	id, err := s.runOperation(c.Metadata.Name, "cluster.create", req, func(ctx context.Context, sink cluster.Sink) (any, error) {
-		if err := s.manager.Create(ctx, c, sink); err != nil {
-			return nil, err
-		}
-		if req.SkipPlatform {
-			return nil, nil
-		}
-		return nil, s.manager.ApplyPlatform(ctx, c.Metadata.Name, sink)
-	})
+	id, err := s.startCreate(c, req.SkipPlatform, req)
 	if err != nil {
 		writeErr(w, err)
 		return
 	}
 	writeJSON(w, http.StatusAccepted, map[string]any{"operationId": id, "cluster": c.Metadata.Name})
+}
+
+func (s *Server) startCreate(c *config.Cluster, skipPlatform bool, request any) (int64, error) {
+	return s.runOperation(c.Metadata.Name, "cluster.create", request, func(ctx context.Context, sink cluster.Sink) (any, error) {
+		if err := s.manager.Create(ctx, c, sink); err != nil {
+			return nil, err
+		}
+		if skipPlatform {
+			return nil, nil
+		}
+		return nil, s.manager.ApplyPlatform(ctx, c.Metadata.Name, sink)
+	})
 }
 
 func (s *Server) handleClusterForget(w http.ResponseWriter, r *http.Request) {
@@ -377,8 +364,10 @@ func (s *Server) handleClusterApply(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		YAML string `json:"yaml"`
 	}
-	_ = json.NewDecoder(r.Body).Decode(&req)
-	id, err := s.runOperation(name, "cluster.apply", req, func(ctx context.Context, sink cluster.Sink) (any, error) {
+	if !decodeOptionalJSON(w, r, &req) {
+		return
+	}
+	s.startOp(w, name, "cluster.apply", req, func(ctx context.Context, sink cluster.Sink) (any, error) {
 		c, _, err := s.manager.LoadCluster(ctx, name)
 		if err != nil {
 			return nil, err
@@ -398,11 +387,6 @@ func (s *Server) handleClusterApply(w http.ResponseWriter, r *http.Request) {
 		}
 		return nil, s.manager.ApplyConfigs(ctx, c, "", sink)
 	})
-	if err != nil {
-		writeErr(w, err)
-		return
-	}
-	writeJSON(w, http.StatusAccepted, map[string]any{"operationId": id})
 }
 
 func (s *Server) handleAddons(w http.ResponseWriter, r *http.Request) {
@@ -416,31 +400,21 @@ func (s *Server) handleAddons(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handlePlatformPlan(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")
-	id, err := s.runOperation(name, "platform.plan", nil, func(ctx context.Context, sink cluster.Sink) (any, error) {
+	s.startOp(w, name, "platform.plan", nil, func(ctx context.Context, sink cluster.Sink) (any, error) {
 		diff, err := s.manager.PlanPlatform(ctx, name, sink)
 		if err != nil {
 			return nil, err
 		}
-		sink(cluster.Event{Time: time.Now(), Kind: "log", Level: cluster.Done, Step: "plan", Message: diff.Summary.String()})
+		sink.Emit(cluster.Done, "plan", "", "%s", diff.Summary.String())
 		return diff, nil
 	})
-	if err != nil {
-		writeErr(w, err)
-		return
-	}
-	writeJSON(w, http.StatusAccepted, map[string]any{"operationId": id})
 }
 
 func (s *Server) handlePlatformApply(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")
-	id, err := s.runOperation(name, "platform.apply", nil, func(ctx context.Context, sink cluster.Sink) (any, error) {
+	s.startOp(w, name, "platform.apply", nil, func(ctx context.Context, sink cluster.Sink) (any, error) {
 		return nil, s.manager.ApplyPlatform(ctx, name, sink)
 	})
-	if err != nil {
-		writeErr(w, err)
-		return
-	}
-	writeJSON(w, http.StatusAccepted, map[string]any{"operationId": id})
 }
 
 func (s *Server) handlePlatformApplyPlan(w http.ResponseWriter, r *http.Request) {
@@ -464,14 +438,9 @@ func (s *Server) handlePlatformApplyPlan(w http.ResponseWriter, r *http.Request)
 		http.Error(w, fmt.Sprintf("plan #%d has been superseded by plan #%d; review the newer plan", planID, latest), http.StatusConflict)
 		return
 	}
-	id, err := s.runOperation(name, "platform.apply", map[string]any{"planId": planID}, func(ctx context.Context, sink cluster.Sink) (any, error) {
+	s.startOp(w, name, "platform.apply", map[string]any{"planId": planID}, func(ctx context.Context, sink cluster.Sink) (any, error) {
 		return nil, s.manager.ApplyPlan(ctx, name, diff.Timestamp, sink)
 	})
-	if err != nil {
-		writeErr(w, err)
-		return
-	}
-	writeJSON(w, http.StatusAccepted, map[string]any{"operationId": id})
 }
 
 func (s *Server) latestPlan(ctx context.Context, name string) int64 {
@@ -513,14 +482,9 @@ func (s *Server) upgrade(w http.ResponseWriter, r *http.Request, kind string, fn
 		http.Error(w, `body must be {"to": "<version>"}`, http.StatusBadRequest)
 		return
 	}
-	id, err := s.runOperation(name, kind, req, func(ctx context.Context, sink cluster.Sink) (any, error) {
+	s.startOp(w, name, kind, req, func(ctx context.Context, sink cluster.Sink) (any, error) {
 		return nil, fn(ctx, name, req.To, sink)
 	})
-	if err != nil {
-		writeErr(w, err)
-		return
-	}
-	writeJSON(w, http.StatusAccepted, map[string]any{"operationId": id})
 }
 
 func (s *Server) handleExport(w http.ResponseWriter, r *http.Request) {
@@ -528,7 +492,9 @@ func (s *Server) handleExport(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Dir string `json:"dir"`
 	}
-	_ = json.NewDecoder(r.Body).Decode(&req)
+	if !decodeOptionalJSON(w, r, &req) {
+		return
+	}
 	if req.Dir == "" {
 		req.Dir = s.manager.ClusterDir(name) + "/export"
 	}
@@ -542,8 +508,7 @@ func (s *Server) handleExport(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleNodeAdd(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")
 	var n config.Node
-	if err := json.NewDecoder(r.Body).Decode(&n); err != nil {
-		writeErr(w, err)
+	if !decodeJSON(w, r, &n) {
 		return
 	}
 	if n.MAC == "" {
@@ -551,27 +516,22 @@ func (s *Server) handleNodeAdd(w http.ResponseWriter, r *http.Request) {
 			n.MAC = row.MAC
 		}
 	}
-	id, err := s.runOperation(name, "node.add", n, func(ctx context.Context, sink cluster.Sink) (any, error) {
+	id, err := s.startNodeAdd(name, n)
+	accepted(w, id, err)
+}
+
+func (s *Server) startNodeAdd(name string, n config.Node) (int64, error) {
+	return s.runOperation(name, "node.add", n, func(ctx context.Context, sink cluster.Sink) (any, error) {
 		return nil, s.manager.AddNode(ctx, name, n, sink)
 	})
-	if err != nil {
-		writeErr(w, err)
-		return
-	}
-	writeJSON(w, http.StatusAccepted, map[string]any{"operationId": id})
 }
 
 func (s *Server) handleNodeRemove(w http.ResponseWriter, r *http.Request) {
 	name, hostname := r.PathValue("name"), r.PathValue("hostname")
 	force := r.URL.Query().Get("force") == "true"
-	id, err := s.runOperation(name, "node.remove", map[string]any{"hostname": hostname, "force": force}, func(ctx context.Context, sink cluster.Sink) (any, error) {
+	s.startOp(w, name, "node.remove", map[string]any{"hostname": hostname, "force": force}, func(ctx context.Context, sink cluster.Sink) (any, error) {
 		return nil, s.manager.RemoveNode(ctx, name, hostname, cluster.RemoveOptions{Force: force}, sink)
 	})
-	if err != nil {
-		writeErr(w, err)
-		return
-	}
-	writeJSON(w, http.StatusAccepted, map[string]any{"operationId": id})
 }
 
 type nodeView struct {
@@ -583,17 +543,14 @@ type nodeView struct {
 
 func machineView(row store.NodeRow) nodeView {
 	v := nodeView{NodeRow: row, Kind: row.Kind(), Talos: row.Talos()}
-	if len(row.Hardware) > 2 {
-		var inv talos.Inventory
-		if json.Unmarshal(row.Hardware, &inv) == nil {
-			v.Inventory = &inv
-		}
+	if inv, ok := inventoryOf(&row); ok {
+		v.Inventory = &inv
 	}
 	v.Hardware = nil
 	if v.OOB != nil {
 		c := *v.OOB
 		if c.Password != "" {
-			c.Password = "•••"
+			c.Password = store.Masked
 		}
 		v.OOB = &c
 	}
@@ -613,54 +570,48 @@ func (s *Server) handleNodes(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, out)
 }
 
+type discoverRequest struct {
+	Targets []string `json:"targets"`
+}
+
 func (s *Server) handleDiscover(w http.ResponseWriter, r *http.Request) {
-	var req struct {
-		Targets []string `json:"targets"`
-	}
+	var req discoverRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || len(req.Targets) == 0 {
 		http.Error(w, `body must be {"targets": ["cidr or ip", ...]}`, http.StatusBadRequest)
 		return
 	}
-	addrs, err := talos.ExpandTargets(req.Targets)
+	id, err := s.startDiscover(req.Targets)
+	accepted(w, id, err)
+}
+
+func (s *Server) startDiscover(targets []string) (int64, error) {
+	addrs, err := talos.ExpandTargets(targets)
 	if err != nil {
-		writeErr(w, err)
-		return
+		return 0, err
 	}
-	id, err := s.runOperation("", "discover", req, func(ctx context.Context, sink cluster.Sink) (any, error) {
-		sink(cluster.Event{Time: time.Now(), Kind: "steps", Level: cluster.Info, Steps: cluster.Steps("scan", fmt.Sprintf("Probe %d addresses on port 50000", len(addrs)), "record", "Record inventory", "amt", "Probe the rest for Intel AMT or a Redfish BMC")})
-		sink(cluster.Event{Time: time.Now(), Kind: "step", Step: "scan", Status: cluster.StepRunning})
+	return s.runOperation("", "discover", discoverRequest{Targets: targets}, func(ctx context.Context, sink cluster.Sink) (any, error) {
+		sink.Plan(cluster.Steps("scan", fmt.Sprintf("Probe %d addresses on port 50000", len(addrs)), "record", "Record inventory", "amt", "Probe the rest for Intel AMT or a Redfish BMC")...)
+		sink.Begin("scan")
 		results := talos.Scan(ctx, addrs, 64, 2*time.Second)
 		if ctx.Err() != nil {
 			return nil, ctx.Err()
 		}
-		sink(cluster.Event{Time: time.Now(), Kind: "step", Step: "scan", Status: cluster.StepDone})
-		sink(cluster.Event{Time: time.Now(), Kind: "step", Step: "record", Status: cluster.StepRunning})
-		vips := s.store.ClusterVIPs(ctx)
-		found := 0
-		for _, res := range results {
-			if res.Err != nil {
-				continue
+		sink.End("scan")
+		sink.Begin("record")
+		found, err := cluster.RecordScan(ctx, s.store, results, func(res talos.ScanResult, vipOf string) {
+			if vipOf != "" {
+				sink.Emit(cluster.Info, "record", res.IP, "VIP of cluster %s, skipped", vipOf)
+			} else {
+				sink.Emit(cluster.Info, "record", res.IP, "%s", res.State)
 			}
-			if name, ok := vips[res.IP]; ok {
-				sink(cluster.Event{Time: time.Now(), Kind: "log", Level: cluster.Info, Step: "record", Node: res.IP, Message: "VIP of cluster " + name + ", skipped"})
-				continue
-			}
-			row := rowFromScan(res)
-			if err := s.store.UpsertNode(ctx, row); err != nil {
-				return nil, err
-			}
-			found++
-			sink(cluster.Event{Time: time.Now(), Kind: "log", Level: cluster.Info, Step: "record", Node: res.IP, Message: string(res.State)})
+		})
+		if err != nil {
+			return nil, err
 		}
-		sink(cluster.Event{Time: time.Now(), Kind: "log", Level: cluster.Done, Step: "record", Message: fmt.Sprintf("%d Talos nodes found", found)})
+		sink.Emit(cluster.Done, "record", "", "%d Talos nodes found", found)
 		amtFound := s.discoverAMT(ctx, addrs, results, sink)
 		return map[string]int{"found": found, "amt": amtFound}, nil
 	})
-	if err != nil {
-		writeErr(w, err)
-		return
-	}
-	writeJSON(w, http.StatusAccepted, map[string]any{"operationId": id})
 }
 
 func (s *Server) nodeClient(r *http.Request) (*talos.Client, error) {
@@ -800,11 +751,10 @@ func (s *Server) handleConfigValidate(w http.ResponseWriter, r *http.Request) {
 	}
 	c, err := config.Parse(body)
 	if err != nil {
-		writeJSON(w, http.StatusUnprocessableEntity, map[string]string{"error": err.Error()})
+		writeErr(w, unprocessable(err))
 		return
 	}
-	out, _ := c.Marshal()
-	writeJSON(w, http.StatusOK, map[string]any{"yaml": string(out), "cluster": c})
+	writeJSON(w, http.StatusOK, map[string]any{"yaml": mustYAML(c), "cluster": c})
 }
 
 func (s *Server) handleConfigDraft(w http.ResponseWriter, r *http.Request) {
@@ -812,8 +762,7 @@ func (s *Server) handleConfigDraft(w http.ResponseWriter, r *http.Request) {
 		Name string   `json:"name"`
 		IPs  []string `json:"ips"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeErr(w, err)
+	if !decodeJSON(w, r, &req) {
 		return
 	}
 	c, err := s.draft(r, req.Name, req.IPs)
@@ -821,8 +770,7 @@ func (s *Server) handleConfigDraft(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, err)
 		return
 	}
-	out, _ := c.Marshal()
-	writeJSON(w, http.StatusOK, map[string]any{"yaml": string(out), "topology": config.Recommend(len(req.IPs))})
+	writeJSON(w, http.StatusOK, map[string]any{"yaml": mustYAML(c), "topology": config.Recommend(len(req.IPs))})
 }
 
 func (s *Server) draft(r *http.Request, name string, ips []string) (*config.Cluster, error) {
@@ -835,22 +783,15 @@ func (s *Server) draft(r *http.Request, name string, ips []string) (*config.Clus
 		MetalLB: config.MetalLB{Enabled: true}, IngressNginx: config.Addon{Enabled: true},
 		GVisor: config.Addon{Enabled: true}, MetricsServer: config.Addon{Enabled: true},
 	}
-	cps, workers := 0, 0
+	names := hostnamer{name: name}
 	for i, ip := range ips {
 		row, err := s.store.GetNode(r.Context(), ip)
 		if err != nil {
 			return nil, err
 		}
-		var inv talos.Inventory
-		_ = json.Unmarshal(row.Hardware, &inv)
+		inv, _ := inventoryOf(row)
 		n := config.Node{IP: ip, MAC: row.MAC, Arch: config.Arch(row.Arch), KVM: inv.KVM}
-		if i < topo.ControlPlanes {
-			cps++
-			n.Role, n.Hostname = config.RoleControlPlane, fmt.Sprintf("%s-cp-%02d", name, cps)
-		} else {
-			workers++
-			n.Role, n.Hostname = config.RoleWorker, fmt.Sprintf("%s-worker-%02d", name, workers)
-		}
+		names.assign(&n, i < topo.ControlPlanes)
 		if cand := inv.InstallCandidates(); len(cand) > 0 {
 			n.InstallDisk = config.InstallDisk{Path: cand[0].DevPath}
 		} else {
@@ -861,15 +802,9 @@ func (s *Server) draft(r *http.Request, name string, ips []string) (*config.Clus
 	sched := topo.AllowScheduling
 	c.Spec.ControlPlane.AllowScheduling = &sched
 	if len(ips) > 0 {
-		if ip := net.ParseIP(ips[0]).To4(); ip != nil {
-			c.Spec.Platform.MetalLB.Range = fmt.Sprintf("%d.%d.%d.200-%d.%d.%d.220", ip[0], ip[1], ip[2], ip[0], ip[1], ip[2])
-		}
+		c.Spec.Platform.MetalLB.Range = config.DefaultMetalLBRange(ips[0])
 	}
-	b, err := c.Marshal()
-	if err != nil {
-		return nil, err
-	}
-	return config.Parse(b)
+	return reparse(c)
 }
 
 func writeJSON(w http.ResponseWriter, status int, v any) {
@@ -939,18 +874,8 @@ func spaHandler(root http.FileSystem) http.Handler {
 	})
 }
 
-func rowFromScan(res talos.ScanResult) store.NodeRow {
-	row := store.NodeRow{IP: res.IP, Source: "scan", State: string(res.State)}
-	if inv := res.Inventory; inv != nil {
-		row.MAC, row.Arch, row.TalosVersion = inv.PrimaryMAC(), inv.Arch, inv.TalosVersion
-		row.UUID, row.Serial = inv.UUID, inv.Serial
-		row.Hardware, _ = json.Marshal(inv)
-	}
-	return row
-}
-
 func (s *Server) discoverAMT(ctx context.Context, addrs []netip.Addr, talosResults []talos.ScanResult, sink cluster.Sink) int {
-	sink(cluster.Event{Time: time.Now(), Kind: "step", Step: "amt", Status: cluster.StepRunning})
+	sink.Begin("amt")
 	isTalos := map[string]bool{}
 	for _, r := range talosResults {
 		if r.Err == nil {
@@ -970,11 +895,11 @@ func (s *Server) discoverAMT(ctx context.Context, addrs []netip.Addr, talosResul
 		if r.MAC == "" {
 			switch {
 			case r.Err != nil:
-				sink(cluster.Event{Time: time.Now(), Kind: "log", Level: cluster.Warn, Step: "amt", Node: r.IP, Message: label + " answers but the default credentials were refused: " + r.Err.Error()})
+				sink.Emit(cluster.Warn, "amt", r.IP, "%s answers but the default credentials were refused: %v", label, r.Err)
 			case r.Type == "redfish":
-				sink(cluster.Event{Time: time.Now(), Kind: "log", Level: cluster.Info, Step: "amt", Node: r.IP, Message: "Redfish BMC answers; set default BMC credentials under Kubit settings, or add it by address on the Inventory page"})
+				sink.Emit(cluster.Info, "amt", r.IP, "Redfish BMC answers; set default BMC credentials under Kubit settings, or add it by address on the Inventory page")
 			default:
-				sink(cluster.Event{Time: time.Now(), Kind: "log", Level: cluster.Warn, Step: "amt", Node: r.IP, Message: "answers on 16992 but its MAC is unknown (not on this segment?); add it via its address on the Inventory page"})
+				sink.Emit(cluster.Warn, "amt", r.IP, "answers on %s but its MAC is unknown (not on this segment?); add it via its address on the Inventory page", oob.AMTPort)
 			}
 			continue
 		}
@@ -1006,17 +931,17 @@ func (s *Server) discoverAMT(ctx context.Context, addrs []netip.Addr, talosResul
 			}
 			c.Type, c.Host = r.Type, r.IP
 			_ = s.store.SetMachineOOB(ctx, r.MAC, &c)
-			sink(cluster.Event{Time: time.Now(), Kind: "log", Level: cluster.Info, Step: "amt", Node: r.IP, Message: fmt.Sprintf("%s %s, %s, power %s", label, r.Info.Version, strings.TrimSpace(r.Info.Manufacturer+" "+r.Info.Model), r.Info.Power)})
+			sink.Emit(cluster.Info, "amt", r.IP, "%s %s, %s, power %s", label, r.Info.Version, strings.TrimSpace(r.Info.Manufacturer+" "+r.Info.Model), r.Info.Power)
 		} else if r.Err != nil {
-			sink(cluster.Event{Time: time.Now(), Kind: "log", Level: cluster.Warn, Step: "amt", Node: r.IP, Message: label + " answers but the default credentials were refused: " + r.Err.Error()})
+			sink.Emit(cluster.Warn, "amt", r.IP, "%s answers but the default credentials were refused: %v", label, r.Err)
 		} else {
-			sink(cluster.Event{Time: time.Now(), Kind: "log", Level: cluster.Info, Step: "amt", Node: r.IP, Message: label + " answers; set default credentials under Kubit settings to identify it"})
+			sink.Emit(cluster.Info, "amt", r.IP, "%s answers; set default credentials under Kubit settings to identify it", label)
 		}
 		found++
 	}
-	sink(cluster.Event{Time: time.Now(), Kind: "step", Step: "amt", Status: cluster.StepDone})
+	sink.End("amt")
 	if found > 0 {
-		sink(cluster.Event{Time: time.Now(), Kind: "log", Level: cluster.Done, Step: "amt", Message: fmt.Sprintf("%d machine(s) reachable out of band", found)})
+		sink.Emit(cluster.Done, "amt", "", "%d machine(s) reachable out of band", found)
 	}
 	return found
 }

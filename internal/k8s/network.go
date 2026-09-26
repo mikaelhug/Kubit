@@ -3,10 +3,10 @@ package k8s
 import (
 	"context"
 	"fmt"
-	"net/netip"
 	"sort"
 	"strings"
 
+	"github.com/mikael/kubit/internal/config"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
@@ -73,7 +73,8 @@ func (c *Client) Services(ctx context.Context) ([]Service, error) {
 	}
 	out := make([]Service, 0, len(list.Items))
 	for _, s := range list.Items {
-		sv := Service{Namespace: s.Namespace, Name: s.Name, Type: string(s.Spec.Type), ClusterIP: s.Spec.ClusterIP, Age: metav1.Now().Sub(s.CreationTimestamp.Time).Truncate(1e9).String(), AgeSec: int64(metav1.Now().Sub(s.CreationTimestamp.Time).Seconds()), Endpoints: ready[s.Namespace+"/"+s.Name]}
+		sv := Service{Namespace: s.Namespace, Name: s.Name, Type: string(s.Spec.Type), ClusterIP: s.Spec.ClusterIP, Endpoints: ready[s.Namespace+"/"+s.Name]}
+		sv.Age, sv.AgeSec = age(s.CreationTimestamp)
 		for _, ing := range s.Status.LoadBalancer.Ingress {
 			if ing.IP != "" {
 				sv.ExternalIPs = append(sv.ExternalIPs, ing.IP)
@@ -106,7 +107,8 @@ func (c *Client) Ingresses(ctx context.Context) ([]Ingress, error) {
 	}
 	out := make([]Ingress, 0, len(list.Items))
 	for _, ing := range list.Items {
-		i := Ingress{Namespace: ing.Namespace, Name: ing.Name, Age: metav1.Now().Sub(ing.CreationTimestamp.Time).Truncate(1e9).String(), AgeSec: int64(metav1.Now().Sub(ing.CreationTimestamp.Time).Seconds()), Rules: []IngressRule{}}
+		i := Ingress{Namespace: ing.Namespace, Name: ing.Name, Rules: []IngressRule{}}
+		i.Age, i.AgeSec = age(ing.CreationTimestamp)
 		if ing.Spec.IngressClassName != nil {
 			i.Class = *ing.Spec.IngressClassName
 		}
@@ -145,15 +147,7 @@ func (c *Client) Ingresses(ctx context.Context) ([]Ingress, error) {
 }
 
 func PoolUsageFor(rangeSpec string, services []Service) (*PoolUsage, error) {
-	from, to, ok := strings.Cut(rangeSpec, "-")
-	if !ok {
-		return nil, fmt.Errorf("range %q is not start-end", rangeSpec)
-	}
-	a, err := netip.ParseAddr(strings.TrimSpace(from))
-	if err != nil {
-		return nil, err
-	}
-	b, err := netip.ParseAddr(strings.TrimSpace(to))
+	a, b, err := config.ParseIPRange(rangeSpec)
 	if err != nil {
 		return nil, err
 	}

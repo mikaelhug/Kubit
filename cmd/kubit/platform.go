@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/mikael/kubit/internal/cluster"
 	"github.com/spf13/cobra"
 )
 
@@ -24,12 +25,7 @@ func platformCmd() *cobra.Command {
 		Use:   "plan <cluster>",
 		Short: "Render infra/platform and show what would change (drift check)",
 		Args:  cobra.ExactArgs(1),
-		RunE: func(cmd *cobra.Command, args []string) error {
-			m, err := openManager()
-			if err != nil {
-				return err
-			}
-			defer m.Store.Close()
+		RunE: withManager(func(cmd *cobra.Command, args []string, m *cluster.Manager) error {
 			diff, err := m.PlanPlatform(cmd.Context(), args[0], printEvents(cmd))
 			if err != nil {
 				return err
@@ -56,20 +52,15 @@ func platformCmd() *cobra.Command {
 			}
 			fmt.Fprintln(w, diff.Summary)
 			return nil
-		},
+		}),
 	}
 	apply := &cobra.Command{
 		Use:   "apply <cluster>",
 		Short: "Apply the platform layer declared in cluster.yaml",
 		Args:  cobra.ExactArgs(1),
-		RunE: func(cmd *cobra.Command, args []string) error {
-			m, err := openManager()
-			if err != nil {
-				return err
-			}
-			defer m.Store.Close()
+		RunE: withManager(func(cmd *cobra.Command, args []string, m *cluster.Manager) error {
 			return m.ApplyPlatform(cmd.Context(), args[0], printEvents(cmd))
-		},
+		}),
 	}
 	cmd.AddCommand(plan, apply)
 	return cmd

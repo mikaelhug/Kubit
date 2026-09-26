@@ -3,13 +3,12 @@ package api
 import (
 	"context"
 	"fmt"
-	"net"
 	"net/http"
+	"slices"
 	"strings"
 	"time"
 
 	"github.com/mikael/kubit/internal/cluster"
-	"github.com/mikael/kubit/internal/config"
 	"github.com/mikael/kubit/internal/labhost"
 	"github.com/mikael/kubit/internal/store"
 )
@@ -32,9 +31,8 @@ func (s *Server) handleLabSamples(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleLabCheck(w http.ResponseWriter, r *http.Request) {
-	host, err := s.store.GetMachine(r.Context(), strings.ToLower(r.PathValue("mac")))
-	if err != nil || host.LabHost == nil {
-		http.Error(w, "not a lab host", http.StatusNotFound)
+	host, ok := s.labHostOf(w, r)
+	if !ok {
 		return
 	}
 	if host.LabHost.Driver != "" {
@@ -62,7 +60,7 @@ func (s *Server) handleLabCheck(w http.ResponseWriter, r *http.Request) {
 func (s *Server) labClusters(ctx context.Context, host *store.Machine) []string {
 	var out []string
 	for _, v := range host.LabHost.VMs {
-		if vm, err := s.store.GetMachine(ctx, v.MAC); err == nil && vm.Cluster != "" && !contains(out, vm.Cluster) {
+		if vm, err := s.store.GetMachine(ctx, v.MAC); err == nil && vm.Cluster != "" && !slices.Contains(out, vm.Cluster) {
 			out = append(out, vm.Cluster)
 		}
 	}
@@ -71,9 +69,8 @@ func (s *Server) labClusters(ctx context.Context, host *store.Machine) []string 
 
 func (s *Server) handleLabMaintain(upgrade bool) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		host, err := s.store.GetMachine(r.Context(), strings.ToLower(r.PathValue("mac")))
-		if err != nil || host.LabHost == nil {
-			http.Error(w, "not a lab host", http.StatusNotFound)
+		host, ok := s.labHostOf(w, r)
+		if !ok {
 			return
 		}
 		if host.LabHost.Driver != "" {
@@ -87,11 +84,9 @@ func (s *Server) handleLabMaintain(upgrade bool) http.HandlerFunc {
 		affected := s.labClusters(r.Context(), host)
 		if r.URL.Query().Get("ignoreWindow") != "true" {
 			for _, name := range affected {
-				if c, _, err := s.manager.LoadCluster(r.Context(), name); err == nil {
-					if open, next := c.Spec.Maintenance.Open(time.Now()); !open {
-						writeJSON(w, http.StatusConflict, map[string]string{"error": windowMessage(name, c.Spec.Maintenance, next)})
-						return
-					}
+				if msg, closed := s.windowClosed(r.Context(), name); closed {
+					writeJSON(w, http.StatusConflict, map[string]string{"error": name + ": " + msg})
+					return
 				}
 			}
 		}
@@ -106,25 +101,11 @@ func (s *Server) handleLabMaintain(upgrade bool) http.HandlerFunc {
 		id, err := s.runOperationLocking(owner, locks, kind, map[string]any{"host": host.MAC, "clusters": affected}, func(ctx context.Context, sink cluster.Sink) (any, error) {
 			return nil, s.labMaintain(ctx, host, upgrade, affected, sink)
 		})
-		if err != nil {
-			writeErr(w, err)
-			return
+		if err == nil {
+			_ = s.store.Audit(r.Context(), owner, kind, host.MAC)
 		}
-		_ = s.store.Audit(r.Context(), owner, kind, host.MAC)
-		writeJSON(w, http.StatusAccepted, map[string]any{"operationId": id})
+		accepted(w, id, err)
 	}
-}
-
-func windowMessage(cluster string, m config.Maintenance, next time.Time) string {
-	msg := fmt.Sprintf("%s: outside the maintenance window (%s", cluster, m.Window)
-	if m.Timezone != "" {
-		msg += " " + m.Timezone
-	}
-	msg += ")"
-	if !next.IsZero() {
-		msg += "; next opens " + next.Format("Mon 2006-01-02 15:04 MST")
-	}
-	return msg + ". Add ?ignoreWindow=true to override."
 }
 
 const (
@@ -153,24 +134,21 @@ func (s *Server) labMaintain(ctx context.Context, host *store.Machine, upgrade b
 		return err
 	}
 	defer lc.Close()
-	step := func(name string, status cluster.StepStatus) {
-		sink(cluster.Event{Time: time.Now(), Kind: "step", Step: name, Status: status})
-	}
 	logf := func(step string, level cluster.Level, format string, a ...any) {
-		sink(cluster.Event{Time: time.Now(), Kind: "log", Level: level, Step: step, Node: host.IP, Message: fmt.Sprintf(format, a...)})
+		sink.Emit(level, step, host.IP, format, a...)
 	}
 
-	step("check", cluster.StepRunning)
+	sink.Begin("check")
 	u, err := lc.CheckUpdates(ctx)
 	if err != nil {
 		return fmt.Errorf("check: %w", err)
 	}
 	host.LabHost.Updates = &u
 	logf("check", cluster.Info, "%s: %d package updates pending%s", u.Release, u.Count, map[bool]string{true: ", reboot already required", false: ""}[u.NeedsReboot()])
-	step("check", cluster.StepDone)
+	sink.End("check")
 
 	if upgrade {
-		step("upgrade", cluster.StepRunning)
+		sink.Begin("upgrade")
 		if u.Count == 0 {
 			logf("upgrade", cluster.Info, "nothing to upgrade")
 		} else {
@@ -187,18 +165,18 @@ func (s *Server) labMaintain(ctx context.Context, host *store.Machine, upgrade b
 				host.LabHost.Updates = &u
 			}
 		}
-		step("upgrade", cluster.StepDone)
+		sink.End("upgrade")
 	}
 
 	if upgrade && !u.NeedsReboot() {
 		logf("reboot", cluster.Done, "no reboot needed; VMs untouched")
-		step("reboot", cluster.StepSkipped)
+		sink.Skip("reboot")
 		updates := host.LabHost.Updates
 		_ = s.store.UpdateLabHost(ctx, mac, func(lh *store.LabHost) { lh.Updates = updates })
 		return nil
 	}
 
-	step("vms", cluster.StepRunning)
+	sink.Begin("vms")
 	running := 0
 	for _, v := range host.LabHost.VMs {
 		if v.State == "running" {
@@ -209,9 +187,9 @@ func (s *Server) labMaintain(ctx context.Context, host *store.Machine, upgrade b
 	if err := lc.ShutdownVMs(ctx, labVMGrace); err != nil {
 		return fmt.Errorf("stop VMs: %w", err)
 	}
-	step("vms", cluster.StepDone)
+	sink.End("vms")
 
-	step("reboot", cluster.StepRunning)
+	sink.Begin("reboot")
 	if err := lc.Reboot(ctx); err != nil {
 		return fmt.Errorf("reboot: %w", err)
 	}
@@ -226,9 +204,9 @@ func (s *Server) labMaintain(ctx context.Context, host *store.Machine, upgrade b
 		host.LabHost.Updates = &u
 		logf("reboot", cluster.Done, "back on kernel %s", u.KernelRunning)
 	}
-	step("reboot", cluster.StepDone)
+	sink.End("reboot")
 
-	step("resume", cluster.StepRunning)
+	sink.Begin("resume")
 	for _, v := range host.LabHost.VMs {
 		if v.State == "running" {
 			_ = lc.Start(ctx, v.Name)
@@ -251,12 +229,12 @@ func (s *Server) labMaintain(ctx context.Context, host *store.Machine, upgrade b
 		nowRunning = host.LabHost.Metrics.VMsRunning
 	}
 	logf("resume", cluster.Done, "%d VMs running", nowRunning)
-	step("resume", cluster.StepDone)
+	sink.End("resume")
 
 	if len(affected) == 0 {
 		return nil
 	}
-	step("cluster", cluster.StepRunning)
+	sink.Begin("cluster")
 	for _, name := range affected {
 		c, _, err := s.manager.LoadCluster(ctx, name)
 		if err != nil {
@@ -277,7 +255,7 @@ func (s *Server) labMaintain(ctx context.Context, host *store.Machine, upgrade b
 		}
 		logf("cluster", cluster.Done, "%s: all %d nodes on this host Ready", name, len(names))
 	}
-	step("cluster", cluster.StepDone)
+	sink.End("cluster")
 	return nil
 }
 
@@ -289,15 +267,8 @@ func (s *Server) labWaitSSH(ctx context.Context, host *store.Machine, timeout ti
 	case <-time.After(15 * time.Second):
 	}
 	for time.Now().Before(deadline) {
-		d := net.Dialer{Timeout: 2 * time.Second}
-		if conn, err := d.DialContext(ctx, "tcp", net.JoinHostPort(host.IP, "22")); err == nil {
-			conn.Close()
-			if lc, err := s.manager.LabSSH(ctx, host); err == nil {
-				if _, err := lc.Run(ctx, "test -f /var/lib/kubit/READY"); err == nil {
-					return lc, nil
-				}
-				lc.Close()
-			}
+		if lc := sshReady(ctx, host.IP, func() (*labhost.Client, error) { return s.manager.LabSSH(ctx, host) }); lc != nil {
+			return lc, nil
 		}
 		select {
 		case <-ctx.Done():
@@ -306,13 +277,4 @@ func (s *Server) labWaitSSH(ctx context.Context, host *store.Machine, timeout ti
 		}
 	}
 	return nil, fmt.Errorf("the host did not come back with SSH within %s; check it from the machine page (AMT power)", timeout)
-}
-
-func contains(list []string, s string) bool {
-	for _, v := range list {
-		if v == s {
-			return true
-		}
-	}
-	return false
 }

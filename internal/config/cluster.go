@@ -111,11 +111,14 @@ func (a ClusterAuth) AdminGroupSubject() string {
 	if o == nil || o.AdminGroup == "" || o.GroupsClaim == "" {
 		return ""
 	}
-	gp := o.GroupsPrefix
-	if gp == "" {
-		gp = "oidc:"
+	return oidcPrefix(o.GroupsPrefix) + o.AdminGroup
+}
+
+func oidcPrefix(p string) string {
+	if p == "" {
+		return "oidc:"
 	}
-	return gp + o.AdminGroup
+	return p
 }
 
 func (a ClusterAuth) AuthenticationConfig() map[string]any {
@@ -127,18 +130,10 @@ func (a ClusterAuth) AuthenticationConfig() map[string]any {
 	if o.UsernameClaim != "" {
 		username["claim"] = o.UsernameClaim
 	}
-	prefix := o.UsernamePrefix
-	if prefix == "" {
-		prefix = "oidc:"
-	}
-	username["prefix"] = prefix
+	username["prefix"] = oidcPrefix(o.UsernamePrefix)
 	mappings := map[string]any{"username": username}
 	if o.GroupsClaim != "" {
-		gp := o.GroupsPrefix
-		if gp == "" {
-			gp = "oidc:"
-		}
-		mappings["groups"] = map[string]any{"claim": o.GroupsClaim, "prefix": gp}
+		mappings["groups"] = map[string]any{"claim": o.GroupsClaim, "prefix": oidcPrefix(o.GroupsPrefix)}
 	}
 	return map[string]any{
 		"apiVersion": "apiserver.config.k8s.io/v1",
@@ -407,12 +402,12 @@ func (c *Cluster) applyDefaults() {
 	if r := c.Spec.Platform.Flux.Repository; r != nil {
 		r.Default()
 	}
-	if c.Spec.Platform.GVisor.Enabled && !containsString(c.Spec.Extensions, "siderolabs/gvisor") {
+	if c.Spec.Platform.GVisor.Enabled && !slices.Contains(c.Spec.Extensions, "siderolabs/gvisor") {
 		c.Spec.Extensions = append(c.Spec.Extensions, "siderolabs/gvisor")
 	}
 	if c.Spec.Platform.Longhorn.Enabled {
 		for _, e := range LonghornExtensions {
-			if !containsString(c.Spec.Extensions, e) {
+			if !slices.Contains(c.Spec.Extensions, e) {
 				c.Spec.Extensions = append(c.Spec.Extensions, e)
 			}
 		}
@@ -661,7 +656,7 @@ func (c *Cluster) Validate() error {
 					errs = append(errs, fmt.Errorf("%s.network.addresses %q collides with the control plane VIP", p, a))
 				}
 				if m := c.Spec.Platform.MetalLB; m.Enabled {
-					if lo, hi, err := ParseIPRange(m.Range); err == nil && !pfx.Addr().Less(lo) && !hi.Less(pfx.Addr()) {
+					if lo, hi, err := ParseIPRange(m.Range); err == nil && inRange(pfx.Addr(), lo, hi) {
 						errs = append(errs, fmt.Errorf("%s.network.addresses %q lies inside the MetalLB range", p, a))
 					}
 				}
@@ -779,15 +774,6 @@ func ParseIPRange(s string) (netip.Addr, netip.Addr, error) {
 		return netip.Addr{}, netip.Addr{}, fmt.Errorf("%q: end precedes start", s)
 	}
 	return a, b, nil
-}
-
-func containsString(list []string, s string) bool {
-	for _, v := range list {
-		if v == s {
-			return true
-		}
-	}
-	return false
 }
 
 func HasSystemVolume(machineConfig []byte) bool {

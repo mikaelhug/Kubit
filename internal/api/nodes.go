@@ -2,7 +2,6 @@ package api
 
 import (
 	"context"
-	"encoding/json"
 	"net/http"
 
 	"github.com/mikael/kubit/internal/cluster"
@@ -64,14 +63,9 @@ func (s *Server) handleNodeKubernetes(w http.ResponseWriter, r *http.Request) {
 func (s *Server) nodeOp(kind string, fn func(ctx context.Context, name, hostname string, sink cluster.Sink) error) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		name, hostname := r.PathValue("name"), r.PathValue("hostname")
-		id, err := s.runOperation(name, kind, map[string]string{"hostname": hostname}, func(ctx context.Context, sink cluster.Sink) (any, error) {
+		s.startOp(w, name, kind, map[string]string{"hostname": hostname}, func(ctx context.Context, sink cluster.Sink) (any, error) {
 			return nil, fn(ctx, name, hostname, sink)
 		})
-		if err != nil {
-			writeErr(w, err)
-			return
-		}
-		writeJSON(w, http.StatusAccepted, map[string]any{"operationId": id})
 	}
 }
 
@@ -80,15 +74,12 @@ func (s *Server) handleNodeRebootOp(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Drain bool `json:"drain"`
 	}
-	_ = json.NewDecoder(r.Body).Decode(&req)
-	id, err := s.runOperation(name, "node.reboot", map[string]any{"hostname": hostname, "drain": req.Drain}, func(ctx context.Context, sink cluster.Sink) (any, error) {
-		return nil, s.manager.RebootNode(ctx, name, hostname, req.Drain, sink)
-	})
-	if err != nil {
-		writeErr(w, err)
+	if !decodeOptionalJSON(w, r, &req) {
 		return
 	}
-	writeJSON(w, http.StatusAccepted, map[string]any{"operationId": id})
+	s.startOp(w, name, "node.reboot", map[string]any{"hostname": hostname, "drain": req.Drain}, func(ctx context.Context, sink cluster.Sink) (any, error) {
+		return nil, s.manager.RebootNode(ctx, name, hostname, req.Drain, sink)
+	})
 }
 
 func (s *Server) handleNodeUpgrade(w http.ResponseWriter, r *http.Request) {
@@ -96,13 +87,10 @@ func (s *Server) handleNodeUpgrade(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		To string `json:"to"`
 	}
-	_ = json.NewDecoder(r.Body).Decode(&req)
-	id, err := s.runOperation(name, "node.upgrade", map[string]any{"hostname": hostname, "to": req.To}, func(ctx context.Context, sink cluster.Sink) (any, error) {
-		return nil, s.manager.UpgradeNode(ctx, name, hostname, req.To, sink)
-	})
-	if err != nil {
-		writeErr(w, err)
+	if !decodeOptionalJSON(w, r, &req) {
 		return
 	}
-	writeJSON(w, http.StatusAccepted, map[string]any{"operationId": id})
+	s.startOp(w, name, "node.upgrade", map[string]any{"hostname": hostname, "to": req.To}, func(ctx context.Context, sink cluster.Sink) (any, error) {
+		return nil, s.manager.UpgradeNode(ctx, name, hostname, req.To, sink)
+	})
 }

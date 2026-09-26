@@ -2,7 +2,6 @@ package api
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
@@ -11,6 +10,7 @@ import (
 	"time"
 
 	"github.com/mikael/kubit/internal/cluster"
+	"github.com/mikael/kubit/internal/k8s"
 	"github.com/mikael/kubit/internal/offsite"
 	"github.com/mikael/kubit/internal/store"
 )
@@ -28,11 +28,10 @@ func (s *Server) handleOffsiteStatus(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleOffsiteTest(w http.ResponseWriter, r *http.Request) {
 	var t offsite.Target
-	if err := json.NewDecoder(r.Body).Decode(&t); err != nil {
-		writeErr(w, err)
+	if !decodeJSON(w, r, &t) {
 		return
 	}
-	if t.SecretKey == "•••" {
+	if t.SecretKey == store.Masked {
 		if cur, err := s.store.GetSettings(r.Context()); err == nil {
 			t.SecretKey = cur.Offsite.SecretKey
 		}
@@ -54,11 +53,7 @@ func (s *Server) handleOffsiteTest(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleOffsiteBackup(w http.ResponseWriter, r *http.Request) {
 	id, err := s.startOffsiteBackup()
-	if err != nil {
-		writeErr(w, err)
-		return
-	}
-	writeJSON(w, http.StatusAccepted, map[string]any{"operationId": id})
+	accepted(w, id, err)
 }
 
 func (s *Server) startOffsiteBackup() (int64, error) {
@@ -66,6 +61,7 @@ func (s *Server) startOffsiteBackup() (int64, error) {
 		key, err := s.manager.BackupOffsite(ctx, sink)
 		s.noteOffsite(ctx, "", err)
 		if err != nil {
+			s.refresh("", k8s.ScopeOffsite)
 			return nil, err
 		}
 		return map[string]string{"key": key}, nil
@@ -145,13 +141,7 @@ func (s *Server) heartbeatText(ctx context.Context) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "Kubit %s is watching %d cluster(s).", s.version, len(rows))
 	for _, row := range rows {
-		open, _ := s.store.Events(ctx, row.Name, 200, true)
-		alerts := 0
-		for _, e := range open {
-			if e.Severity != "info" {
-				alerts++
-			}
-		}
+		alerts := s.store.OpenEventCount(ctx, row.Name)
 		snap := "no etcd snapshot"
 		if ts, _ := s.store.LatestSnapshotTS(ctx, row.Name); ts != "" {
 			if t, err := time.Parse(time.RFC3339, ts); err == nil {

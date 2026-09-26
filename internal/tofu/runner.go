@@ -86,12 +86,9 @@ func (r *Runner) Apply(ctx context.Context) (Summary, error) {
 }
 
 func (r *Runner) Outputs(ctx context.Context) (map[string]string, error) {
-	cmd := exec.CommandContext(ctx, r.Bin, "output", "-json")
-	cmd.Dir = r.Dir
-	cmd.Env = r.env()
-	out, err := cmd.Output()
+	out, err := r.output(ctx, "output", "-json")
 	if err != nil {
-		return nil, fmt.Errorf("tofu output: %w", err)
+		return nil, err
 	}
 	var raw map[string]struct {
 		Value any `json:"value"`
@@ -104,6 +101,21 @@ func (r *Runner) Outputs(ctx context.Context) (map[string]string, error) {
 		res[k] = fmt.Sprint(v.Value)
 	}
 	return res, nil
+}
+
+func (r *Runner) command(ctx context.Context, args ...string) *exec.Cmd {
+	cmd := exec.CommandContext(ctx, r.Bin, args...)
+	cmd.Dir = r.Dir
+	cmd.Env = r.env()
+	return cmd
+}
+
+func (r *Runner) output(ctx context.Context, args ...string) ([]byte, error) {
+	out, err := r.command(ctx, args...).Output()
+	if err != nil {
+		return nil, fmt.Errorf("tofu %s: %w", args[0], err)
+	}
+	return out, nil
 }
 
 func (r *Runner) env() []string {
@@ -124,9 +136,7 @@ func childEnv() []string {
 }
 
 func (r *Runner) run(ctx context.Context, args ...string) (Summary, error) {
-	cmd := exec.CommandContext(ctx, r.Bin, args...)
-	cmd.Dir = r.Dir
-	cmd.Env = r.env()
+	cmd := r.command(ctx, args...)
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		return Summary{}, err

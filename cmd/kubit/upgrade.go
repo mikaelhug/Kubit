@@ -1,6 +1,9 @@
 package main
 
-import "github.com/spf13/cobra"
+import (
+	"github.com/mikael/kubit/internal/cluster"
+	"github.com/spf13/cobra"
+)
 
 func upgradeCmd() *cobra.Command {
 	cmd := &cobra.Command{Use: "upgrade", Short: "Rolling Talos and Kubernetes upgrades"}
@@ -8,26 +11,16 @@ func upgradeCmd() *cobra.Command {
 	talosCmd := &cobra.Command{
 		Use:   "talos",
 		Short: "Upgrade Talos node by node (control planes first)",
-		RunE: func(cmd *cobra.Command, _ []string) error {
-			m, err := openManager()
-			if err != nil {
-				return err
-			}
-			defer m.Store.Close()
+		RunE: withManager(func(cmd *cobra.Command, _ []string, m *cluster.Manager) error {
 			return m.UpgradeTalos(cmd.Context(), clusterName, to, printEvents(cmd))
-		},
+		}),
 	}
 	k8sCmd := &cobra.Command{
 		Use:   "kubernetes",
 		Short: "Upgrade Kubernetes components node by node (control planes first)",
-		RunE: func(cmd *cobra.Command, _ []string) error {
-			m, err := openManager()
-			if err != nil {
-				return err
-			}
-			defer m.Store.Close()
+		RunE: withManager(func(cmd *cobra.Command, _ []string, m *cluster.Manager) error {
 			return m.UpgradeKubernetes(cmd.Context(), clusterName, to, printEvents(cmd))
-		},
+		}),
 	}
 	for _, c := range []*cobra.Command{talosCmd, k8sCmd} {
 		c.Flags().StringVar(&clusterName, "cluster", "", "cluster to upgrade")

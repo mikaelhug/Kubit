@@ -5,8 +5,9 @@ import (
 	"context"
 	"fmt"
 	"regexp"
-	"strconv"
 	"strings"
+
+	utilversion "k8s.io/apimachinery/pkg/util/version"
 )
 
 type DeprecatedAPI struct {
@@ -54,12 +55,12 @@ func (d DeprecatedAPI) RemovedBy(version string) bool {
 	if d.RemovedRelease == "" {
 		return false
 	}
-	rMaj, rMin, ok1 := minor(d.RemovedRelease)
-	tMaj, tMin, ok2 := minor(version)
-	if !ok1 || !ok2 {
+	removed, err := utilversion.ParseMajorMinor(d.RemovedRelease)
+	if err != nil {
 		return false
 	}
-	return tMaj > rMaj || (tMaj == rMaj && tMin >= rMin)
+	target, err := utilversion.ParseMajorMinor(version)
+	return err == nil && target.AtLeast(removed)
 }
 
 func (d DeprecatedAPI) String() string {
@@ -68,15 +69,4 @@ func (d DeprecatedAPI) String() string {
 		g = "core"
 	}
 	return fmt.Sprintf("%s/%s %s (removed in %s)", g, d.Version, d.Resource, d.RemovedRelease)
-}
-
-func minor(v string) (int, int, bool) {
-	v = strings.TrimPrefix(v, "v")
-	parts := strings.Split(v, ".")
-	if len(parts) < 2 {
-		return 0, 0, false
-	}
-	a, err1 := strconv.Atoi(parts[0])
-	b, err2 := strconv.Atoi(parts[1])
-	return a, b, err1 == nil && err2 == nil
 }

@@ -8,7 +8,6 @@ import (
 	"encoding/hex"
 	"fmt"
 	"io"
-	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -18,6 +17,7 @@ import (
 
 	"github.com/mikael/kubit/internal/fsx"
 	"github.com/mikael/kubit/internal/httpx"
+	utilversion "k8s.io/apimachinery/pkg/util/version"
 )
 
 const Version = "1.12.6"
@@ -48,25 +48,11 @@ func Binary(ctx context.Context, binDir string) (string, error) {
 		return "", fmt.Errorf("no pinned OpenTofu build for %s; install tofu %s on PATH", platform, Version)
 	}
 	url := fmt.Sprintf("https://github.com/opentofu/opentofu/releases/download/v%s/tofu_%s_%s.zip", Version, Version, platform)
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
-	if err != nil {
+	var buf bytes.Buffer
+	if _, err := httpx.Fetch(ctx, httpx.Download, url, &buf, maxArchive); err != nil {
 		return "", err
 	}
-	resp, err := httpx.Download.Do(req)
-	if err != nil {
-		return "", err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("download %s: %s", url, resp.Status)
-	}
-	archive, err := io.ReadAll(io.LimitReader(resp.Body, maxArchive+1))
-	if err != nil {
-		return "", err
-	}
-	if len(archive) > maxArchive {
-		return "", fmt.Errorf("download %s: larger than %d MiB", url, maxArchive>>20)
-	}
+	archive := buf.Bytes()
 	sum := sha256.Sum256(archive)
 	if got := hex.EncodeToString(sum[:]); got != want {
 		return "", fmt.Errorf("%s: checksum %s does not match pinned %s", url, got, want)
@@ -113,14 +99,6 @@ func sameMinor(ctx context.Context, path string) bool {
 		return false
 	}
 	line, _, _ := strings.Cut(string(out), "\n")
-	v := strings.TrimPrefix(strings.TrimPrefix(line, "OpenTofu "), "v")
-	return minor(v) == minor(Version)
-}
-
-func minor(v string) string {
-	parts := strings.SplitN(v, ".", 3)
-	if len(parts) < 2 {
-		return v
-	}
-	return parts[0] + "." + parts[1]
+	v, err := utilversion.ParseMajorMinor(strings.TrimPrefix(line, "OpenTofu "))
+	return err == nil && v.EqualTo(utilversion.MustParseMajorMinor(Version))
 }

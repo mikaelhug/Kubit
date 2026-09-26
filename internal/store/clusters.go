@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+
 	"go.yaml.in/yaml/v4"
 )
 
@@ -30,7 +31,7 @@ func (s *Store) PutCluster(ctx context.Context, c ClusterRow) error {
 	_, err := s.db.ExecContext(ctx, `
 		INSERT INTO clusters (name, spec, schematic_id, state) VALUES (?, ?, ?, ?)
 		ON CONFLICT(name) DO UPDATE SET spec = excluded.spec, schematic_id = excluded.schematic_id,
-			state = CASE WHEN excluded.state = '' THEN clusters.state ELSE excluded.state END, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now')`,
+			state = CASE WHEN excluded.state = '' THEN clusters.state ELSE excluded.state END, updated_at = `+sqlNow,
 		c.Name, string(c.Spec), c.SchematicID, c.State)
 	return s.done(err, Change{Table: "clusters", Cluster: c.Name, Key: c.Name, Op: "put"})
 }
@@ -56,42 +57,52 @@ func (s *Store) ClusterVIPs(ctx context.Context) map[string]string {
 	return out
 }
 
-func (s *Store) GetCluster(ctx context.Context, name string) (*ClusterRow, error) {
+const clusterCols = `name, spec, schematic_id, state, created_at, updated_at`
+
+func scanCluster(sc interface{ Scan(...any) error }) (*ClusterRow, error) {
 	var c ClusterRow
 	var spec string
-	err := s.db.QueryRowContext(ctx, `SELECT name, spec, schematic_id, state, created_at, updated_at FROM clusters WHERE name = ?`, name).
-		Scan(&c.Name, &spec, &c.SchematicID, &c.State, &c.CreatedAt, &c.UpdatedAt)
-	if errors.Is(err, sql.ErrNoRows) {
-		return nil, fmt.Errorf("cluster %q: %w", name, ErrNotFound)
-	}
-	if err != nil {
+	if err := sc.Scan(&c.Name, &spec, &c.SchematicID, &c.State, &c.CreatedAt, &c.UpdatedAt); err != nil {
 		return nil, err
 	}
 	c.Spec = []byte(spec)
 	return &c, nil
 }
 
+func (s *Store) GetCluster(ctx context.Context, name string) (*ClusterRow, error) {
+	c, err := scanCluster(s.db.QueryRowContext(ctx, `SELECT `+clusterCols+` FROM clusters WHERE name = ?`, name))
+	if err := notFound(err, "cluster %q", name); err != nil {
+		return nil, err
+	}
+	return c, nil
+}
+
 func (s *Store) ListClusters(ctx context.Context) ([]ClusterRow, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT name, spec, schematic_id, state, created_at, updated_at FROM clusters ORDER BY name`)
+	rows, err := s.db.QueryContext(ctx, `SELECT `+clusterCols+` FROM clusters ORDER BY name`)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 	var out []ClusterRow
 	for rows.Next() {
-		var c ClusterRow
-		var spec string
-		if err := rows.Scan(&c.Name, &spec, &c.SchematicID, &c.State, &c.CreatedAt, &c.UpdatedAt); err != nil {
+		c, err := scanCluster(rows)
+		if err != nil {
 			return nil, err
 		}
-		c.Spec = []byte(spec)
-		out = append(out, c)
+		out = append(out, *c)
 	}
 	return out, rows.Err()
 }
 
+func notFound(err error, format string, args ...any) error {
+	if errors.Is(err, sql.ErrNoRows) {
+		return fmt.Errorf(format+": %w", append(args, ErrNotFound)...)
+	}
+	return err
+}
+
 func (s *Store) SetClusterState(ctx context.Context, name, state string) error {
-	res, err := s.db.ExecContext(ctx, `UPDATE clusters SET state = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE name = ?`, state, name)
+	res, err := s.db.ExecContext(ctx, `UPDATE clusters SET state = ?, updated_at = `+sqlNow+` WHERE name = ?`, state, name)
 	if err != nil {
 		return err
 	}
@@ -108,7 +119,7 @@ func (s *Store) DeleteCluster(ctx context.Context, name string) error {
 		return err
 	}
 	defer tx.Rollback()
-	if _, err := tx.ExecContext(ctx, `UPDATE machines SET cluster = NULL, hostname = '', pool = '', role = '', machine_config = NULL, system_split = 0, state = 'configured', updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE cluster = ?`, name); err != nil {
+	if _, err := tx.ExecContext(ctx, `UPDATE machines SET cluster = NULL, hostname = '', pool = '', role = '', machine_config = NULL, system_split = 0, state = 'configured', updated_at = `+sqlNow+` WHERE cluster = ?`, name); err != nil {
 		return err
 	}
 	res, err := tx.ExecContext(ctx, `UPDATE events SET acked = 1 WHERE cluster = ? AND acked = 0`, name)
@@ -187,10 +198,7 @@ func (s *Store) SetTalosconfig(ctx context.Context, name string, talosconfig []b
 func (s *Store) GetClusterSecrets(ctx context.Context, name string) (*ClusterSecrets, error) {
 	var bundle, tc, kc []byte
 	err := s.db.QueryRowContext(ctx, `SELECT secrets_bundle, talosconfig, kubeconfig FROM cluster_secrets WHERE cluster = ?`, name).Scan(&bundle, &tc, &kc)
-	if errors.Is(err, sql.ErrNoRows) {
-		return nil, fmt.Errorf("secrets for cluster %q: %w", name, ErrNotFound)
-	}
-	if err != nil {
+	if err := notFound(err, "secrets for cluster %q", name); err != nil {
 		return nil, err
 	}
 	var out ClusterSecrets
@@ -219,17 +227,14 @@ func (s *Store) SetPlatformStatus(ctx context.Context, name string, p PlatformSt
 	if err != nil {
 		return err
 	}
-	_, err = s.db.ExecContext(ctx, `UPDATE clusters SET platform = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE name = ?`, string(b), name)
+	_, err = s.db.ExecContext(ctx, `UPDATE clusters SET platform = ?, updated_at = `+sqlNow+` WHERE name = ?`, string(b), name)
 	return s.done(err, Change{Table: "clusters", Cluster: name, Key: name, Op: "put"})
 }
 
 func (s *Store) GetPlatformStatus(ctx context.Context, name string) (*PlatformStatus, error) {
 	var raw string
 	err := s.db.QueryRowContext(ctx, `SELECT platform FROM clusters WHERE name = ?`, name).Scan(&raw)
-	if errors.Is(err, sql.ErrNoRows) {
-		return nil, fmt.Errorf("cluster %q: %w", name, ErrNotFound)
-	}
-	if err != nil {
+	if err := notFound(err, "cluster %q", name); err != nil {
 		return nil, err
 	}
 	var p PlatformStatus

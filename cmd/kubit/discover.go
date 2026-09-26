@@ -7,7 +7,7 @@ import (
 	"text/tabwriter"
 	"time"
 
-	"github.com/mikael/kubit/internal/store"
+	"github.com/mikael/kubit/internal/cluster"
 	"github.com/mikael/kubit/internal/talos"
 	"github.com/spf13/cobra"
 )
@@ -35,25 +35,8 @@ func discoverCmd() *cobra.Command {
 					return err
 				}
 				defer s.Close()
-				vips := s.ClusterVIPs(cmd.Context())
-				for _, r := range results {
-					if r.Err != nil {
-						continue
-					}
-					if _, isVIP := vips[r.IP]; isVIP {
-						continue
-					}
-					row := store.NodeRow{IP: r.IP, Source: "scan", State: string(r.State)}
-					if inv := r.Inventory; inv != nil {
-						row.MAC = inv.PrimaryMAC()
-						row.UUID, row.Serial = inv.UUID, inv.Serial
-						row.Arch = inv.Arch
-						row.TalosVersion = inv.TalosVersion
-						row.Hardware, _ = json.Marshal(inv)
-					}
-					if err := s.UpsertNode(cmd.Context(), row); err != nil {
-						return err
-					}
+				if _, err := cluster.RecordScan(cmd.Context(), s, results, nil); err != nil {
+					return err
 				}
 			}
 			if asJSON {
@@ -73,11 +56,11 @@ func discoverCmd() *cobra.Command {
 				}
 				var disks []string
 				for _, d := range inv.InstallCandidates() {
-					disks = append(disks, fmt.Sprintf("%s(%s)", d.DevPath, humanBytes(d.SizeBytes)))
+					disks = append(disks, fmt.Sprintf("%s(%s)", d.DevPath, cluster.HumanBytes(d.SizeBytes)))
 				}
 				fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%d\t%s\t%s\t%v\n",
 					r.IP, r.State, inv.PrimaryMAC(), inv.Arch, inv.TalosVersion, inv.CPUs,
-					humanBytes(inv.MemoryBytes), strings.Join(disks, ","), inv.KVM)
+					cluster.HumanBytes(inv.MemoryBytes), strings.Join(disks, ","), inv.KVM)
 			}
 			return tw.Flush()
 		},
@@ -87,21 +70,4 @@ func discoverCmd() *cobra.Command {
 	cmd.Flags().BoolVar(&asJSON, "json", false, "print JSON")
 	cmd.Flags().BoolVar(&noSave, "no-save", false, "do not record results in the store")
 	return cmd
-}
-
-func humanBytes(b uint64) string {
-	const unit = 1024
-	if b < unit {
-		return fmt.Sprintf("%dB", b)
-	}
-	div, exp := uint64(unit), 0
-	for n := b / unit; n >= unit; n /= unit {
-		div *= unit
-		exp++
-	}
-	v := float64(b) / float64(div)
-	if exp >= 2 && v < 100 {
-		return fmt.Sprintf("%.1f%c", v, "KMGTPE"[exp])
-	}
-	return fmt.Sprintf("%.0f%c", v, "KMGTPE"[exp])
 }

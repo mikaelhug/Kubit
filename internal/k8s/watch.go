@@ -5,6 +5,8 @@ import (
 	"sync"
 	"time"
 
+	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/informers"
 	"k8s.io/client-go/tools/cache"
 )
@@ -15,9 +17,12 @@ const (
 	ScopeStorage   = "storage"
 	ScopeNodes     = "nodes"
 	ScopeFlux      = "flux"
+	ScopeAddons    = "addons"
+	ScopeServices  = "services"
+	ScopeOffsite   = "offsite"
 )
 
-func (c *Client) WatchScopes(ctx context.Context, changed func(scope string)) {
+func (c *Client) WatchScopes(ctx context.Context, changed func(scope, namespace string)) {
 	cs, err := c.streamClient()
 	if err != nil {
 		return
@@ -25,9 +30,9 @@ func (c *Client) WatchScopes(ctx context.Context, changed func(scope string)) {
 	f := informers.NewSharedInformerFactory(cs, 0)
 	hook := func(scope string) cache.ResourceEventHandlerFuncs {
 		return cache.ResourceEventHandlerFuncs{
-			AddFunc:    func(any) { changed(scope) },
-			UpdateFunc: func(_, _ any) { changed(scope) },
-			DeleteFunc: func(any) { changed(scope) },
+			AddFunc:    func(obj any) { changed(scope, objectNamespace(obj)) },
+			UpdateFunc: func(_, obj any) { changed(scope, objectNamespace(obj)) },
+			DeleteFunc: func(obj any) { changed(scope, objectNamespace(obj)) },
 		}
 	}
 	_, _ = f.Core().V1().Pods().Informer().AddEventHandler(hook(ScopeWorkloads))
@@ -49,6 +54,19 @@ func (c *Client) WatchScopes(ctx context.Context, changed func(scope string)) {
 	f.WaitForCacheSync(ctx.Done())
 	<-ctx.Done()
 	f.Shutdown()
+}
+
+func objectNamespace(obj any) string {
+	if d, ok := obj.(cache.DeletedFinalStateUnknown); ok {
+		obj = d.Obj
+	}
+	if ns, ok := obj.(*corev1.Namespace); ok {
+		return ns.Name
+	}
+	if o, ok := obj.(metav1.Object); ok {
+		return o.GetNamespace()
+	}
+	return ""
 }
 
 type Debouncer struct {

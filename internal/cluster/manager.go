@@ -22,6 +22,10 @@ const (
 	StateFailed       = "failed"
 )
 
+func Observable(state string) bool {
+	return state == StateReady || state == StateBootstrapped
+}
+
 const (
 	NodeDiscovered = "discovered"
 	NodeInstalling = "installing"
@@ -170,15 +174,38 @@ func (m *Manager) SaveCluster(ctx context.Context, c *config.Cluster, state stri
 	return m.Store.PutCluster(ctx, store.ClusterRow{Name: c.Metadata.Name, Spec: spec, SchematicID: c.Spec.SchematicID, State: state})
 }
 
+func (m *Manager) saveExisting(ctx context.Context, c *config.Cluster) error {
+	if _, err := m.Store.GetCluster(ctx, c.Metadata.Name); err != nil {
+		return err
+	}
+	return m.SaveCluster(ctx, c, "")
+}
+
 func (m *Manager) KubeClient(ctx context.Context, name string) (*k8s.Client, error) {
 	sec, err := m.Store.GetClusterSecrets(ctx, name)
 	if err != nil {
 		return nil, err
 	}
+	return kubeClientOf(name, sec)
+}
+
+func kubeClientOf(name string, sec *store.ClusterSecrets) (*k8s.Client, error) {
 	if sec.Kubeconfig == nil {
 		return nil, fmt.Errorf("cluster %s has no kubeconfig yet", name)
 	}
 	return k8s.New(sec.Kubeconfig)
+}
+
+func (m *Manager) clusterClients(ctx context.Context, name string) (*store.ClusterSecrets, *k8s.Client, error) {
+	sec, err := m.Store.GetClusterSecrets(ctx, name)
+	if err != nil {
+		return nil, nil, err
+	}
+	kc, err := kubeClientOf(name, sec)
+	if err != nil {
+		return nil, nil, err
+	}
+	return sec, kc, nil
 }
 
 func storeRow(c *config.Cluster, n config.Node) store.NodeRow {

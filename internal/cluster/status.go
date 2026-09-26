@@ -285,7 +285,7 @@ func probeNode(ctx context.Context, ip string, talosconfig []byte) (version, sta
 	if len(v.Messages) > 0 {
 		version = v.Messages[0].Version.Tag
 	}
-	stage, err = talos.Stage(ctx, ip, talosconfig)
+	stage, err = tc.Stage(ctx)
 	if err != nil {
 		return version, "", fmt.Errorf("machine status: %w", talos.ShortGRPC(err))
 	}

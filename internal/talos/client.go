@@ -55,8 +55,12 @@ func PortOpen(ctx context.Context, ip string, timeout time.Duration) bool {
 }
 
 func PortErr(ctx context.Context, ip string, timeout time.Duration) error {
+	return TCPErr(ctx, ip, Port, timeout)
+}
+
+func TCPErr(ctx context.Context, host, port string, timeout time.Duration) error {
 	d := net.Dialer{Timeout: timeout}
-	conn, err := d.DialContext(ctx, "tcp", net.JoinHostPort(ip, Port))
+	conn, err := d.DialContext(ctx, "tcp", net.JoinHostPort(host, port))
 	if err != nil {
 		return err
 	}

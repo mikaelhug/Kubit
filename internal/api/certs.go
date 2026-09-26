@@ -35,18 +35,13 @@ func (s *Server) handleCertRotate(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, `body must be {"which": "talosconfig" | "kubeconfig"}`, http.StatusBadRequest)
 		return
 	}
-	id, err := s.runOperation(name, "cert.rotate", req, func(ctx context.Context, sink cluster.Sink) (any, error) {
+	s.startOp(w, name, "cert.rotate", req, func(ctx context.Context, sink cluster.Sink) (any, error) {
 		err := s.manager.RotateCredential(ctx, name, req.Which, sink)
 		if err == nil {
 			_ = s.store.ResolveEvents(ctx, name, req.Which, "cert.expiring")
 		}
 		return nil, err
 	})
-	if err != nil {
-		writeErr(w, err)
-		return
-	}
-	writeJSON(w, http.StatusAccepted, map[string]any{"operationId": id})
 }
 
 func (s *Server) checkCertificates(ctx context.Context, name string) {

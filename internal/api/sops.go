@@ -53,7 +53,7 @@ func (s *Server) handleSOPSImport(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err != nil {
-		writeJSON(w, http.StatusUnprocessableEntity, map[string]string{"error": err.Error()})
+		writeErr(w, unprocessable(err))
 		return
 	}
 	_ = s.store.Audit(r.Context(), name, "sops.import", k.Recipient)

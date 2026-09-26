@@ -206,3 +206,48 @@ func TestUpdateLabHostMergesConcurrentWriters(t *testing.T) {
 		t.Fatalf("update on a non-lab-host must be a no-op: %v", err)
 	}
 }
+
+func TestNotFoundWrapsMissingRows(t *testing.T) {
+	s := open(t)
+	ctx := context.Background()
+	for name, err := range map[string]error{
+		"cluster":  func() error { _, err := s.GetCluster(ctx, "nope"); return err }(),
+		"secrets":  func() error { _, err := s.GetClusterSecrets(ctx, "nope"); return err }(),
+		"machine":  func() error { _, err := s.GetMachine(ctx, "52:54:00:00:00:99"); return err }(),
+		"node":     func() error { _, err := s.GetNode(ctx, "10.9.9.9"); return err }(),
+		"config":   func() error { _, err := s.GetNodeMachineConfig(ctx, "10.9.9.9"); return err }(),
+		"op":       func() error { _, err := s.GetOperation(ctx, 999); return err }(),
+		"snapshot": func() error { _, err := s.GetSnapshot(ctx, 999); return err }(),
+		"user":     func() error { _, err := s.GetUser(ctx, "nobody"); return err }(),
+	} {
+		if !errors.Is(err, store.ErrNotFound) {
+			t.Errorf("%s: %v is not ErrNotFound", name, err)
+		}
+	}
+	if _, err := s.GetCluster(ctx, "nope"); err == nil || err.Error() != `cluster "nope": not found` {
+		t.Errorf("message: %v", err)
+	}
+}
+
+func TestOperationRoundTrip(t *testing.T) {
+	s := open(t)
+	ctx := context.Background()
+	id, err := s.CreateOperation(ctx, "", "test.op", []byte(`{"a":1}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = s.AppendOperationLog(ctx, id, "line")
+	_ = s.SetOperationSteps(ctx, id, []byte(`[{"id":"x"}]`))
+	_ = s.FinishOperation(ctx, id, "done")
+	op, err := s.GetOperation(ctx, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if op.Kind != "test.op" || op.Status != "done" || op.Log != "line\n" || string(op.Request) != `{"a":1}` || string(op.Steps) != `[{"id":"x"}]` || op.FinishedAt == "" || op.Artifact != nil {
+		t.Errorf("get: %+v", op)
+	}
+	list, err := s.ListOperations(ctx, 10)
+	if err != nil || len(list) != 1 || list[0].ID != id || list[0].Log != "" || string(list[0].Steps) != `[{"id":"x"}]` {
+		t.Errorf("list: %+v %v", list, err)
+	}
+}

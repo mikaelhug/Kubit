@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 )
 
@@ -25,12 +24,9 @@ func (r *Runner) Releases(ctx context.Context) ([]Release, error) {
 	if _, err := os.Stat(filepath.Join(r.Dir, "terraform.tfstate")); err != nil {
 		return []Release{}, nil
 	}
-	cmd := exec.CommandContext(ctx, r.Bin, "show", "-json")
-	cmd.Dir = r.Dir
-	cmd.Env = r.env()
-	out, err := cmd.Output()
+	out, err := r.output(ctx, "show", "-json")
 	if err != nil {
-		return nil, fmt.Errorf("tofu show: %w", err)
+		return nil, err
 	}
 	return ParseReleases(out)
 }

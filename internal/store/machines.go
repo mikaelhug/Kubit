@@ -6,10 +6,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/mikael/kubit/internal/labhost"
-	"github.com/mikael/kubit/internal/oob"
+	"slices"
 	"strings"
 	"time"
+
+	"github.com/mikael/kubit/internal/labhost"
+	"github.com/mikael/kubit/internal/oob"
 )
 
 type Machine struct {
@@ -76,6 +78,12 @@ func (m *Machine) Talos() bool {
 
 func (m *Machine) IsLabVM() bool { return m.Host != "" }
 
+const byIPOrMAC = ` WHERE ip = ? OR mac = ?`
+
+func ipArgs(ip string, set ...any) []any {
+	return append(set, ip, "ip:"+ip)
+}
+
 func MachineKey(mac, ip string) string {
 	if mac != "" {
 		return strings.ToLower(mac)
@@ -140,7 +148,7 @@ func (s *Store) UpsertNode(ctx context.Context, n Machine) error {
 	seen := []string{}
 	if prev != nil {
 		seen = prev.IPsSeen
-		if prev.IP != "" && prev.IP != n.IP && !contains(seen, prev.IP) {
+		if prev.IP != "" && prev.IP != n.IP && !slices.Contains(seen, prev.IP) {
 			seen = append(seen, prev.IP)
 		}
 	}
@@ -151,7 +159,7 @@ func (s *Store) UpsertNode(ctx context.Context, n Machine) error {
 	}
 	if _, err := tx.ExecContext(ctx, `
 		INSERT INTO machines (mac, uuid, serial, ip, ips_seen, cluster, hostname, pool, role, arch, source, state, hardware, talos_version, last_seen)
-		VALUES (?, ?, ?, NULLIF(?, ''), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+		VALUES (?, ?, ?, NULLIF(?, ''), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, `+sqlNow+`)
 		ON CONFLICT(mac) DO UPDATE SET
 			uuid          = CASE WHEN excluded.uuid = '' THEN machines.uuid ELSE excluded.uuid END,
 			serial        = CASE WHEN excluded.serial = '' THEN machines.serial ELSE excluded.serial END,
@@ -171,7 +179,7 @@ func (s *Store) UpsertNode(ctx context.Context, n Machine) error {
 			last_seen     = excluded.last_seen,
 			provision     = CASE WHEN excluded.state = 'maintenance' THEN 0 ELSE machines.provision END,
 			system_split  = CASE WHEN excluded.state = 'maintenance' AND excluded.cluster IS NULL THEN 0 ELSE machines.system_split END,
-			updated_at    = strftime('%Y-%m-%dT%H:%M:%fZ','now')`,
+			updated_at    = `+sqlNow,
 		key, n.UUID, n.Serial, n.IP, string(seenJSON), cluster, n.Hostname, n.Pool, n.Role, n.Arch, n.Source, n.State, hw, n.TalosVersion); err != nil {
 		return err
 	}
@@ -192,10 +200,7 @@ func (s *Store) GetMachine(ctx context.Context, mac string) (*Machine, error) {
 
 func machineByMAC(ctx context.Context, q rowQuerier, mac string) (*Machine, error) {
 	m, err := scanMachine(q.QueryRowContext(ctx, `SELECT `+machineCols+` FROM machines WHERE mac = ?`, strings.ToLower(mac)))
-	if errors.Is(err, sql.ErrNoRows) {
-		return nil, fmt.Errorf("machine %s: %w", mac, ErrNotFound)
-	}
-	return m, err
+	return m, notFound(err, "machine %s", mac)
 }
 
 func (s *Store) GetNode(ctx context.Context, ip string) (*Machine, error) {
@@ -203,11 +208,8 @@ func (s *Store) GetNode(ctx context.Context, ip string) (*Machine, error) {
 }
 
 func machineByIP(ctx context.Context, q rowQuerier, ip string) (*Machine, error) {
-	m, err := scanMachine(q.QueryRowContext(ctx, `SELECT `+machineCols+` FROM machines WHERE ip = ? OR mac = ?`, ip, "ip:"+ip))
-	if errors.Is(err, sql.ErrNoRows) {
-		return nil, fmt.Errorf("machine at %s: %w", ip, ErrNotFound)
-	}
-	return m, err
+	m, err := scanMachine(q.QueryRowContext(ctx, `SELECT `+machineCols+` FROM machines`+byIPOrMAC, ipArgs(ip)...))
+	return m, notFound(err, "machine at %s", ip)
 }
 
 func (s *Store) ListNodes(ctx context.Context, cluster string) ([]Machine, error) {
@@ -234,17 +236,17 @@ func (s *Store) ListNodes(ctx context.Context, cluster string) ([]Machine, error
 }
 
 func (s *Store) SetNodeState(ctx context.Context, ip, state string) error {
-	_, err := s.db.ExecContext(ctx, `UPDATE machines SET state = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE ip = ? OR mac = ?`, state, ip, "ip:"+ip)
+	_, err := s.db.ExecContext(ctx, `UPDATE machines SET state = ?, updated_at = `+sqlNow+byIPOrMAC, ipArgs(ip, state)...)
 	return s.done(err, Change{Table: "machines", Key: ip, Op: "put"})
 }
 
 func (s *Store) AssignNode(ctx context.Context, ip, cluster, hostname, role string) error {
-	_, err := s.db.ExecContext(ctx, `UPDATE machines SET cluster = ?, hostname = ?, role = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE ip = ? OR mac = ?`, cluster, hostname, role, ip, "ip:"+ip)
+	_, err := s.db.ExecContext(ctx, `UPDATE machines SET cluster = ?, hostname = ?, role = ?, updated_at = `+sqlNow+byIPOrMAC, ipArgs(ip, cluster, hostname, role)...)
 	return s.done(err, Change{Table: "machines", Cluster: cluster, Key: ip, Op: "put"})
 }
 
 func (s *Store) UnassignNode(ctx context.Context, ip, state string) error {
-	_, err := s.db.ExecContext(ctx, `UPDATE machines SET cluster = NULL, hostname = '', pool = '', role = '', state = ?, machine_config = NULL, system_split = 0, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE ip = ? OR mac = ?`, state, ip, "ip:"+ip)
+	_, err := s.db.ExecContext(ctx, `UPDATE machines SET cluster = NULL, hostname = '', pool = '', role = '', state = ?, machine_config = NULL, system_split = 0, updated_at = `+sqlNow+byIPOrMAC, ipArgs(ip, state)...)
 	return s.done(err, Change{Table: "machines", Key: ip, Op: "put"})
 }
 
@@ -253,23 +255,23 @@ func (s *Store) PutNodeMachineConfig(ctx context.Context, ip string, cfg []byte,
 	if err != nil {
 		return err
 	}
-	_, err = s.db.ExecContext(ctx, `UPDATE machines SET machine_config = ?, system_split = MAX(system_split, ?) WHERE ip = ? OR mac = ?`, sealed, systemSplit, ip, "ip:"+ip)
+	_, err = s.db.ExecContext(ctx, `UPDATE machines SET machine_config = ?, system_split = MAX(system_split, ?)`+byIPOrMAC, ipArgs(ip, sealed, systemSplit)...)
 	return err
 }
 
 func (s *Store) NodeSystemSplit(ctx context.Context, ip string) bool {
 	var split bool
-	_ = s.db.QueryRowContext(ctx, `SELECT system_split FROM machines WHERE ip = ? OR mac = ?`, ip, "ip:"+ip).Scan(&split)
+	_ = s.db.QueryRowContext(ctx, `SELECT system_split FROM machines`+byIPOrMAC, ipArgs(ip)...).Scan(&split)
 	return split
 }
 
 func (s *Store) GetNodeMachineConfig(ctx context.Context, ip string) ([]byte, error) {
 	var sealed []byte
-	err := s.db.QueryRowContext(ctx, `SELECT machine_config FROM machines WHERE ip = ? OR mac = ?`, ip, "ip:"+ip).Scan(&sealed)
-	if errors.Is(err, sql.ErrNoRows) || (err == nil && sealed == nil) {
-		return nil, fmt.Errorf("machine config for %s: %w", ip, ErrNotFound)
+	err := s.db.QueryRowContext(ctx, `SELECT machine_config FROM machines`+byIPOrMAC, ipArgs(ip)...).Scan(&sealed)
+	if err == nil && sealed == nil {
+		err = sql.ErrNoRows
 	}
-	if err != nil {
+	if err := notFound(err, "machine config for %s", ip); err != nil {
 		return nil, err
 	}
 	return s.crypto.Open(sealed)
@@ -290,7 +292,7 @@ func (s *Store) SetMachineOOB(ctx context.Context, mac string, c *oob.Config) er
 		}
 		raw = string(b)
 	}
-	_, err := s.db.ExecContext(ctx, `UPDATE machines SET oob = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE mac = ?`, raw, strings.ToLower(mac))
+	_, err := s.db.ExecContext(ctx, `UPDATE machines SET oob = ?, updated_at = `+sqlNow+` WHERE mac = ?`, raw, strings.ToLower(mac))
 	return s.done(err, Change{Table: "machines", Key: strings.ToLower(mac), Op: "put"})
 }
 
@@ -377,7 +379,7 @@ func (s *Store) UpdateLabHost(ctx context.Context, mac string, mutate func(*LabH
 func (s *Store) setLabHostLocked(ctx context.Context, mac string, l *LabHost) error {
 	mac = strings.ToLower(mac)
 	if l == nil {
-		_, err := s.db.ExecContext(ctx, `UPDATE machines SET labhost = '', updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE mac = ?`, mac)
+		_, err := s.db.ExecContext(ctx, `UPDATE machines SET labhost = '', updated_at = `+sqlNow+` WHERE mac = ?`, mac)
 		return s.done(err, Change{Table: "machines", Key: mac, Op: "put"})
 	}
 	if l.VMs == nil {
@@ -389,11 +391,11 @@ func (s *Store) setLabHostLocked(ctx context.Context, mac string, l *LabHost) er
 		return err
 	}
 	if l.Index > 0 {
-		_, err = s.db.ExecContext(ctx, `UPDATE machines SET labhost = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE mac = ?`, string(b), mac)
+		_, err = s.db.ExecContext(ctx, `UPDATE machines SET labhost = ?, updated_at = `+sqlNow+` WHERE mac = ?`, string(b), mac)
 		return s.done(err, Change{Table: "machines", Key: mac, Op: "put"})
 	}
 	var index int
-	err = s.db.QueryRowContext(ctx, `UPDATE machines SET labhost = json_set(?, '$.index', (`+nextLabIndex+`)), updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE mac = ? RETURNING CAST(json_extract(labhost, '$.index') AS INTEGER)`, string(b), mac, mac).Scan(&index)
+	err = s.db.QueryRowContext(ctx, `UPDATE machines SET labhost = json_set(?, '$.index', (`+nextLabIndex+`)), updated_at = `+sqlNow+` WHERE mac = ? RETURNING CAST(json_extract(labhost, '$.index') AS INTEGER)`, string(b), mac, mac).Scan(&index)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil
 	}
@@ -478,13 +480,4 @@ func deleteLabHostHistory(ctx context.Context, x execer, mac string) error {
 	}
 	_, err := x.ExecContext(ctx, `DELETE FROM events WHERE cluster = ?`, key)
 	return err
-}
-
-func contains(list []string, v string) bool {
-	for _, x := range list {
-		if x == v {
-			return true
-		}
-	}
-	return false
 }

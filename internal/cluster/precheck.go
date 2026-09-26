@@ -43,7 +43,7 @@ func (m *Manager) precheckUpgrade(ctx context.Context, c *config.Cluster, kc *k8
 	if len(problems) > 0 {
 		return errors.New(strings.Join(problems, "; "))
 	}
-	sink.emit(Info, "precheck", "", "etcd healthy, %d/%d nodes Ready and reachable", st.Totals.NodesReady, st.Totals.Nodes)
+	sink.Emit(Info, "precheck", "", "etcd healthy, %d/%d nodes Ready and reachable", st.Totals.NodesReady, st.Totals.Nodes)
 
 	for _, n := range c.Spec.Nodes {
 		tc, err := talos.Dial(ctx, n.IP, talosconfig)
@@ -56,13 +56,13 @@ func (m *Manager) precheckUpgrade(ctx context.Context, c *config.Cluster, kc *k8
 		cancel()
 		tc.Close()
 		if err != nil {
-			sink.emit(Warn, "precheck", n.Hostname, "could not read /var usage: %v", err)
+			sink.Emit(Warn, "precheck", n.Hostname, "could not read /var usage: %v", err)
 			continue
 		}
 		if avail < minVarFree {
-			problems = append(problems, fmt.Sprintf("%s: only %s free of %s on /var (need %s)", n.Hostname, humanBytes(avail), humanBytes(size), humanBytes(minVarFree)))
+			problems = append(problems, fmt.Sprintf("%s: only %s free of %s on /var (need %s)", n.Hostname, HumanBytes(avail), HumanBytes(size), HumanBytes(minVarFree)))
 		} else {
-			sink.emit(Info, "precheck", n.Hostname, "/var: %s free of %s", humanBytes(avail), humanBytes(size))
+			sink.Emit(Info, "precheck", n.Hostname, "/var: %s free of %s", HumanBytes(avail), HumanBytes(size))
 		}
 	}
 	if len(problems) > 0 {
@@ -72,18 +72,18 @@ func (m *Manager) precheckUpgrade(ctx context.Context, c *config.Cluster, kc *k8
 	if kind == "talos" {
 		versions, err := m.Factory.Versions(ctx)
 		if err != nil {
-			sink.emit(Warn, "precheck", "", "could not list Image Factory versions: %v", err)
+			sink.Emit(Warn, "precheck", "", "could not list Image Factory versions: %v", err)
 		} else if !slices.Contains(versions, target) {
 			return fmt.Errorf("Talos %s is not published by the Image Factory (%s); latest: %s", target, m.Factory.BaseURL(), latestOf(versions))
 		} else {
-			sink.emit(Info, "precheck", "", "Talos %s is available from the Image Factory", target)
+			sink.Emit(Info, "precheck", "", "Talos %s is available from the Image Factory", target)
 		}
 	}
 
 	if kind == "kubernetes" {
 		used, err := kc.DeprecatedAPIs(ctx)
 		if err != nil {
-			sink.emit(Warn, "precheck", "", "deprecated-API scan skipped: %v", err)
+			sink.Emit(Warn, "precheck", "", "deprecated-API scan skipped: %v", err)
 		} else {
 			var removed, deprecated []string
 			for _, d := range used {
@@ -94,12 +94,12 @@ func (m *Manager) precheckUpgrade(ctx context.Context, c *config.Cluster, kc *k8
 				}
 			}
 			if len(deprecated) > 0 {
-				sink.emit(Warn, "precheck", "", "deprecated APIs in use (still served by %s): %s", target, strings.Join(deprecated, ", "))
+				sink.Emit(Warn, "precheck", "", "deprecated APIs in use (still served by %s): %s", target, strings.Join(deprecated, ", "))
 			}
 			if len(removed) > 0 {
 				return fmt.Errorf("APIs still in use are removed in %s: %s — migrate the clients first (kubectl get --raw /metrics | grep requested_deprecated_apis)", target, strings.Join(removed, ", "))
 			}
-			sink.emit(Info, "precheck", "", "no API in use is removed by %s (%d deprecated group/versions seen since the API server started)", target, len(used))
+			sink.Emit(Info, "precheck", "", "no API in use is removed by %s (%d deprecated group/versions seen since the API server started)", target, len(used))
 		}
 	}
 	return nil
@@ -110,7 +110,7 @@ func (m *Manager) preUpgradeSnapshot(ctx context.Context, name string, sink Sink
 	if err != nil {
 		return fmt.Errorf("pre-upgrade snapshot: %w", err)
 	}
-	sink.emit(Info, "snapshot", "", "etcd snapshot #%d stored (%d keys); restore from Backups if the upgrade goes wrong", sn.ID, sn.Keys)
+	sink.Emit(Info, "snapshot", "", "etcd snapshot #%d stored (%d keys); restore from Backups if the upgrade goes wrong", sn.ID, sn.Keys)
 	return nil
 }
 

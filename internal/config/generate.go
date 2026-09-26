@@ -3,6 +3,7 @@ package config
 import (
 	"encoding/json"
 	"fmt"
+	"maps"
 	"net"
 	"net/netip"
 	"net/url"
@@ -152,9 +153,7 @@ func generateNode(c *Cluster, in *generate.Input, n Node, installerImage string)
 	host.ConfigHostname = n.Hostname
 
 	node := findOrAppend(&docs, k8s.NewKubeNodeConfigV1Alpha1)
-	if node.LabelsConfig == nil {
-		node.LabelsConfig = map[string]string{}
-	}
+	orEmpty(&node.LabelsConfig)
 	if c.Spec.Platform.GVisor.Enabled {
 		node.LabelsConfig[LabelGVisor] = "true"
 		if n.KVM {
@@ -168,32 +167,17 @@ func generateNode(c *Cluster, in *generate.Input, n Node, installerImage string)
 	if c.Spec.Platform.Longhorn.Enabled {
 		if mounts := c.StorageMounts(n); len(mounts) > 0 {
 			node.LabelsConfig[LabelLonghornDisk] = "config"
-			if node.AnnotationsConfig == nil {
-				node.AnnotationsConfig = map[string]string{}
-			}
-			node.AnnotationsConfig[AnnotationLonghornDisks] = longhornDisksConfig(mounts)
+			orEmpty(&node.AnnotationsConfig)[AnnotationLonghornDisks] = longhornDisksConfig(mounts)
 		} else {
 			node.LabelsConfig[LabelLonghornDisk] = "false"
 		}
 	}
-	for k, v := range c.NodeLabels(n) {
-		node.LabelsConfig[k] = v
-	}
+	maps.Copy(node.LabelsConfig, c.NodeLabels(n))
 	if taints := c.NodeTaints(n); len(taints) > 0 {
-		if node.TaintsConfig == nil {
-			node.TaintsConfig = map[string]string{}
-		}
-		for k, v := range taints {
-			node.TaintsConfig[k] = v
-		}
+		maps.Copy(orEmpty(&node.TaintsConfig), taints)
 	}
 	if ann := c.NodeAnnotations(n); len(ann) > 0 {
-		if node.AnnotationsConfig == nil {
-			node.AnnotationsConfig = map[string]string{}
-		}
-		for k, v := range ann {
-			node.AnnotationsConfig[k] = v
-		}
+		maps.Copy(orEmpty(&node.AnnotationsConfig), ann)
 	}
 	if n.Role == RoleControlPlane && *c.Spec.ControlPlane.AllowScheduling {
 		delete(node.LabelsConfig, constants.LabelExcludeFromExternalLB)
@@ -327,17 +311,28 @@ func (c *Cluster) StorageMounts(n Node) []string {
 	return out
 }
 
-func dataVolume(n int, path string) (*block.UserVolumeConfigV1Alpha1, error) {
+func orEmpty(m *map[string]string) map[string]string {
+	if *m == nil {
+		*m = map[string]string{}
+	}
+	return *m
+}
+
+func userVolume(name string, typ blockres.VolumeType, match cel.Expression) *block.UserVolumeConfigV1Alpha1 {
 	vol := block.NewUserVolumeConfigV1Alpha1()
-	vol.MetaName = fmt.Sprintf("data-%d", n)
-	vol.VolumeType = new(blockres.VolumeTypeDisk)
-	match, err := cel.ParseBooleanExpression(fmt.Sprintf("disk.dev_path == %q", path), celenv.DiskLocator())
+	vol.MetaName = name
+	vol.VolumeType = &typ
+	vol.ProvisioningSpec.DiskSelectorSpec.Match = match
+	vol.FilesystemSpec.FilesystemType = blockres.FilesystemTypeXFS
+	return vol
+}
+
+func dataVolume(n int, path string) (*block.UserVolumeConfigV1Alpha1, error) {
+	match, err := diskSelector(InstallDisk{Path: path})
 	if err != nil {
 		return nil, err
 	}
-	vol.ProvisioningSpec.DiskSelectorSpec.Match = match
-	vol.FilesystemSpec.FilesystemType = blockres.FilesystemTypeXFS
-	return vol, nil
+	return userVolume(fmt.Sprintf("data-%d", n), blockres.VolumeTypeDisk, match), nil
 }
 
 func registryMirror(ip string) (*cri.RegistryMirrorConfigV1Alpha1, error) {
@@ -352,17 +347,13 @@ func registryMirror(ip string) (*cri.RegistryMirrorConfigV1Alpha1, error) {
 }
 
 func systemVolume() (*block.UserVolumeConfigV1Alpha1, error) {
-	vol := block.NewUserVolumeConfigV1Alpha1()
-	vol.MetaName = SystemDataVolume
-	vol.VolumeType = new(blockres.VolumeTypePartition)
 	match, err := cel.ParseBooleanExpression("system_disk", celenv.DiskLocator())
 	if err != nil {
 		return nil, err
 	}
-	vol.ProvisioningSpec.DiskSelectorSpec.Match = match
+	vol := userVolume(SystemDataVolume, blockres.VolumeTypePartition, match)
 	vol.ProvisioningSpec.ProvisioningMinSize = block.MustByteSize(MinSystemDataSize)
 	vol.ProvisioningSpec.ProvisioningGrow = new(true)
-	vol.FilesystemSpec.FilesystemType = blockres.FilesystemTypeXFS
 	return vol, nil
 }
 

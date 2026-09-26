@@ -4,6 +4,10 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/client-go/tools/cache"
 )
 
 type fires struct {
@@ -109,5 +113,50 @@ users:
 	}
 	if c.rest.Timeout != 15*time.Second {
 		t.Error("streamConfig must not change the request config")
+	}
+}
+
+func TestObjectNamespace(t *testing.T) {
+	pod := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "p", Namespace: "metallb-system"}}
+	for _, c := range []struct {
+		obj  any
+		want string
+	}{
+		{pod, "metallb-system"},
+		{cache.DeletedFinalStateUnknown{Key: "metallb-system/p", Obj: pod}, "metallb-system"},
+		{&corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "cert-manager"}}, "cert-manager"},
+		{&corev1.Node{ObjectMeta: metav1.ObjectMeta{Name: "n1"}}, ""},
+		{"not an object", ""},
+	} {
+		if got := objectNamespace(c.obj); got != c.want {
+			t.Errorf("objectNamespace(%T) = %q, want %q", c.obj, got, c.want)
+		}
+	}
+}
+
+func TestAge(t *testing.T) {
+	s, sec := age(metav1.NewTime(time.Now().Add(-90*time.Second - 400*time.Millisecond)))
+	if s != "1m30s" || sec != 90 {
+		t.Errorf("age = %q, %d", s, sec)
+	}
+}
+
+func TestRemovedBy(t *testing.T) {
+	for _, c := range []struct {
+		removed, target string
+		want            bool
+	}{
+		{"1.25", "v1.25.0", true},
+		{"1.25", "v1.26.3", true},
+		{"1.25", "v1.24.9", false},
+		{"1.32", "v2.0.0", true},
+		{"", "v1.30.0", false},
+		{"1.25", "garbage", false},
+		{"x", "v1.30.0", false},
+		{"1.25", "v1.25.0-alpha.1", true},
+	} {
+		if got := (DeprecatedAPI{RemovedRelease: c.removed}).RemovedBy(c.target); got != c.want {
+			t.Errorf("RemovedBy(%q, %q) = %v", c.removed, c.target, got)
+		}
 	}
 }

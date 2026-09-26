@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"os/exec"
 	"reflect"
 	"sort"
 	"strings"
@@ -56,12 +55,9 @@ type showPlan struct {
 }
 
 func (r *Runner) ShowPlan(ctx context.Context, warnings []string) (*PlanDiff, error) {
-	cmd := exec.CommandContext(ctx, r.Bin, "show", "-json", "plan.tfplan")
-	cmd.Dir = r.Dir
-	cmd.Env = r.env()
-	out, err := cmd.Output()
+	out, err := r.output(ctx, "show", "-json", "plan.tfplan")
 	if err != nil {
-		return nil, fmt.Errorf("tofu show: %w", err)
+		return nil, err
 	}
 	return ParseShowPlan(out, warnings)
 }

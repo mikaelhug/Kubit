@@ -1,23 +1,12 @@
 package main
 
 import (
-	"os"
-	"path/filepath"
-
 	"github.com/mikael/kubit/internal/cluster"
 	"github.com/mikael/kubit/internal/store"
+	"github.com/spf13/cobra"
 )
 
-func homeDir() (string, error) {
-	if h := os.Getenv("KUBIT_HOME"); h != "" {
-		return h, nil
-	}
-	u, err := os.UserHomeDir()
-	if err != nil {
-		return "", err
-	}
-	return filepath.Join(u, ".kubit"), nil
-}
+func homeDir() (string, error) { return store.HomeDir() }
 
 func openStore() (*store.Store, error) {
 	dir, err := homeDir()
@@ -41,13 +30,31 @@ func openManagerCrypto() (*cluster.Manager, *store.Crypto, error) {
 	if err != nil {
 		return nil, nil, err
 	}
-	crypto, err := store.LoadCrypto()
+	s, err := openStore()
 	if err != nil {
 		return nil, nil, err
 	}
-	s, err := store.Open(dir, crypto)
-	if err != nil {
-		return nil, nil, err
+	return cluster.NewManager(s, dir), s.Crypto(), nil
+}
+
+func withManager(fn func(cmd *cobra.Command, args []string, m *cluster.Manager) error) func(*cobra.Command, []string) error {
+	return func(cmd *cobra.Command, args []string) error {
+		m, err := openManager()
+		if err != nil {
+			return err
+		}
+		defer m.Store.Close()
+		return fn(cmd, args, m)
 	}
-	return cluster.NewManager(s, dir), crypto, nil
+}
+
+func withStore(fn func(cmd *cobra.Command, args []string, s *store.Store) error) func(*cobra.Command, []string) error {
+	return func(cmd *cobra.Command, args []string) error {
+		s, err := openStore()
+		if err != nil {
+			return err
+		}
+		defer s.Close()
+		return fn(cmd, args, s)
+	}
 }

@@ -47,7 +47,6 @@ type Storage struct {
 
 func (c *Client) Storage(ctx context.Context) (*Storage, error) {
 	out := &Storage{Classes: []StorageClass{}, Volumes: []Volume{}, Claims: []Claim{}}
-	age := func(t metav1.Time) string { return metav1.Now().Sub(t.Time).Truncate(1e9).String() }
 	scs, err := c.StorageV1().StorageClasses().List(ctx, metav1.ListOptions{})
 	if err != nil {
 		return nil, err
@@ -70,7 +69,8 @@ func (c *Client) Storage(ctx context.Context) (*Storage, error) {
 		return nil, err
 	}
 	for _, pv := range pvs.Items {
-		v := Volume{Name: pv.Name, Capacity: pv.Spec.Capacity.Storage().Value(), Phase: string(pv.Status.Phase), Class: pv.Spec.StorageClassName, Reclaim: string(pv.Spec.PersistentVolumeReclaimPolicy), Age: age(pv.CreationTimestamp)}
+		v := Volume{Name: pv.Name, Capacity: pv.Spec.Capacity.Storage().Value(), Phase: string(pv.Status.Phase), Class: pv.Spec.StorageClassName, Reclaim: string(pv.Spec.PersistentVolumeReclaimPolicy)}
+		v.Age, _ = age(pv.CreationTimestamp)
 		if pv.Spec.ClaimRef != nil {
 			v.Claim = pv.Spec.ClaimRef.Namespace + "/" + pv.Spec.ClaimRef.Name
 		}
@@ -84,7 +84,8 @@ func (c *Client) Storage(ctx context.Context) (*Storage, error) {
 		return nil, err
 	}
 	for _, pvc := range pvcs.Items {
-		cl := Claim{Namespace: pvc.Namespace, Name: pvc.Name, Phase: string(pvc.Status.Phase), Requested: pvc.Spec.Resources.Requests.Storage().Value(), Capacity: pvc.Status.Capacity.Storage().Value(), Volume: pvc.Spec.VolumeName, Age: age(pvc.CreationTimestamp), AgeSec: int64(metav1.Now().Sub(pvc.CreationTimestamp.Time).Seconds())}
+		cl := Claim{Namespace: pvc.Namespace, Name: pvc.Name, Phase: string(pvc.Status.Phase), Requested: pvc.Spec.Resources.Requests.Storage().Value(), Capacity: pvc.Status.Capacity.Storage().Value(), Volume: pvc.Spec.VolumeName}
+		cl.Age, cl.AgeSec = age(pvc.CreationTimestamp)
 		if pvc.Spec.StorageClassName != nil {
 			cl.Class = *pvc.Spec.StorageClassName
 		}

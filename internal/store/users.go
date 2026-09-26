@@ -129,10 +129,7 @@ func (s *Store) ListUsers(ctx context.Context) ([]User, error) {
 
 func (s *Store) GetUser(ctx context.Context, name string) (*User, error) {
 	u, err := scanUser(s.db.QueryRowContext(ctx, `SELECT `+userCols+` FROM users WHERE name = ?`, strings.ToLower(name)))
-	if errors.Is(err, sql.ErrNoRows) {
-		return nil, fmt.Errorf("user %s: %w", name, ErrNotFound)
-	}
-	return u, err
+	return u, notFound(err, "user %s", name)
 }
 
 func validName(name string) error {
@@ -246,7 +243,7 @@ func (s *Store) Authenticate(ctx context.Context, name, password string) (*User,
 	if disabled != 0 {
 		return nil, fmt.Errorf("user %s is disabled", name)
 	}
-	_, _ = s.db.ExecContext(ctx, `UPDATE users SET last_login = strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE name = ?`, name)
+	_, _ = s.db.ExecContext(ctx, `UPDATE users SET last_login = `+sqlNow+` WHERE name = ?`, name)
 	return s.GetUser(ctx, name)
 }
 
@@ -300,7 +297,7 @@ func (s *Store) ResolveToken(ctx context.Context, token string) (*User, string, 
 			return nil, "", ErrNotFound
 		}
 	}
-	_, _ = s.db.ExecContext(ctx, `UPDATE sessions SET last_used = strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE token_hash = ?`, hashToken(token))
+	_, _ = s.db.ExecContext(ctx, `UPDATE sessions SET last_used = `+sqlNow+` WHERE token_hash = ?`, hashToken(token))
 	return &user, kind, nil
 }
 

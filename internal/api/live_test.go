@@ -3,11 +3,14 @@ package api
 import (
 	"net/http"
 	"net/http/httptest"
+	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/coder/websocket"
+	"github.com/mikael/kubit/internal/store"
 )
 
 func TestHubReplayAndResync(t *testing.T) {
@@ -86,5 +89,60 @@ func TestLiveEndsWhenTheClientLeaves(t *testing.T) {
 	s.hub.mu.Unlock()
 	if n != 0 {
 		t.Errorf("subscribers left: %d", n)
+	}
+}
+
+func drainScopes(ch chan Message) []string {
+	var out []string
+	for {
+		select {
+		case m := <-ch:
+			if m.Kind == "refresh" {
+				out = append(out, m.Cluster+"/"+m.Scope)
+			}
+		default:
+			return out
+		}
+	}
+}
+
+func TestOffsiteRefreshFollowsTheStore(t *testing.T) {
+	s, st, _ := localServer(t)
+	ch, cancel := s.hub.subscribe()
+	defer cancel()
+	ctx := t.Context()
+	for _, c := range []struct {
+		change store.Change
+		want   bool
+	}{
+		{store.Change{Table: "settings", Key: "kubit", Op: "put"}, true},
+		{store.Change{Table: "settings", Key: "offsite.lastBackup", Op: "put"}, true},
+		{store.Change{Table: "settings", Key: "ssh.pub", Op: "put"}, false},
+		{store.Change{Table: "snapshots", Cluster: "c", Key: "7", Op: "delete"}, true},
+	} {
+		s.onChange(ctx, c.change)
+		if got := slices.Contains(drainScopes(ch), "/offsite"); got != c.want {
+			t.Errorf("%+v: offsite refresh %v, want %v", c.change, got, c.want)
+		}
+	}
+	if err := st.PutCluster(ctx, store.ClusterRow{Name: "c", Spec: []byte("x"), State: "ready"}); err != nil {
+		t.Fatal(err)
+	}
+	drainScopes(ch)
+	id, err := st.AddSnapshot(ctx, store.Snapshot{Cluster: "c", Path: "/x", Source: "manual", Status: "ok"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	key := strconv.FormatInt(id, 10)
+	s.onChange(ctx, store.Change{Table: "snapshots", Key: key, Op: "put"})
+	if slices.Contains(drainScopes(ch), "/offsite") {
+		t.Error("a local-only snapshot must not refresh off-site status")
+	}
+	if err := st.SetSnapshotOffsite(ctx, id, "clusters/c/snapshots/x"); err != nil {
+		t.Fatal(err)
+	}
+	s.onChange(ctx, store.Change{Table: "snapshots", Key: key, Op: "put"})
+	if !slices.Contains(drainScopes(ch), "/offsite") {
+		t.Error("an off-site copy must refresh off-site status")
 	}
 }

@@ -46,7 +46,7 @@ func (s *Server) Run(ctx context.Context) error {
 	errc := make(chan error, 3)
 	if s.HTTPOnly {
 		go func() { errc <- s.serveHTTP(ctx) }()
-		s.Log.Printf("pxe: HTTP only on %s (%s) :%d — no DHCP/TFTP; boot machines by hand from http://%s:%d/", s.Interface, s.IP, s.HTTPPort, s.IP, s.HTTPPort)
+		s.Log.Printf("pxe: HTTP only on %s (%s) :%d — no DHCP/TFTP; boot machines by hand from %s/", s.Interface, s.IP, s.HTTPPort, s.BaseURL())
 	} else {
 		go func() { errc <- s.ServeDHCP(ctx) }()
 		go func() { errc <- s.serveTFTP(ctx) }()
@@ -117,7 +117,7 @@ func (s *Server) Handler() http.Handler {
 		}
 		switch decision {
 		case "debian":
-			base := fmt.Sprintf("http://%s:%d", s.IP, s.HTTPPort)
+			base := s.BaseURL()
 			args := labhost.KernelArgs(fmt.Sprintf("%s/labhost/%s/preseed?arch=%s", base, mac, arch), "")
 			fmt.Fprintf(w, "#!ipxe\nkernel %s/assets/debian/%s/linux initrd=initrd.gz %s\ninitrd %s/assets/debian/%s/initrd.gz\nboot\n", base, arch, args, base, arch)
 			s.track.http(hostOf(r.RemoteAddr), arch, "debian")
@@ -128,8 +128,8 @@ func (s *Server) Handler() http.Handler {
 			s.track.logf(fmt.Sprintf("%s (%s) boots from its own disk; iPXE exits", hostOf(r.RemoteAddr), mac))
 			return
 		}
-		base := fmt.Sprintf("http://%s:%d/assets/%s/%s", s.IP, s.HTTPPort, s.Profile.SchematicID, s.Profile.TalosVersion)
-		args := append([]string{"talos.platform=metal", "console=tty0", "console=ttyS0", "init_on_alloc=1", "slab_nomerge", "pti=on"}, s.Profile.ExtraArgs...)
+		base := fmt.Sprintf("%s/assets/%s/%s", s.BaseURL(), s.Profile.SchematicID, s.Profile.TalosVersion)
+		args := append(labhost.TalosKernelArgs("console=tty0", "console=ttyS0"), s.Profile.ExtraArgs...)
 		fmt.Fprintf(w, "#!ipxe\nkernel %s/kernel-%s initrd=initramfs-%s.xz %s\ninitrd %s/initramfs-%s.xz\nboot\n",
 			base, arch, arch, strings.Join(args, " "), base, arch)
 		s.Log.Printf("http: boot script for %s (%s)", r.RemoteAddr, arch)
@@ -159,7 +159,7 @@ func (s *Server) Handler() http.Handler {
 			http.NotFound(w, r)
 			return
 		}
-		base := fmt.Sprintf("http://%s:%d", s.IP, s.HTTPPort)
+		base := s.BaseURL()
 		q := url.Values{"mac": {mac}, "post": {base + "/labhost/" + mac + "/postinstall"}, "ip": {hostOf(r.RemoteAddr)}}
 		for _, k := range []string{"arch", "stage"} {
 			if v := r.URL.Query().Get(k); v != "" {

@@ -3,6 +3,7 @@ package config
 import (
 	"fmt"
 	"net/netip"
+	"slices"
 	"sort"
 	"strings"
 )
@@ -76,15 +77,11 @@ func Design(name string, machines []Machine, opts DesignOptions) (*Cluster, []Wa
 	if opts.MetalLBRange != "" {
 		c.Spec.Platform.MetalLB.Range = opts.MetalLBRange
 	} else if len(machines) > 0 {
-		if a, err := netip.ParseAddr(machines[0].IP); err == nil && a.Is4() {
-			b := a.As4()
-			c.Spec.Platform.MetalLB.Range = fmt.Sprintf("%d.%d.%d.200-%d.%d.%d.220", b[0], b[1], b[2], b[0], b[1], b[2])
-		}
+		c.Spec.Platform.MetalLB.Range = DefaultMetalLBRange(machines[0].IP)
 	}
 	if topo.HA && len(machines) > 0 {
-		if a, err := netip.ParseAddr(machines[0].IP); err == nil && a.Is4() {
-			b := a.As4()
-			c.Spec.ControlPlane.VIP = fmt.Sprintf("%d.%d.%d.250", b[0], b[1], b[2])
+		if lan, ok := slash24(machines[0].IP); ok {
+			c.Spec.ControlPlane.VIP = hostIn(lan, 250)
 		}
 	}
 	c.applyDefaults()
@@ -186,7 +183,7 @@ func Lint(c *Cluster, machines []Machine) []Warning {
 				}
 			}
 			for _, d := range n.DataDisks {
-				if !hasDisk(m.Disks, d) {
+				if !slices.ContainsFunc(m.Disks, func(md MachineDisk) bool { return md.DevPath == d }) {
 					warn("warn", "unknown-data-disk", n.Hostname, "%s: data disk %s is not in the machine's inventory; the volume stays unprovisioned until a disk matches.", n.Hostname, d)
 				}
 			}
@@ -210,8 +207,8 @@ func Lint(c *Cluster, machines []Machine) []Warning {
 					}
 				}
 			}
-		} else if a, err := netip.ParseAddr(n.IP); err == nil && a.Is4() && !subnet.IsValid() {
-			subnet = netip.PrefixFrom(a, 24).Masked()
+		} else if lan, ok := slash24(n.IP); ok && !subnet.IsValid() {
+			subnet = lan
 		}
 	}
 	if m := c.Spec.Platform.MetalLB; m.Enabled && subnet.IsValid() {
@@ -220,7 +217,7 @@ func Lint(c *Cluster, machines []Machine) []Warning {
 				warn("warn", "metallb-off-subnet", "", "MetalLB range %s is outside %s; Layer-2 announcements only work inside the nodes' subnet.", m.Range, subnet)
 			}
 			for _, n := range c.Spec.Nodes {
-				if a, err := netip.ParseAddr(n.IP); err == nil && !a.Less(lo) && !hi.Less(a) {
+				if a, err := netip.ParseAddr(n.IP); err == nil && inRange(a, lo, hi) {
 					warn("warn", "metallb-overlaps-node", n.Hostname, "%s's address %s lies inside the MetalLB range.", n.Hostname, n.IP)
 				}
 			}
@@ -251,11 +248,28 @@ func Overlaps(rangeSpec string, others map[string]string) []string {
 	return out
 }
 
-func hasDisk(disks []MachineDisk, path string) bool {
-	for _, d := range disks {
-		if d.DevPath == path {
-			return true
-		}
+func slash24(ip string) (netip.Prefix, bool) {
+	a, err := netip.ParseAddr(ip)
+	if err != nil || !a.Is4() {
+		return netip.Prefix{}, false
 	}
-	return false
+	return netip.PrefixFrom(a, 24).Masked(), true
+}
+
+func hostIn(lan netip.Prefix, last byte) string {
+	b := lan.Addr().As4()
+	b[3] = last
+	return netip.AddrFrom4(b).String()
+}
+
+func DefaultMetalLBRange(ip string) string {
+	lan, ok := slash24(ip)
+	if !ok {
+		return ""
+	}
+	return hostIn(lan, 200) + "-" + hostIn(lan, 220)
+}
+
+func inRange(a, lo, hi netip.Addr) bool {
+	return !a.Less(lo) && !hi.Less(a)
 }
