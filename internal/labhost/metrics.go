@@ -8,21 +8,18 @@ import (
 	"time"
 )
 
-// Metrics is one reading of the host itself: load, CPU, memory, the filesystem the
-// VMs live on. Bytes throughout so the UI formats them like node samples.
 type Metrics struct {
 	Load1      float64 `json:"load1"`
 	CPUPct     float64 `json:"cpuPct"`
-	MemUsed    int64   `json:"memUsed"` // total minus MemAvailable
+	MemUsed    int64   `json:"memUsed"`
 	MemTotal   int64   `json:"memTotal"`
-	DiskUsed   int64   `json:"diskUsed"` // the filesystem holding VMDir
+	DiskUsed   int64   `json:"diskUsed"`
 	DiskTotal  int64   `json:"diskTotal"`
 	VMsRunning int     `json:"vmsRunning"`
 	UptimeSec  int64   `json:"uptimeSec"`
 	At         string  `json:"at"`
 }
 
-// Updates is what apt and the kernel say about pending maintenance.
 type Updates struct {
 	Count           int    `json:"count"`
 	Security        int    `json:"security"`
@@ -30,11 +27,10 @@ type Updates struct {
 	KernelRunning   string `json:"kernelRunning"`
 	KernelInstalled string `json:"kernelInstalled"`
 	Release         string `json:"release"`
-	Unattended      bool   `json:"unattended"` // unattended-upgrades enabled
+	Unattended      bool   `json:"unattended"`
 	CheckedAt       string `json:"checkedAt"`
 }
 
-// NeedsReboot is true when packages or a newer installed kernel wait for one.
 func (u Updates) NeedsReboot() bool {
 	return u.RebootRequired || (u.KernelInstalled != "" && u.KernelRunning != "" && u.KernelInstalled != u.KernelRunning)
 }
@@ -42,11 +38,10 @@ func (u Updates) NeedsReboot() bool {
 const metricsScript = `read l1 rest < /proc/loadavg; echo "load1=$l1"
 echo "cpu1=$(head -1 /proc/stat)"; sleep 2; echo "cpu2=$(head -1 /proc/stat)"
 awk '/MemTotal/{t=$2}/MemAvailable/{a=$2}END{print "memtotal=" t*1024; print "memavail=" a*1024}' /proc/meminfo
-df -B1 --output=used,size ` + VMDir + ` 2>/dev/null | tail -1 | awk '{print "diskused=" $1; print "disktotal=" $2}'
+df -B1 --output=used,size ` + vmDir + ` 2>/dev/null | tail -1 | awk '{print "diskused=" $1; print "disktotal=" $2}'
 echo "vms=$(virsh list --name 2>/dev/null | grep -c .)"
 echo "uptime=$(cut -d. -f1 /proc/uptime)"`
 
-// Metrics samples the host once (about two seconds, for a CPU delta that is not noise).
 func (c *Client) Metrics(ctx context.Context) (Metrics, error) {
 	out, err := c.Run(ctx, metricsScript)
 	if err != nil {
@@ -72,7 +67,6 @@ func parseMetrics(out string, at time.Time) Metrics {
 	return m
 }
 
-// cpuPct is the busy share between two "cpu ..." lines of /proc/stat.
 func cpuPct(a, b string) float64 {
 	total := func(line string) (busy, all int64) {
 		f := strings.Fields(line)
@@ -82,7 +76,7 @@ func cpuPct(a, b string) float64 {
 		for i, s := range f[1:] {
 			v, _ := strconv.ParseInt(s, 10, 64)
 			all += v
-			if i != 3 && i != 4 { // idle, iowait
+			if i != 3 && i != 4 {
 				busy += v
 			}
 		}
@@ -106,7 +100,6 @@ echo "installed=$(ls -1 /boot/vmlinuz-* 2>/dev/null | sed 's#.*/vmlinuz-##' | so
 echo "release=$(. /etc/os-release 2>/dev/null && echo "$PRETTY_NAME")"
 echo "unattended=$(grep -qs 'Unattended-Upgrade "1"' /etc/apt/apt.conf.d/20auto-upgrades && echo yes || echo no)"`
 
-// CheckUpdates refreshes the package index and reports what a full upgrade would do.
 func (c *Client) CheckUpdates(ctx context.Context) (Updates, error) {
 	out, err := c.Run(ctx, updatesScript)
 	if err != nil {
@@ -123,20 +116,15 @@ func parseUpdates(out string, at time.Time) Updates {
 	return u
 }
 
-// Upgrade applies every pending package update non-interactively, keeping local
-// config files where dpkg would ask, and returns apt's output for the log.
 func (c *Client) Upgrade(ctx context.Context) (string, error) {
 	return c.Run(ctx, `export DEBIAN_FRONTEND=noninteractive; apt-get -qq update && apt-get -y -q -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold full-upgrade && apt-get -y -q autoremove`)
 }
 
-// Reboot asks the host to restart a moment after the session closes.
 func (c *Client) Reboot(ctx context.Context) error {
 	_, err := c.Run(ctx, `nohup sh -c 'sleep 1; systemctl reboot' >/dev/null 2>&1 &`)
 	return err
 }
 
-// ShutdownVMs stops every running VM gracefully and destroys what has not stopped
-// after the grace period; Talos tolerates a hard stop.
 func (c *Client) ShutdownVMs(ctx context.Context, grace time.Duration) error {
 	_, err := c.Run(ctx, fmt.Sprintf(`for d in $(virsh list --name); do [ -n "$d" ] && virsh shutdown $d >/dev/null 2>&1; done
 end=$(( $(date +%%s) + %d ))

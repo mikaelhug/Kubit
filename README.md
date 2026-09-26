@@ -47,8 +47,8 @@ Requires Go 1.26+, Node 20+ for the UI. Talos machinery pinned to v1.14.0
 brew install nirs/vmnet-helper/vmnet-helper` (macOS 26: no root needed), then:
 
 ```
-hack/vm/vm.sh create 1          # 2 vCPU / 4 GiB / 20 GiB disk, boots Talos ISO (schematic with siderolabs/gvisor)
-hack/vm/vm.sh list              # shows IP from vmnet's DHCP lease (192.168.64.0/24)
+hack/vm/vm.sh create 1          # 2 vCPU / 4 GiB / 20 GiB disk, boots Talos ISO (vanilla schematic)
+hack/vm/vm.sh list              # shows IP from vmnet's DHCP lease (192.168.105.0/24)
 hack/vm/vm.sh start 1 --no-iso  # after Talos has installed to disk
 hack/vm/vm.sh destroy all
 ```
@@ -69,7 +69,8 @@ minutes after boot (vmnet NAT settling; NTS lookups time out in the same window)
 stable thereafter — discovery must retry. No serial console output: the arm64 ISO
 uses `ttyAMA0`, not the virtio console.
 
-Image Factory schematic for `siderolabs/gvisor` (arm64 and amd64):
+Image Factory schematics (arm64 and amd64): vanilla, the dev VM default,
+`376567988ad370138ad8b2698212367b8edcb69b5fd68c80be1f2ec7d603b4ba`; `siderolabs/gvisor`
 `d9ff89777e246792e7642abd3220a616afb4e49822382e4213a2e528ab826fe5`.
 
 ## cluster.yaml
@@ -474,7 +475,9 @@ a no-op and the following `tofu plan` reports no changes.
 - `POST clusters` `{yaml, skipPlatform}` → operation; `POST clusters/{n}/apply|platform/plan|platform/apply|upgrade/talos|upgrade/kubernetes|export|nodes`, `DELETE clusters/{n}[/nodes/{host}]`
 - `GET nodes`, `POST discover {targets}`, `GET nodes/{ip}/services|logs?service=&follow=`, `POST nodes/{ip}/reboot`
 - `POST config/validate` (raw YAML → defaulted YAML), `POST config/draft {name, ips}` (topology recommendation → cluster.yaml)
-- `GET operations[/{id}]`, `GET events` (SSE: every operation event and status change)
+- `GET operations[/{id}]`, `DELETE operations/{id}` (cancel), `POST operations/{id}/retry`
+- `GET ws` (WebSocket: every operation event, status change and `refresh`; `?since=` replays what a reconnecting client missed)
+- `GET clusters/{n}/events[?unacked=true]`, `POST clusters/{n}/events/ack`, `POST events/{id}/ack` (health alerts)
 - `GET clusters/{n}/flux` (GitRepositories, OCIRepositories, HelmRepositories, Kustomizations, HelmReleases with their Ready condition and revision; refreshed by the `flux` scope)
 - `GET clusters/{n}/sops` (the age recipient), `GET|PUT clusters/{n}/sops/identity` (admin: export, or import `{keys}`)
 - `GET auth/me`, `POST auth/setup|login|logout`, `GET auth/oidc/start|callback`; `GET/POST users`, `PUT/DELETE users/{name}`, `GET/POST users/{name}/tokens`, `DELETE users/{name}/tokens/{token}` (admin)
@@ -814,7 +817,8 @@ second line of defence), so `kubit pxe` can stay running and BIOS boot order
 "network first" is safe on a LAN Kubit controls. Unknown machines get Talos while
 *Enrollment* (PXE page) is *open*, only known or armed ones when it is *closed*. A member
 armed with *Boot into Talos* is served once; discovery clears the arming when it sees
-the machine in maintenance mode. Recommended BIOS for the EliteDesks: UEFI only, Secure
+the machine in maintenance mode. While the daemon is unreachable no machine gets an
+offer, so everything boots its own disk. Recommended BIOS for the EliteDesks: UEFI only, Secure
 Boot off, AHCI, WoL on, and **disk first** unless you own the LAN's DHCP — first
 contact via AMT *Boot into Talos*, F9 network boot, or the ISO stick; re-provisioning
 never needs PXE because `node remove` resets Talos to maintenance mode from disk.
@@ -1039,7 +1043,7 @@ back in maintenance mode), quorum guard refusing 3→2 without `--force`.
 Not yet exercised: `runsc-kvm` (no nested virtualisation in the VMs).
 - [x] M1 — structured operations, Activity drawer, plan review/apply, IA skeleton, component library
 - [x] M2 — node page: Overview (Talos + etcd member + Kubernetes requests), Hardware, Kubernetes (conditions, pods with usage, labels), Services, Logs, Actions (cordon/uncordon/drain/reboot[-with-drain]/upgrade node) — verified drain→reboot→uncordon on ha-worker-01
-- [x] M3 — `internal/watch`: per-cluster poll (15 s, `--watch-interval`), `samples` (24 h fine / 30 d hourly) and `events` tables, SSE `status`/`health` pushes (UI no longer polls while connected), alerts with ack and auto-resolve on recovery, Overview capacity sparklines (1h–7d), `/versions` feed (Image Factory releases ≥ 1.14, Kubernetes minors supported by the built machinery) in Settings — verified: VM stop raised `talos.unreachable` within 15 s without reload, `node.notready` after the kubelet grace period, both cleared by `talos.back`/`node.ready` on restart
+- [x] M3 — `internal/watch`: per-cluster poll (15 s, `--watch-interval`), `samples` (24 h fine / 30 d hourly) and `events` tables, live `status`/`health` pushes (UI no longer polls while connected), alerts with ack and auto-resolve on recovery, Overview capacity sparklines (1h–7d), `/versions` feed (Image Factory releases ≥ 1.14, Kubernetes minors supported by the built machinery) in Settings — verified: VM stop raised `talos.unreachable` within 15 s without reload, `node.notready` after the kubelet grace period, both cleared by `talos.back`/`node.ready` on restart
 - [x] M4 — Workloads (controllers + pods, namespace filter, pod dialog with container logs and events), Network (addressing, MetalLB pool map with per-IP holder, services with endpoint counts, ingress host→service table), Storage (classes/PVCs/PVs, warning when no StorageClass) — verified with a demo Deployment + LoadBalancer + Ingress reachable from the Mac
 - [x] M5 — add-on cards join cluster.yaml, tofu state (Helm release/chart/app version, status) and namespace readiness into one state (disabled/pending/deploying/ready/degraded/failed/orphaned); Configure dialog edits enabled/MetalLB range/Helm `values` (server-validated YAML) into cluster.yaml; `platform.<addon>.values` flows to `helm_release.values` only when set; Settings has a Form tab (endpoint, VIP, CIDRs, extensions, scheduling) beside YAML — verified: enabled ArgoCD with `server.replicas: 1` via UI → plan → reviewed apply → ArgoCD answering on its MetalLB IP; cert-manager verified in M1
 - [~] M6 — Inventory: Adopt… opens the target cluster's add-node dialog preselected; PXE page reads the separate `kubit pxe` process's `/status.json` (server state, per-MAC boot stages dhcp → ipxe → kernel, log) and shows the exact sudo command when it is not running; Kubit Settings (`settings` table: factory URL, poll interval, discovery subnets, default MetalLB range, PXE status URL — applied live); `kubit backup`/`restore`/`key export` and a Download backup button — verified: backup restored into a fresh KUBIT_HOME manages the live cluster. **PXE boot itself is unverified** (see NOTES/backlog.md): pending real hardware

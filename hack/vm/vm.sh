@@ -13,7 +13,7 @@ set -euo pipefail
 HERE=$(cd "$(dirname "$0")" && pwd)
 STATE=${STATE:-$HERE/state}
 TALOS_VERSION=${TALOS_VERSION:-v1.14.0}
-SCHEMATIC=${SCHEMATIC:-d9ff89777e246792e7642abd3220a616afb4e49822382e4213a2e528ab826fe5} # siderolabs/gvisor
+SCHEMATIC=${SCHEMATIC:-376567988ad370138ad8b2698212367b8edcb69b5fd68c80be1f2ec7d603b4ba} # vanilla, no extensions
 ARCH=arm64
 ISO=$STATE/talos-$TALOS_VERSION-$ARCH.iso
 DISK_GB=${DISK_GB:-20}

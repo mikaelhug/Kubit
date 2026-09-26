@@ -11,7 +11,6 @@ import (
 	"github.com/mikael/kubit/internal/talos"
 )
 
-// nodeStep is the step id for per-node phases of rolling operations.
 func nodeStep(n config.Node) string { return "node:" + n.Hostname }
 
 func nodeSteps(nodes []config.Node, verb string) []Step {
@@ -22,16 +21,10 @@ func nodeSteps(nodes []config.Node, verb string) []Step {
 	return out
 }
 
-// orderedNodes returns control planes first, then workers: the order every rolling
-// operation uses.
 func orderedNodes(c *config.Cluster) []config.Node {
 	return append(append([]config.Node{}, c.ControlPlanes()...), c.Workers()...)
 }
 
-// UpgradeTalos rolls a new Talos release across the cluster one node at a time: Talos
-// installs the new image into the inactive A/B slot, reboots, and rolls back on its own
-// if the new system fails to boot. The next node starts only after the previous one is
-// back and Ready.
 func (m *Manager) UpgradeTalos(ctx context.Context, name, version string, sink Sink) error {
 	c, row, err := m.LoadCluster(ctx, name)
 	if err != nil {
@@ -157,9 +150,6 @@ func (m *Manager) UpgradeTalos(ctx context.Context, name, version string, sink S
 	return nil
 }
 
-// UpgradeKubernetes bumps the component images by re-applying each node's machine
-// config generated for the new version (what `talosctl upgrade-k8s` does underneath),
-// control planes first, waiting for each kubelet to report the new version and Ready.
 func (m *Manager) UpgradeKubernetes(ctx context.Context, name, version string, sink Sink) error {
 	c, row, err := m.LoadCluster(ctx, name)
 	if err != nil {
@@ -208,9 +198,6 @@ func (m *Manager) UpgradeKubernetes(ctx context.Context, name, version string, s
 	return nil
 }
 
-// SyncManifests re-applies Talos' rendered bootstrap manifests (kube-proxy, CoreDNS,
-// flannel, RBAC) from the first control plane so their images follow the configured
-// Kubernetes version.
 func (m *Manager) SyncManifests(ctx context.Context, c *config.Cluster, sink Sink) error {
 	sec, err := m.Store.GetClusterSecrets(ctx, c.Metadata.Name)
 	if err != nil {

@@ -26,8 +26,6 @@ func (s *Server) handleOffsiteStatus(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, s.manager.OffsiteStatus(r.Context()))
 }
 
-// handleOffsiteTest probes the target given in the body (unsaved settings are allowed,
-// a redacted secret is taken from the stored ones) with a write/read/delete round trip.
 func (s *Server) handleOffsiteTest(w http.ResponseWriter, r *http.Request) {
 	var t offsite.Target
 	if err := json.NewDecoder(r.Body).Decode(&t); err != nil {
@@ -64,7 +62,7 @@ func (s *Server) handleOffsiteBackup(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) startOffsiteBackup() (int64, error) {
-	return s.runOperation("", "kubit.backup", map[string]string{"source": "offsite"}, func(ctx contextT, sink clusterSink) (any, error) {
+	return s.runOperation("", "kubit.backup", map[string]string{"source": "offsite"}, func(ctx context.Context, sink cluster.Sink) (any, error) {
 		key, err := s.manager.BackupOffsite(ctx, sink)
 		s.noteOffsite(ctx, "", err)
 		if err != nil {
@@ -74,7 +72,6 @@ func (s *Server) startOffsiteBackup() (int64, error) {
 	})
 }
 
-// noteOffsite raises or clears offsite.failed for a cluster ("" = Kubit backups).
 func (s *Server) noteOffsite(ctx context.Context, name string, err error) {
 	if errors.Is(err, cluster.ErrOffsiteOff) {
 		return
@@ -95,8 +92,6 @@ func (s *Server) noteOffsite(ctx context.Context, name string, err error) {
 	}
 }
 
-// snapshotOffsiteResult turns a snapshot's missing remote key into the offsite.failed
-// event (the copy step never fails the snapshot itself).
 func (s *Server) snapshotOffsiteResult(ctx context.Context, name string, sn *store.Snapshot, err error) {
 	if err != nil || sn == nil {
 		return
@@ -113,8 +108,6 @@ func (s *Server) snapshotOffsiteResult(ctx context.Context, name string, sn *sto
 	s.noteOffsite(ctx, name, nil)
 }
 
-// maybeOffsiteBackup runs the daily Kubit backup when a target is set; called from
-// every watcher status so it needs no timer of its own.
 func (s *Server) maybeOffsiteBackup(ctx context.Context) {
 	s.certCheck.every("offsite.backup", 10*time.Minute, func() {
 		v, err := s.store.GetSettings(ctx)
@@ -131,8 +124,6 @@ func (s *Server) maybeOffsiteBackup(ctx context.Context) {
 	})
 }
 
-// maybeHeartbeat is the dead-man's switch: a periodic summary to the alert sinks,
-// sent regardless of the minimum severity. Its absence is the signal.
 func (s *Server) maybeHeartbeat(ctx context.Context) {
 	s.certCheck.every("heartbeat", 5*time.Minute, func() {
 		v, err := s.store.GetSettings(ctx)
@@ -149,8 +140,6 @@ func (s *Server) maybeHeartbeat(ctx context.Context) {
 	})
 }
 
-// heartbeatText is one line per cluster: state, open alerts, last snapshot, plus the
-// off-site status — everything an operator would otherwise open the UI to check.
 func (s *Server) heartbeatText(ctx context.Context) string {
 	rows, _ := s.store.ListClusters(ctx)
 	var b strings.Builder

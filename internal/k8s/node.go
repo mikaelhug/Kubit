@@ -10,7 +10,6 @@ import (
 	"k8s.io/kubectl/pkg/drain"
 )
 
-// NodeDetail is what the node page's Kubernetes tab shows.
 type NodeDetail struct {
 	Name           string            `json:"name"`
 	Ready          bool              `json:"ready"`
@@ -25,7 +24,7 @@ type NodeDetail struct {
 	Labels         map[string]string `json:"labels"`
 	Capacity       Resources         `json:"capacity"`
 	Allocatable    Resources         `json:"allocatable"`
-	Requests       Resources         `json:"requests"` // sum of pod requests on the node
+	Requests       Resources         `json:"requests"`
 	Pods           []PodSummary      `json:"pods"`
 }
 
@@ -49,10 +48,10 @@ type PodSummary struct {
 	Node       string   `json:"node,omitempty"`
 	Containers []string `json:"containers,omitempty"`
 	Phase      string   `json:"phase"`
-	Ready      string   `json:"ready"` // "2/2"
+	Ready      string   `json:"ready"`
 	Restarts   int32    `json:"restarts"`
-	Owner      string   `json:"owner,omitempty"` // DaemonSet/ReplicaSet/...
-	CPUMilli   int64    `json:"cpuMilli"`        // requests
+	Owner      string   `json:"owner,omitempty"`
+	CPUMilli   int64    `json:"cpuMilli"`
 	MemBytes   int64    `json:"memBytes"`
 	Age        string   `json:"age"`
 	AgeSec     int64    `json:"ageSec"`

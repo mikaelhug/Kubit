@@ -13,19 +13,17 @@ import (
 type NodeState string
 
 const (
-	StateMaintenance NodeState = "maintenance" // accepts insecure API: no config applied yet
-	StateConfigured  NodeState = "configured"  // Talos API up but requires cluster mTLS
+	StateMaintenance NodeState = "maintenance"
+	StateConfigured  NodeState = "configured"
 )
 
 type ScanResult struct {
 	IP        string
 	State     NodeState
-	Inventory *Inventory // only for maintenance nodes
+	Inventory *Inventory
 	Err       error
 }
 
-// ExpandTargets turns CIDRs and single addresses into a host list (network and
-// broadcast addresses of IPv4 prefixes excluded).
 func ExpandTargets(targets []string) ([]netip.Addr, error) {
 	var out []netip.Addr
 	for _, t := range targets {
@@ -57,8 +55,6 @@ func ExpandTargets(targets []string) ([]netip.Addr, error) {
 	return out, nil
 }
 
-// Scan probes each address on the Talos API port with bounded concurrency and returns
-// only hosts that answered, maintenance nodes carrying their inventory.
 func Scan(ctx context.Context, addrs []netip.Addr, concurrency int, timeout time.Duration) []ScanResult {
 	if concurrency <= 0 {
 		concurrency = 64
@@ -94,7 +90,6 @@ func Scan(ctx context.Context, addrs []netip.Addr, concurrency int, timeout time
 	return results
 }
 
-// Probe classifies one host whose API port is open.
 func Probe(ctx context.Context, ip string, timeout time.Duration) ScanResult {
 	ctx, cancel := context.WithTimeout(ctx, 3*timeout)
 	defer cancel()
@@ -111,7 +106,6 @@ func Probe(ctx context.Context, ip string, timeout time.Duration) ScanResult {
 		return ScanResult{IP: ip, Err: err}
 	}
 	if inv.Stage != "maintenance" {
-		// Insecure access succeeded on a non-maintenance node: unexpected but report it.
 		return ScanResult{IP: ip, State: StateConfigured, Inventory: inv}
 	}
 	return ScanResult{IP: ip, State: StateMaintenance, Inventory: inv}

@@ -48,8 +48,6 @@ func TestTokenGuardsAPIOnly(t *testing.T) {
 	if rec := do(t, srv, "GET", "/api/v1/version", ""); rec.Code != http.StatusOK {
 		t.Errorf("version is open so the UI can greet before sign-in: %d", rec.Code)
 	}
-	// The browser WebSocket cannot set headers: the token may come as a query
-	// parameter. Without it the upgrade is refused before any handshake.
 	if rec := do(t, srv, "GET", "/api/v1/ws", ""); rec.Code != http.StatusUnauthorized {
 		t.Errorf("ws without token: %d", rec.Code)
 	}

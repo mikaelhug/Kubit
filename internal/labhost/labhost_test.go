@@ -41,7 +41,6 @@ func TestDomainXMLAndMAC(t *testing.T) {
 	if !strings.Contains(xml, "console=ttyS0") {
 		t.Error("amd64 serial console must be ttyS0")
 	}
-	// arm64's virt UART is ttyAMA0, not ttyS0, or virsh console shows nothing.
 	armk, _ := DomainXML(VMSpec{Name: "a", MAC: MAC(1, 5), CPUs: 1, MemMiB: 1024, DiskGiB: 10, Kernel: "/k", Initrd: "/i", Arch: "arm64"})
 	if !strings.Contains(armk, "console=ttyAMA0") || strings.Contains(armk, "console=ttyS0") {
 		t.Errorf("arm64 serial console must be ttyAMA0, not ttyS0")
@@ -53,7 +52,6 @@ func TestDomainXMLAndMAC(t *testing.T) {
 	if !strings.Contains(disk, "<boot dev='hd'/>") || strings.Contains(disk, "<kernel>") || !strings.Contains(disk, "aarch64") {
 		t.Error("disk-boot arm64 domain wrong")
 	}
-	// Without a UEFI loader an arm64 virt machine has nothing to boot a disk with.
 	if !strings.Contains(disk, "/usr/share/AAVMF/AAVMF_CODE.fd") || !strings.Contains(disk, "<nvram template='/usr/share/AAVMF/AAVMF_VARS.fd'>/var/lib/kubit/vms/v.nvram</nvram>") {
 		t.Error("arm64 domain must carry AAVMF")
 	}

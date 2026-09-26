@@ -6,13 +6,11 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
-// Readiness sums the controllers in a namespace: how many are fully available.
 type Readiness struct {
-	Namespace string `json:"namespace"`
-	Ready     int    `json:"ready"`
-	Total     int    `json:"total"`
-	// Detail lists controllers that are not fully available.
-	Detail []string `json:"detail,omitempty"`
+	Namespace string   `json:"namespace"`
+	Ready     int      `json:"ready"`
+	Total     int      `json:"total"`
+	Detail    []string `json:"detail,omitempty"`
 }
 
 func (c *Client) NamespaceReadiness(ctx context.Context, namespace string) (*Readiness, error) {

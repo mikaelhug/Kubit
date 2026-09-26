@@ -1,11 +1,12 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 
+	"github.com/mikael/kubit/internal/cluster"
 	"github.com/mikael/kubit/internal/store"
-	"github.com/mikael/kubit/internal/talos"
 )
 
 func (s *Server) nodeRoutes() {
@@ -19,8 +20,6 @@ func (s *Server) nodeRoutes() {
 	r.HandleFunc("POST /api/v1/clusters/{name}/nodes/{hostname}/upgrade", s.disruptive(s.handleNodeUpgrade))
 }
 
-// handleNodeInventory returns live hardware/OS facts; for cluster members it also
-// carries the etcd member view on control planes.
 func (s *Server) handleNodeInventory(w http.ResponseWriter, r *http.Request) {
 	tc, err := s.nodeClient(r)
 	if err != nil {
@@ -62,10 +61,10 @@ func (s *Server) handleNodeKubernetes(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, d)
 }
 
-func (s *Server) nodeOp(kind string, fn func(ctx contextT, name, hostname string, sink clusterSink) error) http.HandlerFunc {
+func (s *Server) nodeOp(kind string, fn func(ctx context.Context, name, hostname string, sink cluster.Sink) error) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		name, hostname := r.PathValue("name"), r.PathValue("hostname")
-		id, err := s.runOperation(name, kind, map[string]string{"hostname": hostname}, func(ctx contextT, sink clusterSink) (any, error) {
+		id, err := s.runOperation(name, kind, map[string]string{"hostname": hostname}, func(ctx context.Context, sink cluster.Sink) (any, error) {
 			return nil, fn(ctx, name, hostname, sink)
 		})
 		if err != nil {
@@ -82,7 +81,7 @@ func (s *Server) handleNodeRebootOp(w http.ResponseWriter, r *http.Request) {
 		Drain bool `json:"drain"`
 	}
 	_ = json.NewDecoder(r.Body).Decode(&req)
-	id, err := s.runOperation(name, "node.reboot", map[string]any{"hostname": hostname, "drain": req.Drain}, func(ctx contextT, sink clusterSink) (any, error) {
+	id, err := s.runOperation(name, "node.reboot", map[string]any{"hostname": hostname, "drain": req.Drain}, func(ctx context.Context, sink cluster.Sink) (any, error) {
 		return nil, s.manager.RebootNode(ctx, name, hostname, req.Drain, sink)
 	})
 	if err != nil {
@@ -98,7 +97,7 @@ func (s *Server) handleNodeUpgrade(w http.ResponseWriter, r *http.Request) {
 		To string `json:"to"`
 	}
 	_ = json.NewDecoder(r.Body).Decode(&req)
-	id, err := s.runOperation(name, "node.upgrade", map[string]any{"hostname": hostname, "to": req.To}, func(ctx contextT, sink clusterSink) (any, error) {
+	id, err := s.runOperation(name, "node.upgrade", map[string]any{"hostname": hostname, "to": req.To}, func(ctx context.Context, sink cluster.Sink) (any, error) {
 		return nil, s.manager.UpgradeNode(ctx, name, hostname, req.To, sink)
 	})
 	if err != nil {
@@ -107,5 +106,3 @@ func (s *Server) handleNodeUpgrade(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, http.StatusAccepted, map[string]any{"operationId": id})
 }
-
-var _ = talos.Port

@@ -13,7 +13,7 @@ import (
 )
 
 type Workload struct {
-	Kind      string `json:"kind"` // Deployment | DaemonSet | StatefulSet | Job | CronJob
+	Kind      string `json:"kind"`
 	Namespace string `json:"namespace"`
 	Name      string `json:"name"`
 	Ready     int32  `json:"ready"`
@@ -25,7 +25,6 @@ type Workload struct {
 	Selector  string `json:"selector,omitempty"`
 }
 
-// Workloads lists the controller objects across all namespaces.
 func (c *Client) Workloads(ctx context.Context) ([]Workload, error) {
 	var out []Workload
 	age := func(t metav1.Time) string { return metav1.Now().Sub(t.Time).Truncate(1e9).String() }
@@ -110,7 +109,6 @@ func images(spec corev1.PodSpec) string {
 	return strings.Join(imgs, ", ")
 }
 
-// Pods lists pods, optionally filtered by namespace and a label selector.
 func (c *Client) Pods(ctx context.Context, namespace, selector string) ([]PodSummary, error) {
 	pods, err := c.CoreV1().Pods(namespace).List(ctx, metav1.ListOptions{LabelSelector: selector})
 	if err != nil {
@@ -152,7 +150,6 @@ func podSummary(p *corev1.Pod) PodSummary {
 	return ps
 }
 
-// PodEvents returns Kubernetes events for one pod, newest first.
 func (c *Client) PodEvents(ctx context.Context, namespace, name string) ([]Condition, error) {
 	list, err := c.CoreV1().Events(namespace).List(ctx, metav1.ListOptions{FieldSelector: "involvedObject.name=" + name + ",involvedObject.kind=Pod"})
 	if err != nil {
@@ -170,7 +167,6 @@ func (c *Client) PodEvents(ctx context.Context, namespace, name string) ([]Condi
 	return out, nil
 }
 
-// PodLogs streams a container's log (follow keeps it open).
 func (c *Client) PodLogs(ctx context.Context, namespace, name, container string, tail int64, follow bool) (io.ReadCloser, error) {
 	opts := &corev1.PodLogOptions{Container: container, Follow: follow, TailLines: &tail}
 	if !follow {

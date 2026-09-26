@@ -12,41 +12,33 @@ import (
 	"time"
 )
 
-// Machine is a physical or virtual computer Kubit knows, keyed by the MAC of its
-// uplink. The IP is only where it was last reachable.
 type Machine struct {
-	MAC          string   `json:"mac"`
-	UUID         string   `json:"uuid,omitempty"`
-	Serial       string   `json:"serial,omitempty"`
-	IP           string   `json:"ip"`
-	IPsSeen      []string `json:"ipsSeen,omitempty"`
-	Cluster      string   `json:"cluster"` // "" when unassigned
-	Hostname     string   `json:"hostname"`
-	Pool         string   `json:"pool"`
-	Role         string   `json:"role"`
-	Arch         string   `json:"arch"`
-	Source       string   `json:"source"`
-	State        string   `json:"state"`
-	Hardware     []byte   `json:"-"`
-	TalosVersion string   `json:"talosVersion"`
-	WOL          bool     `json:"wol"`
-	// OOB is the out-of-band config (password redacted on the API); OOBType is a
-	// cheap "has remote management" for lists. Provision marks a machine that PXE
-	// must hand Talos to on its next boot even though it is a cluster member.
-	OOB       *oob.Config `json:"oob,omitempty"`
-	OOBType   string      `json:"oobType,omitempty"`
-	Provision bool        `json:"provision"`
-	// ProvisionKind says what the armed network boot should load: talos | labhost.
-	ProvisionKind string `json:"provisionKind,omitempty"`
-	// LabHost is set on machines Kubit turned into KVM hosts; Host on the VMs they run.
-	LabHost   *LabHost `json:"labhost,omitempty"`
-	Host      string   `json:"host,omitempty"`
-	FirstSeen string   `json:"firstSeen"`
-	LastSeen  string   `json:"lastSeen"`
-	UpdatedAt string   `json:"updatedAt"`
+	MAC           string      `json:"mac"`
+	UUID          string      `json:"uuid,omitempty"`
+	Serial        string      `json:"serial,omitempty"`
+	IP            string      `json:"ip"`
+	IPsSeen       []string    `json:"ipsSeen,omitempty"`
+	Cluster       string      `json:"cluster"`
+	Hostname      string      `json:"hostname"`
+	Pool          string      `json:"pool"`
+	Role          string      `json:"role"`
+	Arch          string      `json:"arch"`
+	Source        string      `json:"source"`
+	State         string      `json:"state"`
+	Hardware      []byte      `json:"-"`
+	TalosVersion  string      `json:"talosVersion"`
+	WOL           bool        `json:"wol"`
+	OOB           *oob.Config `json:"oob,omitempty"`
+	OOBType       string      `json:"oobType,omitempty"`
+	Provision     bool        `json:"provision"`
+	ProvisionKind string      `json:"provisionKind,omitempty"`
+	LabHost       *LabHost    `json:"labhost,omitempty"`
+	Host          string      `json:"host,omitempty"`
+	FirstSeen     string      `json:"firstSeen"`
+	LastSeen      string      `json:"lastSeen"`
+	UpdatedAt     string      `json:"updatedAt"`
 }
 
-// NodeRow is the pre-M8 name; discovery and the API still speak in these terms.
 type NodeRow = Machine
 
 type Kind string
@@ -84,8 +76,6 @@ func (m *Machine) Talos() bool {
 
 func (m *Machine) IsLabVM() bool { return m.Host != "" }
 
-// MachineKey returns the identity used as primary key: the MAC, or a placeholder
-// derived from the IP for declarations that never recorded one.
 func MachineKey(mac, ip string) string {
 	if mac != "" {
 		return strings.ToLower(mac)
@@ -125,10 +115,6 @@ func scanMachine(sc interface{ Scan(...any) error }) (*Machine, error) {
 	return &m, nil
 }
 
-// UpsertNode records a discovery or declaration. Identity is the MAC; a machine that
-// shows up on a new IP keeps its row (the old IP joins ips_seen) and any other row
-// still claiming that IP loses it. Cluster membership and hardware survive rescans
-// that carry neither.
 func (s *Store) UpsertNode(ctx context.Context, n Machine) error {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -137,7 +123,6 @@ func (s *Store) UpsertNode(ctx context.Context, n Machine) error {
 	defer tx.Rollback()
 	key := MachineKey(n.MAC, n.IP)
 	if n.MAC == "" && n.IP != "" {
-		// No identity given: attach to whatever machine currently holds that IP.
 		if existing, err := machineByIP(ctx, tx, n.IP); err == nil {
 			key = existing.MAC
 		}
@@ -213,7 +198,6 @@ func machineByMAC(ctx context.Context, q rowQuerier, mac string) (*Machine, erro
 	return m, err
 }
 
-// GetNode looks a machine up by its current IP.
 func (s *Store) GetNode(ctx context.Context, ip string) (*Machine, error) {
 	return machineByIP(ctx, s.db, ip)
 }
@@ -226,7 +210,6 @@ func machineByIP(ctx context.Context, q rowQuerier, ip string) (*Machine, error)
 	return m, err
 }
 
-// ListNodes returns every machine, or only a cluster's when cluster is non-empty.
 func (s *Store) ListNodes(ctx context.Context, cluster string) ([]Machine, error) {
 	q := `SELECT ` + machineCols + ` FROM machines`
 	var args []any
@@ -250,14 +233,6 @@ func (s *Store) ListNodes(ctx context.Context, cluster string) ([]Machine, error
 	return out, rows.Err()
 }
 
-func (s *Store) macFor(ctx context.Context, ip string) (string, error) {
-	m, err := s.GetNode(ctx, ip)
-	if err != nil {
-		return "", err
-	}
-	return m.MAC, nil
-}
-
 func (s *Store) SetNodeState(ctx context.Context, ip, state string) error {
 	_, err := s.db.ExecContext(ctx, `UPDATE machines SET state = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE ip = ? OR mac = ?`, state, ip, "ip:"+ip)
 	return s.done(err, Change{Table: "machines", Key: ip, Op: "put"})
@@ -268,7 +243,6 @@ func (s *Store) AssignNode(ctx context.Context, ip, cluster, hostname, role stri
 	return s.done(err, Change{Table: "machines", Cluster: cluster, Key: ip, Op: "put"})
 }
 
-// UnassignNode detaches a machine from its cluster after a reset, keeping the inventory.
 func (s *Store) UnassignNode(ctx context.Context, ip, state string) error {
 	_, err := s.db.ExecContext(ctx, `UPDATE machines SET cluster = NULL, hostname = '', pool = '', role = '', state = ?, machine_config = NULL, system_split = 0, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE ip = ? OR mac = ?`, state, ip, "ip:"+ip)
 	return s.done(err, Change{Table: "machines", Key: ip, Op: "put"})
@@ -301,7 +275,6 @@ func (s *Store) GetNodeMachineConfig(ctx context.Context, ip string) ([]byte, er
 	return s.crypto.Open(sealed)
 }
 
-// SetMachineOOB stores the out-of-band config with the password sealed; nil clears it.
 func (s *Store) SetMachineOOB(ctx context.Context, mac string, c *oob.Config) error {
 	raw := ""
 	if c != nil && c.Type != "" {
@@ -321,7 +294,6 @@ func (s *Store) SetMachineOOB(ctx context.Context, mac string, c *oob.Config) er
 	return s.done(err, Change{Table: "machines", Key: strings.ToLower(mac), Op: "put"})
 }
 
-// MachineOOB returns the config with the password unsealed, for the backend only.
 func (s *Store) MachineOOB(ctx context.Context, mac string) (*oob.Config, error) {
 	m, err := s.GetMachine(ctx, mac)
 	if err != nil {
@@ -335,8 +307,6 @@ func (s *Store) MachineOOB(ctx context.Context, mac string) (*oob.Config, error)
 	return &c, nil
 }
 
-// SetMachineProvision arms or clears the one-shot network-boot hand-off; kind says
-// what to serve (talos | labhost).
 func (s *Store) SetMachineProvision(ctx context.Context, mac string, on bool, kind ...string) error {
 	k := ""
 	if on && len(kind) > 0 {
@@ -348,48 +318,39 @@ func (s *Store) SetMachineProvision(ctx context.Context, mac string, on bool, ki
 	return s.done(err, Change{Table: "machines", Key: strings.ToLower(mac), Op: "put"})
 }
 
-// LabHost is the state of a machine Kubit runs as a KVM host.
 type LabHost struct {
-	State     string           `json:"state"` // installing | setup | ready | error
+	State     string           `json:"state"`
 	Error     string           `json:"error,omitempty"`
 	Capacity  labhost.Capacity `json:"capacity"`
-	Talos     string           `json:"talos,omitempty"`     // version of the boot assets on the host
-	Schematic string           `json:"schematic,omitempty"` // schematic id of those assets
+	Talos     string           `json:"talos,omitempty"`
+	Schematic string           `json:"schematic,omitempty"`
 	Kernel    string           `json:"kernel,omitempty"`
 	Initrd    string           `json:"initrd,omitempty"`
 	ISO       string           `json:"iso,omitempty"`
 	Driver    string           `json:"driver,omitempty"`
-	Index     int              `json:"index"` // for MAC assignment
+	Index     int              `json:"index"`
 	VMs       []labhost.VM     `json:"vms"`
 	Metrics   *labhost.Metrics `json:"metrics,omitempty"`
 	Updates   *labhost.Updates `json:"updates,omitempty"`
-	// Install is the installer's last reported stage while State is installing.
-	Install *InstallProgress `json:"install,omitempty"`
-	// Network is how VMs reach the LAN: bridge (default) or routed.
-	Network string `json:"network,omitempty"`
-	// Disk is the device Debian was installed on; empty = the installer picked the largest.
-	Disk string `json:"disk,omitempty"`
-	// Boot is what a manually booted install needs to be started with.
-	Boot *BootLine `json:"boot,omitempty"`
-	// Failures counts consecutive SSH failures; the watcher alerts on the third.
-	Failures  int    `json:"failures,omitempty"`
-	UpdatedAt string `json:"updatedAt"`
+	Install   *InstallProgress `json:"install,omitempty"`
+	Network   string           `json:"network,omitempty"`
+	Disk      string           `json:"disk,omitempty"`
+	Boot      *BootLine        `json:"boot,omitempty"`
+	Failures  int              `json:"failures,omitempty"`
+	UpdatedAt string           `json:"updatedAt"`
 }
 
-// BootLine is the installer kernel, initrd and command line for a manual boot.
 type BootLine struct {
 	Kernel  string `json:"kernel"`
 	Initrd  string `json:"initrd"`
 	Cmdline string `json:"cmdline"`
 }
 
-// InstallProgress is what the Debian installer last told Kubit.
 type InstallProgress struct {
-	Stage string `json:"stage"` // installer | partitioning | packages | late-done | booted
+	Stage string `json:"stage"`
 	At    string `json:"at"`
 }
 
-// SetLabHost stores the lab-host state (nil clears the role).
 func (s *Store) SetLabHost(ctx context.Context, mac string, l *LabHost) error {
 	lk := s.labLock(strings.ToLower(mac))
 	lk.Lock()
@@ -397,10 +358,6 @@ func (s *Store) SetLabHost(ctx context.Context, mac string, l *LabHost) error {
 	return s.setLabHostLocked(ctx, mac, l)
 }
 
-// UpdateLabHost reads the machine's lab-host record, applies mutate and writes it back
-// under the per-host lock, so a writer merges its change into the current record
-// instead of clobbering the whole blob (which loses a concurrent writer's fields).
-// mutate is not called when the machine has no lab-host record.
 func (s *Store) UpdateLabHost(ctx context.Context, mac string, mutate func(*LabHost)) error {
 	mac = strings.ToLower(mac)
 	lk := s.labLock(mac)
@@ -448,14 +405,11 @@ func (s *Store) setLabHostLocked(ctx context.Context, mac string, l *LabHost) er
 
 const nextLabIndex = `SELECT COALESCE(MAX(CAST(json_extract(labhost, '$.index') AS INTEGER)), 0) + 1 FROM machines WHERE labhost != '' AND mac != ?`
 
-// SetMachineHost records which lab host a VM lives on.
 func (s *Store) SetMachineHost(ctx context.Context, mac, host string) error {
 	_, err := s.db.ExecContext(ctx, `UPDATE machines SET host = ? WHERE mac = ?`, strings.ToLower(host), strings.ToLower(mac))
 	return s.done(err, Change{Table: "machines", Key: strings.ToLower(mac), Op: "put"})
 }
 
-// SSHKey returns Kubit's key pair for lab hosts, minting it on first use. The private
-// key is sealed in the settings table.
 func (s *Store) SSHKey(ctx context.Context) (priv []byte, pub string, err error) {
 	if sealed := s.GetValue(ctx, "ssh.priv"); sealed != "" {
 		return []byte(s.unseal(sealed)), s.GetValue(ctx, "ssh.pub"), nil
@@ -493,13 +447,11 @@ func (s *Store) SSHKey(ctx context.Context) (priv []byte, pub string, err error)
 	return newPriv, newPub, nil
 }
 
-// SetMachineWOL flags whether Kubit may send Wake-on-LAN packets to a machine.
 func (s *Store) SetMachineWOL(ctx context.Context, mac string, on bool) error {
 	_, err := s.db.ExecContext(ctx, `UPDATE machines SET wol = ? WHERE mac = ?`, b2i(on), strings.ToLower(mac))
 	return s.done(err, Change{Table: "machines", Key: strings.ToLower(mac), Op: "put"})
 }
 
-// DeleteMachine forgets a machine that will not come back.
 func (s *Store) DeleteMachine(ctx context.Context, mac string) error {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -515,8 +467,6 @@ func (s *Store) DeleteMachine(ctx context.Context, mac string) error {
 	return s.done(tx.Commit(), Change{Table: "machines", Key: strings.ToLower(mac), Op: "delete"})
 }
 
-// DeleteLabHostHistory drops the samples and events filed under a lab host's
-// pseudo-cluster; called when the role is released or the machine retired.
 func (s *Store) DeleteLabHostHistory(ctx context.Context, mac string) error {
 	return deleteLabHostHistory(ctx, s.db, mac)
 }
@@ -528,12 +478,6 @@ func deleteLabHostHistory(ctx context.Context, x execer, mac string) error {
 	}
 	_, err := x.ExecContext(ctx, `DELETE FROM events WHERE cluster = ?`, key)
 	return err
-}
-
-// DeleteNode forgets the machine at an IP.
-func (s *Store) DeleteNode(ctx context.Context, ip string) error {
-	_, err := s.db.ExecContext(ctx, `DELETE FROM machines WHERE ip = ? OR mac = ?`, ip, "ip:"+ip)
-	return s.done(err, Change{Table: "machines", Key: ip, Op: "delete"})
 }
 
 func contains(list []string, v string) bool {

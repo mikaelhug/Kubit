@@ -10,10 +10,6 @@ import (
 	"strings"
 )
 
-// Backup writes an encrypted tar.gz of the Kubit home: the database and every cluster
-// directory (kubeconfig, talosconfig, infra roots and their state). The archive is
-// sealed with the master key, so it is only useful on a machine that has the same key
-// (the Keychain entry, or KUBIT_MASTER_KEY exported with `kubit key export`).
 func Backup(home string, crypto *Crypto, w io.Writer) error {
 	pr, pw := io.Pipe()
 	errc := make(chan error, 1)
@@ -79,9 +75,6 @@ func Backup(home string, crypto *Crypto, w io.Writer) error {
 
 const backupMagic = "KUBITBAK1\n"
 
-// Restore unpacks a Backup archive into home, which must be empty unless force is set.
-// Callers checkpoint the database (Store.Checkpoint) before Backup so the .db file is
-// complete without its -wal.
 func Restore(home string, crypto *Crypto, r io.Reader, force bool) error {
 	raw, err := io.ReadAll(r)
 	if err != nil {

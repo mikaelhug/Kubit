@@ -3,8 +3,6 @@ variable "kubeconfig" {
   type        = string
 }
 
-# Each add-on carries free-form Helm values from cluster.yaml (platform.<addon>.values),
-# merged over Kubit's defaults.
 variable "metallb" {
   type = object({
     enabled = bool
@@ -50,13 +48,11 @@ variable "longhorn" {
   type = object({ enabled = bool, values = optional(any, {}), replicas = optional(number, 3) })
 }
 
-# The SSO group (with its oidc: prefix) bound to cluster-admin; empty binds nothing.
 variable "oidc_admin_group" {
   type    = string
   default = ""
 }
 
-# Chart versions are pinned by Kubit and bumped deliberately.
 variable "chart_versions" {
   type = map(string)
   default = {

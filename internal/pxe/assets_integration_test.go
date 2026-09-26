@@ -20,7 +20,6 @@ func TestIPXEBinariesDownload(t *testing.T) {
 			t.Errorf("%s: %d bytes looks wrong", name, st.Size())
 		}
 	}
-	// Second call is served from disk.
 	if _, err := c.IPXEBinary(context.Background(), FileX64); err != nil {
 		t.Fatal(err)
 	}

@@ -16,8 +16,6 @@ type addonUpdate struct {
 	Repository *config.FluxRepository `json:"repository,omitempty"`
 }
 
-// handleAddonUpdate edits one add-on in cluster.yaml (enabled, MetalLB range, Helm
-// values as YAML) and saves; nothing is applied until the operator plans.
 func (s *Server) handleAddonUpdate(w http.ResponseWriter, r *http.Request) {
 	name, key := r.PathValue("name"), r.PathValue("addon")
 	var req addonUpdate

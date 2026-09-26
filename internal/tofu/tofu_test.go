@@ -33,7 +33,6 @@ func TestRenderWritesModuleAndVars(t *testing.T) {
 		t.Fatal(err)
 	}
 	dir := t.TempDir()
-	// A pre-existing state file must survive re-rendering.
 	if err := os.WriteFile(filepath.Join(dir, "terraform.tfstate"), []byte("{}"), 0o600); err != nil {
 		t.Fatal(err)
 	}

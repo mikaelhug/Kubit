@@ -1,5 +1,3 @@
-# SSO users reach the API server with the oidc: prefix; the admin group named in
-# cluster.yaml gets cluster-admin so someone can bind the rest.
 resource "kubectl_manifest" "oidc_admins" {
   count = var.oidc_admin_group != "" ? 1 : 0
 

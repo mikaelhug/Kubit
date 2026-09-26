@@ -9,9 +9,6 @@ import (
 	"github.com/mikael/kubit/internal/talos"
 )
 
-// RenameNode changes a node's hostname. Kubernetes node names are immutable, so the
-// kubelet re-registers under the new name and the old Node object is deleted; pods on
-// it are drained first so nothing is orphaned.
 func (m *Manager) RenameNode(ctx context.Context, name, hostname, newName string, sink Sink) error {
 	sink.plan(Steps(
 		"check", "Validate the new name",
@@ -106,8 +103,6 @@ func (m *Manager) RenameNode(ctx context.Context, name, hostname, newName string
 	})
 }
 
-// MoveNodeToPool changes a node's pool: labels/taints follow at once; a different
-// schematic means a single-node Talos upgrade to the pool's installer image first.
 func (m *Manager) MoveNodeToPool(ctx context.Context, name, hostname, pool string, sink Sink) error {
 	c, n, err := m.findNode(ctx, name, hostname)
 	if err != nil {
@@ -164,8 +159,6 @@ func (m *Manager) MoveNodeToPool(ctx context.Context, name, hostname, pool strin
 	return nil
 }
 
-// ReaddressNode changes how a node gets its address. A nil network returns it to DHCP.
-// Talos keeps serving the API on the new address; Kubit waits for it there.
 func (m *Manager) ReaddressNode(ctx context.Context, name, hostname string, network *config.NodeNetwork, newIP string, sink Sink) error {
 	sink.plan(Steps("apply", "Apply the new network configuration", "reach", "Wait for the node on its new address", "kubelet", "Restart the kubelet so the Node advertises the new address", "reboot", "Reboot the control plane so etcd re-advertises", "ready", "Wait for Ready")...)
 	c, n, err := m.findNode(ctx, name, hostname)
@@ -199,8 +192,6 @@ func (m *Manager) ReaddressNode(ctx context.Context, name, hostname string, netw
 		target = newIP
 	}
 	err = sink.run("apply", func() error {
-		// After an interrupted attempt the machine may already answer on the new address;
-		// gRPC dials lazily, so only the call itself tells.
 		var err error
 		for _, addr := range []string{n.IP, target} {
 			var tc *talos.Client
@@ -243,8 +234,6 @@ func (m *Manager) ReaddressNode(ctx context.Context, name, hostname string, netw
 		sink.skip("kubelet")
 		sink.skip("reboot")
 	} else if n.Role == config.RoleControlPlane {
-		// etcd and the static pods bind the old address until the machine restarts;
-		// a kubelet restart alone leaves etcd on this member unreachable.
 		sink.skip("kubelet")
 		if err := sink.run("reboot", func() error {
 			tc, err := talos.Dial(ctx, target, sec.Talosconfig)
@@ -267,8 +256,6 @@ func (m *Manager) ReaddressNode(ctx context.Context, name, hostname string, netw
 			return err
 		}
 	} else if err := sink.run("kubelet", func() error {
-		// The kubelet pins --node-ip at start; without a restart the API server keeps
-		// talking to the old address for logs, exec and metrics.
 		tc, err := talos.Dial(ctx, target, sec.Talosconfig)
 		if err != nil {
 			return err

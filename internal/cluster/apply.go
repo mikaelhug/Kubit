@@ -9,10 +9,6 @@ import (
 	"github.com/mikael/kubit/internal/talos"
 )
 
-// ApplyConfigs regenerates every node's machine config from cluster.yaml with the stored
-// secrets and applies it, control planes first, waiting for each node to be Ready (and
-// on the expected kubelet version when wantKubelet is set) before moving on. Talos
-// applies without a reboot whenever it can and reboots otherwise.
 func (m *Manager) ApplyConfigs(ctx context.Context, c *config.Cluster, wantKubelet string, sink Sink) error {
 	name := c.Metadata.Name
 	sec, bundle, err := m.loadSecrets(ctx, name)
@@ -80,8 +76,6 @@ func (m *Manager) applyNodeConfig(ctx context.Context, n config.Node, cfg []byte
 	return nil
 }
 
-// summarizeDryRun keeps the line that states the reboot decision out of Talos' multi-line
-// dry-run report.
 func summarizeDryRun(details string) string {
 	for _, line := range strings.Split(details, "\n") {
 		line = strings.TrimSpace(line)
@@ -92,8 +86,6 @@ func summarizeDryRun(details string) string {
 	return strings.TrimSpace(strings.SplitN(details, "\n", 2)[0])
 }
 
-// wantReboot reads Talos' dry-run mode details ("Applied configuration with a reboot"
-// vs "... without a reboot").
 func wantReboot(details string) bool {
 	return details != "" && !strings.Contains(strings.ToLower(details), "without a reboot")
 }

@@ -23,8 +23,6 @@ func (s *Server) oobRoutes() {
 	r.HandleFunc("GET /api/v1/pxe/decide", s.handlePXEDecide)
 }
 
-// oobConfig merges a submitted config with the stored one (a masked password keeps
-// the stored secret).
 func (s *Server) oobConfig(ctx context.Context, mac string, submitted oob.Config) oob.Config {
 	if submitted.Password == "•••" || submitted.Password == "" {
 		if cur, err := s.store.MachineOOB(ctx, mac); err == nil {
@@ -62,8 +60,6 @@ func (s *Server) handleOOBSave(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// handleOOBTest probes with the submitted (or stored) config and records what the
-// management engine reports about the machine.
 func (s *Server) handleOOBTest(w http.ResponseWriter, r *http.Request) {
 	mac := strings.ToLower(r.PathValue("mac"))
 	var c oob.Config
@@ -93,9 +89,6 @@ func (s *Server) handleOOBTest(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "info": info})
 }
 
-// handleOOBAdd creates a machine from its management engine alone: AMT or the BMC
-// tells us the MAC, model and serial before Talos ever booted, so the machine can be
-// booted into Talos from the Inventory.
 func (s *Server) handleOOBAdd(w http.ResponseWriter, r *http.Request) {
 	var c oob.Config
 	if err := json.NewDecoder(r.Body).Decode(&c); err != nil {
@@ -123,7 +116,7 @@ func (s *Server) handleOOBAdd(w http.ResponseWriter, r *http.Request) {
 		row.State = "unknown"
 	}
 	if existing, err := s.store.GetMachine(ctx, info.MAC); err == nil {
-		row.State = existing.State // already discovered: keep what Talos said
+		row.State = existing.State
 	}
 	if err := s.store.UpsertNode(ctx, row); err != nil {
 		writeErr(w, err)
@@ -145,8 +138,6 @@ func (s *Server) handleOOBAdd(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusCreated, map[string]any{"machine": machineView(*m), "info": info})
 }
 
-// handleOOBPower runs a power action as an operation; "pxe" also arms the one-shot
-// Talos hand-off so Kubit's PXE server serves Talos to this MAC once.
 func (s *Server) handleOOBPower(w http.ResponseWriter, r *http.Request) {
 	mac := strings.ToLower(r.PathValue("mac"))
 	var req struct {
@@ -182,19 +173,18 @@ func (s *Server) handleOOBPower(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusConflict, map[string]string{"error": "The PXE server is not running, so the machine would find nothing to boot. Start it in a terminal (it can stay open): " + pxeCommand(r.Host), "code": "pxe-down", "command": pxeCommand(r.Host)})
 		return
 	}
-	id, err := s.runOperation(m.Cluster, "machine.power", map[string]string{"mac": mac, "action": string(req.Action), "hostname": m.Hostname}, func(ctx contextT, sink clusterSink) (result any, err error) {
+	id, err := s.runOperation(m.Cluster, "machine.power", map[string]string{"mac": mac, "action": string(req.Action), "hostname": m.Hostname}, func(ctx context.Context, sink cluster.Sink) (result any, err error) {
 		if req.Action == oob.BootPXE {
-			// Leave nothing armed behind a failed or cancelled attempt.
 			defer func() {
 				if err != nil {
 					_ = s.store.SetMachineProvision(context.Background(), mac, false)
 				}
 			}()
-			sink(clusterEvent{Time: time.Now(), Kind: "steps", Level: "info", Steps: cluster.Steps("power", "Arm a network boot and reset via "+oob.Label(c.Type), "boot", "Network boot request seen", "ipxe", "Talos kernel fetched", "wait", "Wait for Talos maintenance mode")})
+			sink(cluster.Event{Time: time.Now(), Kind: "steps", Level: "info", Steps: cluster.Steps("power", "Arm a network boot and reset via "+oob.Label(c.Type), "boot", "Network boot request seen", "ipxe", "Talos kernel fetched", "wait", "Wait for Talos maintenance mode")})
 		}
-		sink(clusterEvent{Time: time.Now(), Kind: "step", Step: "power", Status: cluster.StepRunning})
+		sink(cluster.Event{Time: time.Now(), Kind: "step", Step: "power", Status: cluster.StepRunning})
 		mgr, err := oob.Open(*c, oob.WithTrace(func(line string) {
-			sink(clusterEvent{Time: time.Now(), Kind: "log", Level: "info", Step: "power", Message: c.Type + ": " + line})
+			sink(cluster.Event{Time: time.Now(), Kind: "log", Level: "info", Step: "power", Message: c.Type + ": " + line})
 		}))
 		if err != nil {
 			return nil, err
@@ -203,27 +193,22 @@ func (s *Server) handleOOBPower(w http.ResponseWriter, r *http.Request) {
 			if err := s.store.SetMachineProvision(ctx, mac, true); err != nil {
 				return nil, err
 			}
-			sink(clusterEvent{Time: time.Now(), Kind: "log", Level: "info", Step: "power", Message: "armed: Kubit's PXE server hands Talos to " + mac + " on its next boot"})
+			sink(cluster.Event{Time: time.Now(), Kind: "log", Level: "info", Step: "power", Message: "armed: Kubit's PXE server hands Talos to " + mac + " on its next boot"})
 		}
-		sink(clusterEvent{Time: time.Now(), Kind: "log", Level: "info", Step: "power", Message: fmt.Sprintf("%s via %s at %s", req.Action, c.Type, c.Host)})
+		sink(cluster.Event{Time: time.Now(), Kind: "log", Level: "info", Step: "power", Message: fmt.Sprintf("%s via %s at %s", req.Action, c.Type, c.Host)})
 		if err := mgr.Power(ctx, req.Action); err != nil {
 			return nil, err
 		}
 		_ = s.store.Audit(ctx, m.Cluster, "machine.power", mac+" "+string(req.Action))
-		sink(clusterEvent{Time: time.Now(), Kind: "step", Step: "power", Status: cluster.StepDone})
+		sink(cluster.Event{Time: time.Now(), Kind: "step", Step: "power", Status: cluster.StepDone})
 		if req.Action != oob.BootPXE {
 			return nil, nil
 		}
-		// The PXE server's view first: whether the box asked to network-boot at all
-		// and whether it fetched the kernel, so a BIOS or LAN problem is named in
-		// minutes, not after the maintenance-mode timeout.
 		watch := newPXEWatch(s, mac, sink)
 		if err := s.labWaitBoot(ctx, watch); err != nil {
 			return nil, err
 		}
-		// Talos normally comes up on the same lease (same MAC); probe that address and
-		// the AMT address until maintenance mode answers, then record it like a scan.
-		sink(clusterEvent{Time: time.Now(), Kind: "step", Step: "wait", Status: cluster.StepRunning})
+		sink(cluster.Event{Time: time.Now(), Kind: "step", Step: "wait", Status: cluster.StepRunning})
 		candidates := []string{m.IP, c.Host}
 		deadline := time.Now().Add(8 * time.Minute)
 		for time.Now().Before(deadline) {
@@ -236,8 +221,8 @@ func (s *Server) handleOOBPower(w http.ResponseWriter, r *http.Request) {
 				res := talos.Probe(ctx, ip, 2*time.Second)
 				if res.Err == nil && res.State == talos.StateMaintenance {
 					_ = s.store.UpsertNode(ctx, rowFromScan(res))
-					sink(clusterEvent{Time: time.Now(), Kind: "log", Level: "done", Step: "wait", Node: ip, Message: fmt.Sprintf("Talos %s in maintenance mode at %s; the machine can now be adopted or used in a new cluster", res.Inventory.TalosVersion, ip)})
-					sink(clusterEvent{Time: time.Now(), Kind: "step", Step: "wait", Status: cluster.StepDone})
+					sink(cluster.Event{Time: time.Now(), Kind: "log", Level: "done", Step: "wait", Node: ip, Message: fmt.Sprintf("Talos %s in maintenance mode at %s; the machine can now be adopted or used in a new cluster", res.Inventory.TalosVersion, ip)})
+					sink(cluster.Event{Time: time.Now(), Kind: "step", Step: "wait", Status: cluster.StepDone})
 					return nil, nil
 				}
 			}
@@ -256,8 +241,6 @@ func (s *Server) handleOOBPower(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusAccepted, map[string]any{"operationId": id})
 }
 
-// handlePXEDecide is what the PXE process asks for every boot request: hand this
-// MAC Talos (maintenance mode) or let it boot from its own disk.
 func (s *Server) handlePXEDecide(w http.ResponseWriter, r *http.Request) {
 	mac := strings.ToLower(r.URL.Query().Get("mac"))
 	boot, reason := s.pxeDecision(r.Context(), mac)
@@ -288,8 +271,6 @@ func (s *Server) pxeDecision(ctx context.Context, mac string) (string, string) {
 	}
 }
 
-// oobHardware is the inventory stand-in until Talos reports the real one: the chassis
-// strings from either engine, and what a BMC knows about CPUs, memory and drives.
 func oobHardware(info oob.Info) []byte {
 	disks := make([]map[string]any, 0, len(info.Disks))
 	for _, d := range info.Disks {

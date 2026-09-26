@@ -73,7 +73,7 @@ control plane and nodes came up but whose add-ons OOM-crashlooped and left tofu 
   against the chart before shipping.
 - **Resource requests/limits on every add-on** so the scheduler leaves a node Pending
   (visible, recoverable) instead of OOM-churning: metallb, ingress-nginx, metrics-server,
-  argocd, cert-manager. Small, sane defaults suited to a homelab.
+  flux, cert-manager. Small, sane defaults suited to a homelab.
 - ingress-nginx: single replica on small clusters; address the admission-webhook patch-job
   flake already in the backlog (disable the patch job with cert-manager-issued certs, or
   retry).
@@ -107,17 +107,16 @@ control plane and nodes came up but whose add-ons OOM-crashlooped and left tofu 
 
 ### P3 — Keep it fixed (the harness as a gate)
 
-- Make `hack/lab/lab.sh` the end-to-end gate: provision → VMs → cluster → platform → argocd,
+- Make `hack/lab/lab.sh` the end-to-end gate: provision → VMs → cluster → platform → Flux,
   asserting every add-on healthy and the smoke-test workload up. Run it as a `make`
   target / in CI before shipping.
 - Size the harness VMs realistically (≥ 2 GiB workers) so the gate reflects reality.
 - Golden-config tests for the tofu render (FRR off, resource limits present).
 
-## ArgoCD
+## GitOps — Argo CD obsolete
 
-ArgoCD is heavy and only makes sense once the sizing work lands (it needs headroom). Give
-it the same treatment: `atomic` install, resource requests, retry, and a post-install
-health assertion in the smoke test. Do not enable it by default on a small lab.
+Argo CD was replaced by Flux (M24, 2026-09-26): headless `flux2`, `atomic` install, about
+100 MiB, on by default. Open: Flux in the smoke-test health assertion.
 
 ## Sequencing
 

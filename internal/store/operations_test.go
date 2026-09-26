@@ -105,7 +105,6 @@ func TestForgetReleasesMachinesAndWipedMemberDropsMembership(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	// A rescan finding a member in maintenance mode: it was wiped outside Kubit.
 	if err := s.UpsertNode(ctx, store.NodeRow{IP: "10.0.0.10", MAC: "aa:aa:aa:aa:aa:01", Source: "scan", State: "maintenance"}); err != nil {
 		t.Fatal(err)
 	}
@@ -113,7 +112,6 @@ func TestForgetReleasesMachinesAndWipedMemberDropsMembership(t *testing.T) {
 	if m.Cluster != "" || m.Hostname != "" || m.State != "maintenance" {
 		t.Fatalf("wiped member should be released: %+v", m)
 	}
-	// A rescan seeing a member as configured keeps it.
 	if err := s.UpsertNode(ctx, store.NodeRow{IP: "10.0.0.11", MAC: "aa:aa:aa:aa:aa:02", Source: "scan", State: "configured"}); err != nil {
 		t.Fatal(err)
 	}

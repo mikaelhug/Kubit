@@ -23,8 +23,6 @@ func TestLabDesignTopology(t *testing.T) {
 	var macs []string
 	for i := 1; i <= 4; i++ {
 		mac := "52:54:00:6b:01:0" + string(rune('0'+i))
-		// The data disk is larger than the boot disk on purpose: vda must still be
-		// the install disk and vdb the data volume.
 		hw, _ := json.Marshal(talos.Inventory{CPUs: 2, MemoryBytes: 3 << 30, Arch: "amd64", Disks: []talos.Disk{{DevPath: "/dev/vda", SizeBytes: 20 << 30}, {DevPath: "/dev/vdb", SizeBytes: 40 << 30}}})
 		if err := st.UpsertNode(ctx, store.NodeRow{IP: "10.0.0.1" + string(rune('0'+i)), MAC: mac, Arch: "amd64", State: "maintenance", Source: "lab", Hardware: hw}); err != nil {
 			t.Fatal(err)
@@ -59,8 +57,6 @@ func TestLabDesignTopology(t *testing.T) {
 	}
 }
 
-// The control-plane role must follow the plan (the VM sized for it), not Design's
-// smallest-machine-first heuristic: a lab's big VM is the control plane on purpose.
 func TestLabDesignControlPlaneIsThePlannedVM(t *testing.T) {
 	c, _ := store.NewCrypto(bytes.Repeat([]byte{9}, 32))
 	dir := t.TempDir()
@@ -71,7 +67,7 @@ func TestLabDesignControlPlaneIsThePlannedVM(t *testing.T) {
 	defer st.Close()
 	s := New("test", cluster.NewManager(st, dir), "", c)
 	ctx := t.Context()
-	sizes := []uint64{2 << 30, 1 << 30, 1 << 30} // the first VM is the big, intended CP
+	sizes := []uint64{2 << 30, 1 << 30, 1 << 30}
 	var macs []string
 	for i, mem := range sizes {
 		mac := "52:54:00:6b:02:0" + string(rune('1'+i))

@@ -8,6 +8,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/mikael/kubit/internal/cluster"
 	"github.com/mikael/kubit/internal/store"
 )
 
@@ -34,7 +35,7 @@ func (s *Server) handleCertRotate(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, `body must be {"which": "talosconfig" | "kubeconfig"}`, http.StatusBadRequest)
 		return
 	}
-	id, err := s.runOperation(name, "cert.rotate", req, func(ctx contextT, sink clusterSink) (any, error) {
+	id, err := s.runOperation(name, "cert.rotate", req, func(ctx context.Context, sink cluster.Sink) (any, error) {
 		err := s.manager.RotateCredential(ctx, name, req.Which, sink)
 		if err == nil {
 			_ = s.store.ResolveEvents(ctx, name, req.Which, "cert.expiring")
@@ -48,8 +49,6 @@ func (s *Server) handleCertRotate(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusAccepted, map[string]any{"operationId": id})
 }
 
-// checkCertificates raises one open cert.expiring event per credential inside the
-// warning window; the node column carries the credential name so rotation resolves it.
 func (s *Server) checkCertificates(ctx context.Context, name string) {
 	certs, err := s.manager.Certificates(ctx, name)
 	if err != nil {
@@ -76,7 +75,6 @@ func (s *Server) checkCertificates(ctx context.Context, name string) {
 	}
 }
 
-// throttle runs a per-key function at most once per interval.
 type throttle struct {
 	mu   sync.Mutex
 	last map[string]time.Time

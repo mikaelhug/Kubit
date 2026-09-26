@@ -17,35 +17,28 @@ import (
 	"github.com/mikael/kubit/internal/watch"
 )
 
-// Message is what SSE subscribers receive: an operation event, an operation status
-// change, or (later) cluster status and health events.
 type Message struct {
-	Seq         int64               `json:"seq,omitempty"`
-	Kind        string              `json:"kind"` // hello | resync | event | operation | status | health | refresh | cluster | clusterRemoved | machine | machineRemoved | snapshot | snapshotRemoved | audit | settings | healthAck | healthResolved | versions | hostSample | observer
-	OperationID int64               `json:"operationId,omitempty"`
-	Event       *cluster.Event      `json:"event,omitempty"`
-	Operation   *store.OperationRow `json:"operation,omitempty"`
-	Cluster     string              `json:"cluster,omitempty"`
-	Status      *cluster.Status     `json:"status,omitempty"`
-	Health      *store.EventRow     `json:"health,omitempty"`
-	// Scope names the view that changed for kind "refresh" (workloads, network,
-	// storage, nodes, machines, snapshots, addons, certificates, settings, pxe).
-	Scope string `json:"scope,omitempty"`
-	// Typed live-state payloads (one is set per kind).
-	ClusterRow *store.ClusterRow    `json:"clusterRow,omitempty"`
-	Machine    *nodeView            `json:"machine,omitempty"`
-	Snapshot   *store.Snapshot      `json:"snapshot,omitempty"`
-	Audit      *store.AuditEntry    `json:"audit,omitempty"`
-	Settings   *store.Settings      `json:"settings,omitempty"`
-	Sample     *store.Sample        `json:"sample,omitempty"` // hostSample: Key is the lab host's MAC
-	Key        string               `json:"key,omitempty"`    // removed row key, or event id for healthAck ("*" = all)
-	Node       string               `json:"node,omitempty"`   // healthResolved: object; refresh: unused
-	Hello      *Hello               `json:"hello,omitempty"`
-	Observer   *watch.ObserverState `json:"observer,omitempty"`
+	Seq         int64                `json:"seq,omitempty"`
+	Kind        string               `json:"kind"`
+	OperationID int64                `json:"operationId,omitempty"`
+	Event       *cluster.Event       `json:"event,omitempty"`
+	Operation   *store.OperationRow  `json:"operation,omitempty"`
+	Cluster     string               `json:"cluster,omitempty"`
+	Status      *cluster.Status      `json:"status,omitempty"`
+	Health      *store.EventRow      `json:"health,omitempty"`
+	Scope       string               `json:"scope,omitempty"`
+	ClusterRow  *store.ClusterRow    `json:"clusterRow,omitempty"`
+	Machine     *nodeView            `json:"machine,omitempty"`
+	Snapshot    *store.Snapshot      `json:"snapshot,omitempty"`
+	Audit       *store.AuditEntry    `json:"audit,omitempty"`
+	Settings    *store.Settings      `json:"settings,omitempty"`
+	Sample      *store.Sample        `json:"sample,omitempty"`
+	Key         string               `json:"key,omitempty"`
+	Node        string               `json:"node,omitempty"`
+	Hello       *Hello               `json:"hello,omitempty"`
+	Observer    *watch.ObserverState `json:"observer,omitempty"`
 }
 
-// Hello opens every live connection: what the client needs to decide between replay
-// and resync, and the daemon facts the status bar shows.
 type Hello struct {
 	Seq       int64  `json:"seq"`
 	Version   string `json:"version"`
@@ -55,18 +48,13 @@ type Hello struct {
 	OS        string `json:"os"`
 }
 
-// refresh tells connected consoles that a view of a cluster ("" = Kubit-wide) is
-// stale; they refetch exactly that view. This is what replaces polling.
 func (s *Server) refresh(cluster string, scopes ...string) {
 	for _, sc := range scopes {
 		s.hub.publish(Message{Kind: "refresh", Cluster: cluster, Scope: sc})
 	}
 }
 
-// scopesForKind maps a finished operation to the views it may have changed.
 func scopesForKind(kind string) []string {
-	// Rows the store owns (clusters, machines, snapshots, settings) are pushed by the
-	// change notifier; only derived Kubernetes views need a nudge here.
 	switch {
 	case strings.HasPrefix(kind, "etcd."), strings.HasPrefix(kind, "node."), strings.HasPrefix(kind, "cluster."), strings.HasPrefix(kind, "upgrade."):
 		return []string{"nodes"}
@@ -78,8 +66,6 @@ func scopesForKind(kind string) []string {
 	return nil
 }
 
-// hub fans messages out to live subscribers and keeps a ring of recent messages so a
-// reconnecting console can replay what it missed instead of resyncing.
 type hub struct {
 	mu   sync.Mutex
 	subs map[chan Message]struct{}
@@ -93,8 +79,6 @@ const ringSize = 2000
 
 func newHub() *hub { return &hub{subs: map[chan Message]struct{}{}, ring: make([]Message, ringSize)} }
 
-// since returns the messages after seq, or ok=false when seq is older than the ring
-// (the client must resync). seq 0 means "just the head".
 func (h *hub) since(seq int64) (out []Message, head int64, ok bool) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -139,18 +123,13 @@ func (h *hub) publish(m Message) {
 	for ch := range h.subs {
 		select {
 		case ch <- m:
-		default: // a slow client drops messages rather than blocking operations
+		default:
 		}
 	}
 }
 
-// opFunc is the body of an operation. It may return an artifact (JSON-serialisable)
-// that is stored with the operation, e.g. a plan diff.
-type opFunc func(ctx context.Context, sink clusterSink) (artifact any, err error)
+type opFunc func(ctx context.Context, sink cluster.Sink) (artifact any, err error)
 
-// stepTracker keeps the declared steps of one operation up to date from its events.
-// Steps that were never declared are created on first mention, so an operation that
-// only logs still gets a coarse stepper.
 type stepTracker struct {
 	mu    sync.Mutex
 	steps []cluster.Step
@@ -191,7 +170,6 @@ func (t *stepTracker) apply(e cluster.Event) (changed bool) {
 		}
 		s := t.find(e.Step)
 		if s == nil {
-			// Undeclared step: the previous running auto-step ends here.
 			for i := range t.steps {
 				if t.steps[i].Status == cluster.StepRunning && t.steps[i].Title == t.steps[i].ID {
 					t.steps[i].Status = cluster.StepDone
@@ -219,7 +197,6 @@ func (t *stepTracker) find(id string) *cluster.Step {
 	return nil
 }
 
-// finish closes whatever is still open when the operation ends.
 func (t *stepTracker) finish(status string) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
@@ -246,17 +223,14 @@ func (t *stepTracker) json() []byte {
 	return b
 }
 
-// runOperation executes fn in the background, persisting steps, log and artifact and
-// streaming events to subscribers. Operations are serialised per cluster and can be
-// cancelled through their context.
 func (s *Server) runOperation(cluster, kind string, request any, fn opFunc) (int64, error) {
 	return s.runOperationLocking(cluster, []string{cluster}, kind, request, fn)
 }
 
-func (s *Server) runOperationLocking(cluster string, locks []string, kind string, request any, fn opFunc) (int64, error) {
+func (s *Server) runOperationLocking(clusterName string, locks []string, kind string, request any, fn opFunc) (int64, error) {
 	ctx, cancel := context.WithCancel(context.Background())
 	reqJSON, _ := json.Marshal(request)
-	id, err := s.store.CreateOperation(ctx, cluster, kind, reqJSON)
+	id, err := s.store.CreateOperation(ctx, clusterName, kind, reqJSON)
 	if err != nil {
 		cancel()
 		return 0, err
@@ -264,7 +238,7 @@ func (s *Server) runOperationLocking(cluster string, locks []string, kind string
 	s.cancels.Store(id, cancel)
 	s.publishOperation(ctx, id)
 	tracker := &stepTracker{}
-	sink := func(e clusterEvent) {
+	sink := func(e cluster.Event) {
 		if e.Kind == "" {
 			e.Kind = "log"
 		}
@@ -289,7 +263,7 @@ func (s *Server) runOperationLocking(cluster string, locks []string, kind string
 		case err != nil:
 			status = "failed"
 			logOpWrite(id, "log", s.store.AppendOperationLog(bg, id, "error: "+err.Error()))
-			s.hub.publish(Message{Kind: "event", OperationID: id, Event: &clusterEvent{Time: time.Now(), Kind: "log", Level: "error", Step: kind, Message: err.Error()}})
+			s.hub.publish(Message{Kind: "event", OperationID: id, Event: &cluster.Event{Time: time.Now(), Kind: "log", Level: "error", Step: kind, Message: err.Error()}})
 		}
 		if artifact != nil {
 			if b, err := json.Marshal(artifact); err == nil {
@@ -304,12 +278,12 @@ func (s *Server) runOperationLocking(cluster string, locks []string, kind string
 			logOpWrite(id, "finish", s.store.FinishOperation(bg, id, status))
 		}
 		s.publishOperation(bg, id)
-		s.refresh(cluster, scopesForKind(kind)...)
+		s.refresh(clusterName, scopesForKind(kind)...)
 	}()
 	return id, nil
 }
 
-func callOperation(ctx context.Context, fn opFunc, sink clusterSink) (artifact any, err error) {
+func callOperation(ctx context.Context, fn opFunc, sink cluster.Sink) (artifact any, err error) {
 	defer func() {
 		if p := recover(); p != nil {
 			log.Printf("operation panic: %v\n%s", p, debug.Stack())
@@ -325,8 +299,6 @@ func logOpWrite(id int64, what string, err error) {
 	}
 }
 
-// Drain cancels every running operation and waits (bounded) for them to record their
-// cancelled state, so a daemon stop leaves no operation stuck in "running".
 func (s *Server) Drain(timeout time.Duration) {
 	s.stop()
 	s.cancels.Range(func(_, v any) bool {
@@ -344,7 +316,6 @@ func (s *Server) Drain(timeout time.Duration) {
 	}
 }
 
-// cancelOperation stops a running operation; returns false if none is running.
 func (s *Server) cancelOperation(id int64) bool {
 	v, ok := s.cancels.Load(id)
 	if !ok {
@@ -356,20 +327,11 @@ func (s *Server) cancelOperation(id int64) bool {
 
 func (s *Server) publishOperation(ctx context.Context, id int64) {
 	if op, err := s.store.GetOperation(ctx, id); err == nil {
-		op.Log = "" // streamed as events; artifacts (plans) are small and wanted live
+		op.Log = ""
 		s.hub.publish(Message{Kind: "operation", OperationID: id, Operation: op})
 	}
 }
 
-type (
-	clusterSink  = cluster.Sink
-	clusterEvent = cluster.Event
-	contextT     = context.Context
-)
-
-func contextBackground() context.Context { return context.Background() }
-
-// clusterLocks serialises mutating operations per cluster ("" = global, e.g. discovery).
 type clusterLocks struct {
 	mu    sync.Mutex
 	locks map[string]chan struct{}
@@ -414,9 +376,4 @@ func (l *clusterLocks) lockAll(names []string) (unlock func()) {
 			l.unlock(names[i])
 		}
 	}
-}
-
-func marshal(v any) []byte {
-	b, _ := json.Marshal(v)
-	return b
 }

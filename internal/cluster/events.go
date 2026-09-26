@@ -1,7 +1,3 @@
-// Package cluster orchestrates the Talos layer: create, add node, remove node, upgrade.
-// Every long operation reports progress through Events so the CLI and the UI's SSE
-// stream see the same thing: a declared list of steps, step transitions, and log lines
-// attributed to a step.
 package cluster
 
 import (
@@ -21,17 +17,14 @@ const (
 type StepStatus string
 
 const (
-	StepPending StepStatus = "pending"
-	StepRunning StepStatus = "running"
-	StepDone    StepStatus = "done"
-	StepFailed  StepStatus = "failed"
-	StepSkipped StepStatus = "skipped"
-	// StepCancelled is set by the operation runner on steps interrupted by a cancel.
+	StepPending   StepStatus = "pending"
+	StepRunning   StepStatus = "running"
+	StepDone      StepStatus = "done"
+	StepFailed    StepStatus = "failed"
+	StepSkipped   StepStatus = "skipped"
 	StepCancelled StepStatus = "cancelled"
 )
 
-// Step is one phase of an operation, declared up front so a UI can show the whole
-// path before the first log line.
 type Step struct {
 	ID         string     `json:"id"`
 	Title      string     `json:"title"`
@@ -41,8 +34,6 @@ type Step struct {
 	FinishedAt *time.Time `json:"finishedAt,omitempty"`
 }
 
-// Event kinds: "log" (default) is a line attributed to Step; "steps" declares the
-// operation's steps; "step" reports a status transition of one step.
 const (
 	KindLog   = "log"
 	KindSteps = "steps"
@@ -67,7 +58,6 @@ func (e Event) String() string {
 	return fmt.Sprintf("%s [%s] %s", e.Time.Format("15:04:05"), e.Step, e.Message)
 }
 
-// Sink receives events; nil sinks are allowed.
 type Sink func(Event)
 
 func (s Sink) emit(level Level, step, node, format string, args ...any) {
@@ -77,8 +67,6 @@ func (s Sink) emit(level Level, step, node, format string, args ...any) {
 	s(Event{Time: time.Now(), Kind: KindLog, Level: level, Step: step, Node: node, Message: fmt.Sprintf(format, args...)})
 }
 
-// plan declares the steps of the operation in order; ids double as the Step field of
-// log events, which is how lines are attributed.
 func (s Sink) plan(steps ...Step) {
 	if s == nil {
 		return
@@ -114,7 +102,6 @@ func (s Sink) transition(step string, status StepStatus) {
 	s(Event{Time: time.Now(), Kind: KindStep, Level: Info, Step: step, Status: status})
 }
 
-// Steps is a small helper for declaring steps inline: Steps("preflight", "Preflight", ...).
 func Steps(pairs ...string) []Step {
 	out := make([]Step, 0, len(pairs)/2)
 	for i := 0; i+1 < len(pairs); i += 2 {
@@ -123,7 +110,6 @@ func Steps(pairs ...string) []Step {
 	return out
 }
 
-// run brackets fn with begin/end (or fail) for step.
 func (s Sink) run(step string, fn func() error) error {
 	s.begin(step)
 	if err := fn(); err != nil {
@@ -134,8 +120,6 @@ func (s Sink) run(step string, fn func() error) error {
 	return nil
 }
 
-// subSink folds a nested operation's events into one step of the parent: its plan and
-// step transitions are dropped, its log lines are re-attributed to step.
 func subSink(parent Sink, step string) Sink {
 	if parent == nil {
 		return nil

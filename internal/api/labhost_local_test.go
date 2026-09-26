@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/mikael/kubit/internal/cluster"
+	"github.com/mikael/kubit/internal/factory"
 	"github.com/mikael/kubit/internal/labhost"
 	"github.com/mikael/kubit/internal/store"
 	"github.com/mikael/kubit/internal/talos"
@@ -27,7 +28,7 @@ type memDriver struct {
 }
 
 func (d *memDriver) Capacity(context.Context) (labhost.Capacity, error) { return d.capa, nil }
-func (d *memDriver) EnsureTalosBoot(_ context.Context, _, schematic, version, arch string) (labhost.Boot, error) {
+func (d *memDriver) EnsureTalosBoot(_ context.Context, _ *factory.Client, schematic, version, arch string) (labhost.Boot, error) {
 	return labhost.Boot{ISO: "/vms/boot/" + version + "-" + schematic[:12] + "/metal-" + arch + ".iso"}, nil
 }
 func (d *memDriver) Define(context.Context, labhost.VMSpec) error                     { return nil }

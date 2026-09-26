@@ -37,7 +37,6 @@ func TestLabMaintainGates(t *testing.T) {
 	if rec := call(http.MethodPost, "/api/v1/machines/aa:aa:aa:aa:aa:01/labhost/reboot"); rec.Code != http.StatusConflict || !strings.Contains(rec.Body.String(), "updating") {
 		t.Errorf("reboot while updating: %d %s", rec.Code, rec.Body.String())
 	}
-	// History is filed under the pseudo-cluster and served from the machine route.
 	key := store.LabHostKey("aa:aa:aa:aa:aa:01")
 	_ = st.AddSamples(ctx, key, time.Now(), []store.Sample{{CPUMilli: 427, CPUCap: 1000, MemBytes: 12e9, MemCap: 16e9, Pods: 3, Ready: true, Reachable: true, Disk: 180e9, DiskCap: 200e9}})
 	rec := call(http.MethodGet, "/api/v1/machines/aa:aa:aa:aa:aa:01/labhost/samples?range=1h")

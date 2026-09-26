@@ -1,5 +1,3 @@
-// Package k8s is Kubit's view of a cluster through the Kubernetes API: readiness,
-// cordon/drain and metrics. Platform add-ons are OpenTofu's job, not this package's.
 package k8s
 
 import (
@@ -50,8 +48,8 @@ type NodeStatus struct {
 	OSImage        string
 	InternalIP     string
 	Labels         map[string]string
-	AllocatableCPU int64 // millicores
-	AllocatableMem int64 // bytes
+	AllocatableCPU int64
+	AllocatableMem int64
 	CapacityCPU    int64
 	CapacityMem    int64
 	CapacityPods   int64
@@ -93,8 +91,6 @@ func statusOf(n *corev1.Node) NodeStatus {
 	return s
 }
 
-// WaitReady blocks until every named node is registered and Ready. progress is called
-// whenever the set of ready nodes grows.
 func (c *Client) WaitReady(ctx context.Context, names []string, timeout time.Duration, progress func(ready, total int)) error {
 	deadline := time.Now().Add(timeout)
 	want := map[string]bool{}

@@ -18,7 +18,7 @@ type Service struct {
 	ClusterIP   string   `json:"clusterIP"`
 	ExternalIPs []string `json:"externalIPs,omitempty"`
 	Ports       []string `json:"ports"`
-	Endpoints   int      `json:"endpoints"` // ready addresses behind the service
+	Endpoints   int      `json:"endpoints"`
 	Selector    string   `json:"selector,omitempty"`
 	Age         string   `json:"age"`
 	AgeSec      int64    `json:"ageSec"`
@@ -42,7 +42,6 @@ type IngressRule struct {
 	Port    string `json:"port"`
 }
 
-// PoolUsage maps every address of a MetalLB range to the service holding it.
 type PoolUsage struct {
 	Range     string      `json:"range"`
 	Total     int         `json:"total"`
@@ -51,7 +50,7 @@ type PoolUsage struct {
 
 type PoolAlloc struct {
 	IP      string `json:"ip"`
-	Service string `json:"service"` // namespace/name
+	Service string `json:"service"`
 }
 
 func (c *Client) Services(ctx context.Context) ([]Service, error) {
@@ -145,8 +144,6 @@ func (c *Client) Ingresses(ctx context.Context) ([]Ingress, error) {
 	return out, nil
 }
 
-// PoolUsageFor computes which addresses of a "a.b.c.d-a.b.c.e" range are held by
-// LoadBalancer services.
 func PoolUsageFor(rangeSpec string, services []Service) (*PoolUsage, error) {
 	from, to, ok := strings.Cut(rangeSpec, "-")
 	if !ok {

@@ -11,8 +11,6 @@ resource "helm_release" "metrics_server" {
   atomic           = true
   timeout          = 600
 
-  # Talos kubelets serve self-signed certificates unless a serving-cert approver is
-  # installed; metrics-server must skip verification to scrape them.
   set = [
     { name = "args[0]", value = "--kubelet-insecure-tls" },
   ]

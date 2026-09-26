@@ -8,7 +8,6 @@ import (
 	"github.com/mikael/kubit/internal/store"
 )
 
-// homeDir is $KUBIT_HOME or ~/.kubit.
 func homeDir() (string, error) {
 	if h := os.Getenv("KUBIT_HOME"); h != "" {
 		return h, nil

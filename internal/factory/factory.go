@@ -1,5 +1,3 @@
-// Package factory talks to the Talos Image Factory (factory.talos.dev), which turns a
-// schematic (Talos version + system extensions) into installer images and boot assets.
 package factory
 
 import (
@@ -46,8 +44,6 @@ type schematic struct {
 	} `yaml:"customization"`
 }
 
-// CreateSchematic registers the extension set and returns the schematic ID. The ID is a
-// content hash, so calling it repeatedly with the same extensions is idempotent.
 func (c *Client) CreateSchematic(ctx context.Context, extensions []string) (string, error) {
 	var s schematic
 	exts := append([]string(nil), extensions...)
@@ -83,7 +79,6 @@ func (c *Client) CreateSchematic(ctx context.Context, extensions []string) (stri
 	return out.ID, nil
 }
 
-// Versions lists the Talos releases the factory can build images for.
 func (c *Client) Versions(ctx context.Context) ([]string, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.BaseURL()+"/versions", nil)
 	if err != nil {
@@ -113,7 +108,6 @@ func (c *Client) host() string {
 	return base
 }
 
-// InstallerImage is the OCI reference Talos installs from (machine.install.image).
 func (c *Client) InstallerImage(schematicID, talosVersion string) string {
 	return fmt.Sprintf("%s/metal-installer/%s:%s", c.host(), schematicID, talosVersion)
 }
@@ -128,9 +122,4 @@ func (c *Client) KernelURL(schematicID, talosVersion, arch string) string {
 
 func (c *Client) InitramfsURL(schematicID, talosVersion, arch string) string {
 	return fmt.Sprintf("%s/image/%s/%s/initramfs-%s.xz", c.BaseURL(), schematicID, talosVersion, arch)
-}
-
-// PXEURL returns an iPXE script that boots Talos metal for the architecture.
-func (c *Client) PXEURL(schematicID, talosVersion, arch string) string {
-	return fmt.Sprintf("%s/pxe/%s/%s/metal-%s", c.BaseURL(), schematicID, talosVersion, arch)
 }

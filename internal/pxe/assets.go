@@ -12,15 +12,12 @@ import (
 	"time"
 )
 
-// iPXE binaries come from the project's own build server; pinned by name, cached on disk.
 var ipxeURLs = map[string]string{
 	FileBIOS:  "https://boot.ipxe.org/undionly.kpxe",
 	FileX64:   "https://boot.ipxe.org/x86_64-efi/ipxe.efi",
 	FileARM64: "https://boot.ipxe.org/arm64-efi/ipxe.efi",
 }
 
-// Cache fetches files once into dir and serves them from there afterwards, so a
-// fleet of machines booting at once hits the Image Factory a single time.
 type Cache struct {
 	Dir      string
 	mu       sync.Mutex
@@ -29,7 +26,6 @@ type Cache struct {
 
 func NewCache(dir string) *Cache { return &Cache{Dir: dir, inflight: map[string]*sync.WaitGroup{}} }
 
-// Path returns the local file for url, downloading it if needed.
 func (c *Cache) Path(ctx context.Context, url string) (string, error) {
 	name := strings.NewReplacer("https://", "", "http://", "", "/", "_").Replace(url)
 	path := filepath.Join(c.Dir, name)
@@ -58,8 +54,6 @@ func (c *Cache) Path(ctx context.Context, url string) (string, error) {
 	if err := os.MkdirAll(c.Dir, 0o700); err != nil {
 		return "", err
 	}
-	// The download is shared by every concurrent waiter, so it must not be cancelled
-	// when the first caller (one booting machine) disconnects — detach from its ctx.
 	dctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Minute)
 	defer cancel()
 	req, err := http.NewRequestWithContext(dctx, http.MethodGet, url, nil)
@@ -85,8 +79,6 @@ func (c *Cache) Path(ctx context.Context, url string) (string, error) {
 		os.Remove(tmp)
 		return "", err
 	}
-	// A 200 with a truncated/empty body would otherwise be cached and served to the
-	// whole fleet as a valid kernel/initrd; refuse it.
 	if n == 0 {
 		os.Remove(tmp)
 		return "", fmt.Errorf("%s: empty response body", url)
@@ -94,7 +86,6 @@ func (c *Cache) Path(ctx context.Context, url string) (string, error) {
 	return path, os.Rename(tmp, path)
 }
 
-// IPXEBinary resolves one of the TFTP boot files.
 func (c *Cache) IPXEBinary(ctx context.Context, name string) (string, error) {
 	url, ok := ipxeURLs[name]
 	if !ok {

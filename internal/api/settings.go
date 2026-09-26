@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -95,7 +96,6 @@ func (s *Server) handlePutSettings(w http.ResponseWriter, r *http.Request) {
 
 const pxeStatusWait = 2 * time.Second
 
-// applySettings pushes live-changeable settings into running components.
 func (s *Server) applySettings(v store.Settings) {
 	s.manager.Factory.SetBaseURL(v.FactoryURL)
 	if s.watcher != nil && v.WatchIntervalSec > 0 {
@@ -103,10 +103,6 @@ func (s *Server) applySettings(v store.Settings) {
 	}
 }
 
-// handlePXEStatus proxies the pxe process's status page; the process runs separately
-// (it needs root for ports 67/69/4011), so "not running" is a normal answer.
-// pxeCommand is the foreground command a terminal user runs; binary path resolved so
-// it can be pasted as is.
 func pxeCommand(host string) string {
 	bin := "kubit"
 	if p, err := os.Executable(); err == nil {
@@ -115,7 +111,6 @@ func pxeCommand(host string) string {
 	return fmt.Sprintf("sudo %s pxe --iface en0 --kubit-url http://%s", bin, host)
 }
 
-// pxeHTTPCommand is the no-root variant for machines the operator boots by hand.
 func pxeHTTPCommand(host string) string {
 	bin := "kubit"
 	if p, err := os.Executable(); err == nil {
@@ -124,8 +119,7 @@ func pxeHTTPCommand(host string) string {
 	return fmt.Sprintf("%s pxe --http-only --iface en0 --kubit-url http://%s", bin, host)
 }
 
-// pxeRunning asks the separate PXE process for its status page.
-func (s *Server) pxeRunning(ctx contextT) bool {
+func (s *Server) pxeRunning(ctx context.Context) bool {
 	v, err := s.store.GetSettings(ctx)
 	if err != nil || v.PXEStatusURL == "" {
 		return false
@@ -162,7 +156,6 @@ func (s *Server) handlePXEStatus(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, st)
 }
 
-// handleBackup streams a sealed backup of the Kubit home.
 func (s *Server) handleBackup(w http.ResponseWriter, r *http.Request) {
 	if err := s.store.Checkpoint(r.Context()); err != nil {
 		writeErr(w, err)
@@ -171,7 +164,6 @@ func (s *Server) handleBackup(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/octet-stream")
 	w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="kubit-%s.kubitbak"`, time.Now().Format("20060102-150405")))
 	if err := store.Backup(s.manager.Home, s.crypto, w); err != nil {
-		// Headers are out; the truncated body is the only signal left.
 		fmt.Fprintf(w, "\nBACKUP FAILED: %v\n", err)
 	}
 	_ = s.store.Audit(r.Context(), "", "backup", "")

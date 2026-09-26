@@ -8,10 +8,11 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/mikael/kubit/internal/factory"
 	"github.com/mikael/kubit/internal/labhost"
 )
 
-func (h *Host) EnsureTalosBoot(ctx context.Context, factoryURL, schematic, version, arch string) (labhost.Boot, error) {
+func (h *Host) EnsureTalosBoot(ctx context.Context, f *factory.Client, schematic, version, arch string) (labhost.Boot, error) {
 	if len(schematic) < 12 {
 		return labhost.Boot{}, fmt.Errorf("bad schematic %q", schematic)
 	}
@@ -23,8 +24,7 @@ func (h *Host) EnsureTalosBoot(ctx context.Context, factoryURL, schematic, versi
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return labhost.Boot{}, err
 	}
-	url := fmt.Sprintf("%s/image/%s/%s/metal-%s.iso", factoryURL, schematic, version, arch)
-	if err := download(ctx, h.HTTP, url, iso); err != nil {
+	if err := download(ctx, h.HTTP, f.ISOURL(schematic, version, arch), iso); err != nil {
 		return labhost.Boot{}, err
 	}
 	return labhost.Boot{ISO: iso}, nil

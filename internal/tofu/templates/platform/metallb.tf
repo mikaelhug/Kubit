@@ -1,5 +1,3 @@
-# Talos enforces the "baseline" Pod Security level cluster-wide; the speaker needs host
-# networking and NET_RAW, so its namespace must opt out.
 resource "kubernetes_namespace_v1" "metallb" {
   count = var.metallb.enabled ? 1 : 0
 
@@ -27,8 +25,6 @@ resource "helm_release" "metallb" {
   timeout    = 600
 }
 
-# The CRs go through the kubectl provider: it does not need the CRDs to exist at plan
-# time, which is what breaks kubernetes_manifest on a first apply.
 resource "kubectl_manifest" "metallb_pool" {
   count = var.metallb.enabled ? 1 : 0
 

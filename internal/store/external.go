@@ -6,14 +6,7 @@ import (
 	"time"
 )
 
-// WatchExternal reports writes made by other processes (the CLI while the daemon
-// runs) by polling SQLite's data_version on a dedicated connection. That counter only
-// moves when *another* connection commits; local writes are told apart by the
-// notifier's own counter. The poll is daemon-side and cheap (one PRAGMA every 2 s), so
-// consoles never have to.
 func (s *Store) WatchExternal(ctx context.Context, interval time.Duration) {
-	// The pool is capped at one connection, so the probe gets its own; that also
-	// makes local writes look "external" to it, which the write counter filters out.
 	conn, err := sql.Open("sqlite", s.dsn)
 	if err != nil {
 		return

@@ -31,7 +31,11 @@ func statusCmd() *cobra.Command {
 				enc.SetIndent("", "  ")
 				return enc.Encode(st)
 			}
-			printStatus(cmd, st)
+			gvisor := false
+			if c, _, err := m.LoadCluster(cmd.Context(), args[0]); err == nil {
+				gvisor = c.Spec.Platform.GVisor.Enabled
+			}
+			printStatus(cmd, st, gvisor)
 			return nil
 		},
 	}
@@ -39,7 +43,7 @@ func statusCmd() *cobra.Command {
 	return cmd
 }
 
-func printStatus(cmd *cobra.Command, st *cluster.Status) {
+func printStatus(cmd *cobra.Command, st *cluster.Status, gvisor bool) {
 	w := cmd.OutOrStdout()
 	fmt.Fprintf(w, "Cluster %s (%s)  Talos %s  Kubernetes %s  API %s reachable=%v\n",
 		st.Name, st.State, st.TalosVersion, st.KubernetesVersion, st.Endpoint, st.APIReachable)
@@ -51,7 +55,11 @@ func printStatus(cmd *cobra.Command, st *cluster.Status) {
 		fmt.Fprintf(w, "etcd alarms: %s\n", strings.Join(st.Etcd.Alarms, ", "))
 	}
 	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(tw, "HOSTNAME\tIP\tROLE\tREADY\tSTAGE\tTALOS\tKUBELET\tCPU\tRAM\tPODS\tGVISOR")
+	header := "HOSTNAME\tIP\tROLE\tREADY\tSTAGE\tTALOS\tKUBELET\tCPU\tRAM\tPODS"
+	if gvisor {
+		header += "\tGVISOR"
+	}
+	fmt.Fprintln(tw, header)
 	if st.APIError != "" {
 		fmt.Fprintf(w, "Kubernetes API error: %s\n", st.APIError)
 	}
@@ -71,9 +79,13 @@ func printStatus(cmd *cobra.Command, st *cluster.Status) {
 		if !n.TalosReachable {
 			n.Stage = "unreachable: " + n.TalosError
 		}
-		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s/%s\t%s/%s\t%d\t%v\n",
+		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s/%s\t%s/%s\t%d",
 			n.Hostname, n.IP, n.Role, ready, n.Stage, n.TalosVersion, n.KubeletVersion,
-			milli(n.CPUMilli), milli(n.CPUCapMilli), humanBytes(uint64(n.MemBytes)), humanBytes(uint64(n.MemCapBytes)), n.Pods, n.GVisor)
+			milli(n.CPUMilli), milli(n.CPUCapMilli), humanBytes(uint64(n.MemBytes)), humanBytes(uint64(n.MemCapBytes)), n.Pods)
+		if gvisor {
+			fmt.Fprintf(tw, "\t%v", n.GVisor)
+		}
+		fmt.Fprintln(tw)
 	}
 	tw.Flush()
 	if st.Platform != nil {

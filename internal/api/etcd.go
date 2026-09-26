@@ -29,12 +29,8 @@ var (
 	scheduleAttempt = map[string]time.Time{}
 )
 
-// scheduleRetry is how long a failed scheduled snapshot waits before the next try.
 const scheduleRetry = 10 * time.Minute
 
-// maybeScheduleSnapshot runs on every watcher tick: when the schedule is due and the
-// cluster is healthy, observed and idle, a snapshot operation is started like any
-// other. A failed attempt is retried after scheduleRetry, not on the next tick.
 func (s *Server) maybeScheduleSnapshot(ctx context.Context, name string, st *cluster.Status) {
 	if st.State != cluster.StateReady || !st.APIReachable || !st.Etcd.Healthy || st.Health == cluster.HealthUnknown || st.Observer == cluster.ObserverOffline || s.locks.busy(name) {
 		return
@@ -48,15 +44,12 @@ func (s *Server) maybeScheduleSnapshot(ctx context.Context, name string, st *clu
 	if err != nil || !s.manager.SnapshotDue(ctx, c) {
 		return
 	}
-	// Staleness is only the schedule's fault when Kubit was awake to run it: a laptop
-	// that slept past the interval, or a daemon started after the due time, simply
-	// takes the snapshot now.
 	if s.manager.SnapshotStale(ctx, c) && s.observedSince(name) && !s.store.HasOpenEvent(ctx, name, "", "backup.stale") {
 		age, _ := s.manager.SnapshotAge(ctx, name)
 		s.raiseEvent(ctx, store.EventRow{Cluster: name, Severity: "warn", Kind: "backup.stale", Message: fmt.Sprintf("Last etcd snapshot is %s old; schedule is every %s. Check the Backups tab for failed snapshot operations.", age.Round(time.Minute), c.Spec.Backup.Etcd.Interval)})
 	}
 	scheduleAttempt[name] = time.Now()
-	if _, err := s.runOperation(name, "etcd.snapshot", map[string]string{"source": "schedule"}, func(ctx contextT, sink clusterSink) (any, error) {
+	if _, err := s.runOperation(name, "etcd.snapshot", map[string]string{"source": "schedule"}, func(ctx context.Context, sink cluster.Sink) (any, error) {
 		sn, err := s.manager.SnapshotEtcd(ctx, name, "schedule", sink)
 		if err == nil {
 			_ = s.store.ResolveEvents(ctx, name, "", "backup.stale")
@@ -68,8 +61,6 @@ func (s *Server) maybeScheduleSnapshot(ctx context.Context, name string, st *clu
 	}
 }
 
-// observedSince reports whether Kubit has been awake and running since the last
-// snapshot became due, so a missed schedule is a real failure rather than a nap.
 func (s *Server) observedSince(name string) bool {
 	if s.watcher == nil {
 		return true
@@ -94,7 +85,6 @@ func (s *Server) observedSince(name string) bool {
 	return true
 }
 
-// raiseEvent records a health event and pushes it to SSE subscribers.
 func (s *Server) raiseEvent(ctx context.Context, e store.EventRow) {
 	id, err := s.store.AddEvent(ctx, e)
 	if err != nil {
@@ -123,7 +113,7 @@ func (s *Server) handleSnapshotTake(w http.ResponseWriter, r *http.Request) {
 	if req.Source == "" {
 		req.Source = "manual"
 	}
-	id, err := s.runOperation(name, "etcd.snapshot", req, func(ctx contextT, sink clusterSink) (any, error) {
+	id, err := s.runOperation(name, "etcd.snapshot", req, func(ctx context.Context, sink cluster.Sink) (any, error) {
 		sn, err := s.manager.SnapshotEtcd(ctx, name, req.Source, sink)
 		s.snapshotOffsiteResult(ctx, name, sn, err)
 		return sn, err
@@ -150,8 +140,6 @@ func (s *Server) snapshotOf(r *http.Request) (*store.Snapshot, error) {
 	return sn, nil
 }
 
-// handleSnapshotDownload streams the plain etcd snapshot, usable with `talosctl
-// bootstrap --recover-from` or etcdutl outside Kubit.
 func (s *Server) handleSnapshotDownload(w http.ResponseWriter, r *http.Request) {
 	sn, err := s.snapshotOf(r)
 	if err != nil {
@@ -210,7 +198,7 @@ func (s *Server) handleSnapshotRestore(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, `body must be {"confirm": "<cluster name>"}: restoring wipes etcd on every control plane`, http.StatusBadRequest)
 		return
 	}
-	id, err := s.runOperation(sn.Cluster, "etcd.restore", map[string]any{"snapshot": sn.ID}, func(ctx contextT, sink clusterSink) (any, error) {
+	id, err := s.runOperation(sn.Cluster, "etcd.restore", map[string]any{"snapshot": sn.ID}, func(ctx context.Context, sink cluster.Sink) (any, error) {
 		return nil, s.manager.RestoreEtcd(ctx, sn.Cluster, sn.ID, sink)
 	})
 	if err != nil {

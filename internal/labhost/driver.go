@@ -1,6 +1,10 @@
 package labhost
 
-import "context"
+import (
+	"context"
+
+	"github.com/mikael/kubit/internal/factory"
+)
 
 const (
 	DriverLibvirt = "libvirt"
@@ -15,7 +19,7 @@ type Boot struct {
 
 type Driver interface {
 	Capacity(ctx context.Context) (Capacity, error)
-	EnsureTalosBoot(ctx context.Context, factoryURL, schematic, version, arch string) (Boot, error)
+	EnsureTalosBoot(ctx context.Context, f *factory.Client, schematic, version, arch string) (Boot, error)
 	Define(ctx context.Context, s VMSpec) error
 	Start(ctx context.Context, name string) error
 	Stop(ctx context.Context, name string, force bool) error
@@ -44,13 +48,13 @@ type Autostarter interface {
 	Autostart(ctx context.Context) error
 }
 
-const DefaultReserveMiB = 2048
+const defaultReserveMiB = 2048
 
 func (c Capacity) Reserve() int {
 	if c.ReserveMiB > 0 {
 		return c.ReserveMiB
 	}
-	return DefaultReserveMiB
+	return defaultReserveMiB
 }
 
 var (

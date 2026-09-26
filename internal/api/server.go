@@ -1,5 +1,3 @@
-// Package api is the HTTP face of Kubit: a JSON API for the SPA and scripts, an SSE
-// stream of operation events, and the embedded web UI.
 package api
 
 import (
@@ -7,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/mikael/kubit/internal/oob"
 	"io"
 	"io/fs"
 	"log"
@@ -20,6 +17,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/mikael/kubit/internal/oob"
 
 	"github.com/mikael/kubit/internal/cluster"
 	"github.com/mikael/kubit/internal/config"
@@ -40,7 +39,7 @@ type Server struct {
 	store       *store.Store
 	hub         *hub
 	locks       clusterLocks
-	cancels     sync.Map // operation id → context.CancelFunc
+	cancels     sync.Map
 	started     time.Time
 	watcher     *watch.Watcher
 	certCheck   throttle
@@ -50,8 +49,7 @@ type Server struct {
 	crypto      *store.Crypto
 	ctx         context.Context
 	stop        context.CancelFunc
-	// token, when set, is an administrator's bearer token (non-loopback binds, automation).
-	token string
+	token       string
 }
 
 func New(version string, m *cluster.Manager, token string, crypto *store.Crypto) *Server {
@@ -118,8 +116,6 @@ func New(version string, m *cluster.Manager, token string, crypto *store.Crypto)
 	return s
 }
 
-// Loopback reports whether addr binds only to a loopback interface, in which case no
-// token is required.
 func Loopback(addr string) bool {
 	host, _, err := net.SplitHostPort(addr)
 	if err != nil {
@@ -167,8 +163,6 @@ func (s *Server) handleOperationCancel(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusAccepted)
 }
 
-// handleOperationRetry re-runs a finished operation with its stored request; only kinds
-// whose request fully describes them can be retried.
 func (s *Server) handleOperationRetry(w http.ResponseWriter, r *http.Request) {
 	id, _ := strconv.ParseInt(r.PathValue("id"), 10, 64)
 	op, err := s.store.GetOperation(r.Context(), id)
@@ -190,7 +184,7 @@ func (s *Server) handleOperationRetry(w http.ResponseWriter, r *http.Request) {
 			writeErr(w, err)
 			return
 		}
-		newID, err = s.runOperation(c.Metadata.Name, op.Kind, req, func(ctx contextT, sink clusterSink) (any, error) {
+		newID, err = s.runOperation(c.Metadata.Name, op.Kind, req, func(ctx context.Context, sink cluster.Sink) (any, error) {
 			if err := s.manager.Create(ctx, c, sink); err != nil {
 				return nil, err
 			}
@@ -202,11 +196,11 @@ func (s *Server) handleOperationRetry(w http.ResponseWriter, r *http.Request) {
 	case "node.add":
 		var n config.Node
 		_ = json.Unmarshal(op.Request, &n)
-		newID, err = s.runOperation(op.Cluster, op.Kind, n, func(ctx contextT, sink clusterSink) (any, error) {
+		newID, err = s.runOperation(op.Cluster, op.Kind, n, func(ctx context.Context, sink cluster.Sink) (any, error) {
 			return nil, s.manager.AddNode(ctx, op.Cluster, n, sink)
 		})
 	case "platform.apply", "platform.plan":
-		newID, err = s.runOperation(op.Cluster, op.Kind, nil, func(ctx contextT, sink clusterSink) (any, error) {
+		newID, err = s.runOperation(op.Cluster, op.Kind, nil, func(ctx context.Context, sink cluster.Sink) (any, error) {
 			if op.Kind == "platform.plan" {
 				return s.manager.PlanPlatform(ctx, op.Cluster, sink)
 			}
@@ -287,8 +281,6 @@ func (s *Server) handleClusterYAML(w http.ResponseWriter, r *http.Request) {
 	w.Write(row.Spec)
 }
 
-// handleClusterYAMLSave stores an edited declaration without touching the cluster; the
-// operator then applies node configs and plans the platform layer explicitly.
 func (s *Server) handleClusterYAMLSave(w http.ResponseWriter, r *http.Request) {
 	body, err := io.ReadAll(io.LimitReader(r.Body, 1<<20))
 	if err != nil {
@@ -329,7 +321,6 @@ func (s *Server) handleClusterKubeconfig(w http.ResponseWriter, r *http.Request)
 	w.Write(sec.Kubeconfig)
 }
 
-// createRequest carries cluster.yaml as text: the UI edits YAML, not a JSON mirror.
 type createRequest struct {
 	YAML         string `json:"yaml"`
 	SkipPlatform bool   `json:"skipPlatform"`
@@ -346,7 +337,7 @@ func (s *Server) handleClusterCreate(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, err)
 		return
 	}
-	id, err := s.runOperation(c.Metadata.Name, "cluster.create", req, func(ctx contextT, sink clusterSink) (any, error) {
+	id, err := s.runOperation(c.Metadata.Name, "cluster.create", req, func(ctx context.Context, sink cluster.Sink) (any, error) {
 		if err := s.manager.Create(ctx, c, sink); err != nil {
 			return nil, err
 		}
@@ -387,7 +378,7 @@ func (s *Server) handleClusterApply(w http.ResponseWriter, r *http.Request) {
 		YAML string `json:"yaml"`
 	}
 	_ = json.NewDecoder(r.Body).Decode(&req)
-	id, err := s.runOperation(name, "cluster.apply", req, func(ctx contextT, sink clusterSink) (any, error) {
+	id, err := s.runOperation(name, "cluster.apply", req, func(ctx context.Context, sink cluster.Sink) (any, error) {
 		c, _, err := s.manager.LoadCluster(ctx, name)
 		if err != nil {
 			return nil, err
@@ -425,12 +416,12 @@ func (s *Server) handleAddons(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handlePlatformPlan(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")
-	id, err := s.runOperation(name, "platform.plan", nil, func(ctx contextT, sink clusterSink) (any, error) {
+	id, err := s.runOperation(name, "platform.plan", nil, func(ctx context.Context, sink cluster.Sink) (any, error) {
 		diff, err := s.manager.PlanPlatform(ctx, name, sink)
 		if err != nil {
 			return nil, err
 		}
-		sink(clusterEvent{Time: time.Now(), Kind: "log", Level: cluster.Done, Step: "plan", Message: diff.Summary.String()})
+		sink(cluster.Event{Time: time.Now(), Kind: "log", Level: cluster.Done, Step: "plan", Message: diff.Summary.String()})
 		return diff, nil
 	})
 	if err != nil {
@@ -442,7 +433,7 @@ func (s *Server) handlePlatformPlan(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handlePlatformApply(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")
-	id, err := s.runOperation(name, "platform.apply", nil, func(ctx contextT, sink clusterSink) (any, error) {
+	id, err := s.runOperation(name, "platform.apply", nil, func(ctx context.Context, sink cluster.Sink) (any, error) {
 		return nil, s.manager.ApplyPlatform(ctx, name, sink)
 	})
 	if err != nil {
@@ -452,7 +443,6 @@ func (s *Server) handlePlatformApply(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusAccepted, map[string]any{"operationId": id})
 }
 
-// handlePlatformApplyPlan applies the plan reviewed in operation {planId}.
 func (s *Server) handlePlatformApplyPlan(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")
 	planID, _ := strconv.ParseInt(r.PathValue("planId"), 10, 64)
@@ -474,7 +464,7 @@ func (s *Server) handlePlatformApplyPlan(w http.ResponseWriter, r *http.Request)
 		http.Error(w, fmt.Sprintf("plan #%d has been superseded by plan #%d; review the newer plan", planID, latest), http.StatusConflict)
 		return
 	}
-	id, err := s.runOperation(name, "platform.apply", map[string]any{"planId": planID}, func(ctx contextT, sink clusterSink) (any, error) {
+	id, err := s.runOperation(name, "platform.apply", map[string]any{"planId": planID}, func(ctx context.Context, sink cluster.Sink) (any, error) {
 		return nil, s.manager.ApplyPlan(ctx, name, diff.Timestamp, sink)
 	})
 	if err != nil {
@@ -484,8 +474,7 @@ func (s *Server) handlePlatformApplyPlan(w http.ResponseWriter, r *http.Request)
 	writeJSON(w, http.StatusAccepted, map[string]any{"operationId": id})
 }
 
-// latestPlan returns the id of the most recent completed platform.plan for a cluster.
-func (s *Server) latestPlan(ctx contextT, name string) int64 {
+func (s *Server) latestPlan(ctx context.Context, name string) int64 {
 	ops, err := s.store.ListOperations(ctx, 200)
 	if err != nil {
 		return 0
@@ -515,7 +504,7 @@ func (s *Server) handleUpgradeKubernetes(w http.ResponseWriter, r *http.Request)
 	s.upgrade(w, r, "upgrade.kubernetes", s.manager.UpgradeKubernetes)
 }
 
-func (s *Server) upgrade(w http.ResponseWriter, r *http.Request, kind string, fn func(contextT, string, string, clusterSink) error) {
+func (s *Server) upgrade(w http.ResponseWriter, r *http.Request, kind string, fn func(context.Context, string, string, cluster.Sink) error) {
 	name := r.PathValue("name")
 	var req struct {
 		To string `json:"to"`
@@ -524,7 +513,7 @@ func (s *Server) upgrade(w http.ResponseWriter, r *http.Request, kind string, fn
 		http.Error(w, `body must be {"to": "<version>"}`, http.StatusBadRequest)
 		return
 	}
-	id, err := s.runOperation(name, kind, req, func(ctx contextT, sink clusterSink) (any, error) {
+	id, err := s.runOperation(name, kind, req, func(ctx context.Context, sink cluster.Sink) (any, error) {
 		return nil, fn(ctx, name, req.To, sink)
 	})
 	if err != nil {
@@ -562,7 +551,7 @@ func (s *Server) handleNodeAdd(w http.ResponseWriter, r *http.Request) {
 			n.MAC = row.MAC
 		}
 	}
-	id, err := s.runOperation(name, "node.add", n, func(ctx contextT, sink clusterSink) (any, error) {
+	id, err := s.runOperation(name, "node.add", n, func(ctx context.Context, sink cluster.Sink) (any, error) {
 		return nil, s.manager.AddNode(ctx, name, n, sink)
 	})
 	if err != nil {
@@ -575,7 +564,7 @@ func (s *Server) handleNodeAdd(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleNodeRemove(w http.ResponseWriter, r *http.Request) {
 	name, hostname := r.PathValue("name"), r.PathValue("hostname")
 	force := r.URL.Query().Get("force") == "true"
-	id, err := s.runOperation(name, "node.remove", map[string]any{"hostname": hostname, "force": force}, func(ctx contextT, sink clusterSink) (any, error) {
+	id, err := s.runOperation(name, "node.remove", map[string]any{"hostname": hostname, "force": force}, func(ctx context.Context, sink cluster.Sink) (any, error) {
 		return nil, s.manager.RemoveNode(ctx, name, hostname, cluster.RemoveOptions{Force: force}, sink)
 	})
 	if err != nil {
@@ -592,8 +581,6 @@ type nodeView struct {
 	Inventory *talos.Inventory `json:"inventory,omitempty"`
 }
 
-// machineView is the machine row as the console may see it: hardware decoded, the
-// out-of-band password masked.
 func machineView(row store.NodeRow) nodeView {
 	v := nodeView{NodeRow: row, Kind: row.Kind(), Talos: row.Talos()}
 	if len(row.Hardware) > 2 {
@@ -639,16 +626,15 @@ func (s *Server) handleDiscover(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, err)
 		return
 	}
-	id, err := s.runOperation("", "discover", req, func(ctx contextT, sink clusterSink) (any, error) {
-		sink(clusterEvent{Time: time.Now(), Kind: "steps", Level: cluster.Info, Steps: cluster.Steps("scan", fmt.Sprintf("Probe %d addresses on port 50000", len(addrs)), "record", "Record inventory", "amt", "Probe the rest for Intel AMT or a Redfish BMC")})
-		sink(clusterEvent{Time: time.Now(), Kind: "step", Step: "scan", Status: cluster.StepRunning})
+	id, err := s.runOperation("", "discover", req, func(ctx context.Context, sink cluster.Sink) (any, error) {
+		sink(cluster.Event{Time: time.Now(), Kind: "steps", Level: cluster.Info, Steps: cluster.Steps("scan", fmt.Sprintf("Probe %d addresses on port 50000", len(addrs)), "record", "Record inventory", "amt", "Probe the rest for Intel AMT or a Redfish BMC")})
+		sink(cluster.Event{Time: time.Now(), Kind: "step", Step: "scan", Status: cluster.StepRunning})
 		results := talos.Scan(ctx, addrs, 64, 2*time.Second)
 		if ctx.Err() != nil {
 			return nil, ctx.Err()
 		}
-		sink(clusterEvent{Time: time.Now(), Kind: "step", Step: "scan", Status: cluster.StepDone})
-		sink(clusterEvent{Time: time.Now(), Kind: "step", Step: "record", Status: cluster.StepRunning})
-		// A control-plane VIP answers on :50000 too, but it is an address, not a machine.
+		sink(cluster.Event{Time: time.Now(), Kind: "step", Step: "scan", Status: cluster.StepDone})
+		sink(cluster.Event{Time: time.Now(), Kind: "step", Step: "record", Status: cluster.StepRunning})
 		vips := s.store.ClusterVIPs(ctx)
 		found := 0
 		for _, res := range results {
@@ -656,7 +642,7 @@ func (s *Server) handleDiscover(w http.ResponseWriter, r *http.Request) {
 				continue
 			}
 			if name, ok := vips[res.IP]; ok {
-				sink(clusterEvent{Time: time.Now(), Kind: "log", Level: cluster.Info, Step: "record", Node: res.IP, Message: "VIP of cluster " + name + ", skipped"})
+				sink(cluster.Event{Time: time.Now(), Kind: "log", Level: cluster.Info, Step: "record", Node: res.IP, Message: "VIP of cluster " + name + ", skipped"})
 				continue
 			}
 			row := rowFromScan(res)
@@ -664,9 +650,9 @@ func (s *Server) handleDiscover(w http.ResponseWriter, r *http.Request) {
 				return nil, err
 			}
 			found++
-			sink(clusterEvent{Time: time.Now(), Kind: "log", Level: cluster.Info, Step: "record", Node: res.IP, Message: string(res.State)})
+			sink(cluster.Event{Time: time.Now(), Kind: "log", Level: cluster.Info, Step: "record", Node: res.IP, Message: string(res.State)})
 		}
-		sink(clusterEvent{Time: time.Now(), Kind: "log", Level: cluster.Done, Step: "record", Message: fmt.Sprintf("%d Talos nodes found", found)})
+		sink(cluster.Event{Time: time.Now(), Kind: "log", Level: cluster.Done, Step: "record", Message: fmt.Sprintf("%d Talos nodes found", found)})
 		amtFound := s.discoverAMT(ctx, addrs, results, sink)
 		return map[string]int{"found": found, "amt": amtFound}, nil
 	})
@@ -681,7 +667,6 @@ func (s *Server) nodeClient(r *http.Request) (*talos.Client, error) {
 	ip := r.PathValue("ip")
 	row, err := s.store.GetNode(r.Context(), ip)
 	if err != nil {
-		// Accept a MAC in place of the IP so machine pages can address by identity.
 		if m, merr := s.store.GetMachine(r.Context(), ip); merr == nil {
 			row, ip, err = m, m.IP, nil
 		}
@@ -708,8 +693,6 @@ func (s *Server) nodeClient(r *http.Request) (*talos.Client, error) {
 	return talos.Dial(r.Context(), ip, sec.Talosconfig)
 }
 
-// handleNodeLogs streams dmesg (default) or a service log as text/plain; ?follow=true
-// keeps the stream open.
 func (s *Server) handleNodeLogs(w http.ResponseWriter, r *http.Request) {
 	tc, err := s.nodeClient(r)
 	if err != nil {
@@ -809,7 +792,6 @@ func (s *Server) handleNodeReboot(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusAccepted)
 }
 
-// handleConfigValidate parses cluster.yaml text and returns the defaulted document.
 func (s *Server) handleConfigValidate(w http.ResponseWriter, r *http.Request) {
 	body, err := io.ReadAll(io.LimitReader(r.Body, 1<<20))
 	if err != nil {
@@ -825,8 +807,6 @@ func (s *Server) handleConfigValidate(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"yaml": string(out), "cluster": c})
 }
 
-// handleConfigDraft builds a cluster.yaml from discovered nodes using the topology
-// recommendation, for the create wizard to edit.
 func (s *Server) handleConfigDraft(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Name string   `json:"name"`
@@ -881,7 +861,6 @@ func (s *Server) draft(r *http.Request, name string, ips []string) (*config.Clus
 	sched := topo.AllowScheduling
 	c.Spec.ControlPlane.AllowScheduling = &sched
 	if len(ips) > 0 {
-		// MetalLB range: the top of the first node's /24, a reasonable LAN default to edit.
 		if ip := net.ParseIP(ips[0]).To4(); ip != nil {
 			c.Spec.Platform.MetalLB.Range = fmt.Sprintf("%d.%d.%d.200-%d.%d.%d.220", ip[0], ip[1], ip[2], ip[0], ip[1], ip[2])
 		}
@@ -942,9 +921,6 @@ func writeErr(w http.ResponseWriter, err error) {
 	writeJSON(w, status, map[string]string{"error": msg})
 }
 
-// spaHandler serves static assets and falls back to index.html for client-side routes.
-// Hashed assets may be cached for good; index.html never, so a new daemon build is
-// picked up on the next load instead of after a hard refresh.
 func spaHandler(root http.FileSystem) http.Handler {
 	files := http.FileServer(root)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -963,7 +939,6 @@ func spaHandler(root http.FileSystem) http.Handler {
 	})
 }
 
-// rowFromScan is the machine row a Talos probe result produces.
 func rowFromScan(res talos.ScanResult) store.NodeRow {
 	row := store.NodeRow{IP: res.IP, Source: "scan", State: string(res.State)}
 	if inv := res.Inventory; inv != nil {
@@ -974,13 +949,8 @@ func rowFromScan(res talos.ScanResult) store.NodeRow {
 	return row
 }
 
-// discoverAMT sweeps the addresses that did not answer as Talos for a management
-// engine (Intel AMT on 16992, else a Redfish BMC) and records what it finds as
-// machines: with the default credentials from settings the engine tells MAC, model
-// and power state; without them AMT's MAC comes from the ARP table and a BMC is only
-// logged, since a BMC names its host only when asked with credentials.
-func (s *Server) discoverAMT(ctx contextT, addrs []netip.Addr, talosResults []talos.ScanResult, sink clusterSink) int {
-	sink(clusterEvent{Time: time.Now(), Kind: "step", Step: "amt", Status: cluster.StepRunning})
+func (s *Server) discoverAMT(ctx context.Context, addrs []netip.Addr, talosResults []talos.ScanResult, sink cluster.Sink) int {
+	sink(cluster.Event{Time: time.Now(), Kind: "step", Step: "amt", Status: cluster.StepRunning})
 	isTalos := map[string]bool{}
 	for _, r := range talosResults {
 		if r.Err == nil {
@@ -1000,25 +970,21 @@ func (s *Server) discoverAMT(ctx contextT, addrs []netip.Addr, talosResults []ta
 		if r.MAC == "" {
 			switch {
 			case r.Err != nil:
-				sink(clusterEvent{Time: time.Now(), Kind: "log", Level: cluster.Warn, Step: "amt", Node: r.IP, Message: label + " answers but the default credentials were refused: " + r.Err.Error()})
+				sink(cluster.Event{Time: time.Now(), Kind: "log", Level: cluster.Warn, Step: "amt", Node: r.IP, Message: label + " answers but the default credentials were refused: " + r.Err.Error()})
 			case r.Type == "redfish":
-				sink(clusterEvent{Time: time.Now(), Kind: "log", Level: cluster.Info, Step: "amt", Node: r.IP, Message: "Redfish BMC answers; set default BMC credentials under Kubit settings, or add it by address on the Inventory page"})
+				sink(cluster.Event{Time: time.Now(), Kind: "log", Level: cluster.Info, Step: "amt", Node: r.IP, Message: "Redfish BMC answers; set default BMC credentials under Kubit settings, or add it by address on the Inventory page"})
 			default:
-				sink(clusterEvent{Time: time.Now(), Kind: "log", Level: cluster.Warn, Step: "amt", Node: r.IP, Message: "answers on 16992 but its MAC is unknown (not on this segment?); add it via its address on the Inventory page"})
+				sink(cluster.Event{Time: time.Now(), Kind: "log", Level: cluster.Warn, Step: "amt", Node: r.IP, Message: "answers on 16992 but its MAC is unknown (not on this segment?); add it via its address on the Inventory page"})
 			}
 			continue
 		}
 		row := store.NodeRow{IP: r.IP, MAC: r.MAC, Source: r.Type, State: "amt"}
 		if r.Type == "redfish" {
-			// A BMC has its own address; the host's is unknown until it boots.
 			row.IP = ""
 		}
 		existing, err := s.store.GetMachine(ctx, r.MAC)
 		known := err == nil && existing.State != "" && existing.State != "amt"
 		if known {
-			// A known machine that is off or in another OS right now: the engine's
-			// address goes to its remote-management config below, the row keeps the
-			// address its OS answers on (AMT usually holds a lease of its own).
 			row.State, row.Source = existing.State, existing.Source
 			if existing.IP != "" {
 				row.IP = existing.IP
@@ -1026,8 +992,6 @@ func (s *Server) discoverAMT(ctx contextT, addrs []netip.Addr, talosResults []ta
 		}
 		if r.Info != nil {
 			row.Serial, row.UUID = r.Info.Serial, r.Info.UUID
-			// Talos' inventory, once recorded, is better than the engine's; the
-			// stand-in only fills an empty row.
 			if r.Info.Model != "" && (err != nil || len(existing.Hardware) <= 2) {
 				row.Hardware = oobHardware(*r.Info)
 			}
@@ -1042,17 +1006,17 @@ func (s *Server) discoverAMT(ctx contextT, addrs []netip.Addr, talosResults []ta
 			}
 			c.Type, c.Host = r.Type, r.IP
 			_ = s.store.SetMachineOOB(ctx, r.MAC, &c)
-			sink(clusterEvent{Time: time.Now(), Kind: "log", Level: cluster.Info, Step: "amt", Node: r.IP, Message: fmt.Sprintf("%s %s, %s, power %s", label, r.Info.Version, strings.TrimSpace(r.Info.Manufacturer+" "+r.Info.Model), r.Info.Power)})
+			sink(cluster.Event{Time: time.Now(), Kind: "log", Level: cluster.Info, Step: "amt", Node: r.IP, Message: fmt.Sprintf("%s %s, %s, power %s", label, r.Info.Version, strings.TrimSpace(r.Info.Manufacturer+" "+r.Info.Model), r.Info.Power)})
 		} else if r.Err != nil {
-			sink(clusterEvent{Time: time.Now(), Kind: "log", Level: cluster.Warn, Step: "amt", Node: r.IP, Message: label + " answers but the default credentials were refused: " + r.Err.Error()})
+			sink(cluster.Event{Time: time.Now(), Kind: "log", Level: cluster.Warn, Step: "amt", Node: r.IP, Message: label + " answers but the default credentials were refused: " + r.Err.Error()})
 		} else {
-			sink(clusterEvent{Time: time.Now(), Kind: "log", Level: cluster.Info, Step: "amt", Node: r.IP, Message: label + " answers; set default credentials under Kubit settings to identify it"})
+			sink(cluster.Event{Time: time.Now(), Kind: "log", Level: cluster.Info, Step: "amt", Node: r.IP, Message: label + " answers; set default credentials under Kubit settings to identify it"})
 		}
 		found++
 	}
-	sink(clusterEvent{Time: time.Now(), Kind: "step", Step: "amt", Status: cluster.StepDone})
+	sink(cluster.Event{Time: time.Now(), Kind: "step", Step: "amt", Status: cluster.StepDone})
 	if found > 0 {
-		sink(clusterEvent{Time: time.Now(), Kind: "log", Level: cluster.Done, Step: "amt", Message: fmt.Sprintf("%d machine(s) reachable out of band", found)})
+		sink(cluster.Event{Time: time.Now(), Kind: "log", Level: cluster.Done, Step: "amt", Message: fmt.Sprintf("%d machine(s) reachable out of band", found)})
 	}
 	return found
 }

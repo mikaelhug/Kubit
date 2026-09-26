@@ -12,20 +12,14 @@ import (
 	"time"
 )
 
-// ScanResult is one address that answers as a management engine: the AMT port, or a
-// Redfish service root. Info is filled when credentials were available; for AMT the
-// MAC falls back to the ARP table (same segment only), a BMC only tells it when asked.
 type ScanResult struct {
 	IP   string
-	Type string // amt | redfish
+	Type string
 	MAC  string
 	Info *Info
-	Err  error // credentials wrong/absent: the machine is still recorded
+	Err  error
 }
 
-// Scan probes every address for AMT (port 16992) and otherwise for a Redfish root
-// and, with credentials, asks each engine who it is. Addresses that run Talos are
-// excluded by the caller.
 func Scan(ctx context.Context, addrs []netip.Addr, amtCreds, bmcCreds Config, timeout time.Duration) []ScanResult {
 	sem := make(chan struct{}, 64)
 	var (
@@ -50,7 +44,7 @@ func Scan(ctx context.Context, addrs []netip.Addr, amtCreds, bmcCreds Config, ti
 				conn.Close()
 				r = ScanResult{IP: ip, Type: "amt", MAC: macFromARP(ctx, ip)}
 				creds = amtCreds
-			} else if _, ok := ProbeRedfish(ctx, ip, timeout); ok {
+			} else if ProbeRedfish(ctx, ip, timeout) {
 				r = ScanResult{IP: ip, Type: "redfish"}
 				creds = bmcCreds
 			} else {
@@ -84,8 +78,6 @@ func Scan(ctx context.Context, addrs []netip.Addr, amtCreds, bmcCreds Config, ti
 
 var macRe = regexp.MustCompile(`([0-9a-fA-F]{1,2}[:-]){5}[0-9a-fA-F]{1,2}`)
 
-// macFromARP reads the neighbour table after the TCP probe populated it; only works
-// for addresses on the daemon host's own segment, which is where PXE works anyway.
 func macFromARP(ctx context.Context, ip string) string {
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
@@ -103,7 +95,6 @@ func macFromARP(ctx context.Context, ip string) string {
 	if m == "" {
 		return ""
 	}
-	// macOS prints single-digit octets ("4:e:3c:..."); normalise to two digits.
 	parts := strings.Split(strings.ReplaceAll(m, "-", ":"), ":")
 	for i, p := range parts {
 		if len(p) == 1 {

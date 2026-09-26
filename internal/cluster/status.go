@@ -14,7 +14,6 @@ import (
 	machineapi "github.com/siderolabs/talos/pkg/machinery/api/machine"
 )
 
-// Status is the dashboard view of one cluster.
 const (
 	HealthHealthy  = "healthy"
 	HealthDegraded = "degraded"
@@ -23,37 +22,26 @@ const (
 )
 
 type Status struct {
-	Name              string `json:"name"`
-	State             string `json:"state"`
-	TalosVersion      string `json:"talosVersion"`
-	KubernetesVersion string `json:"kubernetesVersion"`
-	Endpoint          string `json:"endpoint"`
-	APIReachable      bool   `json:"apiReachable"`
-	// APIError says why the Kubernetes API could not be queried; APIReach is
-	// "no-network" when the failure was the observer's own network, not the API's.
-	APIError string                `json:"apiError,omitempty"`
-	APIReach string                `json:"apiReach,omitempty"`
-	Nodes    []NodeStatus          `json:"nodes"`
-	Etcd     EtcdStatus            `json:"etcd"`
-	Totals   Totals                `json:"totals"`
-	Platform *store.PlatformStatus `json:"platform,omitempty"`
-	// Health is the watcher's verdict on a ready cluster: healthy, degraded (open
-	// warn/critical alerts) or down (API, etcd or a node unreachable); OpenAlerts is
-	// the unacknowledged alert count behind it.
-	Health     string `json:"health,omitempty"`
-	OpenAlerts int    `json:"openAlerts,omitempty"`
-	// ObservedAt is when this status was computed; LastSnapshotAt and
-	// SnapshotInterval let the UI show how far behind the observer is.
-	ObservedAt       string `json:"observedAt"`
-	LastSnapshotAt   string `json:"lastSnapshotAt,omitempty"`
-	SnapshotInterval string `json:"snapshotInterval,omitempty"`
-	// Observer is online when Kubit's own host can reach the network and offline when
-	// every probe failed for a no-network reason and the default gateway did not
-	// answer either; ObserverError carries the operating system's words. LastContactAt
-	// is the last observation in which anything answered.
-	Observer      string `json:"observer,omitempty"`
-	ObserverError string `json:"observerError,omitempty"`
-	LastContactAt string `json:"lastContactAt,omitempty"`
+	Name              string                `json:"name"`
+	State             string                `json:"state"`
+	TalosVersion      string                `json:"talosVersion"`
+	KubernetesVersion string                `json:"kubernetesVersion"`
+	Endpoint          string                `json:"endpoint"`
+	APIReachable      bool                  `json:"apiReachable"`
+	APIError          string                `json:"apiError,omitempty"`
+	APIReach          string                `json:"apiReach,omitempty"`
+	Nodes             []NodeStatus          `json:"nodes"`
+	Etcd              EtcdStatus            `json:"etcd"`
+	Totals            Totals                `json:"totals"`
+	Platform          *store.PlatformStatus `json:"platform,omitempty"`
+	Health            string                `json:"health,omitempty"`
+	OpenAlerts        int                   `json:"openAlerts,omitempty"`
+	ObservedAt        string                `json:"observedAt"`
+	LastSnapshotAt    string                `json:"lastSnapshotAt,omitempty"`
+	SnapshotInterval  string                `json:"snapshotInterval,omitempty"`
+	Observer          string                `json:"observer,omitempty"`
+	ObserverError     string                `json:"observerError,omitempty"`
+	LastContactAt     string                `json:"lastContactAt,omitempty"`
 }
 
 type NodeStatus struct {
@@ -67,25 +55,20 @@ type NodeStatus struct {
 	Ready          bool   `json:"ready"`
 	Unschedulable  bool   `json:"unschedulable"`
 	TalosReachable bool   `json:"talosReachable"`
-	// TalosError is the dial/query failure when the Talos API did not answer;
-	// TalosReach is "no-network" when the observer, not the node, was cut off.
-	TalosError string `json:"talosError,omitempty"`
-	TalosReach string `json:"talosReach,omitempty"`
-	// Registered is true once the kubelet has created its Node object.
-	Registered bool `json:"registered"`
-	// Pool is the node's pool; SeenAt is set when discovery last saw the machine on a
-	// different address than the one declared (DHCP lease moved).
-	Pool          string `json:"pool"`
-	SeenAt        string `json:"seenAt,omitempty"`
-	Stage         string `json:"stage"`
-	CPUMilli      int64  `json:"cpuMilli"`
-	CPUCapMilli   int64  `json:"cpuCapMilli"`
-	MemBytes      int64  `json:"memBytes"`
-	MemCapBytes   int64  `json:"memCapBytes"`
-	MemAllocBytes int64  `json:"memAllocBytes"`
-	Pods          int    `json:"pods"`
-	PodCap        int64  `json:"podCap"`
-	GVisor        bool   `json:"gvisor"`
+	TalosError     string `json:"talosError,omitempty"`
+	TalosReach     string `json:"talosReach,omitempty"`
+	Registered     bool   `json:"registered"`
+	Pool           string `json:"pool"`
+	SeenAt         string `json:"seenAt,omitempty"`
+	Stage          string `json:"stage"`
+	CPUMilli       int64  `json:"cpuMilli"`
+	CPUCapMilli    int64  `json:"cpuCapMilli"`
+	MemBytes       int64  `json:"memBytes"`
+	MemCapBytes    int64  `json:"memCapBytes"`
+	MemAllocBytes  int64  `json:"memAllocBytes"`
+	Pods           int    `json:"pods"`
+	PodCap         int64  `json:"podCap"`
+	GVisor         bool   `json:"gvisor"`
 }
 
 type EtcdStatus struct {
@@ -107,9 +90,6 @@ type Totals struct {
 	Nodes       int   `json:"nodes"`
 }
 
-// Status gathers node, etcd and resource state. Talos and Kubernetes are queried in
-// parallel with short timeouts; unreachable parts degrade to zero values rather than
-// failing the whole view.
 func (m *Manager) Status(ctx context.Context, name string) (*Status, error) {
 	c, row, err := m.LoadCluster(ctx, name)
 	if err != nil {
@@ -153,7 +133,6 @@ func (m *Manager) Status(ctx context.Context, name string) (*Status, error) {
 		wg.Add(1)
 		go func(n config.Node) {
 			defer wg.Done()
-			// Each node gets its own short deadline so one dead machine cannot starve the rest.
 			nctx, cancel := context.WithTimeout(ctx, 6*time.Second)
 			defer cancel()
 			ver, stage, err := probeNode(nctx, n.IP, sec.Talosconfig)
@@ -251,9 +230,6 @@ func (m *Manager) Status(ctx context.Context, name string) (*Status, error) {
 	return st, nil
 }
 
-// observe decides whether a status with nothing answering is the cluster's fault or
-// the observer's: only when every failure is a no-network error and the default
-// gateway cannot be dialed either is the observer declared offline.
 func observe(ctx context.Context, st *Status) (string, string) {
 	answered, noNet, failed := false, 0, 0
 	for _, n := range st.Nodes {
@@ -277,7 +253,7 @@ func observe(ctx context.Context, st *Status) (string, string) {
 	if answered || failed == 0 || noNet != failed {
 		return ObserverOnline, ""
 	}
-	if r, _ := ControlProbe(ctx, 2*time.Second); r != ReachNoNetwork {
+	if ControlProbe(ctx, 2*time.Second) != ReachNoNetwork {
 		return ObserverOnline, ""
 	}
 	reason := st.APIError
@@ -290,8 +266,6 @@ func observe(ctx context.Context, st *Status) (string, string) {
 	return ObserverOffline, reason
 }
 
-// probeNode asks a node for its version and stage over mTLS, wrapping failures with
-// what was attempted so the UI can show the cause.
 func probeNode(ctx context.Context, ip string, talosconfig []byte) (version, stage string, err error) {
 	if err := talos.PortErr(ctx, ip, 2*time.Second); err != nil {
 		if Classify(err) == ReachNoNetwork {

@@ -1,6 +1,3 @@
-// Package export writes a cluster's Talos layer out of Kubit: native artefacts usable
-// with talosctl/kubectl directly, plus an OpenTofu root using the siderolabs/talos
-// provider. It is a one-way snapshot; Kubit never executes it.
 package export
 
 import (
@@ -18,22 +15,15 @@ import (
 //go:embed templates
 var templates embed.FS
 
-// Input is everything the export needs; the cluster package assembles it from the store.
 type Input struct {
 	Cluster        *config.Cluster
 	ClusterYAML    []byte
 	SecretsYAML    []byte
 	Talosconfig    []byte
-	Kubeconfig     []byte            // may be nil before bootstrap
-	MachineConfigs map[string][]byte // hostname → applied config
+	Kubeconfig     []byte
+	MachineConfigs map[string][]byte
 }
 
-// Write lays out dir:
-//
-//	cluster.yaml  secrets.yaml  talosconfig  kubeconfig
-//	machineconfigs/<hostname>.yaml
-//	infra/talos/{versions,variables,main}.tf  terraform.tfvars.json  README.md
-//	infra/talos/secrets.yaml  infra/talos/machineconfigs/  (copies the provider reads)
 func Write(_ context.Context, dir string, in Input) error {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return err

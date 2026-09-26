@@ -39,7 +39,7 @@ func TestDeriveFirstObservationOnlyReportsProblems(t *testing.T) {
 
 func TestDeriveTransitions(t *testing.T) {
 	prev := st(true, 3, true, node("a", true, true), node("b", true, true))
-	down := st(true, 2, true, node("a", true, true), node("b", false, true)) // kubelet grace: still Ready
+	down := st(true, 2, true, node("a", true, true), node("b", false, true))
 	got := kinds(watch.Derive("c", prev, down))
 	if len(got) != 2 || got[0] != "critical:talos.unreachable" || got[1] != "warn:etcd.members" {
 		t.Errorf("node down: %v", got)

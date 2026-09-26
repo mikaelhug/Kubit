@@ -9,8 +9,6 @@ import (
 	"k8s.io/client-go/tools/cache"
 )
 
-// Scopes are the console views a change invalidates. The UI refetches a view only
-// when its scope fires, so nothing is polled and nothing is fetched needlessly.
 const (
 	ScopeWorkloads = "workloads"
 	ScopeNetwork   = "network"
@@ -19,9 +17,6 @@ const (
 	ScopeFlux      = "flux"
 )
 
-// WatchScopes runs shared informers for everything the console shows and calls
-// changed(scope) on every add/update/delete until ctx ends. The initial list is not
-// reported (the caller fetched it already). Returns when the informers stop.
 func (c *Client) WatchScopes(ctx context.Context, changed func(scope string)) {
 	cs, err := c.streamClient()
 	if err != nil {
@@ -56,7 +51,6 @@ func (c *Client) WatchScopes(ctx context.Context, changed func(scope string)) {
 	f.Shutdown()
 }
 
-// Debouncer coalesces bursts of changes per key into one callback.
 type Debouncer struct {
 	delay   time.Duration
 	maxWait time.Duration

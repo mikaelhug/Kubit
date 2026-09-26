@@ -15,16 +15,13 @@ import (
 	"github.com/siderolabs/talos/pkg/machinery/config/generate/secrets"
 )
 
-// Cluster lifecycle states persisted in the store.
 const (
-	StateDeclared     = "declared"
 	StateProvisioning = "provisioning"
-	StateBootstrapped = "bootstrapped" // Kubernetes API up, platform not yet applied
+	StateBootstrapped = "bootstrapped"
 	StateReady        = "ready"
 	StateFailed       = "failed"
 )
 
-// Node states persisted in the store.
 const (
 	NodeDiscovered = "discovered"
 	NodeInstalling = "installing"
@@ -34,28 +31,25 @@ const (
 )
 
 type Timeouts struct {
-	Install   time.Duration // maintenance apply → mTLS API back
-	Bootstrap time.Duration // etcd healthy after bootstrap
-	Ready     time.Duration // kubelet registration
+	Install   time.Duration
+	Bootstrap time.Duration
+	Ready     time.Duration
 }
 
-var DefaultTimeouts = Timeouts{Install: 10 * time.Minute, Bootstrap: 5 * time.Minute, Ready: 10 * time.Minute}
+var defaultTimeouts = Timeouts{Install: 10 * time.Minute, Bootstrap: 5 * time.Minute, Ready: 10 * time.Minute}
 
 type Manager struct {
 	Store    *store.Store
 	Factory  *factory.Client
 	Timeouts Timeouts
-	// Home is $KUBIT_HOME; per-cluster files live under Home/clusters/<name>.
-	Home  string
-	Local func() (labhost.Driver, error)
+	Home     string
+	Local    func() (labhost.Driver, error)
 }
 
 func NewManager(s *store.Store, home string) *Manager {
-	return &Manager{Store: s, Factory: factory.New(), Timeouts: DefaultTimeouts, Home: home, Local: func() (labhost.Driver, error) { return vfkit.New(home) }}
+	return &Manager{Store: s, Factory: factory.New(), Timeouts: defaultTimeouts, Home: home, Local: func() (labhost.Driver, error) { return vfkit.New(home) }}
 }
 
-// EnsureSchematic resolves the cluster schematic and one per pool that declares its
-// own extensions. Schematic IDs are content hashes, so re-running is idempotent.
 func (m *Manager) EnsureSchematic(ctx context.Context, c *config.Cluster) error {
 	if c.Spec.SchematicID == "" {
 		id, err := m.Factory.CreateSchematic(ctx, c.Spec.Extensions)
@@ -128,7 +122,6 @@ func (m *Manager) ImageStatus(ctx context.Context, name string) (ImageStatus, er
 	return ImageStatus{TalosVersion: c.Spec.TalosVersion, Installed: c.Spec.SchematicID, Desired: id, Extensions: c.Spec.Extensions, Outdated: imageOutdated(c, id, pools)}, nil
 }
 
-// installer maps each pool to its installer image at the cluster's Talos version.
 func (m *Manager) installer(c *config.Cluster) config.Installer {
 	return func(p config.Pool) string {
 		return m.Factory.InstallerImage(c.SchematicFor(p), c.Spec.TalosVersion)
@@ -151,7 +144,6 @@ func (m *Manager) loadSecrets(ctx context.Context, name string) (*store.ClusterS
 	return sec, bundle, nil
 }
 
-// LoadCluster returns the stored declaration.
 func (m *Manager) LoadCluster(ctx context.Context, name string) (*config.Cluster, *store.ClusterRow, error) {
 	row, err := m.Store.GetCluster(ctx, name)
 	if err != nil {
@@ -178,7 +170,6 @@ func (m *Manager) SaveCluster(ctx context.Context, c *config.Cluster, state stri
 	return m.Store.PutCluster(ctx, store.ClusterRow{Name: c.Metadata.Name, Spec: spec, SchematicID: c.Spec.SchematicID, State: state})
 }
 
-// KubeClient opens the Kubernetes API with the stored admin kubeconfig.
 func (m *Manager) KubeClient(ctx context.Context, name string) (*k8s.Client, error) {
 	sec, err := m.Store.GetClusterSecrets(ctx, name)
 	if err != nil {
@@ -190,7 +181,6 @@ func (m *Manager) KubeClient(ctx context.Context, name string) (*k8s.Client, err
 	return k8s.New(sec.Kubeconfig)
 }
 
-// storeRow is the machine record a declared node maps to.
 func storeRow(c *config.Cluster, n config.Node) store.NodeRow {
 	return store.NodeRow{IP: n.IP, Cluster: c.Metadata.Name, Hostname: n.Hostname, MAC: n.MAC, UUID: n.UUID, Arch: string(n.Arch), Pool: n.Pool, Role: string(n.Role), Source: "manual"}
 }

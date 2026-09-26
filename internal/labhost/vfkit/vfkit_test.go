@@ -15,6 +15,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/mikael/kubit/internal/factory"
 	"github.com/mikael/kubit/internal/labhost"
 )
 
@@ -406,20 +407,22 @@ func TestEnsureTalosBoot(t *testing.T) {
 	}))
 	defer srv.Close()
 	h.HTTP = srv.Client()
+	f := factory.New()
+	f.SetBaseURL(srv.URL)
 	ctx := context.Background()
-	b, err := h.EnsureTalosBoot(ctx, srv.URL, "0123456789abcdef", "v1.14.0", "arm64")
+	b, err := h.EnsureTalosBoot(ctx, f, "0123456789abcdef", "v1.14.0", "arm64")
 	if err != nil || read(t, b.ISO) != "ISO" || b.Kernel != "" {
 		t.Fatalf("boot: %+v %v", b, err)
 	}
-	if _, err := h.EnsureTalosBoot(ctx, srv.URL, "0123456789abcdef", "v1.14.0", "arm64"); err != nil || hits != 1 {
+	if _, err := h.EnsureTalosBoot(ctx, f, "0123456789abcdef", "v1.14.0", "arm64"); err != nil || hits != 1 {
 		t.Errorf("a present ISO must not be fetched again (%d requests)", hits)
 	}
 	body = ""
-	if _, err := h.EnsureTalosBoot(ctx, srv.URL, "0123456789abcdef", "v1.15.0", "arm64"); err == nil {
+	if _, err := h.EnsureTalosBoot(ctx, f, "0123456789abcdef", "v1.15.0", "arm64"); err == nil {
 		t.Error("a 404 must fail")
 	}
 	os.RemoveAll(filepath.Join(h.Dir, bootDir))
-	if _, err := h.EnsureTalosBoot(ctx, srv.URL, "0123456789abcdef", "v1.14.0", "arm64"); err == nil {
+	if _, err := h.EnsureTalosBoot(ctx, f, "0123456789abcdef", "v1.14.0", "arm64"); err == nil {
 		t.Error("an empty download must fail")
 	}
 	matches, _ := filepath.Glob(filepath.Join(h.Dir, bootDir, "*", "*"))

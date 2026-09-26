@@ -54,7 +54,7 @@ func TestWatchExternalSeesOtherProcessWrites(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer a.Close()
-	b, err := store.Open(dir, c) // stands in for the CLI: a second connection pool to the same file
+	b, err := store.Open(dir, c)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -77,7 +77,6 @@ func TestWatchExternalSeesOtherProcessWrites(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Fatal("external write not detected")
 	}
-	// A local write must not be reported as external.
 	_ = a.SetValue(ctx, "from", "daemon")
 	select {
 	case ch := <-seen:

@@ -91,7 +91,6 @@ func TestNodes(t *testing.T) {
 	if err := s.AssignNode(ctx, "10.0.0.1", "dev", "cp-01", "controlplane"); err != nil {
 		t.Fatal(err)
 	}
-	// A rescan reports no membership and no hardware; both must survive.
 	if err := s.UpsertNode(ctx, store.NodeRow{IP: "10.0.0.1", Source: "scan", State: "configured"}); err != nil {
 		t.Fatal(err)
 	}
@@ -153,11 +152,9 @@ func TestReopenKeepsData(t *testing.T) {
 func TestMachineIdentityFollowsMAC(t *testing.T) {
 	s := open(t)
 	ctx := context.Background()
-	// First lease.
 	if err := s.UpsertNode(ctx, store.NodeRow{IP: "10.0.0.5", MAC: "AA:BB:CC:DD:EE:01", Source: "scan", State: "maintenance"}); err != nil {
 		t.Fatal(err)
 	}
-	// Same machine, new lease; another machine takes the old address.
 	if err := s.UpsertNode(ctx, store.NodeRow{IP: "10.0.0.9", MAC: "aa:bb:cc:dd:ee:01", Source: "scan", State: "maintenance"}); err != nil {
 		t.Fatal(err)
 	}
@@ -189,8 +186,6 @@ func TestUpdateLabHostMergesConcurrentWriters(t *testing.T) {
 	if err := s.SetLabHost(ctx, mac, &store.LabHost{State: "ready"}); err != nil {
 		t.Fatal(err)
 	}
-	// One writer touches State, another touches Failures, concurrently: with a blind
-	// full-blob write one would clobber the other; the per-host merge keeps both.
 	done := make(chan struct{}, 2)
 	go func() {
 		_ = s.UpdateLabHost(ctx, mac, func(l *store.LabHost) { l.State = "updating" })
@@ -206,7 +201,6 @@ func TestUpdateLabHostMergesConcurrentWriters(t *testing.T) {
 	if m.LabHost.State != "updating" || m.LabHost.Failures != 7 {
 		t.Fatalf("merge lost a field: state=%q failures=%d", m.LabHost.State, m.LabHost.Failures)
 	}
-	// A machine with no lab-host record is a no-op, not a panic.
 	_ = s.UpsertNode(ctx, store.NodeRow{IP: "10.0.0.3", MAC: "52:54:00:6b:01:02", State: "maintenance"})
 	if err := s.UpdateLabHost(ctx, "52:54:00:6b:01:02", func(l *store.LabHost) { l.State = "x" }); err != nil {
 		t.Fatalf("update on a non-lab-host must be a no-op: %v", err)

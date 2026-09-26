@@ -128,17 +128,17 @@ func (s *Server) handleLabLocalCreate(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, err)
 		return
 	}
-	opID, err := s.runOperation("labhost:"+mac, "labhost.local", map[string]any{"mac": mac, "plan": plan}, func(ctx contextT, sink clusterSink) (result any, err error) {
+	opID, err := s.runOperation("labhost:"+mac, "labhost.local", map[string]any{"mac": mac, "plan": plan}, func(ctx context.Context, sink cluster.Sink) (result any, err error) {
 		defer func() {
 			if err == nil {
 				return
 			}
-			sink(clusterEvent{Time: time.Now(), Kind: "log", Level: cluster.Warn, Message: "setup failed, removing the lab host: " + err.Error()})
+			sink(cluster.Event{Time: time.Now(), Kind: "log", Level: cluster.Warn, Message: "setup failed, removing the lab host: " + err.Error()})
 			rctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 			defer cancel()
 			if host, e := s.store.GetMachine(rctx, mac); e == nil {
 				if rerr := s.releaseLabHost(rctx, host); rerr != nil {
-					sink(clusterEvent{Time: time.Now(), Kind: "log", Level: cluster.Warn, Message: "release: " + rerr.Error()})
+					sink(cluster.Event{Time: time.Now(), Kind: "log", Level: cluster.Warn, Message: "release: " + rerr.Error()})
 				}
 			}
 		}()
@@ -151,8 +151,8 @@ func (s *Server) handleLabLocalCreate(w http.ResponseWriter, r *http.Request) {
 		if plan.Cluster != nil {
 			steps = append(steps, cluster.Steps("cluster", "Design and create the cluster")...)
 		}
-		sink(clusterEvent{Time: time.Now(), Kind: "steps", Level: "info", Steps: steps})
-		sink(clusterEvent{Time: time.Now(), Kind: "step", Step: "setup", Status: cluster.StepRunning})
+		sink(cluster.Event{Time: time.Now(), Kind: "steps", Level: "info", Steps: steps})
+		sink(cluster.Event{Time: time.Now(), Kind: "step", Step: "setup", Status: cluster.StepRunning})
 		host, err := s.store.GetMachine(ctx, mac)
 		if err != nil {
 			return nil, err
@@ -167,8 +167,8 @@ func (s *Server) handleLabLocalCreate(w http.ResponseWriter, r *http.Request) {
 			return nil, err
 		}
 		_ = s.store.Audit(ctx, "", "labhost.local", mac)
-		sink(clusterEvent{Time: time.Now(), Kind: "log", Level: "done", Step: "setup", Message: fmt.Sprintf("lab host ready: %d CPUs, %d MiB RAM (%s kept for macOS), %d GiB free for VMs", lh.Capacity.CPUs, lh.Capacity.MemMiB, mib(lh.Capacity.Reserve()), lh.Capacity.DiskGiB)})
-		sink(clusterEvent{Time: time.Now(), Kind: "step", Step: "setup", Status: cluster.StepDone})
+		sink(cluster.Event{Time: time.Now(), Kind: "log", Level: "done", Step: "setup", Message: fmt.Sprintf("lab host ready: %d CPUs, %d MiB RAM (%s kept for macOS), %d GiB free for VMs", lh.Capacity.CPUs, lh.Capacity.MemMiB, mib(lh.Capacity.Reserve()), lh.Capacity.DiskGiB)})
+		sink(cluster.Event{Time: time.Now(), Kind: "step", Step: "setup", Status: cluster.StepDone})
 		if plan.VMs == nil {
 			return lh, nil
 		}

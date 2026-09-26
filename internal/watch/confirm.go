@@ -7,17 +7,10 @@ import (
 	"github.com/mikael/kubit/internal/store"
 )
 
-// confirmAfter is how many consecutive ticks a reachability fact must hold before it
-// becomes an alert: one failed probe is a blip (a DarkWake, a lost packet), three in a
-// row across 45 s is a node, an API server or etcd that is really gone.
 const confirmAfter = 3
 
-// confirmedKinds are the alerts that go through confirmation; their recoveries are
-// only recorded when the alert was actually raised.
 var confirmedKinds = map[string]string{"talos.unreachable": "talos.back", "api.unreachable": "api.back", "etcd.unhealthy": "etcd.healthy", "node.notready": "node.ready"}
 
-// confirm counts consecutive observations of each bad fact and remembers which
-// alerts it has open, so a blip raises nothing and a recovery closes only what was raised.
 type confirm struct {
 	bad  map[string]int
 	open map[string]bool
@@ -27,8 +20,6 @@ func newConfirm() *confirm { return &confirm{bad: map[string]int{}, open: map[st
 
 func factKey(kind, node string) string { return kind + "|" + node }
 
-// Seed marks alerts already open in the store so a daemon restart neither re-raises
-// nor forgets them.
 func (c *confirm) Seed(open []store.EventRow) {
 	for _, e := range open {
 		if _, ok := confirmedKinds[e.Kind]; ok {
@@ -37,11 +28,8 @@ func (c *confirm) Seed(open []store.EventRow) {
 	}
 }
 
-// Reset forgets the counts (not the open alerts) after a gap in observation.
 func (c *confirm) Reset() { c.bad = map[string]int{} }
 
-// Apply takes the facts of one status and returns the alerts that just became
-// confirmed and the recoveries of alerts that were open.
 func (c *confirm) Apply(name string, cur *cluster.Status) []store.EventRow {
 	facts := badFacts(name, cur)
 	var out []store.EventRow
@@ -83,7 +71,6 @@ func recovery(name, kind, node string) store.EventRow {
 	return store.EventRow{Cluster: name, Node: node, Severity: "info", Kind: rk, Message: msg[rk]}
 }
 
-// badFacts lists what is wrong in a status as the alerts it would become.
 func badFacts(name string, cur *cluster.Status) map[string]store.EventRow {
 	out := map[string]store.EventRow{}
 	ev := func(sev, kind, node, msg string) {
@@ -106,8 +93,6 @@ func badFacts(name string, cur *cluster.Status) map[string]store.EventRow {
 	return out
 }
 
-// unconfirmed drops the events Derive produced for confirmed kinds and their
-// recoveries; the confirm tracker owns those.
 func unconfirmed(events []store.EventRow) []store.EventRow {
 	rec := map[string]bool{}
 	for _, r := range confirmedKinds {

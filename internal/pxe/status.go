@@ -9,22 +9,17 @@ import (
 	"time"
 )
 
-// Boot is what the server has seen from one machine, keyed by MAC (DHCP) and later
-// matched to the IP that fetched the boot script and assets.
 type Boot struct {
 	MAC       string    `json:"mac"`
 	IP        string    `json:"ip,omitempty"`
 	Arch      string    `json:"arch,omitempty"`
 	FirstSeen time.Time `json:"firstSeen"`
 	LastSeen  time.Time `json:"lastSeen"`
-	// Stage: nopxe (asked for an address without PXE), dhcp (firmware asked),
-	// ipxe (iPXE fetched the script), kernel (assets served)
-	Stage string `json:"stage"`
-	Class string `json:"class,omitempty"`
-	Count int    `json:"count"`
+	Stage     string    `json:"stage"`
+	Class     string    `json:"class,omitempty"`
+	Count     int       `json:"count"`
 }
 
-// Status is exported on /status.json for the daemon's PXE page.
 type Status struct {
 	StartedAt    time.Time `json:"startedAt"`
 	Interface    string    `json:"interface"`
@@ -40,7 +35,7 @@ type Status struct {
 type tracker struct {
 	mu      sync.Mutex
 	started time.Time
-	boots   map[string]*Boot // by MAC
+	boots   map[string]*Boot
 	byIP    map[string]string
 	log     []string
 }
@@ -49,8 +44,6 @@ func newTracker() *tracker {
 	return &tracker{started: time.Now(), boots: map[string]*Boot{}, byIP: map[string]string{}}
 }
 
-// dhcp records a PXE request. One after a minute of silence is a new boot of the
-// same machine, not a continuation of the last one.
 func (t *tracker) dhcp(mac, arch string) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
@@ -72,8 +65,6 @@ func (t *tracker) dhcp(mac, arch string) {
 	}
 }
 
-// plain records a DHCP discover without PXE options: the machine is up but not
-// network-booting. Logged once a minute per MAC so a chatty client does not flood.
 func (t *tracker) plain(mac, class string) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
@@ -99,8 +90,6 @@ func (t *tracker) plain(mac, class string) {
 	t.appendLog(fmt.Sprintf("%s asked for an address without PXE (%s): it is booting from disk or its management engine woke", mac, what))
 }
 
-// http records a script or asset fetch. The IP is all HTTP knows; it is attributed to
-// the most recent DHCP client still without an address.
 func (t *tracker) http(ip, arch, stage string) {
 	t.mu.Lock()
 	defer t.mu.Unlock()

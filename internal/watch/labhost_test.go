@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/mikael/kubit/internal/cluster"
+	"github.com/mikael/kubit/internal/factory"
 	"github.com/mikael/kubit/internal/labhost"
 	"github.com/mikael/kubit/internal/store"
 )
@@ -35,7 +36,6 @@ func disk(pct int64) labhost.Metrics {
 	return labhost.Metrics{DiskUsed: pct, DiskTotal: 100, MemTotal: 100}
 }
 
-// Disk: warns at 85, escalates once at 95, stays quiet in between, clears below 80.
 func TestLabDiskThresholds(t *testing.T) {
 	w, host := labWatcher(t)
 	ctx := context.Background()
@@ -74,7 +74,6 @@ func TestLabDiskThresholds(t *testing.T) {
 	}
 }
 
-// Memory: three consecutive readings over the line, one alert, cleared below 85.
 func TestLabMemoryPressure(t *testing.T) {
 	w, host := labWatcher(t)
 	ctx := context.Background()
@@ -107,7 +106,6 @@ func TestLabMemoryPressure(t *testing.T) {
 	}
 }
 
-// Unreachable: the third failed tick alerts, the next good tick clears it.
 func TestLabUnreachable(t *testing.T) {
 	w, host := labWatcher(t)
 	ctx := context.Background()
@@ -142,7 +140,7 @@ type macLab struct {
 func (d *macLab) Capacity(context.Context) (labhost.Capacity, error) {
 	return labhost.Capacity{Hostname: "mbp", MemMiB: 24576}, nil
 }
-func (d *macLab) EnsureTalosBoot(context.Context, string, string, string, string) (labhost.Boot, error) {
+func (d *macLab) EnsureTalosBoot(context.Context, *factory.Client, string, string, string) (labhost.Boot, error) {
 	return labhost.Boot{}, nil
 }
 func (d *macLab) Define(context.Context, labhost.VMSpec) error                     { return nil }

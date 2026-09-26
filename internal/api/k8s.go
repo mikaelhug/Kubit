@@ -1,7 +1,6 @@
 package api
 
 import (
-	"io"
 	"net/http"
 	"strconv"
 
@@ -127,7 +126,6 @@ func (s *Server) handlePodEvents(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, list)
 }
 
-// handlePodLogs streams text; ?container=, ?tail=, ?follow=true.
 func (s *Server) handlePodLogs(w http.ResponseWriter, r *http.Request) {
 	kc, ok := s.kube(w, r)
 	if !ok {
@@ -207,5 +205,3 @@ func (s *Server) handleStorage(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, http.StatusOK, st)
 }
-
-var _ = io.EOF

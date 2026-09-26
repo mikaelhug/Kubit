@@ -20,7 +20,6 @@ func printEvents(cmd *cobra.Command) cluster.Sink {
 	return func(e cluster.Event) {
 		switch e.Kind {
 		case cluster.KindSteps:
-			// The CLI shows steps as they run rather than up front.
 		case cluster.KindStep:
 			if e.Status == cluster.StepRunning {
 				fmt.Fprintf(cmd.ErrOrStderr(), "%s ▶ %s\n", e.Time.Format("15:04:05"), e.Step)

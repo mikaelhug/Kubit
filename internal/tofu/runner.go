@@ -12,9 +12,7 @@ import (
 	"strings"
 )
 
-// Line is one record of OpenTofu's machine-readable UI (-json).
 type Line struct {
-	// Phase is the tofu subcommand that produced the line (init, plan, apply).
 	Phase   string `json:"-"`
 	Level   string `json:"@level"`
 	Message string `json:"@message"`
@@ -45,7 +43,6 @@ type Line struct {
 	} `json:"diagnostic,omitempty"`
 }
 
-// Summary is the add/change/remove count of a plan or apply.
 type Summary struct {
 	Add, Change, Remove int
 }
@@ -57,15 +54,12 @@ func (s Summary) String() string {
 }
 
 type Runner struct {
-	Bin string
-	Dir string
-	// Log receives every -json line; nil is allowed.
-	Log func(Line)
-	// lastWarnings collects warning diagnostics of the last run for the plan review.
+	Bin          string
+	Dir          string
+	Log          func(Line)
 	lastWarnings []string
 }
 
-// Warnings returns the warning diagnostics of the last plan/apply, deduplicated.
 func (r *Runner) Warnings() []string {
 	seen := map[string]bool{}
 	var out []string
@@ -83,17 +77,14 @@ func (r *Runner) Init(ctx context.Context) error {
 	return err
 }
 
-// Plan writes plan.tfplan and returns its change counts.
 func (r *Runner) Plan(ctx context.Context) (Summary, error) {
 	return r.run(ctx, "plan", "-input=false", "-json", "-out=plan.tfplan")
 }
 
-// Apply executes the last Plan.
 func (r *Runner) Apply(ctx context.Context) (Summary, error) {
 	return r.run(ctx, "apply", "-input=false", "-json", "plan.tfplan")
 }
 
-// Outputs returns root module outputs (sensitive values included).
 func (r *Runner) Outputs(ctx context.Context) (map[string]string, error) {
 	cmd := exec.CommandContext(ctx, r.Bin, "output", "-json")
 	cmd.Dir = r.Dir

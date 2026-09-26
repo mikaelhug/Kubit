@@ -11,59 +11,43 @@ import (
 	"time"
 )
 
-// VMSpec sizes one Talos VM.
 type VMSpec struct {
 	Name    string `json:"name"`
 	MAC     string `json:"mac"`
 	CPUs    int    `json:"cpus"`
 	MemMiB  int    `json:"memMiB"`
 	DiskGiB int    `json:"diskGiB"`
-	// DataGiB adds a second thin disk (vdb) the cluster can claim as a data volume.
-	DataGiB int `json:"dataGiB,omitempty"`
-	// Kernel/Initrd set = boot Talos maintenance mode from RAM; empty = boot from disk.
-	Kernel string `json:"-"`
-	Initrd string `json:"-"`
-	ISO    string `json:"-"`
-	Arch   string `json:"-"`
-	Bridge string `json:"-"`
-	// Routed puts the VM on Kubit's own libvirt network (RoutedSubnet, DHCP from
-	// dnsmasq, egress masqueraded by the host) instead of the LAN bridge: for hosts
-	// whose uplink drops frames from other MACs (Wi-Fi, port security, a VM under
-	// vmnet). Kubit's host then needs a route to RoutedSubnet via the lab host.
-	Routed bool `json:"-"`
-	// TCG runs the VM under software emulation when the host has no /dev/kvm (dev
-	// harnesses without nested virtualisation); slow, never the default.
-	TCG bool `json:"-"`
+	DataGiB int    `json:"dataGiB,omitempty"`
+	Kernel  string `json:"-"`
+	Initrd  string `json:"-"`
+	ISO     string `json:"-"`
+	Arch    string `json:"-"`
+	Bridge  string `json:"-"`
+	Routed  bool   `json:"-"`
+	TCG     bool   `json:"-"`
 }
 
-// Firmware is the UEFI code image and variable template libvirt boots the VM with.
-// UEFI on both arches so Talos's installed sd-boot is what runs after SetDiskBoot.
-func Firmware(arch string) (code, vars string) {
+func firmware(arch string) (code, vars string) {
 	if arch == "arm64" {
 		return "/usr/share/AAVMF/AAVMF_CODE.fd", "/usr/share/AAVMF/AAVMF_VARS.fd"
 	}
 	return "/usr/share/OVMF/OVMF_CODE_4M.fd", "/usr/share/OVMF/OVMF_VARS_4M.fd"
 }
 
-// VM is what the host reports about a defined VM.
 type VM struct {
 	Name    string `json:"name"`
 	MAC     string `json:"mac"`
-	State   string `json:"state"` // running | shut off | paused | …
+	State   string `json:"state"`
 	CPUs    int    `json:"cpus"`
 	MemMiB  int    `json:"memMiB"`
 	DiskGiB int    `json:"diskGiB"`
 	DataGiB int    `json:"dataGiB,omitempty"`
-	Boot    string `json:"boot"` // talos | disk
+	Boot    string `json:"boot"`
 	IP      string `json:"ip,omitempty"`
 }
 
-// MAC gives VM n on lab host h a stable, recognisable address (locally administered).
 func MAC(host, n int) string { return fmt.Sprintf("52:54:00:6b:%02x:%02x", host&0xff, n&0xff) }
 
-// serialConsole is the kernel console for the VM's serial port: arm64's virt machine
-// exposes a PL011 as ttyAMA0, x86 a 16550 as ttyS0. Wrong here means `virsh console`
-// shows nothing on that arch.
 func serialConsole(arch string) string {
 	if arch == "arm64" {
 		return "console=ttyAMA0"
@@ -114,8 +98,6 @@ var domainTmpl = template.Must(template.New("domain").Parse(`<domain type='{{.Ty
 </domain>
 `))
 
-// DomainXML renders the libvirt definition; Talos boots from kernel/initrd until the
-// caller switches the VM to its disk.
 func DomainXML(s VMSpec) (string, error) {
 	qarch, machine, emulator := "x86_64", "q35", "/usr/bin/qemu-system-x86_64"
 	if s.Arch == "arm64" {
@@ -125,7 +107,7 @@ func DomainXML(s VMSpec) (string, error) {
 	if bridge == "" {
 		bridge = "br0"
 	}
-	loader, vars := Firmware(s.Arch)
+	loader, vars := firmware(s.Arch)
 	typ, cpu := "kvm", "host-passthrough"
 	if s.TCG {
 		typ, cpu = "qemu", "maximum"
@@ -133,9 +115,9 @@ func DomainXML(s VMSpec) (string, error) {
 	data := struct {
 		VMSpec
 		QemuArch, Machine, Emulator, Disk, Data, Bridge, Type, CPUMode, Loader, Vars, NVRAM, Console string
-	}{s, qarch, machine, emulator, DiskPath(s.Name), "", bridge, typ, cpu, loader, vars, VMDir + "/" + s.Name + ".nvram", serialConsole(s.Arch)}
+	}{s, qarch, machine, emulator, diskPath(s.Name), "", bridge, typ, cpu, loader, vars, vmDir + "/" + s.Name + ".nvram", serialConsole(s.Arch)}
 	if s.DataGiB > 0 {
-		data.Data = DataPath(s.Name)
+		data.Data = dataPath(s.Name)
 	}
 	var b bytes.Buffer
 	if err := domainTmpl.Execute(&b, data); err != nil {
@@ -144,45 +126,38 @@ func DomainXML(s VMSpec) (string, error) {
 	return b.String(), nil
 }
 
-// DiskPath and DataPath are the VM's thin qcow2 images on the host.
-func DiskPath(name string) string { return VMDir + "/" + name + ".qcow2" }
-func DataPath(name string) string { return VMDir + "/" + name + "-data.qcow2" }
+func diskPath(name string) string { return vmDir + "/" + name + ".qcow2" }
+func dataPath(name string) string { return vmDir + "/" + name + "-data.qcow2" }
 
-// Define creates the disks (thin qcow2) and the domain, and starts it.
 func (c *Client) Define(ctx context.Context, s VMSpec) error {
 	xml, err := DomainXML(s)
 	if err != nil {
 		return err
 	}
-	disk := DiskPath(s.Name)
+	disk := diskPath(s.Name)
 	if _, err := c.Run(ctx, fmt.Sprintf("[ -f %s ] || qemu-img create -q -f qcow2 %s %dG", disk, disk, s.DiskGiB)); err != nil {
 		return err
 	}
 	if s.DataGiB > 0 {
-		data := DataPath(s.Name)
+		data := dataPath(s.Name)
 		if _, err := c.Run(ctx, fmt.Sprintf("[ -f %s ] || qemu-img create -q -f qcow2 %s %dG", data, data, s.DataGiB)); err != nil {
 			return err
 		}
 	}
-	if err := c.Put(ctx, VMDir+"/"+s.Name+".xml", []byte(xml), "644"); err != nil {
+	if err := c.Put(ctx, vmDir+"/"+s.Name+".xml", []byte(xml), "644"); err != nil {
 		return err
 	}
-	if _, err := c.Run(ctx, "virsh define "+VMDir+"/"+s.Name+".xml >/dev/null"); err != nil {
+	if _, err := c.Run(ctx, "virsh define "+vmDir+"/"+s.Name+".xml >/dev/null"); err != nil {
 		return err
 	}
-	// Autostart so a host reboot (updates, power loss) brings the lab back by itself.
 	if _, err := c.Run(ctx, "virsh autostart "+s.Name+" >/dev/null"); err != nil {
 		return err
 	}
 	return c.Start(ctx, s.Name)
 }
 
-// RoutedSubnet is Kubit's libvirt network for routed VMs; the host is .1.
 const RoutedSubnet = "192.168.123.0/24"
 
-// routedNetwork is an "open" libvirt network: dnsmasq for DHCP, no firewall rules of
-// libvirt's own (its NAT mode rejects new inbound connections, which Kubit needs to
-// reach the VMs). Forwarding and egress masquerade come from kubit-vmnet.service.
 const routedNetwork = `<network>
   <name>kubit</name>
   <forward mode='open'/>
@@ -205,7 +180,6 @@ ExecStart=/bin/sh -c 'sysctl -qw net.ipv4.ip_forward=1; nft list table ip kubit 
 WantedBy=multi-user.target
 `
 
-// EnsureRouted defines and starts the kubit network and the forwarding unit.
 func (c *Client) EnsureRouted(ctx context.Context) error {
 	if err := c.Put(ctx, "/var/lib/kubit/network.xml", []byte(routedNetwork), "644"); err != nil {
 		return err
@@ -217,8 +191,6 @@ func (c *Client) EnsureRouted(ctx context.Context) error {
 	return err
 }
 
-// SetDiskBoot redefines the VM to boot from its disk (after Talos installed itself);
-// takes effect at the VM's next boot, which Talos triggers after the install.
 func (c *Client) SetDiskBoot(ctx context.Context, name string) error {
 	out, err := c.Run(ctx, "virsh dumpxml "+name+" --inactive")
 	if err != nil {
@@ -228,10 +200,10 @@ func (c *Client) SetDiskBoot(ctx context.Context, name string) error {
 	if xml == out {
 		return fmt.Errorf("%s: no Talos kernel block found in the domain XML — cannot switch to disk boot (libvirt XML format may have changed)", name)
 	}
-	if err := c.Put(ctx, VMDir+"/"+name+".xml", []byte(xml), "644"); err != nil {
+	if err := c.Put(ctx, vmDir+"/"+name+".xml", []byte(xml), "644"); err != nil {
 		return err
 	}
-	if _, err := c.Run(ctx, "virsh define "+VMDir+"/"+name+".xml >/dev/null"); err != nil {
+	if _, err := c.Run(ctx, "virsh define "+vmDir+"/"+name+".xml >/dev/null"); err != nil {
 		return err
 	}
 	if after, err := c.Run(ctx, "virsh dumpxml "+name+" --inactive"); err == nil && strings.Contains(after, "<kernel>") {
@@ -242,7 +214,6 @@ func (c *Client) SetDiskBoot(ctx context.Context, name string) error {
 
 var kernelBlock = regexp.MustCompile(`(?s)<kernel>.*?</kernel>\s*<initrd>.*?</initrd>\s*<cmdline>.*?</cmdline>`)
 
-// SetTalosBoot puts a VM back on the maintenance-mode kernel (re-provisioning).
 func (c *Client) SetTalosBoot(ctx context.Context, name string, b Boot, arch string) error {
 	out, err := c.Run(ctx, "virsh dumpxml "+name+" --inactive")
 	if err != nil {
@@ -253,10 +224,10 @@ func (c *Client) SetTalosBoot(ctx context.Context, name string, b Boot, arch str
 	if xml == out {
 		return fmt.Errorf("%s: no <boot dev='hd'/> found in the domain XML — cannot switch to Talos boot (libvirt XML format may have changed)", name)
 	}
-	if err := c.Put(ctx, VMDir+"/"+name+".xml", []byte(xml), "644"); err != nil {
+	if err := c.Put(ctx, vmDir+"/"+name+".xml", []byte(xml), "644"); err != nil {
 		return err
 	}
-	if _, err := c.Run(ctx, "virsh define "+VMDir+"/"+name+".xml >/dev/null"); err != nil {
+	if _, err := c.Run(ctx, "virsh define "+vmDir+"/"+name+".xml >/dev/null"); err != nil {
 		return err
 	}
 	if after, err := c.Run(ctx, "virsh dumpxml "+name+" --inactive"); err == nil && !strings.Contains(after, "<kernel>") {
@@ -265,19 +236,13 @@ func (c *Client) SetTalosBoot(ctx context.Context, name string, b Boot, arch str
 	return nil
 }
 
-// Start starts a VM and confirms it is running. Attaching the first tap to the LAN
-// bridge resets the host's own network for a moment, which can kill the SSH
-// connection carrying this very command — the start still happens on the host. A
-// dropped control connection is therefore not a failure: reconnect and let the
-// domain's state decide. A real refusal (out of memory, bad XML) surfaces as before.
 func (c *Client) Start(ctx context.Context, name string) error {
 	_, err := c.Run(ctx, "virsh start "+name+" >/dev/null")
 	if err == nil {
 		return nil
 	}
 	if !connDropped(err) {
-		// Not a network blip: it may already be running (idempotent), else it failed.
-		if st, e := c.DomState(ctx, name); e == nil && st == "running" {
+		if st, e := c.domState(ctx, name); e == nil && st == "running" {
 			return nil
 		}
 		return err
@@ -287,7 +252,7 @@ func (c *Client) Start(ctx context.Context, name string) error {
 	}
 	deadline := time.Now().Add(30 * time.Second)
 	for {
-		if st, e := c.DomState(ctx, name); e == nil && st == "running" {
+		if st, e := c.domState(ctx, name); e == nil && st == "running" {
 			return nil
 		} else if e != nil && connDropped(e) {
 			_ = c.reconnect(ctx, 45*time.Second)
@@ -303,8 +268,7 @@ func (c *Client) Start(ctx context.Context, name string) error {
 	}
 }
 
-// DomState is libvirt's word for a VM: running | shut off | paused | …
-func (c *Client) DomState(ctx context.Context, name string) (string, error) {
+func (c *Client) domState(ctx context.Context, name string) (string, error) {
 	out, err := c.Run(ctx, "virsh domstate "+name)
 	return strings.TrimSpace(out), err
 }
@@ -318,25 +282,18 @@ func (c *Client) Stop(ctx context.Context, name string, force bool) error {
 	return err
 }
 
-// Delete destroys, undefines and removes the disk.
 func (c *Client) Delete(ctx context.Context, name string) error {
-	// destroy/undefine may fail because the domain is already gone (idempotent cleanup),
-	// so the exit status can't be trusted directly — instead verify afterwards that the
-	// domain no longer exists, which catches a genuine undefine failure (ghost domain)
-	// without failing on an already-absent one.
-	_, err := c.Run(ctx, fmt.Sprintf("virsh destroy %s >/dev/null 2>&1; virsh undefine %s --nvram >/dev/null 2>&1 || virsh undefine %s >/dev/null 2>&1; rm -f %s %s %s/%s.xml %s/%s.nvram; if virsh dominfo %s >/dev/null 2>&1; then echo 'domain still defined after undefine' >&2; exit 1; fi", name, name, name, DiskPath(name), DataPath(name), VMDir, name, VMDir, name, name))
+	_, err := c.Run(ctx, fmt.Sprintf("virsh destroy %s >/dev/null 2>&1; virsh undefine %s --nvram >/dev/null 2>&1 || virsh undefine %s >/dev/null 2>&1; rm -f %s %s %s/%s.xml %s/%s.nvram; if virsh dominfo %s >/dev/null 2>&1; then echo 'domain still defined after undefine' >&2; exit 1; fi", name, name, name, diskPath(name), dataPath(name), vmDir, name, vmDir, name, name))
 	return err
 }
 
-// Resize changes vCPUs and memory (applied on next boot).
 func (c *Client) Resize(ctx context.Context, name string, cpus, memMiB int) error {
 	_, err := c.Run(ctx, fmt.Sprintf("virsh setmaxmem %s %dM --config && virsh setmem %s %dM --config && virsh setvcpus %s %d --config --maximum && virsh setvcpus %s %d --config", name, memMiB, name, memMiB, name, cpus, name, cpus))
 	return err
 }
 
-// List reports every VM defined under Kubit's naming with its state and lease.
 func (c *Client) List(ctx context.Context) ([]VM, error) {
-	out, err := c.Run(ctx, `for d in $(virsh list --all --name); do [ -z "$d" ] && continue; st=$(virsh domstate $d | head -1); x=$(virsh dumpxml $d --inactive); mac=$(echo "$x" | grep -o "mac address='[^']*'" | head -1 | cut -d"'" -f2); mem=$(echo "$x" | grep -o "<memory unit='[A-Za-z]*'>[0-9]*" | grep -o "[0-9]*$"); unit=$(echo "$x" | grep -o "<memory unit='[A-Za-z]*'" | cut -d"'" -f2); cpu=$(echo "$x" | grep -o "<vcpu[^>]*>[0-9]*" | grep -o "[0-9]*$"); boot=$(echo "$x" | grep -q "<kernel>" && echo talos || echo disk); disk=$(qemu-img info -U `+VMDir+`/$d.qcow2 2>/dev/null | grep '^virtual size' | grep -o '([0-9]* bytes)' | tr -dc 0-9); data=$(qemu-img info -U `+VMDir+`/$d-data.qcow2 2>/dev/null | grep '^virtual size' | grep -o '([0-9]* bytes)' | tr -dc 0-9); ip=$( (virsh domifaddr $d --source lease 2>/dev/null; virsh domifaddr $d --source arp 2>/dev/null) | awk '/ipv4/{print $4}' | head -1 | cut -d/ -f1); echo "$d|$st|$mac|$mem|$unit|$cpu|$boot|$disk|$ip|$data"; done`)
+	out, err := c.Run(ctx, `for d in $(virsh list --all --name); do [ -z "$d" ] && continue; st=$(virsh domstate $d | head -1); x=$(virsh dumpxml $d --inactive); mac=$(echo "$x" | grep -o "mac address='[^']*'" | head -1 | cut -d"'" -f2); mem=$(echo "$x" | grep -o "<memory unit='[A-Za-z]*'>[0-9]*" | grep -o "[0-9]*$"); unit=$(echo "$x" | grep -o "<memory unit='[A-Za-z]*'" | cut -d"'" -f2); cpu=$(echo "$x" | grep -o "<vcpu[^>]*>[0-9]*" | grep -o "[0-9]*$"); boot=$(echo "$x" | grep -q "<kernel>" && echo talos || echo disk); disk=$(qemu-img info -U `+vmDir+`/$d.qcow2 2>/dev/null | grep '^virtual size' | grep -o '([0-9]* bytes)' | tr -dc 0-9); data=$(qemu-img info -U `+vmDir+`/$d-data.qcow2 2>/dev/null | grep '^virtual size' | grep -o '([0-9]* bytes)' | tr -dc 0-9); ip=$( (virsh domifaddr $d --source lease 2>/dev/null; virsh domifaddr $d --source arp 2>/dev/null) | awk '/ipv4/{print $4}' | head -1 | cut -d/ -f1); echo "$d|$st|$mac|$mem|$unit|$cpu|$boot|$disk|$ip|$data"; done`)
 	if err != nil {
 		return nil, err
 	}

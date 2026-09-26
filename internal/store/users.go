@@ -195,7 +195,7 @@ func (s *Store) UpdateUser(ctx context.Context, name string, role *Role, disable
 		}
 	}
 	if disabled != nil {
-		if _, err := tx.ExecContext(ctx, `UPDATE users SET disabled = ? WHERE name = ?`, boolInt(*disabled), name); err != nil {
+		if _, err := tx.ExecContext(ctx, `UPDATE users SET disabled = ? WHERE name = ?`, b2i(*disabled), name); err != nil {
 			return err
 		}
 		if *disabled {
@@ -226,13 +226,6 @@ func (s *Store) DeleteUser(ctx context.Context, name string) error {
 	}
 	s.notify(Change{Table: "users", Key: strings.ToLower(name), Op: "delete"})
 	return nil
-}
-
-func boolInt(b bool) int {
-	if b {
-		return 1
-	}
-	return 0
 }
 
 func (s *Store) Authenticate(ctx context.Context, name, password string) (*User, error) {

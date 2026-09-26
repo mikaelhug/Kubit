@@ -1,8 +1,3 @@
-# Replicated block storage on the nodes' data disks. Kubit labels every node for
-# Longhorn at machine-config time (create-default-disk: config + the disk list for
-# nodes with data disks, false for the rest), so the chart only has to trust the labels.
-# Longhorn's manager and engine run privileged; Talos enforces the baseline Pod
-# Security level everywhere else, so the namespace carries its own exemption.
 resource "kubectl_manifest" "longhorn_namespace" {
   count = var.longhorn.enabled ? 1 : 0
 

@@ -10,14 +10,11 @@ import (
 	"strings"
 )
 
-// PlanDiff is a reviewable rendering of a saved plan: resource changes grouped by the
-// add-on they belong to, with the attributes that differ.
 type PlanDiff struct {
-	Summary  Summary  `json:"summary"`
-	Groups   []Group  `json:"groups"`
-	Warnings []string `json:"warnings,omitempty"`
-	// Timestamp is tofu's plan time (RFC 3339) and doubles as the staleness marker.
-	Timestamp string `json:"timestamp"`
+	Summary   Summary  `json:"summary"`
+	Groups    []Group  `json:"groups"`
+	Warnings  []string `json:"warnings,omitempty"`
+	Timestamp string   `json:"timestamp"`
 }
 
 type Group struct {
@@ -26,24 +23,21 @@ type Group struct {
 }
 
 type Change struct {
-	Address string `json:"address"`
-	Type    string `json:"type"`
-	Name    string `json:"name"`
-	// Action is one of create, update, replace, delete, read, no-op.
-	Action string     `json:"action"`
-	Attrs  []AttrDiff `json:"attrs,omitempty"`
+	Address string     `json:"address"`
+	Type    string     `json:"type"`
+	Name    string     `json:"name"`
+	Action  string     `json:"action"`
+	Attrs   []AttrDiff `json:"attrs,omitempty"`
 }
 
 type AttrDiff struct {
-	Key    string `json:"key"`
-	Before string `json:"before,omitempty"`
-	After  string `json:"after,omitempty"`
-	// Unknown marks a value only known after apply.
-	Unknown   bool `json:"unknown,omitempty"`
-	Sensitive bool `json:"sensitive,omitempty"`
+	Key       string `json:"key"`
+	Before    string `json:"before,omitempty"`
+	After     string `json:"after,omitempty"`
+	Unknown   bool   `json:"unknown,omitempty"`
+	Sensitive bool   `json:"sensitive,omitempty"`
 }
 
-// showPlan is the subset of `tofu show -json` we read.
 type showPlan struct {
 	Timestamp       string `json:"timestamp"`
 	ResourceChanges []struct {
@@ -61,7 +55,6 @@ type showPlan struct {
 	} `json:"resource_changes"`
 }
 
-// ShowPlan renders the saved plan.tfplan in Dir into a PlanDiff.
 func (r *Runner) ShowPlan(ctx context.Context, warnings []string) (*PlanDiff, error) {
 	cmd := exec.CommandContext(ctx, r.Bin, "show", "-json", "plan.tfplan")
 	cmd.Dir = r.Dir
@@ -73,7 +66,6 @@ func (r *Runner) ShowPlan(ctx context.Context, warnings []string) (*PlanDiff, er
 	return ParseShowPlan(out, warnings)
 }
 
-// ParseShowPlan turns `tofu show -json` output into a PlanDiff.
 func ParseShowPlan(raw []byte, warnings []string) (*PlanDiff, error) {
 	var sp showPlan
 	if err := json.Unmarshal(raw, &sp); err != nil {
@@ -136,9 +128,6 @@ func actionOf(actions []string) string {
 	}
 }
 
-// AddonOf maps a resource address to the add-on it implements, by the naming
-// convention of the platform templates (helm_release.metallb, kubectl_manifest.metallb_pool,
-// kubectl_manifest.runtimeclass_gvisor, ...).
 func AddonOf(address string) string {
 	addr := strings.TrimPrefix(address, "data.")
 	_, name, ok := strings.Cut(addr, ".")
@@ -159,7 +148,6 @@ func AddonOf(address string) string {
 	return name
 }
 
-// Attributes that only carry provider noise; they never help a reviewer.
 var hiddenAttrs = map[string]bool{"id": true, "metadata": true, "status": true, "timeouts": true, "yaml_incluster": true, "live_manifest_incluster": true, "wait_for": true}
 
 func attrDiffs(before, after, unknown map[string]any, sensitive map[string]any) []AttrDiff {
@@ -173,8 +161,6 @@ func attrDiffs(before, after, unknown map[string]any, sensitive map[string]any) 
 	for k := range unknown {
 		keys[k] = true
 	}
-	// The kubectl provider marks yaml_body sensitive but exposes the same manifest as
-	// yaml_body_parsed; show the readable one only.
 	if keys["yaml_body_parsed"] {
 		delete(keys, "yaml_body")
 	}

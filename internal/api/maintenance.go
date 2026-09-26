@@ -6,9 +6,6 @@ import (
 	"time"
 )
 
-// disruptive gates a handler on the cluster's maintenance window. Outside the window
-// the request is refused with 409 unless ?force=true; the UI passes force after
-// showing the operator the window notice, so the gate protects scripts and habit.
 func (s *Server) disruptive(h http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		name := r.PathValue("name")
@@ -32,7 +29,6 @@ func (s *Server) disruptive(h http.HandlerFunc) http.HandlerFunc {
 	}
 }
 
-// handleMaintenance reports the window state for the UI's confirm dialogs.
 func (s *Server) handleMaintenance(w http.ResponseWriter, r *http.Request) {
 	c, _, err := s.manager.LoadCluster(r.Context(), r.PathValue("name"))
 	if err != nil {

@@ -1,7 +1,3 @@
-// Package offsite copies Kubit's disaster-recovery material (sealed etcd snapshots and
-// Kubit backups) to a second location, so losing the admin host together with the
-// cluster does not lose the way back. Objects stay sealed; the master key travels
-// separately (kubit key export).
 package offsite
 
 import (
@@ -21,23 +17,18 @@ import (
 	"github.com/minio/minio-go/v7/pkg/credentials"
 )
 
-// Target is one destination; Type selects the implementation.
 type Target struct {
-	Type   string `json:"type"` // "" (off) | dir | s3
-	Prefix string `json:"prefix"`
-	// dir: any local or mounted path (SMB/NFS share, USB disk, rsync'ed folder).
-	Dir string `json:"dir"`
-	// s3: any S3-compatible endpoint (AWS, MinIO, Backblaze B2, Wasabi, Hetzner…).
-	Endpoint  string `json:"endpoint"`
-	Bucket    string `json:"bucket"`
-	Region    string `json:"region"`
-	AccessKey string `json:"accessKey"`
-	SecretKey string `json:"secretKey"` // sealed at rest by the settings store
-	Insecure  bool   `json:"insecure"`  // plain http endpoint (LAN MinIO)
-	PathStyle bool   `json:"pathStyle"`
-	// KeepBackups bounds the daily Kubit backups kept remotely; snapshots follow the
-	// cluster's own retention.
-	KeepBackups int `json:"keepBackups"`
+	Type        string `json:"type"`
+	Prefix      string `json:"prefix"`
+	Dir         string `json:"dir"`
+	Endpoint    string `json:"endpoint"`
+	Bucket      string `json:"bucket"`
+	Region      string `json:"region"`
+	AccessKey   string `json:"accessKey"`
+	SecretKey   string `json:"secretKey"`
+	Insecure    bool   `json:"insecure"`
+	PathStyle   bool   `json:"pathStyle"`
+	KeepBackups int    `json:"keepBackups"`
 }
 
 func (t Target) Enabled() bool { return t.Type == "dir" || t.Type == "s3" }
@@ -58,8 +49,6 @@ type Object struct {
 	ModTime time.Time
 }
 
-// Store is what both implementations provide; keys are slash-separated and relative
-// to the target's prefix.
 type Store interface {
 	Put(ctx context.Context, key string, r io.Reader, size int64) error
 	Get(ctx context.Context, key string) (io.ReadCloser, error)
@@ -100,8 +89,6 @@ func lookup(pathStyle bool) minio.BucketLookupType {
 	return minio.BucketLookupAuto
 }
 
-// Probe writes, reads back and deletes a small object: what "Test" in the settings
-// does. It returns the round-trip time so a slow share is visible.
 func Probe(ctx context.Context, st Store) (time.Duration, error) {
 	start := time.Now()
 	key := ".kubit-probe-" + start.UTC().Format("20060102T150405Z")
@@ -124,8 +111,6 @@ func Probe(ctx context.Context, st Store) (time.Duration, error) {
 	return time.Since(start), nil
 }
 
-// PruneOldest deletes objects under prefix beyond keep, oldest first (by key, which
-// Kubit names with a UTC timestamp).
 func PruneOldest(ctx context.Context, st Store, prefix string, keep int) (int, error) {
 	if keep <= 0 {
 		return 0, nil
@@ -145,8 +130,6 @@ func PruneOldest(ctx context.Context, st Store, prefix string, keep int) (int, e
 	return n, nil
 }
 
-// ─── directory ───────────────────────────────────────────────────────────────
-
 type dirStore struct{ root string }
 
 func (d *dirStore) path(key string) string { return filepath.Join(d.root, filepath.FromSlash(key)) }
@@ -156,7 +139,6 @@ func (d *dirStore) Put(_ context.Context, key string, r io.Reader, _ int64) erro
 	if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
 		return err
 	}
-	// Write beside, then rename: a half-copied file must never look like a backup.
 	return fsx.WriteStream(p, 0o600, func(w io.Writer) error {
 		_, err := io.Copy(w, r)
 		return err
@@ -195,8 +177,6 @@ func (d *dirStore) Delete(_ context.Context, key string) error {
 	return err
 }
 
-// ─── S3 ──────────────────────────────────────────────────────────────────────
-
 type s3Store struct {
 	cl     *minio.Client
 	bucket string
@@ -215,7 +195,6 @@ func (s *s3Store) Get(ctx context.Context, key string) (io.ReadCloser, error) {
 	if err != nil {
 		return nil, err
 	}
-	// GetObject is lazy; touch the stat so a missing key fails here, not mid-read.
 	if _, err := obj.Stat(); err != nil {
 		obj.Close()
 		return nil, err

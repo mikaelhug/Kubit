@@ -1,6 +1,3 @@
-// Package talos wraps the Talos machine API for the two ways Kubit reaches a node:
-// insecure maintenance mode before a config is applied, and mTLS with the cluster's
-// talosconfig afterwards.
 package talos
 
 import (
@@ -26,12 +23,10 @@ type Client struct {
 	IP string
 }
 
-// DialMaintenance connects without verifying the server certificate; only a node in
-// maintenance mode accepts such a connection.
 func DialMaintenance(ctx context.Context, ip string) (*Client, error) {
 	c, err := client.New(ctx,
 		client.WithEndpoints(ip),
-		client.WithTLSConfig(&tls.Config{InsecureSkipVerify: true}), //nolint:gosec // maintenance API has no CA yet
+		client.WithTLSConfig(&tls.Config{InsecureSkipVerify: true}), //nolint:gosec
 	)
 	if err != nil {
 		return nil, err
@@ -39,7 +34,6 @@ func DialMaintenance(ctx context.Context, ip string) (*Client, error) {
 	return &Client{Client: c, IP: ip}, nil
 }
 
-// Dial connects with the cluster's talosconfig, addressing the node directly.
 func Dial(ctx context.Context, ip string, talosconfig []byte) (*Client, error) {
 	cfg, err := clientconfig.FromBytes(talosconfig)
 	if err != nil {
@@ -52,18 +46,14 @@ func Dial(ctx context.Context, ip string, talosconfig []byte) (*Client, error) {
 	return &Client{Client: c, IP: ip}, nil
 }
 
-// Context returns a ctx that targets this node when the call is proxied via apid.
 func (c *Client) Context(ctx context.Context) context.Context {
 	return client.WithNode(ctx, c.IP)
 }
 
-// PortOpen reports whether the Talos API port accepts TCP connections.
 func PortOpen(ctx context.Context, ip string, timeout time.Duration) bool {
 	return PortErr(ctx, ip, timeout) == nil
 }
 
-// PortErr is PortOpen with the dial error, so callers can tell a closed port from a
-// host they cannot route to.
 func PortErr(ctx context.Context, ip string, timeout time.Duration) error {
 	d := net.Dialer{Timeout: timeout}
 	conn, err := d.DialContext(ctx, "tcp", net.JoinHostPort(ip, Port))

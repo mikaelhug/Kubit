@@ -13,10 +13,8 @@ import (
 	"github.com/mikael/kubit/internal/store"
 )
 
-// ErrOffsiteOff means no target is configured; callers treat it as "nothing to do".
 var ErrOffsiteOff = errors.New("off-site copies are off")
 
-// Offsite opens the configured target, or ErrOffsiteOff.
 func (m *Manager) Offsite(ctx context.Context) (offsite.Store, offsite.Target, error) {
 	v, err := m.Store.GetSettings(ctx)
 	if err != nil {
@@ -33,7 +31,6 @@ func snapshotKey(sn *store.Snapshot) string {
 	return path.Join("clusters", sn.Cluster, "snapshots", filepath.Base(sn.Path))
 }
 
-// CopySnapshotOffsite uploads the sealed snapshot file and records the remote key.
 func (m *Manager) CopySnapshotOffsite(ctx context.Context, st offsite.Store, sn *store.Snapshot) error {
 	f, err := os.Open(sn.Path)
 	if err != nil {
@@ -52,8 +49,6 @@ func (m *Manager) CopySnapshotOffsite(ctx context.Context, st offsite.Store, sn 
 	return m.Store.SetSnapshotOffsite(ctx, sn.ID, key)
 }
 
-// deleteSnapshotOffsite removes the remote copy when the local one is pruned; a
-// missing target is not an error (the copy simply outlives the local file).
 func (m *Manager) deleteSnapshotOffsite(ctx context.Context, sn *store.Snapshot) error {
 	if sn.Offsite == "" {
 		return nil
@@ -68,10 +63,6 @@ func (m *Manager) deleteSnapshotOffsite(ctx context.Context, sn *store.Snapshot)
 	return st.Delete(ctx, sn.Offsite)
 }
 
-// BackupOffsite writes a sealed Kubit backup (the whole of $KUBIT_HOME minus
-// caches) to the target under backups/, then prunes to KeepBackups. The archive is
-// built in a temp file first so the upload knows its size and a failure leaves no
-// partial object behind.
 func (m *Manager) BackupOffsite(ctx context.Context, sink Sink) (string, error) {
 	sink.plan(Steps("archive", "Build the sealed backup archive", "upload", "Upload to the off-site target", "prune", "Apply retention")...)
 	st, target, err := m.Offsite(ctx)
@@ -135,7 +126,6 @@ func (m *Manager) BackupOffsite(ctx context.Context, sink Sink) (string, error) 
 	return key, nil
 }
 
-// OffsiteStatus summarises what the target holds, for the settings page.
 type OffsiteStatus struct {
 	Target     string `json:"target"`
 	Enabled    bool   `json:"enabled"`

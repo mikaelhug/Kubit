@@ -12,8 +12,6 @@ import (
 	"github.com/mikael/kubit/internal/tofu"
 )
 
-// AddonStatus joins three sources for one add-on: the declaration (enabled, values),
-// the tofu state (what Helm release is recorded), and Kubernetes readiness.
 type AddonStatus struct {
 	Key       string         `json:"key"`
 	Enabled   bool           `json:"enabled"`
@@ -22,12 +20,9 @@ type AddonStatus struct {
 	Address   string         `json:"address,omitempty"`
 	Release   *tofu.Release  `json:"release,omitempty"`
 	Readiness *k8s.Readiness `json:"readiness,omitempty"`
-	// State summarises: disabled | pending | deploying | ready | degraded | failed | orphaned
-	State string `json:"state"`
+	State     string         `json:"state"`
 }
 
-// addonMeta ties a cluster.yaml key to the namespace its workloads live in and the
-// chart pin from the templates.
 var addonMeta = []struct{ key, namespace, pin string }{
 	{"metallb", "metallb-system", "0.16.1"},
 	{"ingressNginx", "ingress-nginx", "4.15.1"},
@@ -76,7 +71,6 @@ func addonSpec(p config.Platform, key string) (bool, map[string]any) {
 	return false, nil
 }
 
-// Addons returns the status of every add-on for a cluster.
 func (m *Manager) Addons(ctx context.Context, name string) ([]AddonStatus, error) {
 	c, _, err := m.LoadCluster(ctx, name)
 	if err != nil {
@@ -121,7 +115,7 @@ func addonState(st AddonStatus, manifestOnly, chartless bool) string {
 	case !st.Enabled && st.Release == nil:
 		return "disabled"
 	case !st.Enabled && st.Release != nil:
-		return "orphaned" // declared off, still installed: plan will remove it
+		return "orphaned"
 	case manifestOnly:
 		return "ready"
 	case chartless && (st.Readiness == nil || st.Readiness.Total == 0):

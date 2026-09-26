@@ -11,18 +11,16 @@ import (
 )
 
 type OperationRow struct {
-	ID         int64  `json:"id"`
-	Cluster    string `json:"cluster"`
-	Kind       string `json:"kind"`
-	Status     string `json:"status"` // running | done | failed | cancelled
-	Log        string `json:"log"`
-	StartedAt  string `json:"startedAt"`
-	FinishedAt string `json:"finishedAt,omitempty"`
-	// Steps is the JSON step list (see cluster.Step); Artifact is kind-specific JSON
-	// (a plan diff for platform.plan); Request is the JSON body that started it, for retry.
-	Steps    json.RawMessage `json:"steps"`
-	Artifact json.RawMessage `json:"artifact,omitempty"`
-	Request  json.RawMessage `json:"request,omitempty"`
+	ID         int64           `json:"id"`
+	Cluster    string          `json:"cluster"`
+	Kind       string          `json:"kind"`
+	Status     string          `json:"status"`
+	Log        string          `json:"log"`
+	StartedAt  string          `json:"startedAt"`
+	FinishedAt string          `json:"finishedAt,omitempty"`
+	Steps      json.RawMessage `json:"steps"`
+	Artifact   json.RawMessage `json:"artifact,omitempty"`
+	Request    json.RawMessage `json:"request,omitempty"`
 }
 
 func (s *Store) CreateOperation(ctx context.Context, cluster, kind string, request []byte) (int64, error) {
@@ -72,17 +70,12 @@ func (s *Store) GetOperation(ctx context.Context, id int64) (*OperationRow, erro
 	return &o, nil
 }
 
-// ListOperations returns the most recent operations first, without their logs.
-// LastFinished returns when the newest operation of one of the kinds ended for a
-// cluster (zero time when none did).
 func (s *Store) LastFinished(ctx context.Context, cluster string, kinds []string) time.Time {
 	var out time.Time
 	for _, k := range kinds {
 		var ts sql.NullString
 		if err := s.db.QueryRowContext(ctx, `SELECT finished_at FROM operations WHERE kind = ? AND finished_at IS NOT NULL AND (cluster = ? OR EXISTS (SELECT 1 FROM json_each(CASE WHEN json_valid(request) THEN request ELSE '{}' END, '$.clusters') WHERE value = ?)) ORDER BY id DESC LIMIT 1`, k, cluster, cluster).Scan(&ts); err == nil && ts.Valid {
 			if t, err := time.Parse(time.RFC3339Nano, ts.String); err == nil && t.After(out) {
-				out = t
-			} else if t, err := time.Parse("2006-01-02T15:04:05.000Z", ts.String); err == nil && t.After(out) {
 				out = t
 			}
 		}
@@ -121,7 +114,6 @@ func rawOrNull(v, fallback string) json.RawMessage {
 	return json.RawMessage(v)
 }
 
-// MarkStaleOperations flips operations left "running" by a previous process to failed.
 func (s *Store) MarkStaleOperations(ctx context.Context) error {
 	_, err := s.db.ExecContext(ctx, `UPDATE operations SET status = 'failed', finished_at = strftime('%Y-%m-%dT%H:%M:%fZ','now'), log = log || 'kubit restarted while this operation was running' || char(10) WHERE status = 'running'`)
 	return err

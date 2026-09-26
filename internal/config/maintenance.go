@@ -6,18 +6,14 @@ import (
 	"time"
 )
 
-// Maintenance restricts when disruptive operations (upgrades, reboots, drains,
-// removals, restores) may start. Empty = anytime.
 type Maintenance struct {
-	// Window is "<days> <HH:MM>-<HH:MM>", days a comma list of Mon..Sun or "daily";
-	// the range may cross midnight, e.g. "Sat,Sun 22:00-04:00".
 	Window   string `yaml:"window,omitempty" json:"window,omitempty"`
-	Timezone string `yaml:"timezone,omitempty" json:"timezone,omitempty"` // IANA name, default Local
+	Timezone string `yaml:"timezone,omitempty" json:"timezone,omitempty"`
 }
 
 type window struct {
 	days       map[time.Weekday]bool
-	start, end int // minutes since midnight; end < start crosses midnight
+	start, end int
 	loc        *time.Location
 }
 
@@ -78,14 +74,11 @@ func hhmm(s string) (int, error) {
 	return t.Hour()*60 + t.Minute(), nil
 }
 
-// Validate checks the syntax.
 func (m Maintenance) Validate() error {
 	_, err := m.parse()
 	return err
 }
 
-// Open reports whether t falls inside the window (always true when none is set) and
-// the next opening time when it does not.
 func (m Maintenance) Open(t time.Time) (open bool, next time.Time) {
 	w, err := m.parse()
 	if err != nil || w == nil {
@@ -95,7 +88,6 @@ func (m Maintenance) Open(t time.Time) (open bool, next time.Time) {
 	if w.contains(lt) {
 		return true, time.Time{}
 	}
-	// Scan forward at minute resolution for up to eight days.
 	probe := lt.Truncate(time.Minute)
 	for i := 0; i < 8*24*60; i++ {
 		probe = probe.Add(time.Minute)
@@ -111,7 +103,6 @@ func (w *window) contains(t time.Time) bool {
 	if w.end > w.start {
 		return w.days[t.Weekday()] && mins >= w.start && mins < w.end
 	}
-	// Crosses midnight: the part after midnight belongs to the previous day's window.
 	if mins >= w.start {
 		return w.days[t.Weekday()]
 	}

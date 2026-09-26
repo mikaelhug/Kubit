@@ -5,25 +5,20 @@ import (
 	"sync/atomic"
 )
 
-// Change is what a subscriber learns about a write: which table, which cluster it
-// concerns ("" for Kubit-wide rows), the row key, and whether it was put or deleted.
-// Subscribers fetch the row themselves; the store never marshals for them.
 type Change struct {
-	Table   string // clusters | machines | snapshots | operations | audit | events | settings | * (external writer)
+	Table   string
 	Cluster string
-	Key     string // cluster name, machine mac, snapshot/operation/audit id, event kind…
-	Op      string // put | delete | ack | resolve
-	Node    string // events: the object the ack/resolve applies to
+	Key     string
+	Op      string
+	Node    string
 }
 
 type notifier struct {
 	mu     sync.RWMutex
 	fns    []func(Change)
-	writes atomic.Int64 // local write counter; external-writer detection compares against it
+	writes atomic.Int64
 }
 
-// OnChange registers a subscriber; fn must not block (it is called inline after the
-// write commits).
 func (s *Store) OnChange(fn func(Change)) {
 	s.n.mu.Lock()
 	defer s.n.mu.Unlock()
@@ -40,7 +35,6 @@ func (s *Store) notify(c Change) {
 	}
 }
 
-// done notifies when err is nil and passes err through, for the one-liner writers.
 func (s *Store) done(err error, c Change) error {
 	if err == nil {
 		s.notify(c)

@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"strings"
 	"time"
 
 	"github.com/mikael/kubit/internal/config"
@@ -23,7 +24,6 @@ func (m *Manager) findNode(ctx context.Context, name, hostname string) (*config.
 	return nil, config.Node{}, fmt.Errorf("node %s is not part of cluster %s", hostname, name)
 }
 
-// CordonNode marks the node unschedulable; running pods stay.
 func (m *Manager) CordonNode(ctx context.Context, name, hostname string, sink Sink) error {
 	sink.plan(Steps("cordon", "Mark "+hostname+" unschedulable")...)
 	if _, _, err := m.findNode(ctx, name, hostname); err != nil {
@@ -62,7 +62,6 @@ func (m *Manager) UncordonNode(ctx context.Context, name, hostname string, sink 
 	})
 }
 
-// DrainNode cordons and evicts pods (DaemonSets stay); the node remains in the cluster.
 func (m *Manager) DrainNode(ctx context.Context, name, hostname string, sink Sink) error {
 	sink.plan(Steps("drain", "Cordon and evict pods from "+hostname)...)
 	if _, _, err := m.findNode(ctx, name, hostname); err != nil {
@@ -82,8 +81,6 @@ func (m *Manager) DrainNode(ctx context.Context, name, hostname string, sink Sin
 	})
 }
 
-// RebootNode optionally drains first, reboots through the Talos API, waits for the
-// machine to come back and, if it was drained, uncordons it.
 func (m *Manager) RebootNode(ctx context.Context, name, hostname string, drainFirst bool, sink Sink) error {
 	steps := Steps("reboot", "Reboot "+hostname+" and wait for it to return", "ready", "Wait for Kubernetes Ready")
 	if drainFirst {
@@ -91,7 +88,7 @@ func (m *Manager) RebootNode(ctx context.Context, name, hostname string, drainFi
 		steps = append(steps, Step{ID: "uncordon", Title: "Mark schedulable again"})
 	}
 	sink.plan(steps...)
-	c, n, err := m.findNode(ctx, name, hostname)
+	_, n, err := m.findNode(ctx, name, hostname)
 	if err != nil {
 		return err
 	}
@@ -142,13 +139,10 @@ func (m *Manager) RebootNode(ctx context.Context, name, hostname string, drainFi
 			return err
 		}
 	}
-	_ = c
 	sink.emit(Done, steps[len(steps)-1].ID, hostname, "rebooted and Ready")
 	return nil
 }
 
-// UpgradeNode upgrades one node's Talos to the cluster's declared version (or a given
-// one), the same way the rolling upgrade treats each node.
 func (m *Manager) UpgradeNode(ctx context.Context, name, hostname, version string, sink Sink) error {
 	c, n, err := m.findNode(ctx, name, hostname)
 	if err != nil {
@@ -206,7 +200,6 @@ func (m *Manager) UpgradeNode(ctx context.Context, name, hostname, version strin
 	})
 }
 
-// sinkWriter forwards kubectl drain's progress lines as events.
 type sinkWriter struct {
 	sink Sink
 	step string
@@ -215,16 +208,9 @@ type sinkWriter struct {
 
 func (w sinkWriter) Write(p []byte) (int, error) {
 	if s := string(p); len(s) > 1 {
-		w.sink.emit(Info, w.step, w.node, "%s", trimNL(s))
+		w.sink.emit(Info, w.step, w.node, "%s", strings.TrimRight(s, "\r\n"))
 	}
 	return len(p), nil
-}
-
-func trimNL(s string) string {
-	for len(s) > 0 && (s[len(s)-1] == '\n' || s[len(s)-1] == '\r') {
-		s = s[:len(s)-1]
-	}
-	return s
 }
 
 var _ io.Writer = sinkWriter{}

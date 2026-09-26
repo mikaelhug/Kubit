@@ -17,8 +17,6 @@ import (
 	"github.com/mikael/kubit/internal/store"
 )
 
-// handleMachineAdd registers a machine Kubit has not seen on the network: a VM or a
-// box that will be installed by hand. Nothing is probed; discovery fills in the rest.
 func (s *Server) handleMachineAdd(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		MAC, IP, Hostname, Arch string
@@ -45,7 +43,6 @@ func (s *Server) handleMachineAdd(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusCreated, m)
 }
 
-// handleLabProgress is what the installer (through the pxe proxy) calls at each stage.
 func (s *Server) handleLabProgress(w http.ResponseWriter, r *http.Request) {
 	mac, stage := strings.ToLower(r.URL.Query().Get("mac")), r.URL.Query().Get("stage")
 	m, err := s.store.GetMachine(r.Context(), mac)
@@ -58,15 +55,12 @@ func (s *Server) handleLabProgress(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, err)
 		return
 	}
-	// The installer's address is the lease the installed system will most likely
-	// keep; it is where the SSH phase looks first.
 	if ip := r.URL.Query().Get("ip"); ip != "" && ip != m.IP && net.ParseIP(ip) != nil {
 		_ = s.store.UpsertNode(r.Context(), store.NodeRow{MAC: mac, IP: ip, Source: m.Source, State: m.State, Hostname: m.Hostname, Arch: m.Arch})
 	}
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// pxeStatus reads the PXE server's view (boots by MAC and its log).
 func (s *Server) pxeStatus(ctx context.Context) (*pxe.Status, error) {
 	v, err := s.store.GetSettings(ctx)
 	if err != nil || v.PXEStatusURL == "" {
@@ -84,21 +78,17 @@ func (s *Server) pxeStatus(ctx context.Context) (*pxe.Status, error) {
 	return &st, nil
 }
 
-// pxeWatch mirrors new PXE log lines about a machine into an operation as they
-// appear, so the Activity drawer reads like the console nobody is sitting at. The
-// PXE server's log and boot table outlive earlier attempts, so only what it saw
-// after the watch was created counts.
 type pxeWatch struct {
 	s     *Server
 	mac   string
 	ip    string
 	since time.Time
 	seen  int
-	sink  clusterSink
+	sink  cluster.Sink
 	step  string
 }
 
-func newPXEWatch(s *Server, mac string, sink clusterSink) *pxeWatch {
+func newPXEWatch(s *Server, mac string, sink cluster.Sink) *pxeWatch {
 	return &pxeWatch{s: s, mac: mac, sink: sink, since: time.Now(), seen: -1}
 }
 
@@ -122,15 +112,13 @@ func (p *pxeWatch) poll(ctx context.Context) *pxe.Boot {
 	}
 	for _, line := range st.Log[p.seen:] {
 		if strings.Contains(line, p.mac) || (p.ip != "" && strings.Contains(line, p.ip+" ")) {
-			p.sink(clusterEvent{Time: time.Now(), Kind: "log", Level: cluster.Info, Step: p.step, Node: p.mac, Message: "pxe: " + strings.TrimSpace(line)})
+			p.sink(cluster.Event{Time: time.Now(), Kind: "log", Level: cluster.Info, Step: p.step, Node: p.mac, Message: "pxe: " + strings.TrimSpace(line)})
 		}
 	}
 	p.seen = len(st.Log)
 	return boot
 }
 
-// Phase timeouts: each is the longest a healthy install spends there, with margin.
-// Variables so tests can shorten them.
 var (
 	labBootWait      = 3 * time.Minute
 	labIPXEWait      = 2 * time.Minute
@@ -140,19 +128,17 @@ var (
 	labPollEvery     = 5 * time.Second
 )
 
-// labWaitBoot is the PXE half shared by lab-host installs and Boot into Talos: the
-// firmware's DHCP request, then the kernel fetch.
 func (s *Server) labWaitBoot(ctx context.Context, watch *pxeWatch) error {
 	sink, mac := watch.sink, watch.mac
 	wait := func(step string, budget time.Duration, check func() (bool, string)) error {
 		watch.step = step
-		sink(clusterEvent{Time: time.Now(), Kind: "step", Step: step, Status: cluster.StepRunning})
+		sink(cluster.Event{Time: time.Now(), Kind: "step", Step: step, Status: cluster.StepRunning})
 		deadline := time.Now().Add(budget)
 		for {
 			done, note := check()
 			if done {
-				sink(clusterEvent{Time: time.Now(), Kind: "log", Level: cluster.Done, Step: step, Node: mac, Message: note})
-				sink(clusterEvent{Time: time.Now(), Kind: "step", Step: step, Status: cluster.StepDone})
+				sink(cluster.Event{Time: time.Now(), Kind: "log", Level: cluster.Done, Step: step, Node: mac, Message: note})
+				sink(cluster.Event{Time: time.Now(), Kind: "step", Step: step, Status: cluster.StepDone})
 				return nil
 			}
 			if time.Now().After(deadline) {
@@ -183,11 +169,7 @@ func (s *Server) labWaitBoot(ctx context.Context, watch *pxeWatch) error {
 	})
 }
 
-// labWaitInstall follows one Debian install from the network boot to SSH, one phase
-// at a time, each with its own timeout and a diagnosis that names the layer that
-// failed instead of "no SSH after 30 minutes". manual skips the PXE phases (the
-// operator booted the installer themselves).
-func (s *Server) labWaitInstall(ctx context.Context, m *store.Machine, manual bool, sink clusterSink) (*labhost.Client, error) {
+func (s *Server) labWaitInstall(ctx context.Context, m *store.Machine, manual bool, sink cluster.Sink) (*labhost.Client, error) {
 	mac := m.MAC
 	watch := newPXEWatch(s, mac, sink)
 	stageAt := func() (string, time.Time) {
@@ -199,19 +181,18 @@ func (s *Server) labWaitInstall(ctx context.Context, m *store.Machine, manual bo
 		return row.LabHost.Install.Stage, t
 	}
 	stageRank := map[string]int{"installer": 1, "partitioning": 2, "packages": 3, "late-done": 4, "booted": 5}
-	// wait polls check every 5 s until it reports done or the phase's budget is spent.
 	wait := func(step string, budget time.Duration, check func() (bool, string)) error {
 		watch.step = step
-		sink(clusterEvent{Time: time.Now(), Kind: "step", Step: step, Status: cluster.StepRunning})
+		sink(cluster.Event{Time: time.Now(), Kind: "step", Step: step, Status: cluster.StepRunning})
 		deadline := time.Now().Add(budget)
 		for {
 			watch.poll(ctx)
 			done, note := check()
 			if done {
 				if note != "" {
-					sink(clusterEvent{Time: time.Now(), Kind: "log", Level: cluster.Done, Step: step, Node: mac, Message: note})
+					sink(cluster.Event{Time: time.Now(), Kind: "log", Level: cluster.Done, Step: step, Node: mac, Message: note})
 				}
-				sink(clusterEvent{Time: time.Now(), Kind: "step", Step: step, Status: cluster.StepDone})
+				sink(cluster.Event{Time: time.Now(), Kind: "step", Step: step, Status: cluster.StepDone})
 				return nil
 			}
 			if time.Now().After(deadline) {
@@ -255,8 +236,6 @@ func (s *Server) labWaitInstall(ctx context.Context, m *store.Machine, manual bo
 	var lc *labhost.Client
 	if err := wait("ssh", labSSHWait, func() (bool, string) {
 		st, _ := stageAt()
-		// The row's address may have been updated meanwhile (discovery, or a harness
-		// that learned the lease), so read it again each time.
 		rowIP := ""
 		if row, err := s.store.GetMachine(ctx, mac); err == nil {
 			rowIP = row.IP

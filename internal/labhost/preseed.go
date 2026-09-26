@@ -1,7 +1,3 @@
-// Package labhost turns a bare machine into a KVM host for Talos VMs: an unattended
-// Debian install (preseed served during one network boot), then everything over SSH
-// with libvirt's virsh. VMs boot Talos straight from a kernel/initramfs on the host —
-// no PXE, no ISO — and become ordinary Kubit machines.
 package labhost
 
 import (
@@ -11,42 +7,33 @@ import (
 	"text/template"
 )
 
-// Debian release and where the netboot installer comes from.
 const (
-	DebianSuite  = "trixie"
-	DebianMirror = "http://deb.debian.org/debian"
-	// User Kubit logs in as; passwordless sudo, key-only.
-	User = "kubit"
-	// VMDir and BootDir hold disks and the Talos kernel/initramfs per version.
-	VMDir   = "/var/lib/kubit/vms"
-	BootDir = "/var/lib/kubit/boot"
+	debianSuite  = "trixie"
+	debianMirror = "http://deb.debian.org/debian"
+	User         = "kubit"
+	vmDir        = "/var/lib/kubit/vms"
+	bootDir      = "/var/lib/kubit/boot"
 )
 
-// NetbootURL is the Debian installer kernel or initrd for an arch.
 func NetbootURL(arch, file string) string {
-	return fmt.Sprintf("%s/dists/%s/main/installer-%s/current/images/netboot/debian-installer/%s/%s", DebianMirror, DebianSuite, arch, arch, file)
+	return fmt.Sprintf("%s/dists/%s/main/installer-%s/current/images/netboot/debian-installer/%s/%s", debianMirror, debianSuite, arch, arch, file)
 }
 
-// PreseedParams is everything the install needs to know about one host.
 type PreseedParams struct {
 	Hostname  string
-	Disk      string // "" = let the early command pick the largest
-	PublicKey string // Kubit's SSH public key (authorized_keys line)
-	PostURL   string // fetched and run at the end of the install
+	Disk      string
+	PublicKey string
+	PostURL   string
 	Timezone  string
 	Mirror    string
-	Arch      string // amd64 | arm64: picks the qemu and firmware packages
+	Arch      string
 }
 
-// ProgressURL is where the installer reports its stage; derived from PostURL so the
-// pxe proxy needs no extra configuration.
 func (p PreseedParams) ProgressURL() string {
 	return strings.TrimSuffix(p.PostURL, "/postinstall") + "/progress"
 }
 
-// Packages the host needs per arch: the emulator for its own arch and the UEFI
-// firmware the VMs boot from disk with.
-func Packages(arch string) string {
+func packages(arch string) string {
 	common := "qemu-utils libvirt-daemon-system libvirt-clients bridge-utils sudo curl ca-certificates unattended-upgrades"
 	if arch == "arm64" {
 		return "qemu-system-arm qemu-efi-aarch64 " + common
@@ -118,11 +105,10 @@ d-i preseed/late_command string \
   wget -q -O /dev/null "{{.ProgressURL}}?stage=late-done" || true
 `))
 
-// Preseed renders the debian-installer answers for one host.
 func Preseed(p PreseedParams) (string, error) {
 	mirror := p.Mirror
 	if mirror == "" {
-		mirror = DebianMirror
+		mirror = debianMirror
 	}
 	host, path := splitMirror(mirror)
 	tz := p.Timezone
@@ -132,7 +118,7 @@ func Preseed(p PreseedParams) (string, error) {
 	data := struct {
 		PreseedParams
 		MirrorHost, MirrorPath, User, VMDir, BootDir, Timezone, Packages string
-	}{p, host, path, User, VMDir, BootDir, tz, Packages(p.Arch)}
+	}{p, host, path, User, vmDir, bootDir, tz, packages(p.Arch)}
 	var b bytes.Buffer
 	if err := preseedTmpl.Execute(&b, data); err != nil {
 		return "", err
@@ -148,7 +134,6 @@ func splitMirror(u string) (string, string) {
 	return u, "/debian"
 }
 
-// KernelArgs is the installer command line: fully automatic, preseed over HTTP.
 func KernelArgs(preseedURL, hostname string) string {
 	h := ""
 	if hostname != "" {
@@ -157,12 +142,6 @@ func KernelArgs(preseedURL, hostname string) string {
 	return fmt.Sprintf("auto=true priority=critical url=%s interface=auto%s DEBIAN_FRONTEND=text console=tty0 ---", preseedURL, h)
 }
 
-// PostInstall runs inside the freshly installed system (from late_command, in the
-// target): nothing Kubit cannot redo over SSH later, so it stays small — libvirt's
-// default network is off (VMs use br0), unattended-upgrades applies Debian's security
-// and stable updates daily without rebooting (the reboot is Kubit's Update host
-// operation, which parks the VMs first), and a one-shot unit reports "booted" to
-// Kubit on the first boot so the operation knows the reboot landed in Debian.
 func PostInstall(progressURL string) string {
 	return `#!/bin/sh
 set -e

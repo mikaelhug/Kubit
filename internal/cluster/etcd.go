@@ -24,9 +24,6 @@ func (m *Manager) snapshotDir(name string) string {
 	return filepath.Join(m.Home, "clusters", name, "snapshots")
 }
 
-// SnapshotEtcd takes an etcd snapshot from the first control plane whose etcd is
-// healthy, verifies it, seals it with the master key and records it. source is
-// manual | schedule | pre-upgrade; scheduled snapshots are pruned to backup.etcd.keep.
 func (m *Manager) SnapshotEtcd(ctx context.Context, name, source string, sink Sink) (*store.Snapshot, error) {
 	sink.plan(Steps("pick", "Find a healthy control plane", "snapshot", "Stream the etcd snapshot", "verify", "Verify and seal", "offsite", "Copy off-site", "prune", "Apply retention")...)
 	c, _, err := m.LoadCluster(ctx, name)
@@ -113,7 +110,6 @@ func (m *Manager) SnapshotEtcd(ctx context.Context, name, source string, sink Si
 		if err != nil {
 			return err
 		}
-		// bbolt files are mostly free pages: gzip typically shrinks them 20–50×.
 		var zb bytes.Buffer
 		zw := gzip.NewWriter(&zb)
 		if _, err := zw.Write(plain); err != nil {
@@ -141,8 +137,6 @@ func (m *Manager) SnapshotEtcd(ctx context.Context, name, source string, sink Si
 		return nil, err
 	}
 	sn.TS = ts.Format(time.RFC3339)
-	// A failed copy never fails the snapshot: the local file is the primary; the
-	// caller raises offsite.failed so the gap is visible and forwarded.
 	if st, target, oerr := m.Offsite(ctx); errors.Is(oerr, ErrOffsiteOff) {
 		sink.skip("offsite")
 	} else {
@@ -179,8 +173,6 @@ func (m *Manager) SnapshotEtcd(ctx context.Context, name, source string, sink Si
 	return &sn, nil
 }
 
-// pruneSnapshots deletes the oldest scheduled snapshots beyond keep; manual and
-// pre-upgrade snapshots are never pruned automatically.
 func (m *Manager) pruneSnapshots(ctx context.Context, name string, keep int) (int, error) {
 	all, err := m.Store.ListSnapshots(ctx, name)
 	if err != nil {
@@ -217,8 +209,6 @@ func (m *Manager) DeleteSnapshot(ctx context.Context, id int64) error {
 	return m.Store.DeleteSnapshot(ctx, id)
 }
 
-// OpenSnapshot returns the plain snapshot bytes after checking the hash; a mismatch
-// marks the row corrupt.
 func (m *Manager) OpenSnapshot(ctx context.Context, id int64) (*store.Snapshot, []byte, error) {
 	sn, err := m.Store.GetSnapshot(ctx, id)
 	if err != nil {
@@ -256,7 +246,6 @@ func (m *Manager) OpenSnapshot(ctx context.Context, id int64) (*store.Snapshot, 
 	return sn, plain, nil
 }
 
-// VerifySnapshot re-checks a stored snapshot: unseal, hash, open as bbolt.
 func (m *Manager) VerifySnapshot(ctx context.Context, id int64) (*store.Snapshot, error) {
 	sn, plain, err := m.OpenSnapshot(ctx, id)
 	if err != nil {
@@ -280,8 +269,6 @@ func (m *Manager) VerifySnapshot(ctx context.Context, id int64) (*store.Snapshot
 	return sn, nil
 }
 
-// SnapshotAge returns how long ago the last good snapshot was taken; ok is false when
-// there is none.
 func (m *Manager) SnapshotAge(ctx context.Context, name string) (age time.Duration, ok bool) {
 	last, err := m.Store.LatestSnapshotTS(ctx, name)
 	if err != nil || last == "" {
@@ -289,14 +276,11 @@ func (m *Manager) SnapshotAge(ctx context.Context, name string) (age time.Durati
 	}
 	t, err := time.Parse(time.RFC3339Nano, last)
 	if err != nil {
-		if t, err = time.Parse("2006-01-02T15:04:05.000Z", last); err != nil {
-			return 0, false
-		}
+		return 0, false
 	}
 	return time.Since(t), true
 }
 
-// SnapshotDue reports whether the schedule calls for a snapshot now.
 func (m *Manager) SnapshotDue(ctx context.Context, c *config.Cluster) bool {
 	iv := c.Spec.Backup.Etcd.IntervalDuration()
 	if iv == 0 {
@@ -306,7 +290,6 @@ func (m *Manager) SnapshotDue(ctx context.Context, c *config.Cluster) bool {
 	return !ok || age >= iv
 }
 
-// SnapshotStale reports a schedule that has slipped past twice its interval.
 func (m *Manager) SnapshotStale(ctx context.Context, c *config.Cluster) bool {
 	iv := c.Spec.Backup.Etcd.IntervalDuration()
 	if iv == 0 {
@@ -316,10 +299,6 @@ func (m *Manager) SnapshotStale(ctx context.Context, c *config.Cluster) bool {
 	return ok && age >= 2*iv
 }
 
-// RestoreEtcd rebuilds the cluster's etcd from a stored snapshot: every control
-// plane's EPHEMERAL partition is wiped (STATE keeps the machine config), the snapshot
-// is uploaded to the first control plane, etcd is bootstrapped from it and the other
-// members rejoin. Workers keep running; their kubelets reconnect once the API is back.
 func (m *Manager) RestoreEtcd(ctx context.Context, name string, snapshotID int64, sink Sink) error {
 	sink.plan(Steps("check", "Verify the snapshot and reach every control plane", "wipe", "Wipe etcd state on every control plane and reboot", "upload", "Upload the snapshot to the first control plane", "bootstrap", "Bootstrap etcd from the snapshot", "ready", "Wait for nodes to become Ready", "workers", "Restart pods on workers")...)
 	c, _, err := m.LoadCluster(ctx, name)
@@ -400,7 +379,7 @@ func (m *Manager) RestoreEtcd(ctx context.Context, name string, snapshotID int64
 				return err
 			}
 			defer tc.Close()
-			if err := tc.EtcdRecoverUpload(call, bytesReader(plain)); err != nil {
+			if err := tc.EtcdRecoverUpload(call, bytes.NewReader(plain)); err != nil {
 				return err
 			}
 			sink.emit(Info, "upload", cp1.Hostname, "%s uploaded", humanBytes(uint64(len(plain))))
@@ -451,9 +430,6 @@ func (m *Manager) RestoreEtcd(ctx context.Context, name string, snapshotID int64
 	if err := sink.run("ready", func() error { return m.waitReady(ctx, c, c.Spec.Nodes, sink) }); err != nil {
 		return fail(err)
 	}
-	// A restore resets resourceVersions; watches held by pods on workers (kube-proxy,
-	// CNI, MetalLB speakers) never recover on their own and the node loses service
-	// routing. Control planes rebooted; workers get their pods recreated.
 	if len(c.Workers()) == 0 {
 		sink.skip("workers")
 	} else if err := sink.run("workers", func() error {
@@ -476,5 +452,3 @@ func (m *Manager) RestoreEtcd(ctx context.Context, name string, snapshotID int64
 	sink.emit(Done, "workers", "", "cluster %s restored from snapshot #%d (%s)", name, sn.ID, sn.TS)
 	return nil
 }
-
-func bytesReader(b []byte) io.Reader { return bytes.NewReader(b) }

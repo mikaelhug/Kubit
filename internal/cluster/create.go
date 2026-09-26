@@ -14,11 +14,6 @@ import (
 	"go.yaml.in/yaml/v4"
 )
 
-// Create provisions a new cluster from a declaration whose nodes are all in maintenance
-// mode. Steps: schematic → secrets + configs → apply to every node in parallel → wait
-// for each to come back with cluster credentials → bootstrap etcd on the first control
-// plane → kubeconfig → all nodes Ready. Everything after the secrets are stored is
-// resumable: calling Create again with the same declaration continues where it stopped.
 func (m *Manager) Create(ctx context.Context, c *config.Cluster, sink Sink) error {
 	name := c.Metadata.Name
 	sink.plan(createSteps...)
@@ -98,8 +93,6 @@ var createSteps = Steps(
 	"ready", "Wait for nodes to become Ready",
 )
 
-// resume drives a provisioning cluster to ready, skipping steps already completed.
-// recheck re-runs preflight on nodes still to install (a fresh Create just did it).
 func (m *Manager) resume(ctx context.Context, c *config.Cluster, recheck bool, sink Sink) error {
 	name := c.Metadata.Name
 	sec, err := m.Store.GetClusterSecrets(ctx, name)
@@ -154,10 +147,6 @@ func (m *Manager) resume(ctx context.Context, c *config.Cluster, recheck bool, s
 	}
 
 	if err := sink.run("ready", func() error { return m.waitReady(ctx, c, c.Spec.Nodes, sink) }); err != nil {
-		// etcd and the API are already up (StateBootstrapped). Nodes not going Ready in
-		// time is a degraded cluster, not a failed one — leave it Bootstrapped (a re-run
-		// or the nodes catching up on CNI/image pulls recovers it) rather than mislabel
-		// a live cluster as failed.
 		sink.emit(Warn, "ready", "", "%v — the cluster is up (etcd + API) but not all nodes are Ready yet; it stays usable and Create can be re-run", err)
 		return err
 	}
@@ -165,8 +154,6 @@ func (m *Manager) resume(ctx context.Context, c *config.Cluster, recheck bool, s
 	return nil
 }
 
-// pendingInstall splits nodes into those still needing a config applied (in maintenance
-// mode) and those already running the installed system, and loads the stored configs.
 func (m *Manager) pendingInstall(ctx context.Context, c *config.Cluster, talosconfig []byte, sink Sink) ([]config.Node, map[string][]byte, error) {
 	var pending []config.Node
 	cfgs := map[string][]byte{}
@@ -201,10 +188,6 @@ func (m *Manager) pendingInstall(ctx context.Context, c *config.Cluster, talosco
 	return pending, cfgs, nil
 }
 
-// sameNodes reports whether two cluster specs describe the same set of machines. It
-// compares stable identity (MAC when present, else hostname) and role — never IP, which
-// the install itself rewrites for static nodes and which DHCP changes across leases, so
-// a retry of the same cluster is not rejected as "a different node set".
 func sameNodes(a, b *config.Cluster) bool {
 	if len(a.Spec.Nodes) != len(b.Spec.Nodes) {
 		return false
@@ -227,13 +210,8 @@ func sameNodes(a, b *config.Cluster) bool {
 	return true
 }
 
-// minControlPlaneBytes is the *usable* RAM floor for a Talos control plane, enforced in
-// preflight so an undersized CP fails before install rather than after the 0/N-Ready
-// timeout. It sits below what a 2 GiB VM reports (firmware/kernel reserve some, so a
-// 2048 MiB VM shows ~1.9 GiB) while still rejecting a 1 GiB VM (~940 MiB).
 const minControlPlaneBytes = 1600 << 20
 
-// preflight checks every target answers the maintenance API before anything is written.
 func (m *Manager) preflight(ctx context.Context, c *config.Cluster, nodes []config.Node, sink Sink) error {
 	for _, n := range nodes {
 		r := talos.Probe(ctx, n.IP, 3*time.Second)
@@ -254,7 +232,6 @@ func (m *Manager) preflight(ctx context.Context, c *config.Cluster, nodes []conf
 	return nil
 }
 
-// installAll applies configs in parallel and waits for each node to return over mTLS.
 func (m *Manager) installAll(ctx context.Context, c *config.Cluster, nodes []config.Node, cfgs map[string][]byte, talosconfig []byte, sink Sink) error {
 	var (
 		wg    sync.WaitGroup
@@ -274,8 +251,6 @@ func (m *Manager) installAll(ctx context.Context, c *config.Cluster, nodes []con
 				errs = append(errs, fmt.Errorf("%s: %w", n.Hostname, err))
 				mu.Unlock()
 			} else if target := n.TargetIP(); target != n.IP {
-				// A static node leaves its maintenance-mode lease behind; from here on
-				// the declaration and the machine row point at the pinned address.
 				mu.Lock()
 				for i := range c.Spec.Nodes {
 					if c.Spec.Nodes[i].Hostname == n.Hostname {
@@ -310,12 +285,8 @@ func (m *Manager) installOne(ctx context.Context, n config.Node, cfg []byte, tal
 		tc.Close()
 		return fmt.Errorf("boot id: %w", err)
 	}
-	// A lab VM boots Talos from RAM; its persistent libvirt domain must be switched to
-	// disk boot BEFORE the apply triggers the install-reboot, or the reboot re-reads the
-	// old definition and lands back in the RAM installer. A failure here cannot be
-	// recovered by proceeding, so it is fatal (bare-metal nodes are a no-op).
 	if n.MAC != "" {
-		switched, derr := m.labDiskBoot(ctx, storeMachineRef{MAC: n.MAC})
+		switched, derr := m.labDiskBoot(ctx, n.MAC)
 		if derr != nil {
 			tc.Close()
 			return fmt.Errorf("%s: switch to disk boot: %w", n.Hostname, derr)

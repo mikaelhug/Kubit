@@ -1,8 +1,3 @@
-// Package oob is out-of-band management: reaching a machine's management engine
-// when the OS is absent, dead or powered off. Two backends: Intel AMT (vPro desktops
-// and NUCs) and DMTF Redfish (server BMCs). Both give Kubit power control and "boot
-// from network once", which turns first contact and re-provisioning into a click
-// instead of a walk to the machine.
 package oob
 
 import (
@@ -19,21 +14,14 @@ import (
 	"github.com/device-management-toolkit/go-wsman-messages/v2/pkg/wsman/client"
 )
 
-// Config is how to reach one machine's management engine; the password is sealed by
-// the store.
 type Config struct {
-	Type     string `json:"type"` // "" (none) | amt | redfish
-	Host     string `json:"host"` // AMT shares the wired NIC's address; a BMC has its own
-	User     string `json:"user"` // AMT: usually "admin"; BMC: its local account
+	Type     string `json:"type"`
+	Host     string `json:"host"`
+	User     string `json:"user"`
 	Password string `json:"password"`
-	TLS      bool   `json:"tls"` // AMT only: 16993 with TLS, 16992 without (Redfish is always HTTPS)
+	TLS      bool   `json:"tls"`
 }
 
-func (c Config) Enabled() bool { return (c.Type == "amt" || c.Type == "redfish") && c.Host != "" }
-
-// Info is what a probe learns: enough to create the machine row before Talos ever
-// booted, and the power state the Inventory shows. A BMC also reports the host's
-// CPUs, memory and drives; AMT does not.
 type Info struct {
 	Version      string     `json:"version"`
 	MAC          string     `json:"mac"`
@@ -41,7 +29,7 @@ type Info struct {
 	Manufacturer string     `json:"manufacturer,omitempty"`
 	Model        string     `json:"model,omitempty"`
 	Serial       string     `json:"serial,omitempty"`
-	Power        string     `json:"power"` // on | off | sleep | unknown
+	Power        string     `json:"power"`
 	CPUs         int        `json:"cpus,omitempty"`
 	MemoryBytes  int64      `json:"memoryBytes,omitempty"`
 	Disks        []DiskInfo `json:"disks,omitempty"`
@@ -51,11 +39,10 @@ type DiskInfo struct {
 	Model     string `json:"model,omitempty"`
 	Serial    string `json:"serial,omitempty"`
 	SizeBytes int64  `json:"sizeBytes"`
-	Transport string `json:"transport,omitempty"` // sata | sas | nvme | usb
-	Media     string `json:"media,omitempty"`     // hdd | ssd
+	Transport string `json:"transport,omitempty"`
+	Media     string `json:"media,omitempty"`
 }
 
-// Action is a power request.
 type Action string
 
 const (
@@ -63,25 +50,20 @@ const (
 	PowerOff   Action = "off"
 	Reset      Action = "reset"
 	PowerCycle Action = "cycle"
-	// BootPXE forces one network boot on the next start (then on/reset as needed).
-	BootPXE Action = "pxe"
+	BootPXE    Action = "pxe"
 )
 
-// Manager abstracts the backend so the API and tests do not depend on WS-Man.
 type Manager interface {
 	Probe(ctx context.Context) (Info, error)
 	Power(ctx context.Context, a Action) error
 }
 
-// Option tunes a backend; WithTrace receives one line per boot-related request and
-// reply so an operation log shows what the management engine was asked and answered.
 type Option func(*options)
 
 type options struct{ trace func(string) }
 
 func WithTrace(fn func(string)) Option { return func(o *options) { o.trace = fn } }
 
-// Open returns the backend for a config.
 func Open(c Config, opts ...Option) (Manager, error) {
 	var o options
 	for _, opt := range opts {
@@ -139,8 +121,6 @@ func (a *amt) msgs(ctx context.Context) wsman.Messages {
 func (a *amt) Probe(ctx context.Context) (Info, error) {
 	m := a.msgs(ctx)
 	var info Info
-	// Software identity carries the AMT version; it is also the cheapest "are the
-	// credentials right" call.
 	sw, err := m.CIM.SoftwareIdentity.Enumerate()
 	if err != nil {
 		return info, fmt.Errorf("AMT at %s: %w", a.c.Host, describe(err))
@@ -210,7 +190,6 @@ func (a *amt) Power(ctx context.Context, act Action) error {
 		if err := a.forcePXE(m); err != nil {
 			return err
 		}
-		// A powered-off box needs "on"; a running one a reset. Either way one boot.
 		if a.powerState(m) == "on" {
 			state = power.MasterBusReset
 		} else {
@@ -229,8 +208,6 @@ func (a *amt) Power(ctx context.Context, act Action) error {
 	return nil
 }
 
-// powerReturn maps a CIM RequestPowerStateChange return value to something an operator
-// can act on, instead of always blaming "already in that state".
 func powerReturn(rv int) string {
 	switch rv {
 	case 1:
@@ -250,10 +227,6 @@ func powerReturn(rv int) string {
 	}
 }
 
-// forcePXE arms one network boot the way Intel's console does: clear the boot
-// source, write the boot settings with every one-shot option off, give the boot
-// configuration the IsNextSingleUse role (without it the BIOS ignores the source),
-// set the PXE source. Every step's reply is traced.
 func (a *amt) forcePXE(m wsman.Messages) error {
 	if _, err := m.CIM.BootConfigSetting.ChangeBootOrder(""); err != nil {
 		a.tracef("boot source clear: %v", describe(err))
@@ -280,12 +253,8 @@ func (a *amt) forcePXE(m wsman.Messages) error {
 	return nil
 }
 
-// bootConfigInstance is the one CIM_BootConfigSetting AMT has (AMT 6.0+).
 const bootConfigInstance = "Intel(r) AMT: Boot Configuration 0"
 
-// putBootSettings writes AMT_BootSettingData back the way the firmware reported it,
-// one-shot options switched off. A fixed property set is refused by AMT 11/12 as
-// InvalidRepresentation; a refused mirrored write is retried with the AMT 11 base set.
 func (a *amt) putBootSettings(m wsman.Messages) error {
 	cur, err := m.AMT.BootSettingData.Get()
 	if err != nil {
@@ -316,7 +285,6 @@ func (a *amt) put(m wsman.Messages, attempt, body string) error {
 	return nil
 }
 
-// describe turns the library's transport errors into something an operator can act on.
 func describe(err error) error {
 	s := err.Error()
 	switch {

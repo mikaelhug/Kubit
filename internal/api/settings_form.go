@@ -2,34 +2,30 @@ package api
 
 import (
 	"encoding/json"
-	"github.com/mikael/kubit/internal/config"
 	"net/http"
 	"strings"
+
+	"github.com/mikael/kubit/internal/config"
 )
 
-// clusterForm is the structured, non-node part of cluster.yaml the Settings form edits.
 type clusterForm struct {
-	TalosVersion      string   `json:"talosVersion"`
-	KubernetesVersion string   `json:"kubernetesVersion"`
-	Endpoint          string   `json:"endpoint"`
-	VIP               string   `json:"vip"`
-	AllowScheduling   *bool    `json:"allowScheduling"`
-	PodCIDR           string   `json:"podCIDR"`
-	ServiceCIDR       string   `json:"serviceCIDR"`
-	Extensions        []string `json:"extensions"`
-	Nameservers       []string `json:"nameservers"`
-	NTP               []string `json:"ntp"`
-	// Etcd snapshot schedule; empty interval keeps the stored value.
-	EtcdSnapshotInterval string `json:"etcdSnapshotInterval"`
-	EtcdSnapshotKeep     int    `json:"etcdSnapshotKeep"`
-	MaintenanceWindow    string `json:"maintenanceWindow"`
-	MaintenanceTimezone  string `json:"maintenanceTimezone"`
-	// OIDC is the API server's SSO; a nil or empty issuer removes it.
-	OIDC *config.ClusterOIDC `json:"oidc"`
+	TalosVersion         string              `json:"talosVersion"`
+	KubernetesVersion    string              `json:"kubernetesVersion"`
+	Endpoint             string              `json:"endpoint"`
+	VIP                  string              `json:"vip"`
+	AllowScheduling      *bool               `json:"allowScheduling"`
+	PodCIDR              string              `json:"podCIDR"`
+	ServiceCIDR          string              `json:"serviceCIDR"`
+	Extensions           []string            `json:"extensions"`
+	Nameservers          []string            `json:"nameservers"`
+	NTP                  []string            `json:"ntp"`
+	EtcdSnapshotInterval string              `json:"etcdSnapshotInterval"`
+	EtcdSnapshotKeep     int                 `json:"etcdSnapshotKeep"`
+	MaintenanceWindow    string              `json:"maintenanceWindow"`
+	MaintenanceTimezone  string              `json:"maintenanceTimezone"`
+	OIDC                 *config.ClusterOIDC `json:"oidc"`
 }
 
-// handleClusterForm validates and saves the structured fields; versions are only
-// recorded here — use the upgrade actions to move running nodes.
 func (s *Server) handleClusterForm(w http.ResponseWriter, r *http.Request) {
 	var f clusterForm
 	if err := json.NewDecoder(r.Body).Decode(&f); err != nil {

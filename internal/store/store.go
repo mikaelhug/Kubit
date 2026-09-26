@@ -1,5 +1,3 @@
-// Package store is Kubit's SQLite-backed inventory: clusters, their encrypted secrets,
-// nodes, operations and the audit log.
 package store
 
 import (
@@ -21,11 +19,9 @@ type Store struct {
 	dsn    string
 
 	labMu    sync.Mutex
-	labLocks map[string]*sync.Mutex // per-MAC, serialises lab-host record writes
+	labLocks map[string]*sync.Mutex
 }
 
-// labLock returns the per-MAC mutex that serialises reads-modify-writes of a machine's
-// lab-host record between operations, HTTP handlers and the watcher.
 func (s *Store) labLock(mac string) *sync.Mutex {
 	s.labMu.Lock()
 	defer s.labMu.Unlock()
@@ -40,8 +36,6 @@ func (s *Store) labLock(mac string) *sync.Mutex {
 	return m
 }
 
-// Open creates dir (0700) if needed, opens dir/kubit.db and applies migrations.
-// Crypto exposes the sealer for file-level users (backups, snapshots).
 func (s *Store) Crypto() *Crypto { return s.crypto }
 
 func Open(dir string, crypto *Crypto) (*Store, error) {
@@ -60,7 +54,6 @@ func Open(dir string, crypto *Crypto) (*Store, error) {
 		db.Close()
 		return nil, err
 	}
-	// The directory is 0700; this only tightens the file itself (created lazily above).
 	if err := os.Chmod(path, 0o600); err != nil {
 		db.Close()
 		return nil, err
@@ -70,7 +63,6 @@ func Open(dir string, crypto *Crypto) (*Store, error) {
 
 func (s *Store) Close() error { return s.db.Close() }
 
-// Checkpoint folds the WAL into the main database file so a file-level copy is complete.
 func (s *Store) Checkpoint(ctx context.Context) error {
 	_, err := s.db.ExecContext(ctx, `PRAGMA wal_checkpoint(TRUNCATE)`)
 	return err
@@ -191,22 +183,15 @@ var migrations = []string{
 		status        TEXT NOT NULL DEFAULT 'ok'      -- ok | corrupt | missing
 	);
 	CREATE INDEX snapshots_cluster_ts ON snapshots (cluster, ts);`,
-	// v8: off-site copy key per snapshot ("" = not copied).
 	`ALTER TABLE snapshots ADD COLUMN offsite TEXT NOT NULL DEFAULT '';`,
-	// v9: out-of-band management (sealed JSON) and the one-shot "serve Talos over
-	// PXE even though this machine is a member" flag.
 	`ALTER TABLE machines ADD COLUMN oob TEXT NOT NULL DEFAULT '';
 	 ALTER TABLE machines ADD COLUMN provision INTEGER NOT NULL DEFAULT 0;`,
-	// v10: lab hosts (KVM hosts Kubit installed) and the VMs they carry.
 	`ALTER TABLE machines ADD COLUMN labhost TEXT NOT NULL DEFAULT '';
 	 ALTER TABLE machines ADD COLUMN host TEXT NOT NULL DEFAULT '';
 	 ALTER TABLE machines ADD COLUMN provision_kind TEXT NOT NULL DEFAULT '';`,
-	// v11: lab-host samples share the table (cluster "labhost:<mac>") and add disk usage.
 	`ALTER TABLE samples ADD COLUMN disk INTEGER NOT NULL DEFAULT 0;
 	 ALTER TABLE samples ADD COLUMN disk_cap INTEGER NOT NULL DEFAULT 0;`,
 	`UPDATE machines SET state = 'unknown' WHERE state = 'configured' AND source = 'labhost';`,
-	// v13: identity. Users with a role, sessions and API tokens (hashed), and who did
-	// what in the audit log.
 	`CREATE TABLE users (
 		id            INTEGER PRIMARY KEY AUTOINCREMENT,
 		name          TEXT NOT NULL UNIQUE,
@@ -237,9 +222,6 @@ var migrations = []string{
 	`ALTER TABLE machines ADD COLUMN system_split INTEGER NOT NULL DEFAULT 0;`,
 }
 
-// alreadyApplied probes, by version, for schema a migration would create twice; a
-// version whose probe succeeds is recorded without running (a restored or
-// hand-repaired schema_version must not fail on ALTER TABLE).
 var alreadyApplied = map[int]string{
 	13: `SELECT actor FROM audit_log LIMIT 0`,
 	14: `SELECT cluster FROM sops_keys LIMIT 0`,
@@ -296,7 +278,6 @@ func (s *Store) Audit(ctx context.Context, cluster, action, detail string) error
 	return nil
 }
 
-// AuditEntry is one recorded administrative action.
 type AuditEntry struct {
 	ID      int64  `json:"id"`
 	At      string `json:"at"`
@@ -306,7 +287,6 @@ type AuditEntry struct {
 	Actor   string `json:"actor,omitempty"`
 }
 
-// ListAudit returns the newest entries, optionally for one cluster.
 func (s *Store) ListAudit(ctx context.Context, cluster string, limit int) ([]AuditEntry, error) {
 	if limit <= 0 || limit > 5000 {
 		limit = 500

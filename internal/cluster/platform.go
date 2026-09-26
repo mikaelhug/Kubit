@@ -3,6 +3,7 @@ package cluster
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"os"
@@ -15,14 +16,10 @@ import (
 	"github.com/mikael/kubit/internal/tofu"
 )
 
-// ClusterDir is where a cluster's on-disk artefacts live: kubeconfig, talosconfig,
-// infra/platform (executed), infra/talos (export only).
 func (m *Manager) ClusterDir(name string) string {
 	return filepath.Join(m.Home, "clusters", name)
 }
 
-// writeCredentials materialises kubeconfig and talosconfig for tools that read files
-// (OpenTofu providers, kubectl, talosctl).
 func (m *Manager) writeCredentials(ctx context.Context, name string) (kubeconfigPath string, err error) {
 	sec, err := m.Store.GetClusterSecrets(ctx, name)
 	if err != nil {
@@ -102,8 +99,6 @@ var platformSteps = Steps(
 	"apply", "tofu apply",
 )
 
-// PlanPlatform renders, initialises and plans; the reviewable diff is returned and
-// plan.tfplan stays in the module directory for ApplyPlan.
 func (m *Manager) PlanPlatform(ctx context.Context, name string, sink Sink) (*tofu.PlanDiff, error) {
 	r, err := m.platformRunner(ctx, name, sink)
 	if err != nil {
@@ -128,11 +123,8 @@ func (m *Manager) PlanPlatform(ctx context.Context, name string, sink Sink) (*to
 	return diff, nil
 }
 
-// ErrStalePlan is returned when cluster.yaml changed after the plan was made.
-var ErrStalePlan = fmt.Errorf("plan is stale: cluster.yaml changed since it was made; plan again")
+var errStalePlan = errors.New("plan is stale: cluster.yaml changed since it was made; plan again")
 
-// ApplyPlan executes a previously reviewed plan.tfplan. planTime is the plan's tofu
-// timestamp; the cluster row's updated_at must not be newer.
 func (m *Manager) ApplyPlan(ctx context.Context, name string, planTime string, sink Sink) error {
 	sink.plan(platformSteps...)
 	sink.skip("render")
@@ -142,7 +134,7 @@ func (m *Manager) ApplyPlan(ctx context.Context, name string, planTime string, s
 		return err
 	}
 	if planTime != "" && row.UpdatedAt > planTime {
-		return ErrStalePlan
+		return errStalePlan
 	}
 	dir := filepath.Join(m.ClusterDir(name), "infra", "platform")
 	if _, err := os.Stat(filepath.Join(dir, "plan.tfplan")); err != nil {
@@ -159,8 +151,6 @@ func (m *Manager) ApplyPlan(ctx context.Context, name string, planTime string, s
 	return m.applyWith(ctx, name, r, sink)
 }
 
-// ApplyPlatform converges the in-cluster layer on cluster.yaml's platform section in
-// one go (plan and apply without a review), used by the CLI and by cluster creation.
 func (m *Manager) ApplyPlatform(ctx context.Context, name string, sink Sink) error {
 	r, err := m.platformRunner(ctx, name, sink)
 	if err != nil {
@@ -231,7 +221,6 @@ func (m *Manager) recordPlatform(ctx context.Context, name string, r *tofu.Runne
 	return nil
 }
 
-// tofuLogger turns tofu's machine-readable lines into operation events.
 func tofuLogger(sink Sink) func(tofu.Line) {
 	return func(l tofu.Line) {
 		step := l.Phase
@@ -239,7 +228,6 @@ func tofuLogger(sink Sink) func(tofu.Line) {
 		case l.Diagnostic != nil && l.Diagnostic.Severity == "error":
 			sink.emit(Error, step, "", "%s: %s", l.Diagnostic.Summary, l.Diagnostic.Detail)
 		case l.Diagnostic != nil:
-			// Warnings (deprecations) are collected into the plan review instead.
 		case l.Type == "planned_change" && l.Change != nil:
 			sink.emit(Info, step, l.Change.Resource.Addr, "will %s", l.Change.Action)
 		case l.Type == "apply_start" && l.Hook != nil:

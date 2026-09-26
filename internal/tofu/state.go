@@ -9,7 +9,6 @@ import (
 	"path/filepath"
 )
 
-// Release is what the tofu state records about one Helm release.
 type Release struct {
 	Address      string `json:"address"`
 	Addon        string `json:"addon"`
@@ -18,11 +17,10 @@ type Release struct {
 	Chart        string `json:"chart"`
 	ChartVersion string `json:"chartVersion"`
 	AppVersion   string `json:"appVersion,omitempty"`
-	Status       string `json:"status"` // deployed, failed, pending-install, ...
+	Status       string `json:"status"`
 	LastDeployed int64  `json:"lastDeployed,omitempty"`
 }
 
-// Releases reads the Helm releases from the module's state; a missing state yields none.
 func (r *Runner) Releases(ctx context.Context) ([]Release, error) {
 	if _, err := os.Stat(filepath.Join(r.Dir, "terraform.tfstate")); err != nil {
 		return []Release{}, nil

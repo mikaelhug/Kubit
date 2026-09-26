@@ -7,24 +7,18 @@ import (
 	"strings"
 )
 
-// Machine is what the designer knows about a candidate: the discovery inventory
-// reduced to what drives placement.
 type Machine struct {
-	IP       string `json:"ip"`
-	MAC      string `json:"mac"`
-	UUID     string `json:"uuid,omitempty"`
-	Arch     Arch   `json:"arch"`
-	CPUs     int    `json:"cpus"`
-	MemBytes uint64 `json:"memBytes"`
-	KVM      bool   `json:"kvm"`
-	// Virtual: a VM. Several VMs usually share one host, so control planes prefer
-	// bare metal.
-	Virtual bool `json:"virtual"`
-	// Host names the lab host a VM runs on ("" for anything else).
-	Host string `json:"host,omitempty"`
-	// Disks are install candidates, largest first (dev path and size).
-	Disks []MachineDisk `json:"disks"`
-	Model string        `json:"model,omitempty"`
+	IP       string        `json:"ip"`
+	MAC      string        `json:"mac"`
+	UUID     string        `json:"uuid,omitempty"`
+	Arch     Arch          `json:"arch"`
+	CPUs     int           `json:"cpus"`
+	MemBytes uint64        `json:"memBytes"`
+	KVM      bool          `json:"kvm"`
+	Virtual  bool          `json:"virtual"`
+	Host     string        `json:"host,omitempty"`
+	Disks    []MachineDisk `json:"disks"`
+	Model    string        `json:"model,omitempty"`
 }
 
 type MachineDisk struct {
@@ -33,15 +27,9 @@ type MachineDisk struct {
 	Transport string `json:"transport,omitempty"`
 }
 
-// Design proposes a cluster declaration for a set of machines: which become control
-// planes, hostnames, install disks, and a MetalLB range. Every choice is a plain field
-// the wizard lets the operator override.
 func Design(name string, machines []Machine, opts DesignOptions) (*Cluster, []Warning) {
 	topo := Recommend(len(machines))
 	ordered := append([]Machine(nil), machines...)
-	// Control planes: bare metal before VMs (a hypervisor is one failure domain),
-	// then the most alike, smallest machines; KVM-capable ones are worth more as
-	// workers (runsc-kvm) when there are workers to be had.
 	sort.SliceStable(ordered, func(i, j int) bool {
 		a, b := ordered[i], ordered[j]
 		if a.Virtual != b.Virtual {
@@ -106,26 +94,20 @@ func Design(name string, machines []Machine, opts DesignOptions) (*Cluster, []Wa
 
 type DesignOptions struct {
 	MetalLBRange string
-	// DataDisks claims every disk besides the install disk for node-local storage.
-	DataDisks bool
+	DataDisks    bool
 }
 
-// MinWorkerBytes is the usable RAM under which a worker cannot carry the platform
-// add-ons (a 2 GiB VM reports ~1.9 GiB; a 1 GiB VM ~940 MiB). Preflight enforces it.
 const MinWorkerBytes = 1500 << 20
 
 const talosPartitionsBytes = 2 << 30
 
-// Warning is a lint finding: something legal that an operator should know before
-// creating the cluster.
 type Warning struct {
-	Level   string `json:"level"` // info | warn
+	Level   string `json:"level"`
 	Code    string `json:"code"`
 	Message string `json:"message"`
 	Node    string `json:"node,omitempty"`
 }
 
-// Lint reports design smells on a declaration; machines (optional) add hardware checks.
 func Lint(c *Cluster, machines []Machine) []Warning {
 	var out []Warning
 	warn := func(level, code, node, format string, args ...any) {
@@ -181,8 +163,6 @@ func Lint(c *Cluster, machines []Machine) []Warning {
 			warn("warn", "control-planes-on-vms", "", "%d control planes are virtual machines; if they share a hypervisor, one host failure takes etcd quorum with it. Spread them over hosts or use bare metal.", virtualCPs)
 		}
 	}
-	// A control plane below the etcd/API-server floor is a hard failure at create time
-	// (preflight enforces it); flag it here too so the wizard shows it before Create.
 	for _, n := range cps {
 		if m, ok := byMAC[strings.ToLower(n.MAC)]; ok && m.MemBytes > 0 && m.MemBytes < 1600<<20 {
 			warn("warn", "control-plane-undersized", n.Hostname, "Control plane %s has under ~1.6 GiB usable RAM; a control plane cannot run etcd and the API server on that — give it a 2 GiB machine (provisioning will refuse it).", n.Hostname)
@@ -215,7 +195,7 @@ func Lint(c *Cluster, machines []Machine) []Warning {
 			} else if m.MemBytes > 0 && m.MemBytes < 2<<30 {
 				warn("warn", "low-memory", n.Hostname, "%s has %d MiB RAM; 2 GiB is the floor for a %s.", n.Hostname, m.MemBytes>>20, map[Role]string{RoleControlPlane: "control plane", RoleWorker: "worker"}[n.Role])
 			}
-			if n.Role == RoleControlPlane && m.KVM && len(c.Workers()) > 0 {
+			if c.Spec.Platform.GVisor.Enabled && n.Role == RoleControlPlane && m.KVM && len(c.Workers()) > 0 {
 				warn("info", "kvm-on-control-plane", n.Hostname, "%s supports KVM; as a worker it could run runsc-kvm sandboxes.", n.Hostname)
 			}
 		}
@@ -252,7 +232,6 @@ func Lint(c *Cluster, machines []Machine) []Warning {
 	return out
 }
 
-// Overlaps reports which stored clusters' MetalLB ranges intersect this one's.
 func Overlaps(rangeSpec string, others map[string]string) []string {
 	lo, hi, err := ParseIPRange(rangeSpec)
 	if err != nil {

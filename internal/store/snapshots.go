@@ -8,7 +8,6 @@ import (
 	"strconv"
 )
 
-// Snapshot is one etcd snapshot taken through the Talos API and kept sealed on disk.
 type Snapshot struct {
 	ID           int64  `json:"id"`
 	Cluster      string `json:"cluster"`
@@ -22,7 +21,7 @@ type Snapshot struct {
 	K8sVersion   string `json:"k8sVersion,omitempty"`
 	Source       string `json:"source"`
 	Status       string `json:"status"`
-	Offsite      string `json:"offsite,omitempty"` // remote key once copied
+	Offsite      string `json:"offsite,omitempty"`
 }
 
 func (s *Store) AddSnapshot(ctx context.Context, sn Snapshot) (int64, error) {
@@ -48,7 +47,6 @@ func scanSnapshot(r interface{ Scan(...any) error }) (*Snapshot, error) {
 	return &sn, nil
 }
 
-// ListSnapshots returns a cluster's snapshots, newest first.
 func (s *Store) ListSnapshots(ctx context.Context, cluster string) ([]Snapshot, error) {
 	rows, err := s.db.QueryContext(ctx, `SELECT `+snapshotCols+` FROM snapshots WHERE cluster = ? ORDER BY ts DESC, id DESC`, cluster)
 	if err != nil {
@@ -85,21 +83,17 @@ func (s *Store) SetSnapshotStatus(ctx context.Context, id int64, status string) 
 }
 
 func (s *Store) DeleteSnapshot(ctx context.Context, id int64) error {
-	// The cluster is read first so subscribers can drop the row from the right list.
 	var cl string
 	_ = s.db.QueryRowContext(ctx, `SELECT cluster FROM snapshots WHERE id = ?`, id).Scan(&cl)
 	_, err := s.db.ExecContext(ctx, `DELETE FROM snapshots WHERE id = ?`, id)
 	return s.done(err, Change{Table: "snapshots", Cluster: cl, Key: strconv.FormatInt(id, 10), Op: "delete"})
 }
 
-// LatestSnapshotTS returns the newest snapshot time for a cluster ("" when none).
 func (s *Store) LatestSnapshotTS(ctx context.Context, cluster string) (string, error) {
 	var ts sql.NullString
 	err := s.db.QueryRowContext(ctx, `SELECT MAX(ts) FROM snapshots WHERE cluster = ? AND status = 'ok'`, cluster).Scan(&ts)
 	return ts.String, err
 }
 
-// SealFile and OpenFile expose the store's master-key crypto for large artefacts kept
-// outside the database (etcd snapshots).
 func (s *Store) SealFile(plain []byte) ([]byte, error)  { return s.crypto.Seal(plain) }
 func (s *Store) OpenFile(sealed []byte) ([]byte, error) { return s.crypto.Open(sealed) }

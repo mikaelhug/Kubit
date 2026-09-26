@@ -1,5 +1,3 @@
-# Talos ships runsc via the siderolabs/gvisor extension; Kubit labels nodes that carry it
-# and, separately, those with /dev/kvm for the faster KVM platform.
 resource "kubectl_manifest" "runtimeclass_gvisor" {
   count = var.gvisor.enabled ? 1 : 0
 

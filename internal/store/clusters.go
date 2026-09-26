@@ -21,9 +21,9 @@ type ClusterRow struct {
 }
 
 type ClusterSecrets struct {
-	SecretsBundle []byte // secrets.yaml
+	SecretsBundle []byte
 	Talosconfig   []byte
-	Kubeconfig    []byte // nil until bootstrapped
+	Kubeconfig    []byte
 }
 
 func (s *Store) PutCluster(ctx context.Context, c ClusterRow) error {
@@ -35,8 +35,6 @@ func (s *Store) PutCluster(ctx context.Context, c ClusterRow) error {
 	return s.done(err, Change{Table: "clusters", Cluster: c.Name, Key: c.Name, Op: "put"})
 }
 
-// ClusterVIPs maps each stored cluster's control-plane VIP to its name. A VIP answers
-// on :50000 like a machine; discovery must not record it as one.
 func (s *Store) ClusterVIPs(ctx context.Context) map[string]string {
 	out := map[string]string{}
 	rows, err := s.ListClusters(ctx)
@@ -104,9 +102,6 @@ func (s *Store) SetClusterState(ctx context.Context, name, state string) error {
 	return nil
 }
 
-// DeleteCluster drops the cluster row and releases its machines: they keep running
-// Talos ("configured") but belong to nobody Kubit knows, so a later scan that finds
-// them in maintenance mode can offer them again.
 func (s *Store) DeleteCluster(ctx context.Context, name string) error {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -174,7 +169,6 @@ func (s *Store) SetKubeconfig(ctx context.Context, name string, kubeconfig []byt
 	return nil
 }
 
-// SetTalosconfig replaces the stored admin talosconfig (certificate rotation).
 func (s *Store) SetTalosconfig(ctx context.Context, name string, talosconfig []byte) error {
 	tc, err := s.crypto.Seal(talosconfig)
 	if err != nil {
@@ -214,7 +208,6 @@ func (s *Store) GetClusterSecrets(ctx context.Context, name string) (*ClusterSec
 	return &out, nil
 }
 
-// PlatformStatus records the last OpenTofu run for the in-cluster layer.
 type PlatformStatus struct {
 	AppliedAt string            `json:"appliedAt,omitempty"`
 	Outputs   map[string]string `json:"outputs,omitempty"`

@@ -7,6 +7,7 @@ import (
 	"errors"
 	"net"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -33,10 +34,6 @@ func (s *Server) authRoutes() {
 	s.oidcRoutes()
 }
 
-// authenticate resolves who is calling. Order: the daemon's own bearer token (an
-// automation/backwards-compatible admin), then a session cookie or a user token.
-// With no users defined at all, a loopback caller is the implicit administrator so a
-// fresh install works before anyone exists; anything else gets nothing.
 func (s *Server) authenticate(r *http.Request) (store.Actor, bool) {
 	bearer := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
 	if bearer == r.Header.Get("Authorization") {
@@ -73,16 +70,13 @@ func loopbackPeer(r *http.Request) bool {
 	return ip != nil && ip.IsLoopback()
 }
 
-// requiredRole is the least role a request needs. Reads are for viewers, except
-// credentials and exports; changes are for operators; identity, settings and
-// Kubit's own backup are for administrators.
 func requiredRole(r *http.Request) store.Role {
 	p := r.URL.Path
 	read := r.Method == http.MethodGet || r.Method == http.MethodHead
 	switch {
-	case strings.HasPrefix(p, "/api/v1/users"), p == "/api/v1/settings" && !read, strings.HasPrefix(p, "/api/v1/backup"), strings.HasPrefix(p, "/api/v1/restore"), strings.HasPrefix(p, "/api/v1/key"):
+	case strings.HasPrefix(p, "/api/v1/users"), p == "/api/v1/settings" && !read, strings.HasPrefix(p, "/api/v1/backup"):
 		return store.RoleAdmin
-	case strings.HasSuffix(p, "/kubeconfig"), strings.HasSuffix(p, "/talosconfig"), strings.HasSuffix(p, "/export"), strings.Contains(p, "/certificates"), strings.HasSuffix(p, "/sops/identity"):
+	case strings.HasSuffix(p, "/kubeconfig"), strings.HasSuffix(p, "/export"), strings.Contains(p, "/certificates"), strings.HasSuffix(p, "/sops/identity"):
 		return store.RoleAdmin
 	case read:
 		return store.RoleViewer
@@ -164,7 +158,6 @@ func userAgent(r *http.Request) string {
 	return ua
 }
 
-// handleAuthSetup creates the first administrator; only possible while no user exists.
 func (s *Server) handleAuthSetup(w http.ResponseWriter, r *http.Request) {
 	n, err := s.store.CountUsers(r.Context())
 	if err != nil {
@@ -294,7 +287,7 @@ func (s *Server) handleUserUpdate(w http.ResponseWriter, r *http.Request) {
 		detail += " role=" + string(*role)
 	}
 	if req.Disabled != nil {
-		detail += " disabled=" + boolStr(*req.Disabled)
+		detail += " disabled=" + strconv.FormatBool(*req.Disabled)
 	}
 	if req.Password != "" {
 		detail += " password"
@@ -304,14 +297,6 @@ func (s *Server) handleUserUpdate(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, u)
 }
 
-func boolStr(b bool) string {
-	if b {
-		return "true"
-	}
-	return "false"
-}
-
-// guardLastAdmin refuses to demote, disable or delete the only enabled administrator.
 func (s *Server) guardLastAdmin(ctx context.Context, name string, role *store.Role, disabled *bool) error {
 	losesAdmin := (role != nil && *role != store.RoleAdmin) || (disabled != nil && *disabled) || (role == nil && disabled == nil)
 	if !losesAdmin {

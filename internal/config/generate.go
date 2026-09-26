@@ -31,39 +31,29 @@ import (
 )
 
 const (
-	// gVisor needs unprivileged user namespaces; value from the siderolabs/extensions README.
 	gvisorUserNamespacesSysctl = "user.max_user_namespaces"
 	gvisorUserNamespacesValue  = "11255"
 
-	LabelGVisor    = "sandbox.runtime/gvisor"
-	LabelGVisorKVM = "sandbox.runtime/gvisor-kvm"
-	// LabelPool records the node's pool on the Kubernetes Node object.
-	LabelPool = "kubit.dev/pool"
-	// LabelDataDisks carries the count of data volumes so storage can target nodes.
-	LabelDataDisks = "kubit.dev/data-disks"
-	// Longhorn reads these at node registration: which disks to create, or none.
+	LabelGVisor             = "sandbox.runtime/gvisor"
+	LabelGVisorKVM          = "sandbox.runtime/gvisor-kvm"
+	LabelPool               = "kubit.dev/pool"
+	LabelDataDisks          = "kubit.dev/data-disks"
 	LabelLonghornDisk       = "node.longhorn.io/create-default-disk"
 	AnnotationLonghornDisks = "node.longhorn.io/default-disks-config"
 
-	// vipLinkAlias names the physical interface the control plane VIP floats on.
 	vipLinkAlias = "uplink"
 )
 
 type Generated struct {
 	Secrets     *secrets.Bundle
 	Talosconfig *clientconfig.Config
-	// Nodes maps hostname to multi-document machine config YAML.
-	Nodes map[string][]byte
+	Nodes       map[string][]byte
 }
 
-// Installer resolves the installer image for a pool (schematic differs per pool).
 type Installer func(p Pool) string
 
-// FixedInstaller uses one image for every pool.
 func FixedInstaller(image string) Installer { return func(Pool) string { return image } }
 
-// Generate renders one machine config per node. Pass a nil bundle to mint new cluster
-// secrets; pass the stored bundle when adding nodes to an existing cluster.
 func Generate(c *Cluster, bundle *secrets.Bundle, installer Installer) (*Generated, error) {
 	contract, err := talosconfig.ParseContractFromVersion(c.Spec.TalosVersion)
 	if err != nil {
@@ -205,15 +195,10 @@ func generateNode(c *Cluster, in *generate.Input, n Node, installerImage string)
 			node.AnnotationsConfig[k] = v
 		}
 	}
-	// Talos excludes control planes from external load balancers; MetalLB honours that
-	// label and would never announce from a cluster whose control planes also carry
-	// workloads (1–5 nodes), leaving every LoadBalancer IP dark.
 	if n.Role == RoleControlPlane && *c.Spec.ControlPlane.AllowScheduling {
 		delete(node.LabelsConfig, constants.LabelExcludeFromExternalLB)
 	}
 
-	// The uplink alias names the physical interface every network document hangs off:
-	// the VIP, static addressing, or the explicit DHCP choice.
 	alias := network.NewLinkAliasConfigV1Alpha1(vipLinkAlias)
 	if alias.Selector.Match, err = uplinkSelector(n.MAC); err != nil {
 		return nil, err
@@ -273,7 +258,6 @@ func generateNode(c *Cluster, in *generate.Input, n Node, installerImage string)
 	return cfg.Bytes()
 }
 
-// fillLink sets static addresses and the default route on a link document.
 func fillLink(l *network.CommonLinkConfig, nn *NodeNetwork) error {
 	up := true
 	l.LinkUp = &up
@@ -292,7 +276,6 @@ func fillLink(l *network.CommonLinkConfig, nn *NodeNetwork) error {
 		if err != nil {
 			return fmt.Errorf("gateway: %w", err)
 		}
-		// An empty destination is Talos' spelling of the default route.
 		l.LinkRoutes = append(l.LinkRoutes, network.RouteConfig{RouteGateway: meta.Addr{Addr: gw}})
 	}
 	return nil
@@ -312,8 +295,6 @@ func firstNonEmpty(a, b []string) []string {
 	return b
 }
 
-// findOrAppend returns the generator's existing document of type T, or appends a new one;
-// the container rejects duplicate kinds, so per-node tweaks must edit in place.
 func findOrAppend[T config.Document](docs *[]config.Document, newDoc func() T) T {
 	for _, d := range *docs {
 		if t, ok := d.(T); ok {
@@ -325,8 +306,6 @@ func findOrAppend[T config.Document](docs *[]config.Document, newDoc func() T) T
 	return t
 }
 
-// uplinkSelector picks the interface for the VIP: by permanent MAC when discovery recorded
-// one, otherwise the sole physical ethernet link (LinkStatusSpec.Physical: type ether, no kind).
 func uplinkSelector(mac string) (cel.Expression, error) {
 	expr := `link.type == 1 && link.kind == ""`
 	if mac != "" {
@@ -335,8 +314,6 @@ func uplinkSelector(mac string) (cel.Expression, error) {
 	return cel.ParseBooleanExpression(expr, celenv.LinkLocator())
 }
 
-// DataMount is where data volume n lands on the node (Talos mounts user volumes
-// under /var/mnt/<name>).
 func DataMount(n int) string { return fmt.Sprintf("/var/mnt/data-%d", n) }
 
 func (c *Cluster) StorageMounts(n Node) []string {
@@ -350,7 +327,6 @@ func (c *Cluster) StorageMounts(n Node) []string {
 	return out
 }
 
-// dataVolume claims a whole disk for node-local storage: xfs, mounted at DataMount.
 func dataVolume(n int, path string) (*block.UserVolumeConfigV1Alpha1, error) {
 	vol := block.NewUserVolumeConfigV1Alpha1()
 	vol.MetaName = fmt.Sprintf("data-%d", n)
@@ -402,7 +378,6 @@ func ephemeralVolume(docs *[]config.Document) *block.VolumeConfigV1Alpha1 {
 	return v
 }
 
-// diskSelector builds the CEL expression Talos evaluates against each disk at install.
 func diskSelector(d InstallDisk) (cel.Expression, error) {
 	var terms []string
 	switch {
@@ -425,7 +400,6 @@ func diskSelector(d InstallDisk) (cel.Expression, error) {
 	return cel.ParseBooleanExpression(strings.Join(terms, " && "), celenv.DiskLocator())
 }
 
-// celSize turns "100GB" into the CEL form "100u * GB" understood by the disk locator env.
 func celSize(s string) string {
 	s = strings.TrimSpace(s)
 	i := len(s)
@@ -439,10 +413,6 @@ func celSize(s string) string {
 	return num + "u * " + unit
 }
 
-var _ config.Document = (*runtime.UnattendedInstallConfigV1Alpha1)(nil)
-
-// ParseSecrets restores a secrets bundle from its YAML form (secrets.yaml). The bundle's
-// clock is not serialised and must be re-attached before it can sign certificates.
 func ParseSecrets(b []byte) (*secrets.Bundle, error) {
 	var bundle secrets.Bundle
 	if err := yaml.Unmarshal(b, &bundle); err != nil {
@@ -452,7 +422,6 @@ func ParseSecrets(b []byte) (*secrets.Bundle, error) {
 	return &bundle, nil
 }
 
-// longhornDisksConfig lists every storage mount as a schedulable Longhorn disk.
 func longhornDisksConfig(mounts []string) string {
 	disks := make([]map[string]any, 0, len(mounts))
 	for _, m := range mounts {

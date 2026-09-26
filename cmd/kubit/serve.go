@@ -49,8 +49,6 @@ func serveCmd() *cobra.Command {
 			}
 			fmt.Fprintf(cmd.OutOrStdout(), "kubit %s listening on http://%s (%s, master key from %s)\n", version, addr, mode, store.MasterKeySource())
 			srv := api.New(version, m, token, crypto)
-			// SIGTERM/SIGINT: stop the watcher, cancel running operations so they are
-			// recorded as cancelled, close the listener and fold the WAL.
 			ctx, stop := signal.NotifyContext(cmd.Context(), syscall.SIGINT, syscall.SIGTERM)
 			defer stop()
 			w := watch.New(m, interval)

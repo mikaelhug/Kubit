@@ -9,19 +9,16 @@ import (
 	"strings"
 )
 
-// DeprecatedAPI is a deprecated API group/version that clients have used since the
-// API server started, as reported by the apiserver_requested_deprecated_apis metric.
 type DeprecatedAPI struct {
 	Group          string `json:"group"`
 	Version        string `json:"version"`
 	Resource       string `json:"resource"`
-	RemovedRelease string `json:"removedRelease"` // e.g. "1.32"
+	RemovedRelease string `json:"removedRelease"`
 }
 
 var deprecatedLine = regexp.MustCompile(`^apiserver_requested_deprecated_apis\{([^}]*)\}\s+(\S+)`)
 var labelPair = regexp.MustCompile(`(\w+)="([^"]*)"`)
 
-// DeprecatedAPIs scrapes the API server metrics for deprecated API usage.
 func (c *Client) DeprecatedAPIs(ctx context.Context) ([]DeprecatedAPI, error) {
 	body, err := c.RESTClient().Get().AbsPath("/metrics").DoRaw(ctx)
 	if err != nil {
@@ -53,7 +50,6 @@ func (c *Client) DeprecatedAPIs(ctx context.Context) ([]DeprecatedAPI, error) {
 	return out, sc.Err()
 }
 
-// RemovedBy reports whether the API is gone in the given Kubernetes version ("v1.34.0").
 func (d DeprecatedAPI) RemovedBy(version string) bool {
 	if d.RemovedRelease == "" {
 		return false

@@ -81,8 +81,6 @@ func nodeLogsCmd() *cobra.Command {
 				return err
 			}
 			defer tc.Close()
-			var stream interface{ Recv() (*talosLogMsg, error) }
-			_ = stream
 			if service == "" {
 				st, err := tc.Dmesg(tc.Context(cmd.Context()), false, false)
 				if err != nil {
@@ -115,8 +113,6 @@ func nodeLogsCmd() *cobra.Command {
 	_ = cmd.MarkFlagRequired("cluster")
 	return cmd
 }
-
-type talosLogMsg struct{ Bytes []byte }
 
 func drain(w io.Writer, recv func() ([]byte, error)) error {
 	for {

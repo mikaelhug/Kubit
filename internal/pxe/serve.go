@@ -16,8 +16,6 @@ import (
 	"github.com/pin/tftp/v3"
 )
 
-// Profile is what every machine that network-boots gets: one Talos version and
-// schematic, booting into maintenance mode on the metal platform.
 type Profile struct {
 	SchematicID  string
 	TalosVersion string
@@ -32,7 +30,6 @@ type Server struct {
 	track   *tracker
 }
 
-// Track installs the boot tracker; Run calls it, tests may call it directly.
 func (s *Server) Track() {
 	if s.track == nil {
 		s.track = newTracker()
@@ -42,7 +39,6 @@ func (s *Server) Track() {
 	}
 }
 
-// Run serves DHCP, TFTP and HTTP until ctx ends. DHCP and TFTP bind privileged ports.
 func (s *Server) Run(ctx context.Context) error {
 	s.Track()
 	ctx, cancel := context.WithCancel(ctx)
@@ -94,7 +90,6 @@ func (s *Server) serveTFTP(ctx context.Context) error {
 	return nil
 }
 
-// archFromIPXE maps iPXE's ${buildarch} to Talos/Image Factory names.
 func archFromIPXE(a string) string {
 	switch a {
 	case "x86_64", "i386", "amd64":
@@ -105,14 +100,11 @@ func archFromIPXE(a string) string {
 	return ""
 }
 
-// Handler serves the iPXE script and the boot-asset cache.
 func (s *Server) Handler() http.Handler {
 	s.Track()
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /status.json", s.statusHandler)
 	mux.HandleFunc("GET /boot.ipxe", func(w http.ResponseWriter, r *http.Request) {
-		// iPXE substitutes ${buildarch} and ${net0/mac} before requesting; a bare hit
-		// gets a chain that fills them in.
 		arch := archFromIPXE(r.URL.Query().Get("arch"))
 		w.Header().Set("Content-Type", "text/plain")
 		if arch == "" {
@@ -125,7 +117,6 @@ func (s *Server) Handler() http.Handler {
 		}
 		switch decision {
 		case "debian":
-			// Lab host: the Debian installer with Kubit's preseed, no Talos.
 			base := fmt.Sprintf("http://%s:%d", s.IP, s.HTTPPort)
 			args := labhost.KernelArgs(fmt.Sprintf("%s/labhost/%s/preseed?arch=%s", base, mac, arch), "")
 			fmt.Fprintf(w, "#!ipxe\nkernel %s/assets/debian/%s/linux initrd=initrd.gz %s\ninitrd %s/assets/debian/%s/initrd.gz\nboot\n", base, arch, args, base, arch)
@@ -133,8 +124,6 @@ func (s *Server) Handler() http.Handler {
 			s.track.logf(fmt.Sprintf("%s (%s) fetched the Debian installer script (lab host)", hostOf(r.RemoteAddr), mac))
 			return
 		case "local":
-			// Second line of defence (the DHCP layer normally never offered): exit
-			// iPXE so the firmware continues with the next boot device.
 			fmt.Fprint(w, "#!ipxe\necho Kubit: this machine boots from its own disk\nexit\n")
 			s.track.logf(fmt.Sprintf("%s (%s) boots from its own disk; iPXE exits", hostOf(r.RemoteAddr), mac))
 			return
@@ -164,8 +153,6 @@ func (s *Server) Handler() http.Handler {
 		s.track.logf(fmt.Sprintf("%s downloading Debian %s %s", hostOf(r.RemoteAddr), arch, file))
 		http.ServeFile(w, r, path)
 	})
-	// The installer fetches its preseed and post-install script through this proxy
-	// and reports progress the same way; only the pxe process holds the daemon's token.
 	mux.HandleFunc("GET /labhost/{mac}/{file}", func(w http.ResponseWriter, r *http.Request) {
 		mac, file := r.PathValue("mac"), r.PathValue("file")
 		if s.KubitURL == "" || (file != "preseed" && file != "postinstall" && file != "progress") {
@@ -242,7 +229,6 @@ func hostOf(remote string) string {
 	return remote
 }
 
-// InterfaceIPv4 returns the first IPv4 address on the named interface.
 func InterfaceIPv4(name string) (net.IP, error) {
 	ifc, err := net.InterfaceByName(name)
 	if err != nil {

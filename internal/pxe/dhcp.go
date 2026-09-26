@@ -1,7 +1,3 @@
-// Package pxe boots bare-metal machines into Talos maintenance mode with nothing but a
-// network cable: a proxyDHCP responder (never an address server — the LAN's DHCP keeps
-// handing out leases), a TFTP server for the iPXE binaries, and an HTTP server for the
-// iPXE script and a cache of Image Factory boot assets.
 package pxe
 
 import (
@@ -18,7 +14,6 @@ import (
 	"github.com/insomniacslk/dhcp/iana"
 )
 
-// Boot files served over TFTP, by client architecture (DHCP option 93).
 const (
 	FileBIOS  = "undionly.kpxe"
 	FileX64   = "ipxe.efi"
@@ -26,30 +21,18 @@ const (
 )
 
 type Config struct {
-	// onDHCP and onLog feed the status tracker when set.
-	onDHCP func(mac, arch string)
-	onLog  func(line string)
-	// onPlainDHCP sees ordinary (non-PXE) discovers: a machine that asks for an
-	// address without PXE options booted from disk, or its management engine woke.
-	onPlainDHCP func(mac, class string)
-	// Decide asks the daemon what a MAC should boot: "talos" (maintenance mode),
-	// "local" (its own disk — cluster members), or "" when the daemon is unreachable,
-	// which is treated as talos so onboarding works without it.
-	Decide func(mac string) string
-	// KubitURL/KubitToken let the HTTP side fetch per-machine files (lab-host
-	// preseeds) from the daemon on behalf of the installer.
+	onDHCP               func(mac, arch string)
+	onLog                func(line string)
+	onPlainDHCP          func(mac, class string)
+	Decide               func(mac string) string
 	KubitURL, KubitToken string
-	// HTTPOnly serves just the HTTP side (assets, preseed proxy, status): no DHCP or
-	// TFTP, no root. For machines booted by hand — a VM harness, a USB installer.
-	HTTPOnly bool
-	// Interface to answer on; its IPv4 address becomes next-server and the HTTP host.
-	Interface string
-	IP        net.IP
-	HTTPPort  int
-	Log       *log.Logger
+	HTTPOnly             bool
+	Interface            string
+	IP                   net.IP
+	HTTPPort             int
+	Log                  *log.Logger
 }
 
-// bootFile picks the iPXE binary for the firmware that is asking.
 func bootFile(m *dhcpv4.DHCPv4) (string, bool) {
 	for _, a := range m.ClientArch() {
 		switch a {
@@ -64,9 +47,6 @@ func bootFile(m *dhcpv4.DHCPv4) (string, bool) {
 	return "", false
 }
 
-// isIPXE reports whether the request comes from iPXE itself (option 77 "iPXE" or the
-// option 175 it always sends), which must be pointed at the script instead of looping
-// back into the binary.
 func isIPXE(m *dhcpv4.DHCPv4) bool {
 	for _, uc := range m.UserClass() {
 		if uc == "iPXE" {
@@ -76,14 +56,10 @@ func isIPXE(m *dhcpv4.DHCPv4) bool {
 	return m.Options.Has(dhcpv4.GenericOptionCode(175))
 }
 
-// ScriptURL is where iPXE fetches its boot script.
 func (c Config) ScriptURL() string {
 	return fmt.Sprintf("http://%s:%d/boot.ipxe", c.IP, c.HTTPPort)
 }
 
-// handle answers PXE clients only. Two sockets see traffic: :67 (broadcast DISCOVER
-// from firmware, alongside the real DHCP server) and :4011 (the PXE boot-server
-// REQUEST the firmware sends to us after it got its lease).
 func (c Config) handle(conn net.PacketConn, peer net.Addr, m *dhcpv4.DHCPv4) {
 	if m.OpCode != dhcpv4.OpcodeBootRequest {
 		return
@@ -105,7 +81,6 @@ func (c Config) handle(conn net.PacketConn, peer net.Addr, m *dhcpv4.DHCPv4) {
 		return
 	}
 	if c.decide(mac) == "local" {
-		// No offer at all: the firmware moves on to its disk without loading iPXE.
 		c.Log.Printf("pxe: %s: no offer, boots from its own disk", mac)
 		c.logf("%s: no offer, boots from its own disk (Kubit's decision)", mac)
 		return
@@ -130,10 +105,6 @@ func (c Config) handle(conn net.PacketConn, peer net.Addr, m *dhcpv4.DHCPv4) {
 		dhcpv4.WithOptionCopied(m, dhcpv4.OptionClientMachineIdentifier),
 	}
 	if ipxe || file == FileBIOS {
-		// PXE vendor options (43): discovery control bit 3 = "use boot filename as is",
-		// which spares BIOS firmware and iPXE the boot-server round trip. UEFI firmware
-		// is not told: some ignore an offer that tries to bypass boot-server discovery,
-		// while all of them come back to :4011 when option 43 is absent.
 		mods = append(mods, dhcpv4.WithOption(dhcpv4.OptGeneric(dhcpv4.OptionVendorSpecificInformation, []byte{6, 1, 8, 0xff})))
 	}
 	reply, err := dhcpv4.NewReplyFromRequest(m, mods...)
@@ -143,7 +114,6 @@ func (c Config) handle(conn net.PacketConn, peer net.Addr, m *dhcpv4.DHCPv4) {
 	}
 	reply.BootFileName = file
 	reply.ServerHostName = c.IP.String()
-	// yiaddr stays 0.0.0.0: the proxy never assigns addresses.
 	dest := peer
 	if m.GatewayIPAddr != nil && !m.GatewayIPAddr.IsUnspecified() {
 		dest = &net.UDPAddr{IP: m.GatewayIPAddr, Port: dhcpv4.ServerPort}
@@ -176,21 +146,14 @@ func (c Config) logf(format string, args ...any) {
 
 func (c Config) decide(mac string) string {
 	if c.Decide == nil {
-		// No daemon wired up: standalone onboarding mode, serve Talos to everything.
 		return "talos"
 	}
 	if d := c.Decide(strings.ToLower(mac)); d != "" {
 		return d
 	}
-	// Daemon configured but unreachable: fail closed. Offering Talos here would pull a
-	// cluster member or a running lab host into maintenance mode (or re-image it)
-	// during an outage; no offer lets it boot its own disk.
 	return "local"
 }
 
-// listenShared binds a UDP port with SO_REUSEADDR/SO_REUSEPORT so the proxy can sit on
-// :67 beside a DHCP server on the same host (macOS's bootpd under vmnet, dnsmasq on a
-// Linux box); broadcasts are delivered to every such socket.
 func listenShared(ctx context.Context, port int) (net.PacketConn, error) {
 	lc := net.ListenConfig{Control: func(_, _ string, c syscall.RawConn) error {
 		var serr error
@@ -209,7 +172,6 @@ func listenShared(ctx context.Context, port int) (net.PacketConn, error) {
 	return pc, nil
 }
 
-// ServeDHCP runs the proxyDHCP responders on :67 and :4011 until ctx ends.
 func (c Config) ServeDHCP(ctx context.Context) error {
 	var servers []*server4.Server
 	for _, port := range []int{dhcpv4.ServerPort, 4011} {

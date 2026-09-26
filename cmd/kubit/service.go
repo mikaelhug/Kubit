@@ -12,8 +12,6 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// The daemon is optional: a cluster runs without it. Installing it as a user service
-// only adds the observer features (alerts, scheduled snapshots, watcher history).
 const serviceLabel = "dev.kubit.serve"
 
 func serviceCmd() *cobra.Command {
@@ -153,9 +151,6 @@ RestartSec=3
 WantedBy=multi-user.target
 `))
 
-// installPXEUnit writes and starts the root PXE service (launchd system daemon on
-// macOS, system unit on Linux). The PXE process reads Kubit's cache under KUBIT_HOME
-// of the invoking user, so the log and cache stay with that user's install.
 func installPXEUnit(u unit) (string, error) {
 	if err := os.MkdirAll(filepath.Dir(u.Log), 0o755); err != nil {
 		return "", err
@@ -237,7 +232,6 @@ RestartSec=3
 WantedBy={{if .User}}multi-user.target{{else}}default.target{{end}}
 `))
 
-// renderUnit produces the platform's unit file; system selects the systemd system unit.
 func renderUnit(goos string, u unit, system bool) (string, error) {
 	var b strings.Builder
 	switch goos {
@@ -245,7 +239,7 @@ func renderUnit(goos string, u unit, system bool) (string, error) {
 		return execTemplate(launchdPlist, u)
 	case "linux":
 		if !system {
-			u.User = "" // a --user unit runs as the session user already
+			u.User = ""
 		}
 		if err := systemdUnit.Execute(&b, u); err != nil {
 			return "", err
@@ -302,7 +296,7 @@ func installUnit(u unit, system bool) (string, error) {
 	switch runtime.GOOS {
 	case "darwin":
 		domain := fmt.Sprintf("gui/%d", os.Getuid())
-		_ = run("launchctl", "bootout", domain+"/"+serviceLabel) // reinstall: ignore "not loaded"
+		_ = run("launchctl", "bootout", domain+"/"+serviceLabel)
 		if err := run("launchctl", "bootstrap", domain, path); err != nil {
 			return path, err
 		}

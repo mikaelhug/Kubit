@@ -17,8 +17,6 @@ import (
 	"google.golang.org/protobuf/types/known/emptypb"
 )
 
-// Apply pushes a machine config; mode AUTO reboots only when the change needs it, which
-// on a maintenance node means install-and-reboot.
 func (c *Client) Apply(ctx context.Context, cfg []byte) error {
 	_, err := c.ApplyConfiguration(c.Context(ctx), &machineapi.ApplyConfigurationRequest{
 		Data: cfg,
@@ -27,7 +25,6 @@ func (c *Client) Apply(ctx context.Context, cfg []byte) error {
 	return err
 }
 
-// ApplyDryRun validates the config on the node and reports whether applying would reboot.
 func (c *Client) ApplyDryRun(ctx context.Context, cfg []byte) (string, error) {
 	resp, err := c.ApplyConfiguration(c.Context(ctx), &machineapi.ApplyConfigurationRequest{
 		Data: cfg, Mode: machineapi.ApplyConfigurationRequest_AUTO, DryRun: true,
@@ -41,19 +38,15 @@ func (c *Client) ApplyDryRun(ctx context.Context, cfg []byte) (string, error) {
 	return resp.Messages[0].ModeDetails, nil
 }
 
-// BootstrapEtcd initialises the etcd cluster on this control plane; call exactly once
-// per cluster. Talos answers AlreadyExists-style errors once bootstrapped.
 func (c *Client) BootstrapEtcd(ctx context.Context) error {
 	return c.Bootstrap(c.Context(ctx), &machineapi.BootstrapRequest{})
 }
 
-// RestartService restarts a Talos system service (e.g. "kubelet").
 func (c *Client) RestartService(ctx context.Context, id string) error {
 	_, err := c.ServiceRestart(c.Context(ctx), id)
 	return err
 }
 
-// ServiceHealthy reports whether a Talos service is running and passing health checks.
 func (c *Client) ServiceHealthy(ctx context.Context, id string) (bool, error) {
 	infos, err := c.ServiceInfo(c.Context(ctx), id)
 	if err != nil {
@@ -70,7 +63,6 @@ func (c *Client) ServiceHealthy(ctx context.Context, id string) (bool, error) {
 	return false, nil
 }
 
-// EtcdMemberCount returns how many members the etcd cluster currently has.
 func (c *Client) EtcdMemberCount(ctx context.Context) (int, error) {
 	resp, err := c.EtcdMemberList(c.Context(ctx), &machineapi.EtcdMemberListRequest{})
 	if err != nil {
@@ -83,8 +75,6 @@ func (c *Client) EtcdMemberCount(ctx context.Context) (int, error) {
 	return n, nil
 }
 
-// BootID identifies the current boot by the kernel's boot time; it changes on every
-// reboot and, unlike the file API, SystemStat is served in maintenance mode too.
 func (c *Client) BootID(ctx context.Context) (string, error) {
 	resp, err := c.MachineClient.SystemStat(c.Context(ctx), &emptypb.Empty{})
 	if err != nil {
@@ -96,11 +86,6 @@ func (c *Client) BootID(ctx context.Context) (string, error) {
 	return strconv.FormatUint(resp.Messages[0].BootTime, 10), nil
 }
 
-// WaitForReboot polls until the node answers over mTLS from a different boot than
-// prevBootID, i.e. it has rebooted into the installed system. Right after an apply in
-// maintenance mode apid already accepts cluster credentials and reports stage "booting"
-// while the installer still runs, so neither a Version answer nor the stage alone is
-// proof of installation.
 func WaitForReboot(ctx context.Context, ip string, talosconfig []byte, prevBootID string, timeout time.Duration) error {
 	deadline := time.Now().Add(timeout)
 	var last error
@@ -117,15 +102,10 @@ func WaitForReboot(ctx context.Context, ip string, talosconfig []byte, prevBootI
 			case err == nil && id != prevBootID:
 				return nil
 			case err == nil:
-				// Cluster creds accepted in maintenance mode before the reboot.
 				sawCreds = true
 				last = NotReady("still on the pre-install boot")
 			default:
 				last = err
-				// mTLS worked before and now fails: if the node is answering
-				// maintenance mode again, it rebooted into the RAM installer instead of
-				// the installed disk (e.g. the disk-boot switch did not take). Fail fast
-				// with a legible message rather than grinding to the deadline.
 				if sawCreds {
 					if r := Probe(ctx, ip, 2*time.Second); r.Err == nil && r.State == StateMaintenance {
 						return fmt.Errorf("%s rebooted into maintenance mode, not the installed system — the disk-boot switch did not take", ip)
@@ -151,7 +131,6 @@ func bootIDWith(ctx context.Context, ip string, talosconfig []byte) (string, err
 	return c.BootID(ctx)
 }
 
-// Stage returns the node's runtime.MachineStatus stage over mTLS.
 func Stage(ctx context.Context, ip string, talosconfig []byte) (string, error) {
 	c, err := Dial(ctx, ip, talosconfig)
 	if err != nil {
@@ -165,8 +144,6 @@ func Stage(ctx context.Context, ip string, talosconfig []byte) (string, error) {
 	return st.TypedSpec().Stage.String(), nil
 }
 
-// Retry runs f until it succeeds, the context ends, or the timeout passes. Retryable
-// failures are connectivity and readiness errors; anything else stops immediately.
 func Retry(ctx context.Context, timeout, interval time.Duration, f func() error) error {
 	deadline := time.Now().Add(timeout)
 	for {
@@ -185,8 +162,6 @@ func Retry(ctx context.Context, timeout, interval time.Duration, f func() error)
 	}
 }
 
-// NotReady marks a condition that is expected to clear with time (etcd still joining,
-// kubelet not registered) as opposed to a failure.
 type NotReady string
 
 func (e NotReady) Error() string { return string(e) }
@@ -206,10 +181,6 @@ func retryable(err error) bool {
 	return false
 }
 
-// BootstrapManifests returns the Kubernetes objects Talos renders for the control plane
-// (kube-proxy, CoreDNS, flannel, RBAC, ...). Talos applies them once at bootstrap;
-// after a Kubernetes upgrade they must be re-applied, which is what
-// `talosctl upgrade-k8s` does in its manifest sync step.
 func (c *Client) BootstrapManifests(ctx context.Context) ([]map[string]any, error) {
 	list, err := safe.StateListAll[*k8s.Manifest](c.Context(ctx), c.COSI)
 	if err != nil {
@@ -224,8 +195,6 @@ func (c *Client) BootstrapManifests(ctx context.Context) ([]map[string]any, erro
 	return out, nil
 }
 
-// GenerateTalosconfig asks the node for a fresh os:admin client configuration signed
-// by the cluster's Talos CA.
 func (c *Client) GenerateTalosconfig(ctx context.Context, ttl time.Duration) ([]byte, error) {
 	resp, err := c.GenerateClientConfiguration(c.Context(ctx), &machineapi.GenerateClientConfigurationRequest{Roles: []string{"os:admin"}, CrtTtl: durationpb.New(ttl)})
 	if err != nil {
@@ -237,8 +206,6 @@ func (c *Client) GenerateTalosconfig(ctx context.Context, ttl time.Duration) ([]
 	return resp.Messages[0].Talosconfig, nil
 }
 
-// VarAvailable returns free bytes on the EPHEMERAL (/var) filesystem, where images and
-// container state live.
 func (c *Client) VarAvailable(ctx context.Context) (avail, size uint64, err error) {
 	resp, err := c.Mounts(c.Context(ctx))
 	if err != nil {

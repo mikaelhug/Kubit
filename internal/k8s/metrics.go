@@ -7,14 +7,11 @@ import (
 	metricsclient "k8s.io/metrics/pkg/client/clientset/versioned"
 )
 
-// NodeUsage is live CPU (millicores) and memory (bytes) from metrics-server.
 type NodeUsage struct {
 	CPUMilli    int64
 	MemoryBytes int64
 }
 
-// NodeUsages returns metrics-server readings keyed by node name; an empty map (no
-// error) means metrics-server is not installed or not ready yet.
 func (c *Client) NodeUsages(ctx context.Context) (map[string]NodeUsage, error) {
 	mc, err := metricsclient.NewForConfig(c.rest)
 	if err != nil {
@@ -31,7 +28,6 @@ func (c *Client) NodeUsages(ctx context.Context) (map[string]NodeUsage, error) {
 	return out, nil
 }
 
-// podUsages returns metrics-server pod readings keyed by namespace/name.
 func (c *Client) podUsages(ctx context.Context) (map[string]NodeUsage, error) {
 	mc, err := metricsclient.NewForConfig(c.rest)
 	if err != nil {
@@ -53,7 +49,6 @@ func (c *Client) podUsages(ctx context.Context) (map[string]NodeUsage, error) {
 	return out, nil
 }
 
-// PodCount returns running pods per node.
 func (c *Client) PodCount(ctx context.Context) (map[string]int, error) {
 	pods, err := c.CoreV1().Pods("").List(ctx, metav1.ListOptions{FieldSelector: "status.phase=Running"})
 	if err != nil {

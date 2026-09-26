@@ -16,7 +16,6 @@ import (
 	"github.com/mikael/kubit/internal/store"
 )
 
-// fakePXE serves a status.json the test mutates as the "machine" progresses.
 type fakePXE struct {
 	mu sync.Mutex
 	st pxe.Status
@@ -55,20 +54,17 @@ func TestLabWaitBootPhases(t *testing.T) {
 	labBootWait, labIPXEWait, labPollEvery = 300*time.Millisecond, 300*time.Millisecond, 50*time.Millisecond
 	mac := "04:0e:3c:c5:4b:d1"
 	var logs []string
-	sink := func(e clusterEvent) {
+	sink := func(e cluster.Event) {
 		if e.Kind == "log" {
 			logs = append(logs, e.Message)
 		}
 	}
 
-	// Nothing ever asks to boot: the boot phase names the BIOS/LAN, not SSH.
 	err = s.labWaitBoot(ctx, newPXEWatch(s, mac, sink))
 	if err == nil || !strings.Contains(err.Error(), "no network boot request from "+mac) || !strings.Contains(err.Error(), "BIOS boot order") {
 		t.Fatalf("boot phase error: %v", err)
 	}
 
-	// DHCP seen but the kernel never fetched: the transport is blamed. Only lines and
-	// boots newer than the watch count, so the watch is primed before they appear.
 	w0 := newPXEWatch(s, mac, sink)
 	w0.poll(ctx)
 	fake.set(func(p *pxe.Status) {
@@ -83,7 +79,6 @@ func TestLabWaitBootPhases(t *testing.T) {
 		t.Errorf("PXE log lines about the MAC must be mirrored into the operation: %v", logs)
 	}
 
-	// Kernel fetched: both phases pass and the IP is learned for the SSH phase.
 	w := newPXEWatch(s, mac, sink)
 	fake.set(func(p *pxe.Status) {
 		p.Boots[0].Stage = "kernel"
@@ -97,7 +92,6 @@ func TestLabWaitBootPhases(t *testing.T) {
 		t.Errorf("watch must learn the IP from the PXE server, got %q", w.ip)
 	}
 
-	// A boot left over from an earlier attempt does not count for a new watch.
 	fake.set(func(p *pxe.Status) { p.Boots[0].LastSeen = time.Now().Add(-time.Hour) })
 	if err := s.labWaitBoot(ctx, newPXEWatch(s, mac, sink)); err == nil || !strings.Contains(err.Error(), "no network boot request") {
 		t.Errorf("stale boot must not satisfy the boot phase: %v", err)
@@ -139,7 +133,6 @@ func TestLabProgressRoute(t *testing.T) {
 	if m.LabHost == nil || m.LabHost.Install == nil || m.LabHost.Install.Stage != "packages" {
 		t.Errorf("stage not recorded: %+v", m.LabHost)
 	}
-	// The preseed for an arm64 machine installs the arm emulator and reports progress.
 	rec = httptest.NewRecorder()
 	s.ServeHTTP(rec, local(httptest.NewRequest(http.MethodGet, "/api/v1/labhost/preseed?mac="+mac+"&post=http://192.168.105.1:8069/labhost/"+mac+"/postinstall", nil)))
 	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "qemu-system-arm") || !strings.Contains(rec.Body.String(), "http://192.168.105.1:8069/labhost/"+mac+"/progress?stage=installer") {
@@ -148,14 +141,12 @@ func TestLabProgressRoute(t *testing.T) {
 	if body := rec.Body.String(); !strings.Contains(body, "list-devices disk") || strings.Contains(body, "partman-auto/disk string /dev") {
 		t.Errorf("without a chosen disk the installer picks the largest: %s", body)
 	}
-	// A disk chosen in the dialog is pinned in the preseed; the partitioning stage still reports.
 	_ = st.SetLabHost(ctx, mac, &store.LabHost{State: "installing", Disk: "/dev/nvme1n1"})
 	rec = httptest.NewRecorder()
 	s.ServeHTTP(rec, local(httptest.NewRequest(http.MethodGet, "/api/v1/labhost/preseed?mac="+mac+"&post=http://192.168.105.1:8069/labhost/"+mac+"/postinstall", nil)))
 	if body := rec.Body.String(); rec.Code != http.StatusOK || !strings.Contains(body, "partman-auto/disk string /dev/nvme1n1") || strings.Contains(body, "list-devices disk") || !strings.Contains(body, "progress?stage=partitioning") {
 		t.Errorf("preseed with a chosen disk: %d %s", rec.Code, body)
 	}
-	// The provision request refuses a disk that is not a device path before anything is armed.
 	rec = httptest.NewRecorder()
 	s.ServeHTTP(rec, local(httptest.NewRequest(http.MethodPost, "/api/v1/machines/"+mac+"/labhost", strings.NewReader(`{"manual":true,"disk":"nvme1n1"}`))))
 	if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "/dev path") {

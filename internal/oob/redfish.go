@@ -377,14 +377,11 @@ func (r *redfish) forcePXE(ctx context.Context, path string, sys *redfishSystem)
 	return nil
 }
 
-func ProbeRedfish(ctx context.Context, host string, timeout time.Duration) (string, bool) {
+func ProbeRedfish(ctx context.Context, host string, timeout time.Duration) bool {
 	r := newRedfish(Config{Host: host}, nil)
 	r.client.Timeout = timeout
 	var root struct {
 		Version string `json:"RedfishVersion"`
 	}
-	if err := r.do(ctx, http.MethodGet, redfishRoot, nil, &root); err != nil || root.Version == "" {
-		return "", false
-	}
-	return root.Version, true
+	return r.do(ctx, http.MethodGet, redfishRoot, nil, &root) == nil && root.Version != ""
 }

@@ -26,7 +26,7 @@ func hasKind(evs []store.EventRow, kind string) bool {
 }
 
 func TestWorkloadUnavailableNeedsTwoCollectionsAndAge(t *testing.T) {
-	tr := NewServiceTracker()
+	tr := newServiceTracker()
 	now := time.Now()
 	young := &cluster.ServiceHealth{Workloads: []cluster.WorkloadHealth{{Kind: "Deployment", Namespace: "app", Name: "web", Ready: 0, Desired: 3, AgeSec: 60}}}
 	if evs := tr.Derive("c", young, now, nil); len(evs) != 0 {
@@ -43,7 +43,6 @@ func TestWorkloadUnavailableNeedsTwoCollectionsAndAge(t *testing.T) {
 	if evs[0].Node != "Deployment/app/web" || evs[0].Severity != "warn" {
 		t.Fatalf("unexpected event %+v", evs[0])
 	}
-	// Steady state: no repeat.
 	if evs := tr.Derive("c", old, now, nil); len(evs) != 0 {
 		t.Fatalf("alert repeated: %v", kinds(evs))
 	}
@@ -60,7 +59,7 @@ func TestWorkloadUnavailableNeedsTwoCollectionsAndAge(t *testing.T) {
 }
 
 func TestFlappingServiceKeepsOneAlert(t *testing.T) {
-	tr := NewServiceTracker()
+	tr := newServiceTracker()
 	now := time.Now()
 	at := func(endpoints int) *cluster.ServiceHealth {
 		return &cluster.ServiceHealth{Services: []cluster.ServiceRow{{Namespace: "metallb-system", Name: "webhook", Type: "ClusterIP", HasSelector: true, Endpoints: endpoints, AgeSec: 900}}}
@@ -82,7 +81,7 @@ func TestFlappingServiceKeepsOneAlert(t *testing.T) {
 }
 
 func TestPodCrashloopByReasonAndByRestartBurst(t *testing.T) {
-	tr := NewServiceTracker()
+	tr := newServiceTracker()
 	t0 := time.Now()
 	sh := func(phase string, restarts int32) *cluster.ServiceHealth {
 		return &cluster.ServiceHealth{Pods: []cluster.PodHealth{{Namespace: "app", Name: "web-1", Phase: phase, Restarts: restarts, AgeSec: 900}}}
@@ -90,15 +89,13 @@ func TestPodCrashloopByReasonAndByRestartBurst(t *testing.T) {
 	if evs := tr.Derive("c", sh("CrashLoopBackOff", 4), t0, nil); !hasKind(evs, "pod.crashloop") {
 		t.Fatalf("CrashLoopBackOff not alerted: %v", kinds(evs))
 	}
-	// Briefly Running between back-offs is not a recovery.
 	if evs := tr.Derive("c", sh("Running", 4), t0.Add(time.Minute), nil); len(evs) != 0 {
 		t.Fatalf("flapped to recovered too early: %v", kinds(evs))
 	}
 	if evs := tr.Derive("c", sh("Running", 4), t0.Add(11*time.Minute), nil); !hasKind(evs, "pod.recovered") {
 		t.Fatalf("quiet window did not recover: %v", kinds(evs))
 	}
-	// Restart burst without a waiting reason: +3 within the window.
-	tr = NewServiceTracker()
+	tr = newServiceTracker()
 	tr.Derive("c", sh("Running", 0), t0, nil)
 	tr.Derive("c", sh("Running", 1), t0.Add(2*time.Minute), nil)
 	if evs := tr.Derive("c", sh("Running", 2), t0.Add(4*time.Minute), nil); len(evs) != 0 {
@@ -107,14 +104,12 @@ func TestPodCrashloopByReasonAndByRestartBurst(t *testing.T) {
 	if evs := tr.Derive("c", sh("Running", 3), t0.Add(6*time.Minute), nil); !hasKind(evs, "pod.crashloop") {
 		t.Fatalf("restart burst not alerted: %v", kinds(evs))
 	}
-	// Samples older than the window drop out: no new alert after quiet time.
-	tr = NewServiceTracker()
+	tr = newServiceTracker()
 	tr.Derive("c", sh("Running", 0), t0, nil)
 	if evs := tr.Derive("c", sh("Running", 3), t0.Add(20*time.Minute), nil); len(evs) != 0 {
 		t.Fatalf("stale restart history alerted: %v", kinds(evs))
 	}
-	// A never-restarted pod is fine immediately.
-	tr = NewServiceTracker()
+	tr = newServiceTracker()
 	tr.Seed([]store.EventRow{{Node: "Pod/app/web-1", Kind: "pod.crashloop"}})
 	if evs := tr.Derive("c", sh("Running", 0), t0, nil); !hasKind(evs, "pod.recovered") {
 		t.Fatalf("zero-restart pod not recovered: %v", kinds(evs))
@@ -122,7 +117,7 @@ func TestPodCrashloopByReasonAndByRestartBurst(t *testing.T) {
 }
 
 func TestYoungCrashloopIsNotAlerted(t *testing.T) {
-	tr := NewServiceTracker()
+	tr := newServiceTracker()
 	sh := &cluster.ServiceHealth{Pods: []cluster.PodHealth{{Namespace: "kube-system", Name: "kube-controller-manager-cp-01", Phase: "CrashLoopBackOff", Restarts: 2, AgeSec: 90}}}
 	if evs := tr.Derive("c", sh, time.Now(), nil); len(evs) != 0 {
 		t.Fatalf("bootstrap-time crashloop alerted: %v", kinds(evs))
@@ -130,7 +125,7 @@ func TestYoungCrashloopIsNotAlerted(t *testing.T) {
 }
 
 func TestDeletedObjectResolvesAndIgnoreNamespaces(t *testing.T) {
-	tr := NewServiceTracker()
+	tr := newServiceTracker()
 	now := time.Now()
 	pend := &cluster.ServiceHealth{Claims: []cluster.ClaimHealth{{Namespace: "app", Name: "data", Phase: "Pending", AgeSec: 900}, {Namespace: "ci", Name: "scratch", Phase: "Pending", AgeSec: 900}}}
 	evs := tr.Derive("c", pend, now, []string{"ci"})
@@ -144,7 +139,7 @@ func TestDeletedObjectResolvesAndIgnoreNamespaces(t *testing.T) {
 }
 
 func TestServicesIngressAndPool(t *testing.T) {
-	tr := NewServiceTracker()
+	tr := newServiceTracker()
 	now := time.Now()
 	sh := &cluster.ServiceHealth{
 		MetalLB:   true,
@@ -184,7 +179,7 @@ func TestServicesIngressAndPool(t *testing.T) {
 }
 
 func TestSeedPreventsReraise(t *testing.T) {
-	tr := NewServiceTracker()
+	tr := newServiceTracker()
 	tr.Seed([]store.EventRow{{Node: "Deployment/app/web", Kind: "workload.unavailable"}})
 	old := &cluster.ServiceHealth{Workloads: []cluster.WorkloadHealth{{Kind: "Deployment", Namespace: "app", Name: "web", Ready: 0, Desired: 3, AgeSec: 600}}}
 	tr.Derive("c", old, time.Now(), nil)
@@ -194,7 +189,7 @@ func TestSeedPreventsReraise(t *testing.T) {
 }
 
 func TestFluxNotReadyRaisesAndClears(t *testing.T) {
-	tr := NewServiceTracker()
+	tr := newServiceTracker()
 	now := time.Now()
 	broken := &cluster.ServiceHealth{Flux: []cluster.FluxHealth{{Kind: "Kustomization", Namespace: "flux-system", Name: "flux-system", Ready: "False", Message: "Deployment/shop/shop dry-run failed: .spec.replicas: expected numeric\nNamespace/shop created"}}}
 	if evs := tr.Derive("c", broken, now, nil); len(evs) != 0 {
@@ -205,14 +200,14 @@ func TestFluxNotReadyRaisesAndClears(t *testing.T) {
 		t.Fatalf("second failed collection: %+v", evs)
 	}
 	waiting := &cluster.ServiceHealth{Flux: []cluster.FluxHealth{{Kind: "Kustomization", Namespace: "flux-system", Name: "app", Ready: "False", Reason: "DependencyNotReady"}}}
-	wt := NewServiceTracker()
+	wt := newServiceTracker()
 	for i := 0; i < 3; i++ {
 		if evs := wt.Derive("c", waiting, now, nil); len(evs) != 0 {
 			t.Fatalf("waiting on a build is not a failure: %v", kinds(evs))
 		}
 	}
 	suspended := &cluster.ServiceHealth{Flux: []cluster.FluxHealth{{Kind: "HelmRelease", Namespace: "a", Name: "b", Ready: "False", Suspended: true}}}
-	if evs := NewServiceTracker().Derive("c", suspended, now, nil); len(evs) != 0 {
+	if evs := newServiceTracker().Derive("c", suspended, now, nil); len(evs) != 0 {
 		t.Fatalf("suspended object alerted: %v", kinds(evs))
 	}
 	fixed := &cluster.ServiceHealth{Flux: []cluster.FluxHealth{{Kind: "Kustomization", Namespace: "flux-system", Name: "flux-system", Ready: "True"}}}

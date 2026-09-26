@@ -6,7 +6,6 @@ import (
 	"github.com/mikael/kubit/internal/export"
 )
 
-// Export writes the cluster's Talos layer to dir (see package export).
 func (m *Manager) Export(ctx context.Context, name, dir string) error {
 	c, row, err := m.LoadCluster(ctx, name)
 	if err != nil {

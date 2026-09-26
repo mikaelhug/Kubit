@@ -76,8 +76,6 @@ func TestOverlaps(t *testing.T) {
 	}
 }
 
-// Two EliteDesks, two VMs on one KVM host, one standalone box: the metal machines
-// take the control plane even though the VMs are smaller.
 func TestDesignPrefersBareMetalControlPlanes(t *testing.T) {
 	d := []config.MachineDisk{{DevPath: "/dev/sda", SizeBytes: 256 << 30, Transport: "sata"}}
 	ms := []config.Machine{
@@ -102,7 +100,6 @@ func TestDesignPrefersBareMetalControlPlanes(t *testing.T) {
 			t.Errorf("no VM control planes expected, got %+v", w)
 		}
 	}
-	// With only VMs available the lint says so.
 	vms := ms[2:4]
 	vms = append(vms, config.Machine{IP: "10.0.0.26", MAC: "aa:aa:aa:aa:aa:26", Arch: "amd64", CPUs: 2, MemBytes: 4 << 30, Virtual: true, Disks: d})
 	_, warnings = config.Design("vms", vms, config.DesignOptions{})

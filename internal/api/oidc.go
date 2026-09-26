@@ -148,8 +148,6 @@ func (s *Server) handleOIDCCallback(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, "/", http.StatusFound)
 }
 
-// upsertSSOUser creates or updates the account the provider vouches for; its role
-// follows the group mapping on every sign-in, so a group change takes effect at once.
 func (s *Server) upsertSSOUser(ctx context.Context, name string, role store.Role) (*store.User, error) {
 	name = strings.ToLower(name)
 	u, err := s.store.GetUser(ctx, name)

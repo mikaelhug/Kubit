@@ -17,8 +17,6 @@ import (
 	"github.com/mikael/kubit/internal/store"
 )
 
-// forwardEvent sends a health event to the configured sinks; failures are logged and
-// never block the watcher. Only events at or above the configured severity go out.
 func (s *Server) forwardEvent(e store.EventRow) {
 	v, err := s.store.GetSettings(context.Background())
 	if err != nil {
@@ -30,7 +28,6 @@ func (s *Server) forwardEvent(e store.EventRow) {
 	s.deliver(v, e)
 }
 
-// deliver fans one event out to every configured sink, ignoring the severity floor.
 func (s *Server) deliver(v store.Settings, e store.EventRow) {
 	if v.Alerts.WebhookURL != "" {
 		go func() {
@@ -57,8 +54,6 @@ func severityAtLeast(sev, min string) bool {
 	return rank[sev] >= m
 }
 
-// webhookPayload is a generic JSON body; Slack/Discord/Teams incoming webhooks accept
-// the top-level "text" field, everything else is for programmatic receivers.
 type webhookPayload struct {
 	Text     string         `json:"text"`
 	Source   string         `json:"source"`
@@ -115,8 +110,6 @@ func sendMail(c store.SMTP, e store.EventRow) error {
 	if c.Username != "" {
 		auth = smtp.PlainAuth("", c.Username, c.Password, c.Host)
 	}
-	// smtp.SendMail only does opportunistic STARTTLS; implicit TLS (465) and a
-	// deliberate plaintext mode need the client built by hand.
 	var (
 		cl  *smtp.Client
 		err error
@@ -182,7 +175,6 @@ func sendMail(c store.SMTP, e store.EventRow) error {
 	return cl.Quit()
 }
 
-// handleAlertTest sends a synthetic critical event through the configured sinks.
 func (s *Server) handleAlertTest(w http.ResponseWriter, r *http.Request) {
 	v, err := s.store.GetSettings(r.Context())
 	if err != nil {

@@ -14,9 +14,6 @@ import (
 	"github.com/mikael/kubit/internal/store"
 )
 
-// attachLive turns every store write into a typed live message. This is the single
-// place that decides what a change means for the console; handlers never push by
-// hand for rows the store owns.
 func (s *Server) attachLive(ctx context.Context) {
 	s.store.OnChange(func(c store.Change) { s.onChange(ctx, c) })
 	go s.store.WatchExternal(ctx, 2*time.Second)
@@ -40,7 +37,6 @@ func (s *Server) onChange(ctx context.Context, c store.Change) {
 			return
 		}
 		if c.Key == "" {
-			// A whole-cluster release (forget): push every affected row.
 			if rows, err := s.store.ListNodes(ctx, ""); err == nil {
 				for i := range rows {
 					v := machineView(rows[i])
@@ -95,8 +91,6 @@ func (s *Server) onChange(ctx context.Context, c store.Change) {
 
 var devOrigins = []string{"localhost:5173", "127.0.0.1:5173"}
 
-// handleLive is the console's one live connection: hello, then replay from ?since
-// (or resync when too far behind), then every message as it happens.
 func (s *Server) handleLive(w http.ResponseWriter, r *http.Request) {
 	conn, err := websocket.Accept(w, r, &websocket.AcceptOptions{OriginPatterns: devOrigins})
 	if err != nil {
@@ -129,7 +123,6 @@ func (s *Server) handleLive(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	// The client never sends anything meaningful; reading only surfaces the close.
 	go func() {
 		defer stop()
 		for {
@@ -151,10 +144,7 @@ func (s *Server) handleLive(w http.ResponseWriter, r *http.Request) {
 			if err != nil {
 				return
 			}
-		case m, open := <-ch:
-			if !open {
-				return
-			}
+		case m := <-ch:
 			if err := send(m); err != nil {
 				log.Printf("live: %v", err)
 				return

@@ -8,11 +8,8 @@ import (
 	"syscall"
 )
 
-// Lock holds the single-instance lock of a KUBIT_HOME while a daemon runs.
 type Lock struct{ f *os.File }
 
-// LockHome takes an exclusive advisory lock on <dir>/serve.lock and records the pid;
-// a second daemon on the same home fails with the holder's pid.
 func LockHome(dir string) (*Lock, error) {
 	path := filepath.Join(dir, "serve.lock")
 	f, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0o600)

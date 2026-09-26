@@ -23,7 +23,6 @@ func TestParseMetrics(t *testing.T) {
 	if m.Load1 != 1.42 || m.MemTotal != 16e9 || m.MemUsed != 12e9 || m.DiskUsed != 180e9 || m.DiskTotal != 200e9 || m.VMsRunning != 3 || m.UptimeSec != 86400 || m.At != "2026-09-15T12:00:00Z" {
 		t.Errorf("parsed %+v", m)
 	}
-	// Between the two readings 960 jiffies passed, 410 of them busy.
 	if m.CPUPct < 42.6 || m.CPUPct > 42.8 {
 		t.Errorf("cpu %.2f%%, want 42.7", m.CPUPct)
 	}

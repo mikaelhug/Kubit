@@ -18,7 +18,6 @@ import (
 	"github.com/siderolabs/talos/pkg/machinery/gendata"
 )
 
-// AttachWatcher connects the background watcher to the SSE stream and starts it.
 func defaultTalosVersion() string { return gendata.VersionTag }
 
 func (s *Server) AttachWatcher(ctx context.Context, w *watch.Watcher) {
@@ -58,8 +57,6 @@ func (s *Server) AttachWatcher(ctx context.Context, w *watch.Watcher) {
 	go w.Run(ctx)
 }
 
-// watchVersions re-reads the factory feed hourly and pushes a `versions` message
-// when the newest stable Talos changed, so update notices appear without a reload.
 func (s *Server) watchVersions(ctx context.Context) {
 	last := s.latestStableTalos(ctx)
 	t := time.NewTicker(time.Hour)
@@ -71,7 +68,7 @@ func (s *Server) watchVersions(ctx context.Context) {
 		case <-t.C:
 		}
 		s.versionsMu.Lock()
-		s.versionsAt = time.Time{} // force a refetch past the cache
+		s.versionsAt = time.Time{}
 		s.versionsMu.Unlock()
 		if v := s.latestStableTalos(ctx); v != last {
 			last = v
@@ -80,8 +77,6 @@ func (s *Server) watchVersions(ctx context.Context) {
 	}
 }
 
-// watchPXE polls the separate pxe process's status page on the daemon's side and
-// pushes a refresh only when it changed, so the console never polls it.
 func (s *Server) watchPXE(ctx context.Context) {
 	var last string
 	t := time.NewTicker(5 * time.Second)
@@ -122,14 +117,12 @@ func (s *Server) healthRoutes() {
 	r.HandleFunc("GET /api/v1/observer", s.handleObserver)
 	r.HandleFunc("GET /api/v1/clusters/{name}/samples", s.handleSamples)
 	r.HandleFunc("GET /api/v1/clusters/{name}/service-health", s.handleServiceHealth)
-	r.HandleFunc("GET /api/v1/clusters/{name}/events", s.handleEvents2)
+	r.HandleFunc("GET /api/v1/clusters/{name}/events", s.handleClusterEvents)
 	r.HandleFunc("POST /api/v1/clusters/{name}/events/ack", s.handleAckAll)
 	r.HandleFunc("POST /api/v1/events/{id}/ack", s.handleAck)
 	r.HandleFunc("GET /api/v1/versions", s.handleVersions)
 }
 
-// handleServiceHealth returns the watcher's latest in-cluster collection (nil until
-// the first one) with the open workload alerts.
 func (s *Server) handleServiceHealth(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")
 	var latest *cluster.ServiceHealth
@@ -169,7 +162,7 @@ func sampleRange(rng string) time.Duration {
 	return 24 * time.Hour
 }
 
-func (s *Server) handleEvents2(w http.ResponseWriter, r *http.Request) {
+func (s *Server) handleClusterEvents(w http.ResponseWriter, r *http.Request) {
 	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
 	if limit <= 0 {
 		limit = 200
@@ -199,9 +192,6 @@ func (s *Server) handleAckAll(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// Versions lists what an upgrade may target. Talos versions come from the Image
-// Factory; Kubernetes minors are the range this build's machinery (Talos
-// gendata.VersionTag) supports, which is also the range Kubit validates against.
 type Versions struct {
 	Talos            []string `json:"talos"`
 	TalosSource      string   `json:"talosSource"`
@@ -213,11 +203,11 @@ type Versions struct {
 }
 
 func (s *Server) handleVersions(w http.ResponseWriter, r *http.Request) {
-	v := Versions{Machinery: gendata.VersionTag, MinTalos: "v1.14.0", KubernetesLatest: "v" + constants.DefaultKubernetesVersion,
+	v := Versions{Machinery: gendata.VersionTag, MinTalos: config.MinTalosVersion, KubernetesLatest: "v" + constants.DefaultKubernetesVersion,
 		Note: "Kubernetes compatibility is checked against Talos " + gendata.VersionTag + "'s support window; a Talos release newer than Kubit's machinery may support more."}
 	if list, err := s.manager.Factory.Versions(r.Context()); err == nil {
 		for _, t := range list {
-			if strings.HasPrefix(t, "v1.") && talosAtLeast(t, "v1.14.0") {
+			if strings.HasPrefix(t, "v1.") && talosAtLeast(t, config.MinTalosVersion) {
 				v.Talos = append(v.Talos, t)
 			}
 		}
@@ -231,8 +221,6 @@ func (s *Server) handleVersions(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, v)
 }
 
-// latestStableTalos is the newest non-prerelease Talos the factory publishes ("" if
-// the factory cannot be reached); cached for an hour.
 func (s *Server) latestStableTalos(ctx context.Context) string {
 	s.versionsMu.Lock()
 	if time.Since(s.versionsAt) < time.Hour {
@@ -256,7 +244,6 @@ func (s *Server) latestStableTalos(ctx context.Context) string {
 	return latest
 }
 
-// updatesAvailable lists "cluster: Talos vX → vY" lines for the heartbeat.
 func (s *Server) updatesAvailable(ctx context.Context) []string {
 	latest := s.latestStableTalos(ctx)
 	k8s := "v" + constants.DefaultKubernetesVersion
@@ -293,7 +280,6 @@ func parseMinor(v string) (int, int) {
 
 func talosAtLeast(v, min string) bool { return !versionLess(v, min) }
 
-// versionLess orders semver-ish tags; prereleases sort before their release.
 func versionLess(a, b string) bool {
 	pa, pb := splitVer(a), splitVer(b)
 	for i := 0; i < 3; i++ {

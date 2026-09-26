@@ -155,10 +155,10 @@ func TestRedfishErrors(t *testing.T) {
 	if _, err := Open(Config{Type: "redfish", Host: srv.URL}); err == nil {
 		t.Error("missing credentials must be refused")
 	}
-	if v, ok := ProbeRedfish(ctx, srv.URL, 2*time.Second); !ok || v != "1.15.0" {
-		t.Errorf("service root probe: %q %v", v, ok)
+	if !ProbeRedfish(ctx, srv.URL, 2*time.Second) {
+		t.Error("service root probe failed")
 	}
-	if _, ok := ProbeRedfish(ctx, "https://127.0.0.1:1", time.Second); ok {
+	if ProbeRedfish(ctx, "https://127.0.0.1:1", time.Second) {
 		t.Error("closed port must not look like a BMC")
 	}
 	m, _ = Open(Config{Type: "redfish", Host: srv.URL, User: "root", Password: "calvin"})

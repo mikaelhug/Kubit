@@ -19,7 +19,6 @@ import (
 	"go.yaml.in/yaml/v4"
 )
 
-// metalMode mirrors what a bare-metal Talos node validates against.
 type metalMode struct{}
 
 func (metalMode) String() string        { return "metal" }
@@ -93,7 +92,6 @@ func TestGenerateEveryNodeValidates(t *testing.T) {
 func TestGenerateGVisorRequirements(t *testing.T) {
 	_, g := generateSample(t)
 	cfg := load(t, g.Nodes["worker-01"])
-	// siderolabs/extensions gvisor README: user.max_user_namespaces = 11255.
 	if got := doc[*runtime.SysctlConfigV1Alpha1](t, cfg).Params["user.max_user_namespaces"]; got != "11255" {
 		t.Errorf("sysctl user.max_user_namespaces = %q", got)
 	}
@@ -128,9 +126,6 @@ func TestGenerateInstallDisk(t *testing.T) {
 	}
 }
 
-// README: data disks become whole-disk xfs user volumes mounted at /var/mnt/data-N,
-// in declaration order, never touching the install disk; the node is labelled with
-// the count.
 func TestGenerateDataDisks(t *testing.T) {
 	_, g := generateSample(t)
 	cfg := load(t, g.Nodes["worker-01"])
@@ -246,7 +241,6 @@ func TestGenerateReusesSecrets(t *testing.T) {
 	if _, g3 := generateSample(t); g3.Secrets.Cluster.ID == g1.Secrets.Cluster.ID {
 		t.Error("nil bundle must mint fresh secrets")
 	}
-	// The stored form is secrets.yaml; a restored bundle must still be able to sign.
 	raw, err := yaml.Marshal(g1.Secrets)
 	if err != nil {
 		t.Fatal(err)

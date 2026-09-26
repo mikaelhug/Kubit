@@ -21,28 +21,25 @@ import (
 )
 
 type Inventory struct {
-	IP           string `json:"ip"`
-	Hostname     string `json:"hostname,omitempty"`
-	TalosVersion string `json:"talosVersion"`
-	Arch         string `json:"arch"`
-	Platform     string `json:"platform"`
-	Stage        string `json:"stage"` // maintenance, running, ...
-	CPUs         int    `json:"cpus"`
-	MemoryBytes  uint64 `json:"memoryBytes"`
-	Manufacturer string `json:"manufacturer,omitempty"`
-	Product      string `json:"product,omitempty"`
-	UUID         string `json:"uuid,omitempty"`
-	Serial       string `json:"serial,omitempty"`
-	KVM          bool   `json:"kvm"`
-	// Virtual is set from the SMBIOS vendor strings: a VM shares its host's failure
-	// domain, which matters for control-plane placement.
-	Virtual bool   `json:"virtual"`
-	Disks   []Disk `json:"disks"`
-	Links   []Link `json:"links"`
-	// Fields below are only filled on configured (mTLS) nodes.
-	BootTime   string      `json:"bootTime,omitempty"`
-	Extensions []Extension `json:"extensions,omitempty"`
-	Etcd       *EtcdMember `json:"etcd,omitempty"`
+	IP           string      `json:"ip"`
+	Hostname     string      `json:"hostname,omitempty"`
+	TalosVersion string      `json:"talosVersion"`
+	Arch         string      `json:"arch"`
+	Platform     string      `json:"platform"`
+	Stage        string      `json:"stage"`
+	CPUs         int         `json:"cpus"`
+	MemoryBytes  uint64      `json:"memoryBytes"`
+	Manufacturer string      `json:"manufacturer,omitempty"`
+	Product      string      `json:"product,omitempty"`
+	UUID         string      `json:"uuid,omitempty"`
+	Serial       string      `json:"serial,omitempty"`
+	KVM          bool        `json:"kvm"`
+	Virtual      bool        `json:"virtual"`
+	Disks        []Disk      `json:"disks"`
+	Links        []Link      `json:"links"`
+	BootTime     string      `json:"bootTime,omitempty"`
+	Extensions   []Extension `json:"extensions,omitempty"`
+	Etcd         *EtcdMember `json:"etcd,omitempty"`
 }
 
 type Extension struct {
@@ -79,8 +76,6 @@ type Link struct {
 	Addresses []string `json:"addresses,omitempty"`
 }
 
-// Inspect gathers what the UI shows for a discovered node. Every call here is served in
-// maintenance mode as well as on a configured node.
 func (c *Client) Inspect(ctx context.Context) (*Inventory, error) {
 	ctx = c.Context(ctx)
 	inv := &Inventory{IP: c.IP}
@@ -166,7 +161,6 @@ func (c *Client) Inspect(ctx context.Context) (*Inventory, error) {
 	return inv, nil
 }
 
-// EtcdMemberInfo reads this node's etcd member status; only control planes answer.
 func (c *Client) EtcdMemberInfo(ctx context.Context) (*EtcdMember, error) {
 	st, err := c.EtcdStatus(c.Context(ctx))
 	if err != nil {
@@ -185,7 +179,6 @@ func (c *Client) EtcdMemberInfo(ctx context.Context) (*EtcdMember, error) {
 	return nil, errors.New("no etcd member status")
 }
 
-// PrimaryMAC is the MAC of the physical link carrying the node's IP.
 func (inv *Inventory) PrimaryMAC() string {
 	for _, l := range inv.Links {
 		for _, a := range l.Addresses {
@@ -200,7 +193,6 @@ func (inv *Inventory) PrimaryMAC() string {
 	return ""
 }
 
-// InstallCandidates lists writable, non-removable disks, largest first.
 func (inv *Inventory) InstallCandidates() []Disk {
 	var out []Disk
 	for _, d := range inv.Disks {
@@ -229,7 +221,6 @@ func (c *Client) exists(ctx context.Context, path string) bool {
 	}
 }
 
-// IsVirtual recognises the common hypervisors from SMBIOS manufacturer/product.
 func IsVirtual(manufacturer, product string) bool {
 	m := strings.ToLower(manufacturer + " " + product)
 	for _, hint := range []string{"qemu", "kvm", "vmware", "virtualbox", "innotek", "xen", "virtual machine", "apple virtualization", "parallels", "bochs", "proxmox", "hetzner vserver", "openstack", "amazon ec2", "google compute engine", "nutanix"} {

@@ -7,8 +7,6 @@ import (
 	"github.com/mikael/kubit/internal/tofu"
 )
 
-// Fixture: a real `tofu show -json` of a plan that enables cert-manager and widens the
-// MetalLB pool on a cluster where everything else is already applied.
 func TestParseShowPlan(t *testing.T) {
 	raw, err := os.ReadFile("testdata/plan-changes.json")
 	if err != nil {

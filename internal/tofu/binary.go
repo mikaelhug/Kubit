@@ -1,5 +1,3 @@
-// Package tofu runs OpenTofu for the in-cluster platform layer: a pinned binary, the
-// rendered infra/platform root, and a plan/apply runner that streams JSON events.
 package tofu
 
 import (
@@ -22,8 +20,6 @@ import (
 	"github.com/mikael/kubit/internal/httpx"
 )
 
-// Version is the OpenTofu release Kubit drives. Checksums are from the release's
-// SHA256SUMS; bump them together.
 const Version = "1.12.6"
 
 var checksums = map[string]string{
@@ -33,8 +29,6 @@ var checksums = map[string]string{
 	"linux_arm64":  "e573979ba68a17fe7b881752051a694a7efcd970e39521f6a25775197861ed4d",
 }
 
-// Binary returns the path of a tofu binary of the pinned version, downloading it into
-// binDir on first use. A PATH tofu of the same major.minor is used if present.
 func Binary(ctx context.Context, binDir string) (string, error) {
 	if p, err := exec.LookPath("tofu"); err == nil && sameMinor(ctx, p) {
 		return p, nil
@@ -118,7 +112,6 @@ func sameMinor(ctx context.Context, path string) bool {
 	if err != nil {
 		return false
 	}
-	// First line: "OpenTofu v1.12.6"
 	line, _, _ := strings.Cut(string(out), "\n")
 	v := strings.TrimPrefix(strings.TrimPrefix(line, "OpenTofu "), "v")
 	return minor(v) == minor(Version)

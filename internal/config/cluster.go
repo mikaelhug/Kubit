@@ -1,5 +1,3 @@
-// Package config defines cluster.yaml, the single declarative input to Kubit, and
-// turns it into Talos machine configuration.
 package config
 
 import (
@@ -23,7 +21,6 @@ import (
 )
 
 const (
-	// MinTalosVersion is the oldest release whose config document set Kubit generates.
 	MinTalosVersion = "v1.14.0"
 
 	APIVersion  = "kubit.dev/v1"
@@ -53,25 +50,19 @@ type Metadata struct {
 }
 
 type Spec struct {
-	TalosVersion      string `yaml:"talosVersion,omitempty" json:"talosVersion,omitempty"`
-	KubernetesVersion string `yaml:"kubernetesVersion,omitempty" json:"kubernetesVersion,omitempty"`
-	// Extensions and SchematicID are the cluster default; a pool may override them.
-	Extensions   []string     `yaml:"extensions,omitempty" json:"extensions,omitempty"`
-	SchematicID  string       `yaml:"schematicID,omitempty" json:"schematicID,omitempty"`
-	ControlPlane ControlPlane `yaml:"controlPlane" json:"controlPlane"`
-	Network      Network      `yaml:"network" json:"network"`
-	// Pools group nodes that share role, labels, taints, extensions and disk policy.
-	// Absent pools are synthesised: "controlplane" and "worker".
-	Pools    []Pool   `yaml:"pools,omitempty" json:"pools,omitempty"`
-	Nodes    []Node   `yaml:"nodes" json:"nodes"`
-	Platform Platform `yaml:"platform" json:"platform"`
-	Backup   Backup   `yaml:"backup" json:"backup"`
-	// Maintenance gates disruptive operations to a window; empty = anytime.
-	Maintenance Maintenance `yaml:"maintenance,omitempty" json:"maintenance,omitempty"`
-	// Auth wires the cluster's API server to an OpenID Connect provider so people
-	// use kubectl with their own identity and RBAC binds to their groups.
-	Auth    ClusterAuth `yaml:"auth,omitempty" json:"auth,omitempty"`
-	Storage Storage     `yaml:"storage,omitempty" json:"storage,omitempty"`
+	TalosVersion      string       `yaml:"talosVersion,omitempty" json:"talosVersion,omitempty"`
+	KubernetesVersion string       `yaml:"kubernetesVersion,omitempty" json:"kubernetesVersion,omitempty"`
+	Extensions        []string     `yaml:"extensions,omitempty" json:"extensions,omitempty"`
+	SchematicID       string       `yaml:"schematicID,omitempty" json:"schematicID,omitempty"`
+	ControlPlane      ControlPlane `yaml:"controlPlane" json:"controlPlane"`
+	Network           Network      `yaml:"network" json:"network"`
+	Pools             []Pool       `yaml:"pools,omitempty" json:"pools,omitempty"`
+	Nodes             []Node       `yaml:"nodes" json:"nodes"`
+	Platform          Platform     `yaml:"platform" json:"platform"`
+	Backup            Backup       `yaml:"backup" json:"backup"`
+	Maintenance       Maintenance  `yaml:"maintenance,omitempty" json:"maintenance,omitempty"`
+	Auth              ClusterAuth  `yaml:"auth,omitempty" json:"auth,omitempty"`
+	Storage           Storage      `yaml:"storage,omitempty" json:"storage,omitempty"`
 }
 
 type Storage struct {
@@ -105,8 +96,6 @@ type ClusterAuth struct {
 	OIDC *ClusterOIDC `yaml:"oidc,omitempty" json:"oidc,omitempty"`
 }
 
-// ClusterOIDC becomes a JWT authenticator in the API server's AuthenticationConfiguration.
-// Prefixes default to "oidc:" so SSO users and groups never collide with service accounts.
 type ClusterOIDC struct {
 	Issuer         string `yaml:"issuer" json:"issuer"`
 	ClientID       string `yaml:"clientID" json:"clientID"`
@@ -114,12 +103,9 @@ type ClusterOIDC struct {
 	UsernamePrefix string `yaml:"usernamePrefix,omitempty" json:"usernamePrefix,omitempty"`
 	GroupsClaim    string `yaml:"groupsClaim,omitempty" json:"groupsClaim,omitempty"`
 	GroupsPrefix   string `yaml:"groupsPrefix,omitempty" json:"groupsPrefix,omitempty"`
-	// AdminGroup, when set, is bound to cluster-admin by the platform layer.
-	AdminGroup string `yaml:"adminGroup,omitempty" json:"adminGroup,omitempty"`
+	AdminGroup     string `yaml:"adminGroup,omitempty" json:"adminGroup,omitempty"`
 }
 
-// AdminGroupSubject is the RBAC group name the API server will see for AdminGroup:
-// the group with its prefix applied.
 func (a ClusterAuth) AdminGroupSubject() string {
 	o := a.OIDC
 	if o == nil || o.AdminGroup == "" || o.GroupsClaim == "" {
@@ -132,8 +118,6 @@ func (a ClusterAuth) AdminGroupSubject() string {
 	return gp + o.AdminGroup
 }
 
-// AuthenticationConfig renders the API server's structured AuthenticationConfiguration
-// (one JWT authenticator); nil when unset.
 func (a ClusterAuth) AuthenticationConfig() map[string]any {
 	o := a.OIDC
 	if o == nil || o.Issuer == "" || o.ClientID == "" {
@@ -166,19 +150,15 @@ func (a ClusterAuth) AuthenticationConfig() map[string]any {
 	}
 }
 
-// Backup declares what Kubit keeps on the admin host for disaster recovery.
 type Backup struct {
 	Etcd EtcdBackup `yaml:"etcd" json:"etcd"`
 }
 
-// EtcdBackup schedules etcd snapshots over the Talos API. Interval "0" disables the
-// schedule; snapshots can still be taken by hand.
 type EtcdBackup struct {
-	Interval string `yaml:"interval,omitempty" json:"interval,omitempty"` // Go duration, default 6h
-	Keep     int    `yaml:"keep,omitempty" json:"keep,omitempty"`         // scheduled snapshots retained, default 28
+	Interval string `yaml:"interval,omitempty" json:"interval,omitempty"`
+	Keep     int    `yaml:"keep,omitempty" json:"keep,omitempty"`
 }
 
-// IntervalDuration parses Interval; zero means disabled.
 func (b EtcdBackup) IntervalDuration() time.Duration {
 	d, err := time.ParseDuration(b.Interval)
 	if err != nil || d <= 0 {
@@ -187,60 +167,47 @@ func (b EtcdBackup) IntervalDuration() time.Duration {
 	return d
 }
 
-// Pool is a node class in the sense of Omni machine classes or CAPI machine pools.
 type Pool struct {
 	Name        string            `yaml:"name" json:"name"`
 	Role        Role              `yaml:"role" json:"role"`
 	Labels      map[string]string `yaml:"labels,omitempty" json:"labels,omitempty"`
-	Taints      map[string]string `yaml:"taints,omitempty" json:"taints,omitempty"` // key: "value:Effect"
+	Taints      map[string]string `yaml:"taints,omitempty" json:"taints,omitempty"`
 	Annotations map[string]string `yaml:"annotations,omitempty" json:"annotations,omitempty"`
-	// Extensions, when set, replace the cluster default and give the pool its own schematic.
-	Extensions  []string     `yaml:"extensions,omitempty" json:"extensions,omitempty"`
-	SchematicID string       `yaml:"schematicID,omitempty" json:"schematicID,omitempty"`
-	InstallDisk *InstallDisk `yaml:"installDisk,omitempty" json:"installDisk,omitempty"`
+	Extensions  []string          `yaml:"extensions,omitempty" json:"extensions,omitempty"`
+	SchematicID string            `yaml:"schematicID,omitempty" json:"schematicID,omitempty"`
+	InstallDisk *InstallDisk      `yaml:"installDisk,omitempty" json:"installDisk,omitempty"`
 }
 
 type ControlPlane struct {
-	// Endpoint is the Kubernetes API URL clients use; defaults to the VIP, else the first control plane IP.
 	Endpoint        string `yaml:"endpoint,omitempty" json:"endpoint,omitempty"`
 	VIP             string `yaml:"vip,omitempty" json:"vip,omitempty"`
 	AllowScheduling *bool  `yaml:"allowScheduling,omitempty" json:"allowScheduling,omitempty"`
 }
 
 type Network struct {
-	PodCIDR     string `yaml:"podCIDR,omitempty" json:"podCIDR,omitempty"`
-	ServiceCIDR string `yaml:"serviceCIDR,omitempty" json:"serviceCIDR,omitempty"`
-	// Nameservers and NTP apply to every node (Talos defaults otherwise).
+	PodCIDR     string   `yaml:"podCIDR,omitempty" json:"podCIDR,omitempty"`
+	ServiceCIDR string   `yaml:"serviceCIDR,omitempty" json:"serviceCIDR,omitempty"`
 	Nameservers []string `yaml:"nameservers,omitempty" json:"nameservers,omitempty"`
 	NTP         []string `yaml:"ntp,omitempty" json:"ntp,omitempty"`
 }
 
 type Node struct {
-	Hostname string `yaml:"hostname" json:"hostname"`
-	// IP is where the machine is reachable now (its lease, or the static address).
-	IP string `yaml:"ip" json:"ip"`
-	// MAC of the uplink is the machine's identity; UUID (SMBIOS) is a second one.
-	MAC  string `yaml:"mac,omitempty" json:"mac,omitempty"`
-	UUID string `yaml:"uuid,omitempty" json:"uuid,omitempty"`
-	// Pool names the node class; Role is derived from it (kept for legacy declarations).
-	Pool        string      `yaml:"pool,omitempty" json:"pool,omitempty"`
-	Role        Role        `yaml:"role,omitempty" json:"role,omitempty"`
-	Arch        Arch        `yaml:"arch,omitempty" json:"arch,omitempty"`
-	InstallDisk InstallDisk `yaml:"installDisk,omitempty" json:"installDisk,omitempty"`
-	// DataDisks are whole disks Talos formats (xfs) and mounts at /var/mnt/data-N, in
-	// this order, for node-local storage; nothing else on the machine is touched.
-	DataDisks []string `yaml:"dataDisks,omitempty" json:"dataDisks,omitempty"`
-	// KVM marks nodes where /dev/kvm exists, enabling the runsc-kvm RuntimeClass.
-	KVM bool `yaml:"kvm,omitempty" json:"kvm,omitempty"`
-	// Network, when set, replaces DHCP on the uplink with static addressing.
+	Hostname    string            `yaml:"hostname" json:"hostname"`
+	IP          string            `yaml:"ip" json:"ip"`
+	MAC         string            `yaml:"mac,omitempty" json:"mac,omitempty"`
+	UUID        string            `yaml:"uuid,omitempty" json:"uuid,omitempty"`
+	Pool        string            `yaml:"pool,omitempty" json:"pool,omitempty"`
+	Role        Role              `yaml:"role,omitempty" json:"role,omitempty"`
+	Arch        Arch              `yaml:"arch,omitempty" json:"arch,omitempty"`
+	InstallDisk InstallDisk       `yaml:"installDisk,omitempty" json:"installDisk,omitempty"`
+	DataDisks   []string          `yaml:"dataDisks,omitempty" json:"dataDisks,omitempty"`
+	KVM         bool              `yaml:"kvm,omitempty" json:"kvm,omitempty"`
 	Network     *NodeNetwork      `yaml:"network,omitempty" json:"network,omitempty"`
 	Labels      map[string]string `yaml:"labels,omitempty" json:"labels,omitempty"`
 	Taints      map[string]string `yaml:"taints,omitempty" json:"taints,omitempty"`
 	Annotations map[string]string `yaml:"annotations,omitempty" json:"annotations,omitempty"`
 }
 
-// TargetIP is where the node answers once its config is applied: the first static
-// address when one is declared, otherwise the address it was discovered on.
 func (n Node) TargetIP() string {
 	if n.Network != nil && len(n.Network.Addresses) > 0 {
 		if pfx, err := netip.ParsePrefix(n.Network.Addresses[0]); err == nil {
@@ -254,25 +221,21 @@ func (n Node) TargetIP() string {
 }
 
 type NodeNetwork struct {
-	Addresses   []string `yaml:"addresses" json:"addresses"` // CIDR notation
+	Addresses   []string `yaml:"addresses" json:"addresses"`
 	Gateway     string   `yaml:"gateway,omitempty" json:"gateway,omitempty"`
 	Nameservers []string `yaml:"nameservers,omitempty" json:"nameservers,omitempty"`
 	VLAN        uint16   `yaml:"vlan,omitempty" json:"vlan,omitempty"`
 	MTU         uint32   `yaml:"mtu,omitempty" json:"mtu,omitempty"`
 }
 
-// MaxDataDisks bounds the data volumes per node; the mount names are data-1..data-N.
 const MaxDataDisks = 8
 
-// InstallDisk selects the target disk either by explicit device path or by a selector;
-// exactly one of the two must be set.
 type InstallDisk struct {
 	Path     string        `yaml:"path,omitempty" json:"path,omitempty"`
 	Selector *DiskSelector `yaml:"selector,omitempty" json:"selector,omitempty"`
 }
 
 type DiskSelector struct {
-	// MinSize like "100GB"; Type like "nvme", "sata", "virtio"; Model is a glob.
 	MinSize string `yaml:"minSize,omitempty" json:"minSize,omitempty"`
 	Type    string `yaml:"type,omitempty" json:"type,omitempty"`
 	Model   string `yaml:"model,omitempty" json:"model,omitempty"`
@@ -285,17 +248,12 @@ type Platform struct {
 	MetricsServer Addon   `yaml:"metricsServer" json:"metricsServer"`
 	CertManager   Addon   `yaml:"certManager" json:"certManager"`
 	Flux          Flux    `yaml:"flux" json:"flux"`
-	// Longhorn is replicated block storage on the nodes' data disks: the default
-	// StorageClass, volume snapshots, backups to S3. Needs dataDisks on the nodes
-	// that should hold replicas; Talos gets the iscsi and util-linux extensions.
-	Longhorn Addon `yaml:"longhorn" json:"longhorn"`
-	Builds   Addon `yaml:"builds" json:"builds"`
+	Longhorn      Addon   `yaml:"longhorn" json:"longhorn"`
+	Builds        Addon   `yaml:"builds" json:"builds"`
 
 	LegacyArgoCD *Addon `yaml:"argocd,omitempty" json:"-"`
 }
 
-// AddOns reports whether any in-cluster add-on is enabled: the workers then carry
-// MetalLB, ingress and metrics pods on top of the kubelet.
 func (p Platform) AddOns() bool {
 	return p.MetalLB.Enabled || p.IngressNginx.Enabled || p.MetricsServer.Enabled || p.CertManager.Enabled || p.Flux.Enabled || p.Longhorn.Enabled || p.Builds.Enabled
 }
@@ -317,11 +275,8 @@ func (c *Cluster) RegistryIP() string {
 	return netip.AddrFrom4(b).String()
 }
 
-// LonghornExtensions are the Talos system extensions Longhorn's engine needs.
 var LonghornExtensions = []string{"siderolabs/iscsi-tools", "siderolabs/util-linux-tools"}
 
-// LonghornNodes are the nodes that carry Longhorn replicas: those with data disks,
-// and those sharing their system disk.
 func (c *Cluster) LonghornNodes() []Node {
 	var out []Node
 	for _, n := range c.Spec.Nodes {
@@ -332,7 +287,6 @@ func (c *Cluster) LonghornNodes() []Node {
 	return out
 }
 
-// LonghornReplicas is the default replica count: three, or fewer on small clusters.
 func (c *Cluster) LonghornReplicas() int {
 	n := len(c.LonghornNodes())
 	if n > 3 {
@@ -345,9 +299,8 @@ func (c *Cluster) LonghornReplicas() int {
 }
 
 type Addon struct {
-	Enabled bool `yaml:"enabled" json:"enabled"`
-	// Values are merged into the add-on's Helm chart values (free-form).
-	Values map[string]any `yaml:"values,omitempty" json:"values,omitempty"`
+	Enabled bool           `yaml:"enabled" json:"enabled"`
+	Values  map[string]any `yaml:"values,omitempty" json:"values,omitempty"`
 }
 
 type Flux struct {
@@ -394,7 +347,7 @@ func (r *FluxRepository) Validate() error {
 
 type MetalLB struct {
 	Enabled bool           `yaml:"enabled" json:"enabled"`
-	Range   string         `yaml:"range,omitempty" json:"range,omitempty"` // "a.b.c.d-a.b.c.e"
+	Range   string         `yaml:"range,omitempty" json:"range,omitempty"`
 	Values  map[string]any `yaml:"values,omitempty" json:"values,omitempty"`
 }
 
@@ -421,14 +374,6 @@ func Parse(b []byte) (*Cluster, error) {
 }
 
 func (c *Cluster) Marshal() ([]byte, error) { return yaml.Marshal(c) }
-
-func (c *Cluster) Save(path string) error {
-	b, err := c.Marshal()
-	if err != nil {
-		return err
-	}
-	return os.WriteFile(path, b, 0o600)
-}
 
 func (c *Cluster) applyDefaults() {
 	if c.Spec.TalosVersion == "" {
@@ -483,7 +428,6 @@ func (c *Cluster) applyDefaults() {
 			n.Arch = ArchAMD64
 		}
 		if n.Pool == "" {
-			// Legacy declaration: role names the default pool.
 			if n.Role == "" {
 				n.Role = RoleWorker
 			}
@@ -509,8 +453,6 @@ func (c *Cluster) applyDefaults() {
 	}
 }
 
-// defaultPools guarantees a "controlplane" and a "worker" pool exist so declarations
-// that only use role: keep working and every node has a pool.
 func (c *Cluster) defaultPools() {
 	have := map[string]bool{}
 	for _, p := range c.Spec.Pools {
@@ -538,7 +480,6 @@ func (c *Cluster) poolByName(name string) *Pool {
 	return nil
 }
 
-// PoolOf returns the node's pool (always resolvable after Parse).
 func (c *Cluster) PoolOf(n Node) Pool {
 	if p := c.poolByName(n.Pool); p != nil {
 		return *p
@@ -546,16 +487,6 @@ func (c *Cluster) PoolOf(n Node) Pool {
 	return Pool{Name: n.Pool, Role: n.Role}
 }
 
-// ExtensionsFor is the extension set a pool installs: its own, else the cluster default.
-func (c *Cluster) ExtensionsFor(p Pool) []string {
-	if len(p.Extensions) > 0 {
-		return p.Extensions
-	}
-	return c.Spec.Extensions
-}
-
-// SchematicFor is the schematic a pool installs from; pools without their own
-// extensions share the cluster schematic.
 func (c *Cluster) SchematicFor(p Pool) string {
 	if len(p.Extensions) > 0 && p.SchematicID != "" {
 		return p.SchematicID
@@ -566,7 +497,6 @@ func (c *Cluster) SchematicFor(p Pool) string {
 	return c.Spec.SchematicID
 }
 
-// NodeLabels merges pool labels under node labels.
 func (c *Cluster) NodeLabels(n Node) map[string]string {
 	return merge(c.PoolOf(n).Labels, n.Labels)
 }
@@ -643,8 +573,6 @@ func (c *Cluster) Validate() error {
 	if contract, err := talosconfig.ParseContractFromVersion(c.Spec.TalosVersion); err != nil {
 		errs = append(errs, fmt.Errorf("talosVersion: %w", err))
 	} else if !contract.UnattendedInstallConfig() || !contract.MultidocKubernetesConfigSupported() {
-		// Kubit emits only the multi-document form (UnattendedInstallConfig, KubeNodeConfig,
-		// HostnameConfig, ...), which older Talos releases do not register.
 		errs = append(errs, fmt.Errorf("talosVersion %s: Kubit requires Talos %s or newer", c.Spec.TalosVersion, MinTalosVersion))
 	}
 	if !hostnameRE.MatchString(c.Metadata.Name) {
@@ -809,7 +737,6 @@ func (c *Cluster) Validate() error {
 	return errors.Join(errs...)
 }
 
-// validTaint accepts Kubernetes taints written as key: "value:Effect" or key: "Effect".
 func validTaint(key, value string) error {
 	effect := value
 	if i := strings.LastIndexByte(value, ':'); i >= 0 {
@@ -835,7 +762,6 @@ func (c *Cluster) nodesWithRole(r Role) []Node {
 	return out
 }
 
-// ParseIPRange parses "a.b.c.d-a.b.c.e" as used by MetalLB pools.
 func ParseIPRange(s string) (netip.Addr, netip.Addr, error) {
 	from, to, ok := strings.Cut(s, "-")
 	if !ok {

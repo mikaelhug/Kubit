@@ -17,12 +17,9 @@ import (
 const (
 	keyringService = "kubit"
 	keyringUser    = "master-key"
-	// EnvMasterKey overrides the keyring with a base64 32-byte key (CI, Linux without a
-	// secret service, tests).
-	EnvMasterKey = "KUBIT_MASTER_KEY"
+	EnvMasterKey   = "KUBIT_MASTER_KEY"
 )
 
-// Crypto seals secret columns with AES-256-GCM under one master key.
 type Crypto struct {
 	aead cipher.AEAD
 }
@@ -42,18 +39,12 @@ func NewCrypto(key []byte) (*Crypto, error) {
 	return &Crypto{aead: aead}, nil
 }
 
-// MasterKeyFile is the keyring fallback: a 0600 file next to the database, used on
-// hosts without a secret service (headless Linux, containers, most systemd units).
 const MasterKeyFile = "master.key"
 
 var keySource = "unset"
 
-// MasterKeySource names where the last LoadMasterKey found the key: env, keyring or
-// file. Logged at daemon start so an operator knows what to back up.
 func MasterKeySource() string { return keySource }
 
-// LoadCrypto returns the master key from $KUBIT_MASTER_KEY, the OS keyring, or the
-// key file under $KUBIT_HOME, minting and storing a new one on first use.
 func LoadCrypto() (*Crypto, error) {
 	key, err := LoadMasterKey()
 	if err != nil {
@@ -62,8 +53,6 @@ func LoadCrypto() (*Crypto, error) {
 	return NewCrypto(key)
 }
 
-// LoadMasterKey returns the raw 32-byte master key (see LoadCrypto). Kubit's home is
-// $KUBIT_HOME or ~/.kubit; the file fallback lives there.
 func LoadMasterKey() ([]byte, error) {
 	dir := os.Getenv("KUBIT_HOME")
 	if dir == "" {
@@ -74,7 +63,6 @@ func LoadMasterKey() ([]byte, error) {
 	return LoadMasterKeyIn(dir)
 }
 
-// LoadMasterKeyIn is LoadMasterKey with an explicit home directory for the file fallback.
 func LoadMasterKeyIn(dir string) ([]byte, error) {
 	if v := os.Getenv(EnvMasterKey); v != "" {
 		key, err := base64.StdEncoding.DecodeString(v)
@@ -113,7 +101,6 @@ func LoadMasterKeyIn(dir string) ([]byte, error) {
 		}
 		return mintKeyFile(path, key)
 	default:
-		// No usable keyring (no Secret Service, no session): fall back to the file.
 		key := make([]byte, 32)
 		if _, err := rand.Read(key); err != nil {
 			return nil, err

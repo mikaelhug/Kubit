@@ -11,14 +11,9 @@ import (
 )
 
 type RemoveOptions struct {
-	// Force skips the etcd quorum guard and tolerates an unreachable node (no drain,
-	// no reset): the node is only forgotten.
 	Force bool
 }
 
-// RemoveNode takes a node out of the cluster: cordon and drain, delete the Node object,
-// graceful Talos reset (leaves etcd first on control planes, wipes state, reboots into
-// maintenance mode), then drops it from cluster.yaml.
 func (m *Manager) RemoveNode(ctx context.Context, name, hostname string, opts RemoveOptions, sink Sink) error {
 	sink.plan(Steps(
 		"guard", "Check etcd quorum impact",

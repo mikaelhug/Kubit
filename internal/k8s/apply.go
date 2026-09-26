@@ -13,11 +13,8 @@ import (
 	"k8s.io/client-go/restmapper"
 )
 
-// FieldManager identifies Kubit's server-side applies.
 const FieldManager = "kubit"
 
-// ServerSideApply upserts arbitrary objects (Talos' rendered bootstrap manifests) the
-// way `kubectl apply --server-side --force-conflicts` does.
 func (c *Client) ServerSideApply(ctx context.Context, objects []map[string]any) error {
 	dyn, err := dynamic.NewForConfig(c.rest)
 	if err != nil {

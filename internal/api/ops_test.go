@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"strings"
 	"testing"
 	"time"
@@ -54,7 +55,7 @@ func TestStepTrackerSkipsPendingOnFailure(t *testing.T) {
 
 func TestOperationPanicFailsTheOperation(t *testing.T) {
 	s, st, _ := localServer(t)
-	id, err := s.runOperation("c", "test.panic", nil, func(contextT, clusterSink) (any, error) {
+	id, err := s.runOperation("c", "test.panic", nil, func(context.Context, cluster.Sink) (any, error) {
 		var m map[string]int
 		m["boom"]++
 		return nil, nil
@@ -66,7 +67,7 @@ func TestOperationPanicFailsTheOperation(t *testing.T) {
 	if op.Status != "failed" || !strings.Contains(op.Log, "internal error") {
 		t.Fatalf("status %s, log %q", op.Status, op.Log)
 	}
-	next, err := s.runOperation("c", "test.after", nil, func(contextT, clusterSink) (any, error) { return nil, nil })
+	next, err := s.runOperation("c", "test.after", nil, func(context.Context, cluster.Sink) (any, error) { return nil, nil })
 	if err != nil {
 		t.Fatal(err)
 	}

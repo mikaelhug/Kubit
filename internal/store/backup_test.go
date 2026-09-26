@@ -23,7 +23,6 @@ func TestBackupRestoreRoundTrip(t *testing.T) {
 	if err := s.Checkpoint(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	// Back up while the store is open, as the daemon does.
 	defer s.Close()
 	os.MkdirAll(filepath.Join(home, "clusters", "a"), 0o700)
 	os.WriteFile(filepath.Join(home, "clusters", "a", "kubeconfig"), []byte("kc"), 0o600)

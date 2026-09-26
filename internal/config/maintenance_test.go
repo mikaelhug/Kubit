@@ -10,10 +10,10 @@ func TestMaintenanceWindow(t *testing.T) {
 	if err := m.Validate(); err != nil {
 		t.Fatal(err)
 	}
-	sat23 := time.Date(2026, 9, 19, 23, 0, 0, 0, time.UTC) // Saturday
-	sun03 := time.Date(2026, 9, 20, 3, 0, 0, 0, time.UTC)  // Sunday early: belongs to Saturday's window
-	mon03 := time.Date(2026, 9, 21, 3, 0, 0, 0, time.UTC)  // Monday early: Sunday's window
-	tue03 := time.Date(2026, 9, 22, 3, 0, 0, 0, time.UTC)  // Tuesday early: Monday not in days
+	sat23 := time.Date(2026, 9, 19, 23, 0, 0, 0, time.UTC)
+	sun03 := time.Date(2026, 9, 20, 3, 0, 0, 0, time.UTC)
+	mon03 := time.Date(2026, 9, 21, 3, 0, 0, 0, time.UTC)
+	tue03 := time.Date(2026, 9, 22, 3, 0, 0, 0, time.UTC)
 	wed12 := time.Date(2026, 9, 16, 12, 0, 0, 0, time.UTC)
 	for _, tc := range []struct {
 		t    time.Time

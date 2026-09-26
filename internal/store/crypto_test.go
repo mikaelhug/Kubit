@@ -26,7 +26,6 @@ func TestMasterKeyFileFallback(t *testing.T) {
 	if !bytes.Equal(got, want) || MasterKeySource() != "file" {
 		t.Fatalf("got %x source %s", got, MasterKeySource())
 	}
-	// The environment wins over the file.
 	t.Setenv(EnvMasterKey, base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{9}, 32)))
 	got, err = LoadMasterKeyIn(dir)
 	if err != nil || got[0] != 9 || MasterKeySource() != "env" {

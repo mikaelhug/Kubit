@@ -13,16 +13,10 @@ import (
 	"github.com/mikael/kubit/internal/talos"
 )
 
-// minVarFree is the /var headroom an upgrade needs: the new Talos image or the new
-// Kubernetes component images are pulled there before anything is swapped.
 const minVarFree = 1 << 30
 
-// upgradePrechecks are the steps every rolling upgrade starts with.
 var upgradePrechecks = Steps("precheck", "Pre-flight: etcd, node health, disk headroom", "snapshot", "Take a pre-upgrade etcd snapshot")
 
-// precheckUpgrade refuses to start an upgrade on a cluster that is not fully healthy.
-// kind is "talos" or "kubernetes"; for Kubernetes upgrades the API server's record of
-// deprecated API usage is checked against the target release.
 func (m *Manager) precheckUpgrade(ctx context.Context, c *config.Cluster, kc *k8s.Client, talosconfig []byte, kind, target string, sink Sink) error {
 	name := c.Metadata.Name
 	var problems []string
@@ -111,7 +105,6 @@ func (m *Manager) precheckUpgrade(ctx context.Context, c *config.Cluster, kc *k8
 	return nil
 }
 
-// preUpgradeSnapshot takes the safety snapshot; failure to snapshot stops the upgrade.
 func (m *Manager) preUpgradeSnapshot(ctx context.Context, name string, sink Sink) error {
 	sn, err := m.SnapshotEtcd(ctx, name, "pre-upgrade", subSink(sink, "snapshot"))
 	if err != nil {

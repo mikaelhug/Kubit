@@ -7,10 +7,6 @@ import (
 	"github.com/mikael/kubit/internal/k8s"
 )
 
-// ServiceHealth is the watcher's view of what runs *in* the cluster: enough to notice
-// a workload that never becomes available, a pod that keeps crashing, a claim nobody
-// binds, a service without backends, or a LoadBalancer pool that ran dry — without
-// installing anything in the cluster.
 type ServiceHealth struct {
 	Workloads   []WorkloadHealth `json:"workloads"`
 	Pods        []PodHealth      `json:"pods"`
@@ -48,7 +44,7 @@ type PodHealth struct {
 	Name      string `json:"name"`
 	Node      string `json:"node,omitempty"`
 	Owner     string `json:"owner,omitempty"`
-	Phase     string `json:"phase"` // pod phase, or the waiting reason (CrashLoopBackOff, ImagePullBackOff…)
+	Phase     string `json:"phase"`
 	Restarts  int32  `json:"restarts"`
 	AgeSec    int64  `json:"ageSec"`
 }
@@ -82,8 +78,6 @@ type PoolHealth struct {
 	Allocated int    `json:"allocated"`
 }
 
-// ServiceHealth lists workloads, pods, claims, services and ingresses across all
-// namespaces. Five list calls; the watcher runs it less often than Status.
 func (m *Manager) ServiceHealth(ctx context.Context, name string) (*ServiceHealth, error) {
 	c, _, err := m.LoadCluster(ctx, name)
 	if err != nil {

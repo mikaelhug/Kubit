@@ -9,9 +9,6 @@ import (
 	"time"
 )
 
-// Reach says whose fault a failed probe is: the target did not answer, or the observer
-// itself has no way onto the network (interface down, no route, or the process is not
-// allowed to reach the LAN).
 type Reach int
 
 const (
@@ -46,8 +43,6 @@ func Classify(err error) Reach {
 	return ReachUnreachable
 }
 
-// ShortNet keeps the operating system's own words for a dial failure ("no route to
-// host") and drops the address the caller already knows.
 func ShortNet(err error) string {
 	msg := err.Error()
 	if i := strings.LastIndex(msg, ": "); i >= 0 {
@@ -56,23 +51,19 @@ func ShortNet(err error) string {
 	return msg
 }
 
-// ControlProbe tells whether the observer can reach its own LAN at all by dialing the
-// default gateway: a refusal or a timeout means the network is fine and the targets are
-// the problem; a no-network error means the observer is blind. Without a default
-// gateway the answer is unknown and the caller must not claim to be blind.
-func ControlProbe(ctx context.Context, timeout time.Duration) (Reach, string) {
+func ControlProbe(ctx context.Context, timeout time.Duration) Reach {
 	gw := DefaultGateway()
 	if gw == "" {
-		return ReachOK, ""
+		return ReachOK
 	}
 	d := net.Dialer{Timeout: timeout}
 	conn, err := d.DialContext(ctx, "tcp", net.JoinHostPort(gw, "443"))
 	if err == nil {
 		conn.Close()
-		return ReachOK, gw
+		return ReachOK
 	}
 	if Classify(err) == ReachNoNetwork {
-		return ReachNoNetwork, gw
+		return ReachNoNetwork
 	}
-	return ReachOK, gw
+	return ReachOK
 }

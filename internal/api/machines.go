@@ -1,12 +1,14 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net"
 	"net/http"
 	"strings"
 
+	"github.com/mikael/kubit/internal/cluster"
 	"github.com/mikael/kubit/internal/config"
 	"github.com/mikael/kubit/internal/talos"
 )
@@ -35,7 +37,6 @@ func (s *Server) handleMachine(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, machineView(*m))
 }
 
-// handleMachineRetire forgets a machine; cluster members must be removed first.
 func (s *Server) handleMachineRetire(w http.ResponseWriter, r *http.Request) {
 	m, err := s.store.GetMachine(r.Context(), r.PathValue("mac"))
 	if err != nil {
@@ -79,7 +80,6 @@ func (s *Server) handleMachineWOL(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// handleMachineWake broadcasts a Wake-on-LAN magic packet for the machine.
 func (s *Server) handleMachineWake(w http.ResponseWriter, r *http.Request) {
 	m, err := s.store.GetMachine(r.Context(), r.PathValue("mac"))
 	if err != nil {
@@ -90,7 +90,7 @@ func (s *Server) handleMachineWake(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Wake-on-LAN is not enabled for this machine", http.StatusConflict)
 		return
 	}
-	if err := WakeOnLAN(m.MAC); err != nil {
+	if err := wakeOnLAN(m.MAC); err != nil {
 		writeErr(w, err)
 		return
 	}
@@ -98,9 +98,7 @@ func (s *Server) handleMachineWake(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusAccepted)
 }
 
-// WakeOnLAN sends the standard magic packet (6×0xFF + 16×MAC) to the broadcast address
-// on UDP 9. Only useful when the daemon shares a segment with the machine.
-func WakeOnLAN(mac string) error {
+func wakeOnLAN(mac string) error {
 	hw, err := net.ParseMAC(mac)
 	if err != nil || len(hw) != 6 {
 		return fmt.Errorf("not a 48-bit MAC: %q", mac)
@@ -135,7 +133,6 @@ type designResponse struct {
 	Overlaps []string         `json:"overlaps,omitempty"`
 }
 
-// handleDesign proposes a declaration for the selected machines.
 func (s *Server) handleDesign(w http.ResponseWriter, r *http.Request) {
 	var req designRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -158,7 +155,6 @@ func (s *Server) handleDesign(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, designResponse{YAML: string(out), Cluster: c, Warnings: warnings, Topology: config.Recommend(len(machines)), Overlaps: s.rangeOverlaps(r, c)})
 }
 
-// handleLint lints a declaration (YAML body) against the known machines.
 func (s *Server) handleLint(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		YAML string `json:"yaml"`
@@ -231,7 +227,6 @@ func (s *Server) rangeOverlaps(r *http.Request, c *config.Cluster) []string {
 	return config.Overlaps(c.Spec.Platform.MetalLB.Range, others)
 }
 
-// vipConflicts lists stored clusters that use the same control-plane VIP.
 func (s *Server) vipConflicts(r *http.Request, c *config.Cluster) []string {
 	if c.Spec.ControlPlane.VIP == "" {
 		return nil
@@ -266,7 +261,7 @@ func (s *Server) handleNodeRename(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, `body must be {"to": "<new-hostname>"}`, http.StatusBadRequest)
 		return
 	}
-	id, err := s.runOperation(name, "node.rename", map[string]string{"hostname": hostname, "to": req.To}, func(ctx contextT, sink clusterSink) (any, error) {
+	id, err := s.runOperation(name, "node.rename", map[string]string{"hostname": hostname, "to": req.To}, func(ctx context.Context, sink cluster.Sink) (any, error) {
 		return nil, s.manager.RenameNode(ctx, name, hostname, req.To, sink)
 	})
 	if err != nil {
@@ -285,7 +280,7 @@ func (s *Server) handleNodePool(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, `body must be {"pool": "<pool>"}`, http.StatusBadRequest)
 		return
 	}
-	id, err := s.runOperation(name, "node.pool", map[string]string{"hostname": hostname, "pool": req.Pool}, func(ctx contextT, sink clusterSink) (any, error) {
+	id, err := s.runOperation(name, "node.pool", map[string]string{"hostname": hostname, "pool": req.Pool}, func(ctx context.Context, sink cluster.Sink) (any, error) {
 		return nil, s.manager.MoveNodeToPool(ctx, name, hostname, req.Pool, sink)
 	})
 	if err != nil {
@@ -298,8 +293,8 @@ func (s *Server) handleNodePool(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleNodeReaddress(w http.ResponseWriter, r *http.Request) {
 	name, hostname := r.PathValue("name"), r.PathValue("hostname")
 	var req struct {
-		Network *config.NodeNetwork `json:"network"` // null = back to DHCP
-		IP      string              `json:"ip"`      // the address Kubit should use afterwards
+		Network *config.NodeNetwork `json:"network"`
+		IP      string              `json:"ip"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeErr(w, err)
@@ -310,7 +305,7 @@ func (s *Server) handleNodeReaddress(w http.ResponseWriter, r *http.Request) {
 			req.IP = pfx
 		}
 	}
-	id, err := s.runOperation(name, "node.readdress", req, func(ctx contextT, sink clusterSink) (any, error) {
+	id, err := s.runOperation(name, "node.readdress", req, func(ctx context.Context, sink cluster.Sink) (any, error) {
 		return nil, s.manager.ReaddressNode(ctx, name, hostname, req.Network, req.IP, sink)
 	})
 	if err != nil {
@@ -328,7 +323,6 @@ func parsePrefix(cidr string) (string, error) {
 	return ip.String(), nil
 }
 
-// handlePoolsSave replaces the pool list of a cluster (nodes keep their pool names).
 func (s *Server) handlePoolsSave(w http.ResponseWriter, r *http.Request) {
 	var pools []config.Pool
 	if err := json.NewDecoder(r.Body).Decode(&pools); err != nil {

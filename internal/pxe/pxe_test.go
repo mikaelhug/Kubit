@@ -49,7 +49,6 @@ func TestIPXEDetection(t *testing.T) {
 	}
 }
 
-// fakeConn records what the proxy would send.
 type fakeConn struct {
 	net.PacketConn
 	sent []byte
@@ -86,8 +85,6 @@ func TestProxyReplyOffersBootFileWithoutAddress(t *testing.T) {
 		t.Error("UEFI firmware must not get the option 43 discovery bypass; it comes back to :4011")
 	}
 
-	// BIOS firmware gets the bypass and its machine identifier echoed; a boot-server
-	// REQUEST on :4011 is acknowledged with the client's address kept.
 	conn = &fakeConn{}
 	guid := append([]byte{0}, make([]byte, 16)...)
 	req := discover(t, dhcpv4.WithOption(dhcpv4.OptClassIdentifier("PXEClient:Arch:00000:UNDI:002001")), dhcpv4.WithOption(dhcpv4.OptClientArch(iana.INTEL_X86PC)), dhcpv4.WithGeneric(dhcpv4.OptionClientMachineIdentifier, guid), dhcpv4.WithMessageType(dhcpv4.MessageTypeRequest), dhcpv4.WithClientIP(net.IPv4(10, 0, 0, 9)))
@@ -100,14 +97,12 @@ func TestProxyReplyOffersBootFileWithoutAddress(t *testing.T) {
 		t.Error("BIOS reply needs the option 43 bypass and the echoed option 97")
 	}
 
-	// A non-PXE DHCP client must be ignored: this is a proxy, never the LAN's DHCP server.
 	conn = &fakeConn{}
 	c.handle(conn, &net.UDPAddr{IP: net.IPv4zero, Port: 68}, discover(t))
 	if conn.sent != nil {
 		t.Error("answered an ordinary DHCP client")
 	}
 
-	// iPXE itself gets the HTTP script, not the binary again.
 	conn = &fakeConn{}
 	c.handle(conn, &net.UDPAddr{IP: net.IPv4(10, 0, 0, 9), Port: 68}, discover(t, dhcpv4.WithUserClass("iPXE", false), dhcpv4.WithOption(dhcpv4.OptClientArch(iana.EFI_X86_64))))
 	reply, _ = dhcpv4.FromBytes(conn.sent)
@@ -172,7 +167,6 @@ func TestMembersGetNoOffer(t *testing.T) {
 		t.Fatal("a machine the daemon can't classify (unreachable) must get no offer — fail closed, don't re-image")
 	}
 
-	// With no daemon wired up at all (Decide nil) it is standalone onboarding: serve Talos.
 	open := Config{IP: net.IPv4(10, 0, 0, 2), HTTPPort: 8069, Log: log.New(io.Discard, "", 0)}
 	conn = &fakeConn{}
 	open.handle(conn, &net.UDPAddr{IP: net.IPv4zero, Port: 68}, m)

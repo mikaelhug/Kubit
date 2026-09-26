@@ -9,8 +9,6 @@ import (
 	"github.com/siderolabs/talos/pkg/machinery/config/generate/secrets"
 )
 
-// AddNode joins a maintenance-mode machine to an existing cluster using the stored
-// secrets, then records it in cluster.yaml.
 func (m *Manager) AddNode(ctx context.Context, name string, n config.Node, sink Sink) error {
 	sink.plan(Steps(
 		"preflight", "Check node is in maintenance mode",

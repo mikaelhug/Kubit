@@ -31,7 +31,6 @@ func (s *Server) handleLabSamples(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, rows)
 }
 
-// handleLabCheck refreshes the package index now instead of at the hourly tick.
 func (s *Server) handleLabCheck(w http.ResponseWriter, r *http.Request) {
 	host, err := s.store.GetMachine(r.Context(), strings.ToLower(r.PathValue("mac")))
 	if err != nil || host.LabHost == nil {
@@ -60,8 +59,6 @@ func (s *Server) handleLabCheck(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, u)
 }
 
-// labClusters lists the clusters with members among this host's VMs: the ones a
-// host reboot takes down, so the ones whose maintenance windows apply.
 func (s *Server) labClusters(ctx context.Context, host *store.Machine) []string {
 	var out []string
 	for _, v := range host.LabHost.VMs {
@@ -72,9 +69,6 @@ func (s *Server) labClusters(ctx context.Context, host *store.Machine) []string 
 	return out
 }
 
-// handleLabMaintain runs Update host (upgrade, then reboot only if needed) or Reboot
-// host. Either can take every VM down, so the affected clusters' maintenance windows
-// gate it like any other disruptive operation.
 func (s *Server) handleLabMaintain(upgrade bool) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		host, err := s.store.GetMachine(r.Context(), strings.ToLower(r.PathValue("mac")))
@@ -109,7 +103,7 @@ func (s *Server) handleLabMaintain(upgrade bool) http.HandlerFunc {
 			owner = affected[0]
 		}
 		locks := append([]string{"labhost:" + host.MAC}, affected...)
-		id, err := s.runOperationLocking(owner, locks, kind, map[string]any{"host": host.MAC, "clusters": affected}, func(ctx contextT, sink clusterSink) (any, error) {
+		id, err := s.runOperationLocking(owner, locks, kind, map[string]any{"host": host.MAC, "clusters": affected}, func(ctx context.Context, sink cluster.Sink) (any, error) {
 			return nil, s.labMaintain(ctx, host, upgrade, affected, sink)
 		})
 		if err != nil {
@@ -139,11 +133,8 @@ const (
 	labReadyWait  = 10 * time.Minute
 )
 
-func (s *Server) labMaintain(ctx context.Context, host *store.Machine, upgrade bool, affected []string, sink clusterSink) error {
+func (s *Server) labMaintain(ctx context.Context, host *store.Machine, upgrade bool, affected []string, sink cluster.Sink) error {
 	mac := host.MAC
-	// The watcher's tick would count the reboot as failures; park it until done.
-	// Merge only State so a concurrent watcher tick cannot clobber it, and use a
-	// detached context so the "ready" restore still runs if the op was cancelled.
 	setState := func(c context.Context, state string) {
 		_ = s.store.UpdateLabHost(c, mac, func(lh *store.LabHost) { lh.State = state })
 		if h, err := s.store.GetMachine(c, mac); err == nil && h.LabHost != nil {
@@ -163,10 +154,10 @@ func (s *Server) labMaintain(ctx context.Context, host *store.Machine, upgrade b
 	}
 	defer lc.Close()
 	step := func(name string, status cluster.StepStatus) {
-		sink(clusterEvent{Time: time.Now(), Kind: "step", Step: name, Status: status})
+		sink(cluster.Event{Time: time.Now(), Kind: "step", Step: name, Status: status})
 	}
 	logf := func(step string, level cluster.Level, format string, a ...any) {
-		sink(clusterEvent{Time: time.Now(), Kind: "log", Level: level, Step: step, Node: host.IP, Message: fmt.Sprintf(format, a...)})
+		sink(cluster.Event{Time: time.Now(), Kind: "log", Level: level, Step: step, Node: host.IP, Message: fmt.Sprintf(format, a...)})
 	}
 
 	step("check", cluster.StepRunning)
@@ -238,8 +229,6 @@ func (s *Server) labMaintain(ctx context.Context, host *store.Machine, upgrade b
 	step("reboot", cluster.StepDone)
 
 	step("resume", cluster.StepRunning)
-	// Autostart brings VMs back; anything defined before autostart existed is
-	// started here.
 	for _, v := range host.LabHost.VMs {
 		if v.State == "running" {
 			_ = lc.Start(ctx, v.Name)
@@ -292,11 +281,8 @@ func (s *Server) labMaintain(ctx context.Context, host *store.Machine, upgrade b
 	return nil
 }
 
-// labWaitSSH polls port 22 and then a real login until the host answers again.
 func (s *Server) labWaitSSH(ctx context.Context, host *store.Machine, timeout time.Duration) (*labhost.Client, error) {
 	deadline := time.Now().Add(timeout)
-	// Give the host time to actually go down so an early dial does not catch the
-	// old session.
 	select {
 	case <-ctx.Done():
 		return nil, ctx.Err()

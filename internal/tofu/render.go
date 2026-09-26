@@ -13,8 +13,6 @@ import (
 //go:embed all:templates
 var templates embed.FS
 
-// Render writes the platform root into dir: the static .tf files plus
-// terraform.tfvars.json derived from cluster.yaml. State files already in dir are kept.
 func Render(dir string, c *config.Cluster, kubeconfigPath string) error {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return err
@@ -88,9 +86,6 @@ func vals(m map[string]any) map[string]any {
 	return m
 }
 
-// metallbDefaults keep MetalLB to what Kubit configures: layer-2 announcements need
-// the speaker only, not the FRR-K8s BGP daemonset the chart enables by default; the
-// requests make its pods Burstable so a starved node evicts BestEffort work first.
 var metallbDefaults = map[string]any{
 	"frrk8s":     map[string]any{"enabled": false},
 	"speaker":    map[string]any{"frr": map[string]any{"enabled": false}, "resources": requests("20m", "64Mi")},
@@ -109,8 +104,6 @@ func requests(cpu, mem string) map[string]any {
 	return map[string]any{"requests": map[string]any{"cpu": cpu, "memory": mem}}
 }
 
-// merged lays the user's values over Kubit's defaults, map by map, so a single
-// overridden key keeps its siblings.
 func merged(defaults, over map[string]any) map[string]any {
 	out := map[string]any{}
 	for k, v := range defaults {
@@ -128,7 +121,6 @@ func merged(defaults, over map[string]any) map[string]any {
 	return out
 }
 
-// Vars maps cluster.yaml's platform section onto the module's input variables.
 func Vars(c *config.Cluster, kubeconfigPath string) map[string]any {
 	p := c.Spec.Platform
 	return map[string]any{

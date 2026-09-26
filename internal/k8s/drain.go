@@ -11,8 +11,6 @@ import (
 	"k8s.io/kubectl/pkg/drain"
 )
 
-// Drain cordons the node and evicts its pods the way `kubectl drain
-// --ignore-daemonsets --delete-emptydir-data` does.
 func (c *Client) Drain(ctx context.Context, name string, timeout time.Duration, log io.Writer) error {
 	node, err := c.CoreV1().Nodes().Get(ctx, name, metav1.GetOptions{})
 	if err != nil {
@@ -49,9 +47,6 @@ func (c *Client) DeleteNode(ctx context.Context, name string) error {
 	return c.CoreV1().Nodes().Delete(ctx, name, metav1.DeleteOptions{})
 }
 
-// DeletePodsOnNode deletes every pod scheduled on a node (DaemonSet pods included)
-// so their controllers recreate them; used after an etcd restore, when running pods
-// hold watches the restored API server cannot resume.
 func (c *Client) DeletePodsOnNode(ctx context.Context, node string) (int, error) {
 	pods, err := c.CoreV1().Pods("").List(ctx, metav1.ListOptions{FieldSelector: "spec.nodeName=" + node})
 	if err != nil {

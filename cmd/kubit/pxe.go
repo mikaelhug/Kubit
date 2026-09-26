@@ -14,6 +14,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/mikael/kubit/internal/config"
 	"github.com/mikael/kubit/internal/factory"
 	"github.com/mikael/kubit/internal/pxe"
 	"github.com/spf13/cobra"
@@ -38,8 +39,6 @@ machines land in maintenance mode and show up in 'kubit discover'.`,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			ip, err := pxe.InterfaceIPv4(iface)
 			if advertise != "" {
-				// An interface that appears later (vmnet's bridge100 exists only while
-				// a VM runs) can still be advertised in boot lines and preseed URLs.
 				if ip = net.ParseIP(advertise); ip == nil {
 					return fmt.Errorf("--ip %q is not an IPv4 address", advertise)
 				}
@@ -68,8 +67,8 @@ machines land in maintenance mode and show up in 'kubit discover'.`,
 	}
 	cmd.Flags().StringVar(&iface, "iface", "en0", "LAN interface to answer on")
 	cmd.Flags().StringVar(&schematic, "schematic", "", "Image Factory schematic ID (default: create from --extensions)")
-	cmd.Flags().StringSliceVar(&extensions, "extensions", []string{"siderolabs/gvisor"}, "system extensions for the default schematic")
-	cmd.Flags().StringVar(&talosVersion, "talos-version", "v1.14.0", "Talos release to boot")
+	cmd.Flags().StringSliceVar(&extensions, "extensions", nil, "system extensions for the default schematic")
+	cmd.Flags().StringVar(&talosVersion, "talos-version", config.MinTalosVersion, "Talos release to boot")
 	cmd.Flags().IntVar(&httpPort, "http-port", 8069, "port for the iPXE script and boot assets")
 	cmd.Flags().StringVar(&advertise, "ip", "", "address to advertise in boot scripts and preseed URLs (default: the interface's IPv4)")
 	cmd.Flags().BoolVar(&httpOnly, "http-only", false, "serve only HTTP (boot assets, lab-host preseed and progress) on --http-port; no DHCP/TFTP, no root. For machines you boot yourself")
@@ -77,8 +76,6 @@ machines land in maintenance mode and show up in 'kubit discover'.`,
 	return cmd
 }
 
-// pxeDecider asks the daemon per MAC and caches the answer briefly; when the daemon is
-// down every machine gets Talos, as before.
 func pxeDecider(url, token string, logger *log.Logger) func(string) string {
 	cache := newDecideCache(1024)
 	client := &http.Client{Timeout: 2 * time.Second}
@@ -95,7 +92,7 @@ func pxeDecider(url, token string, logger *log.Logger) func(string) string {
 		}
 		resp, err := client.Do(req)
 		if err != nil {
-			logger.Printf("pxe: daemon unreachable (%v); serving Talos to %s", err, mac)
+			logger.Printf("pxe: daemon unreachable (%v); no boot offer for %s, it boots its own disk", err, mac)
 			return ""
 		}
 		defer resp.Body.Close()

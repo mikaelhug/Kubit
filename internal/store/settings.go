@@ -11,34 +11,20 @@ import (
 	"github.com/mikael/kubit/internal/oob"
 )
 
-// Settings are Kubit's own preferences; everything has a default so a missing row is fine.
 type Settings struct {
-	FactoryURL       string   `json:"factoryUrl"`
-	DiscoverySubnets []string `json:"discoverySubnets"`
-	WatchIntervalSec int      `json:"watchIntervalSec"`
-	PXEStatusURL     string   `json:"pxeStatusUrl"`
-	DefaultMetalLB   string   `json:"defaultMetalLBRange"`
-	Alerts           Alerts   `json:"alerts"`
-	// Offsite is the second home for snapshots and Kubit backups.
-	Offsite offsite.Target `json:"offsite"`
-	// PXEEnrollment: "open" hands Talos to any unknown machine that network-boots
-	// (onboarding a batch); "closed" only to machines Kubit expects (unassigned ones it
-	// has seen, or members armed with Boot into Talos). Members always boot locally.
-	PXEEnrollment string `json:"pxeEnrollment"`
-	// AMT holds default management credentials: discovery uses them to identify
-	// machines that answer on 16992, so vPro boxes show up with model and power
-	// state before Talos ever ran. Password sealed at rest.
-	AMT oob.Config `json:"amt"`
-	// BMC holds default Redfish credentials for the same purpose on server hardware:
-	// discovery asks every Redfish service root it finds who it manages.
-	BMC oob.Config `json:"bmc"`
-	// Auth is how people sign in besides local accounts.
-	Auth Auth `json:"auth"`
+	FactoryURL       string         `json:"factoryUrl"`
+	DiscoverySubnets []string       `json:"discoverySubnets"`
+	WatchIntervalSec int            `json:"watchIntervalSec"`
+	PXEStatusURL     string         `json:"pxeStatusUrl"`
+	DefaultMetalLB   string         `json:"defaultMetalLBRange"`
+	Alerts           Alerts         `json:"alerts"`
+	Offsite          offsite.Target `json:"offsite"`
+	PXEEnrollment    string         `json:"pxeEnrollment"`
+	AMT              oob.Config     `json:"amt"`
+	BMC              oob.Config     `json:"bmc"`
+	Auth             Auth           `json:"auth"`
 }
 
-// Auth holds the single-sign-on configuration. Groups from the provider map to
-// Kubit roles; a signed-in person outside every listed group gets DefaultRole, and
-// an empty DefaultRole means no access.
 type Auth struct {
 	OIDC OIDC `json:"oidc"`
 }
@@ -57,32 +43,25 @@ type OIDC struct {
 	DefaultRole    string   `json:"defaultRole"`
 }
 
-// Alerts forwards health events at or above MinSeverity to external sinks.
 type Alerts struct {
-	MinSeverity string `json:"minSeverity"` // warn | critical
-	WebhookURL  string `json:"webhookUrl"`  // generic JSON POST; empty = off
-	SMTP        SMTP   `json:"smtp"`
-	// IgnoreNamespaces never raise workload alerts (noisy dev namespaces, CI).
+	MinSeverity      string   `json:"minSeverity"`
+	WebhookURL       string   `json:"webhookUrl"`
+	SMTP             SMTP     `json:"smtp"`
 	IgnoreNamespaces []string `json:"ignoreNamespaces"`
-	// HeartbeatHours sends a "still watching" summary to the sinks this often; 0 = off.
-	// It is the dead-man's switch: a missing heartbeat means the daemon is down.
-	HeartbeatHours int `json:"heartbeatHours"`
+	HeartbeatHours   int      `json:"heartbeatHours"`
 }
 
 type SMTP struct {
-	Host     string   `json:"host"` // empty = off
+	Host     string   `json:"host"`
 	Port     int      `json:"port"`
 	From     string   `json:"from"`
 	To       []string `json:"to"`
 	Username string   `json:"username"`
-	Password string   `json:"password"` // sealed at rest, never returned to the UI
+	Password string   `json:"password"`
 	StartTLS bool     `json:"startTLS"`
-	// TLS: "starttls" (587, default), "tls" (implicit, 465) or "none"; empty falls
-	// back to StartTLS for settings saved before this field existed.
-	TLS string `json:"tls"`
+	TLS      string   `json:"tls"`
 }
 
-// Mode resolves the TLS mode including the legacy StartTLS flag.
 func (c SMTP) Mode() string {
 	switch c.TLS {
 	case "tls", "none", "starttls":
@@ -159,8 +138,6 @@ func (s *Store) seal(v string) (string, error) {
 	return base64.StdEncoding.EncodeToString(sealed), nil
 }
 
-// GetValue and SetValue keep small daemon bookkeeping (last heartbeat, last off-site
-// backup) beside the settings row.
 func (s *Store) GetValue(ctx context.Context, key string) string {
 	var v string
 	_ = s.db.QueryRowContext(ctx, `SELECT value FROM settings WHERE key = ?`, key).Scan(&v)
