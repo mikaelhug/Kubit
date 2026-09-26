@@ -1,6 +1,7 @@
 package config_test
 
 import (
+	"slices"
 	"testing"
 
 	"github.com/mikael/kubit/internal/config"
@@ -145,5 +146,28 @@ func TestLintUndersizedWorker(t *testing.T) {
 	}
 	if seen["worker-undersized:lab-worker-01"] || !seen["low-memory:lab-worker-01"] {
 		t.Errorf("without add-ons a small worker is only low-memory: %v", seen)
+	}
+}
+
+func TestDesignEnablesOnlyWhatAClusterNeeds(t *testing.T) {
+	c, _ := config.Design("lab", machines(), config.DesignOptions{})
+	p := c.Spec.Platform
+	if !p.MetalLB.Enabled || !p.IngressNginx.Enabled || !p.MetricsServer.Enabled || !p.CertManager.Enabled || !p.Flux.Enabled {
+		t.Errorf("a ready cluster needs networking, metrics, certificates and GitOps: %+v", p)
+	}
+	if p.GVisor.Enabled || p.Longhorn.Enabled {
+		t.Errorf("gVisor is opt-in, Longhorn needs data disks: %+v", p)
+	}
+	d := []config.MachineDisk{{DevPath: "/dev/vda", SizeBytes: 20 << 30}, {DevPath: "/dev/vdb", SizeBytes: 20 << 30}}
+	ms := []config.Machine{
+		{IP: "10.0.0.31", MAC: "aa:aa:aa:aa:aa:31", Arch: "arm64", CPUs: 2, MemBytes: 3 << 30, Virtual: true, Disks: d},
+		{IP: "10.0.0.32", MAC: "aa:aa:aa:aa:aa:32", Arch: "arm64", CPUs: 2, MemBytes: 5 << 30, Virtual: true, Disks: d},
+	}
+	c, _ = config.Design("lab", ms, config.DesignOptions{DataDisks: true})
+	if !c.Spec.Platform.Longhorn.Enabled || !slices.Contains(c.Spec.Extensions, "siderolabs/iscsi-tools") || slices.Contains(c.Spec.Extensions, "siderolabs/gvisor") {
+		t.Errorf("data disks: longhorn %v, extensions %v", c.Spec.Platform.Longhorn.Enabled, c.Spec.Extensions)
+	}
+	if err := c.Validate(); err != nil {
+		t.Error(err)
 	}
 }

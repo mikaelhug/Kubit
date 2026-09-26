@@ -193,8 +193,8 @@
   scale the Helm timeout with node count (reliability plan P0, still open).
 - Smoke test at the end of create: a tiny Deployment + LoadBalancer Service must get an
   IP before the cluster is reported ready (reliability plan P2).
-- ArgoCD/cert-manager still ship without resource requests; give them the same
-  treatment before enabling by default.
+- cert-manager still ships without resource requests; give it the same treatment
+  before enabling by default (Flux's chart sets 100m/64Mi per controller).
 - Observer (2026-09-19): Kubit lives on a laptop by design; sleep is handled (gaps
   re-baseline, `backup.stale` skips slept time). Open: the WebSocket reconnect after a
   long sleep always ends in a `resync` (fine); a per-machine "last contact" for
@@ -262,3 +262,34 @@
     (or the node object recreated); Kubit could patch `nodes.longhorn.io` after Apply.
   - Lab host disk metrics on macOS measure the whole APFS container, so the 85 % disk
     alert can fire from unrelated files on the Mac.
+- App secrets (M23) follow-ups:
+  - External Secrets Operator add-on with provider presets (Bitwarden Secrets Manager,
+    Doppler, Infisical); Kubit keeps the provider's bootstrap token sealed and installs
+    it like the SOPS key. For secrets that must come from a manager, not Git.
+  - Key rotation in the UI: keep old and new identities in `keys.txt` during the
+    rollover, show both recipients, drop the old one on confirm.
+  - Private and SSH apps repositories: a deploy key Kubit generates, seals and installs
+    as the GitRepository's `secretRef`.
+  - Platform secrets in add-on values (ACME DNS tokens, Longhorn S3 credentials) are
+    plaintext in cluster.yaml, readable by viewers and copied into tfvars/tfstate.
+    Needs sealed values with viewer redaction.
+  - tfvars and tfstate are plaintext on disk (0600, inside `~/.kubit`; sealed only in
+    backups).
+  - The Flux card shows the recipient Kubit holds, not whether the cluster's
+    `flux-system/sops-age` still matches it; a drift check could compare the two.
+- Flux (M24) follow-ups:
+  - *Sync now* on the Flux card: annotate the GitRepository with
+    `reconcile.fluxcd.io/requestedAt` instead of waiting for the interval.
+  - Push webhook: a notification-controller Receiver behind ingress, its token sealed
+    by Kubit.
+  - Multi-tenancy lockdown: the root Kustomization applies with cluster-admin, so the
+    repository can touch platform namespaces.
+    A service account with namespace-scoped rights, or the chart's `multitenancy`.
+  - Per-app Kustomizations need a hand-written `flux/<app>.yaml` next to each folder;
+    a generator (Flux Operator ResourceSet, or Kubit templating one per folder)
+    would drop the boilerplate.
+  - Changing `repository.path` prunes everything under the old path before the new
+    Kustomizations re-create it (volumes lost). The Configure dialog should warn, or
+    the root Kustomization could be switched with pruning suspended for one apply.
+  - The Flux card lists every object; with many apps it wants grouping per app or
+    hiding Ready rows.

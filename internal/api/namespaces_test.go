@@ -7,8 +7,8 @@ import (
 )
 
 func TestNamespaceRows(t *testing.T) {
-	rows := namespaceRows([]k8s.Namespace{{Name: "argocd"}, {Name: "default"}, {Name: "kube-node-lease"}, {Name: "kube-system"}, {Name: "longhorn-system"}, {Name: "metallb-system"}, {Name: "podinfo"}})
-	want := map[string]string{"argocd": "argocd", "kube-node-lease": "kubernetes", "kube-system": "kubernetes", "longhorn-system": "longhorn", "metallb-system": "metallb"}
+	rows := namespaceRows([]k8s.Namespace{{Name: "flux-system"}, {Name: "default"}, {Name: "kube-node-lease"}, {Name: "kube-system"}, {Name: "longhorn-system"}, {Name: "metallb-system"}, {Name: "podinfo"}})
+	want := map[string]string{"flux-system": "flux", "kube-node-lease": "kubernetes", "kube-system": "kubernetes", "longhorn-system": "longhorn", "metallb-system": "metallb"}
 	for _, r := range rows {
 		addon, platform := want[r.Name]
 		if r.Platform != platform || r.Addon != addon {

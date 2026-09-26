@@ -10,9 +10,10 @@ import (
 )
 
 type addonUpdate struct {
-	Enabled    *bool   `json:"enabled,omitempty"`
-	Range      *string `json:"range,omitempty"`
-	ValuesYAML *string `json:"valuesYaml,omitempty"`
+	Enabled    *bool                  `json:"enabled,omitempty"`
+	Range      *string                `json:"range,omitempty"`
+	ValuesYAML *string                `json:"valuesYaml,omitempty"`
+	Repository *config.FluxRepository `json:"repository,omitempty"`
 }
 
 // handleAddonUpdate edits one add-on in cluster.yaml (enabled, MetalLB range, Helm
@@ -64,8 +65,20 @@ func (s *Server) handleAddonUpdate(w http.ResponseWriter, r *http.Request) {
 		set(&p.MetricsServer)
 	case "certManager":
 		set(&p.CertManager)
-	case "argocd":
-		set(&p.ArgoCD)
+	case "flux":
+		if req.Enabled != nil {
+			p.Flux.Enabled = *req.Enabled
+		}
+		if req.Repository != nil {
+			req.Repository.Default()
+			p.Flux.Repository = req.Repository
+			if req.Repository.URL == "" {
+				p.Flux.Repository = nil
+			}
+		}
+		if req.ValuesYAML != nil {
+			p.Flux.Values = values
+		}
 	case "longhorn":
 		set(&p.Longhorn)
 	default:

@@ -76,7 +76,7 @@ export function Backups({ ctx }: { ctx: ClusterCtx }) {
           onConfirm={() => api.restoreSnapshot(name, restore.id).then((r) => { setRestore(null); watch(r) }).catch((e) => toast(e.message, 'error'))}
           impact={<ul class="list-disc pl-5 flex flex-col gap-1">
             <li>Cluster state goes back to <b>{fmt.datetime(restore.ts)}</b> ({restore.keys.toLocaleString()} keys, taken from {restore.node}).</li>
-            <li class="text-bad">Every object created or changed since then is lost: deployments, secrets, PVCs, MetalLB assignments, Argo CD state.</li>
+            <li class="text-bad">Every object created or changed since then is lost: deployments, secrets, PVCs, MetalLB assignments, Flux state.</li>
             <li>All {cps.length} control plane{cps.length === 1 ? '' : 's'} reboot with etcd wiped; the API is down for ~1–2 minutes.</li>
             <li>Workers are not touched; pods keep running and reconcile against the restored state.</li>
             <li>Talos and Kubernetes versions are unchanged: the snapshot was taken on {restore.talosVersion} / {restore.k8sVersion}; the cluster runs {cluster.spec.spec.talosVersion} / {cluster.spec.spec.kubernetesVersion}.</li>

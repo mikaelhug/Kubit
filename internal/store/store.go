@@ -227,6 +227,12 @@ var migrations = []string{
 		last_used  TEXT NOT NULL DEFAULT ''
 	);
 	ALTER TABLE audit_log ADD COLUMN actor TEXT NOT NULL DEFAULT '';`,
+	`CREATE TABLE sops_keys (
+		cluster    TEXT PRIMARY KEY,
+		identity   BLOB NOT NULL,
+		recipient  TEXT NOT NULL,
+		created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+	);`,
 }
 
 // alreadyApplied probes, by version, for schema a migration would create twice; a
@@ -234,6 +240,7 @@ var migrations = []string{
 // hand-repaired schema_version must not fail on ALTER TABLE).
 var alreadyApplied = map[int]string{
 	13: `SELECT actor FROM audit_log LIMIT 0`,
+	14: `SELECT cluster FROM sops_keys LIMIT 0`,
 }
 
 func (s *Store) migrate(ctx context.Context) error {

@@ -192,3 +192,29 @@ func TestSeedPreventsReraise(t *testing.T) {
 		t.Fatalf("seeded alert re-raised: %v", kinds(evs))
 	}
 }
+
+func TestFluxNotReadyRaisesAndClears(t *testing.T) {
+	tr := NewServiceTracker()
+	now := time.Now()
+	broken := &cluster.ServiceHealth{Flux: []cluster.FluxHealth{{Kind: "Kustomization", Namespace: "flux-system", Name: "flux-system", Ready: "False", Message: "Deployment/shop/shop dry-run failed: .spec.replicas: expected numeric\nNamespace/shop created"}}}
+	if evs := tr.Derive("c", broken, now, nil); len(evs) != 0 {
+		t.Fatalf("first failed collection alerted: %v", kinds(evs))
+	}
+	evs := tr.Derive("c", broken, now, nil)
+	if len(evs) != 1 || evs[0].Kind != "flux.not-ready" || evs[0].Message != "Kustomization flux-system/flux-system is not ready: Deployment/shop/shop dry-run failed: .spec.replicas: expected numeric" {
+		t.Fatalf("second failed collection: %+v", evs)
+	}
+	suspended := &cluster.ServiceHealth{Flux: []cluster.FluxHealth{{Kind: "HelmRelease", Namespace: "a", Name: "b", Ready: "False", Suspended: true}}}
+	if evs := NewServiceTracker().Derive("c", suspended, now, nil); len(evs) != 0 {
+		t.Fatalf("suspended object alerted: %v", kinds(evs))
+	}
+	fixed := &cluster.ServiceHealth{Flux: []cluster.FluxHealth{{Kind: "Kustomization", Namespace: "flux-system", Name: "flux-system", Ready: "True"}}}
+	for i := 0; i < clearAfter-1; i++ {
+		if evs := tr.Derive("c", fixed, now, nil); len(evs) != 0 {
+			t.Fatalf("cleared too early: %v", kinds(evs))
+		}
+	}
+	if evs := tr.Derive("c", fixed, now, nil); !hasKind(evs, "flux.ready") {
+		t.Fatalf("recovery: %v", kinds(evs))
+	}
+}

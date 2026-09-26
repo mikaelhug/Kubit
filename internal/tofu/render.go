@@ -23,13 +23,26 @@ func Render(dir string, c *config.Cluster, kubeconfigPath string) error {
 	if err != nil {
 		return err
 	}
+	current := map[string]bool{}
 	for _, e := range entries {
+		current[e.Name()] = true
 		b, err := templates.ReadFile("templates/platform/" + e.Name())
 		if err != nil {
 			return err
 		}
 		if err := os.WriteFile(filepath.Join(dir, e.Name()), b, 0o600); err != nil {
 			return err
+		}
+	}
+	existing, err := os.ReadDir(dir)
+	if err != nil {
+		return err
+	}
+	for _, e := range existing {
+		if filepath.Ext(e.Name()) == ".tf" && !current[e.Name()] {
+			if err := os.Remove(filepath.Join(dir, e.Name())); err != nil {
+				return err
+			}
 		}
 	}
 	vars := Vars(c, kubeconfigPath)
@@ -49,6 +62,12 @@ type longhornVars struct {
 	Enabled  bool           `json:"enabled"`
 	Values   map[string]any `json:"values"`
 	Replicas int            `json:"replicas"`
+}
+
+type fluxVars struct {
+	Enabled    bool                   `json:"enabled"`
+	Values     map[string]any         `json:"values"`
+	Repository *config.FluxRepository `json:"repository"`
 }
 
 type MetallbVars struct {
@@ -114,8 +133,14 @@ func Vars(c *config.Cluster, kubeconfigPath string) map[string]any {
 		"gvisor":           addonVars{p.GVisor.Enabled, vals(p.GVisor.Values)},
 		"metrics_server":   addonVars{p.MetricsServer.Enabled, merged(metricsDefaults, p.MetricsServer.Values)},
 		"cert_manager":     addonVars{p.CertManager.Enabled, vals(p.CertManager.Values)},
-		"argocd":           addonVars{p.ArgoCD.Enabled, vals(p.ArgoCD.Values)},
+		"flux":             fluxVars{Enabled: p.Flux.Enabled, Values: vals(p.Flux.Values), Repository: p.Flux.Repository},
 		"longhorn":         longhornVars{Enabled: p.Longhorn.Enabled, Values: vals(p.Longhorn.Values), Replicas: c.LonghornReplicas()},
 		"oidc_admin_group": c.Spec.Auth.AdminGroupSubject(),
 	}
 }
+
+const (
+	SOPSNamespace = "flux-system"
+	SOPSSecret    = "sops-age"
+	SOPSSecretKey = "age.agekey"
+)

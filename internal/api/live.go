@@ -72,6 +72,8 @@ func (s *Server) onChange(ctx context.Context, c store.Change) {
 		}
 	case "users":
 		s.hub.publish(Message{Kind: "refresh", Scope: "users"})
+	case "sops":
+		s.hub.publish(Message{Kind: "refresh", Cluster: c.Cluster, Scope: "sops"})
 	case "settings":
 		if v, err := s.store.GetSettings(ctx); err == nil {
 			v = redactSettings(v)

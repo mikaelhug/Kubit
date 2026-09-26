@@ -8,8 +8,9 @@ PCs and VMs. Single Go binary: CLI, daemon, embedded web UI.
 | Layer | Owner | Mechanism |
 |---|---|---|
 | Discovery, machine config, apply, bootstrap, kubeconfig, OS/K8s upgrades, drain, reset, etcd | Kubit | Talos API via `siderolabs/talos/pkg/machinery` + `client-go` |
-| Platform add-ons: MetalLB, ingress-nginx, gVisor RuntimeClasses, metrics-server, cert-manager, Longhorn, ArgoCD | OpenTofu (`infra/platform/`), executed by Kubit with a pinned binary | `hashicorp/helm` for charts, `alekc/kubectl` for CRs |
-| User workloads | Argo CD add-on, syncing an apps repository you own | One ApplicationSet turns every `apps/<name>/` folder into an app; Terraform bootstraps the root Application once. Example: [github.com/mikaelhug/kubit-apps](https://github.com/mikaelhug/kubit-apps) |
+| Platform add-ons: MetalLB, ingress-nginx, gVisor RuntimeClasses, metrics-server, cert-manager, Longhorn, Flux | OpenTofu (`infra/platform/`), executed by Kubit with a pinned binary | `hashicorp/helm` for charts, `alekc/kubectl` for CRs |
+| User workloads | Flux add-on (headless), syncing an apps repository you own | Kubit creates GitRepository and Kustomization `flux-system/flux-system` from `platform.flux.repository`; the path holds one Flux Kustomization per app, so a broken app fails alone. Kubit is the only UI and alerts on failed syncs. Example: [github.com/mikaelhug/kubit-apps](https://github.com/mikaelhug/kubit-apps) |
+| App secrets | SOPS-encrypted files in the apps repository, one age key per cluster | Flux's kustomize-controller decrypts them in the cluster; Kubit generates, seals, backs up and installs the key |
 | Escape hatch | Operator | `infra/talos/` export (talos provider HCL + `import {}`) and native artifacts (`secrets.yaml`, `talosconfig`, machine configs, kubeconfig) — never executed by Kubit |
 
 `cluster.yaml` under `~/.kubit/clusters/<name>/` is the single declarative input.
@@ -80,7 +81,7 @@ metadata: { name: dev }
 spec:
   talosVersion: v1.14.0            # default: machinery's version
   kubernetesVersion: v1.37.0       # default: machinery's DefaultKubernetesVersion
-  extensions: [siderolabs/gvisor]  # default: derived from platform.gvisor
+  extensions: []                   # default: derived from platform.gvisor and platform.longhorn
   schematicID: ""                  # Image Factory schematic; created from extensions when empty
   controlPlane:
     vip: 192.168.64.9              # optional Layer-2 VIP shared by control planes
@@ -130,7 +131,13 @@ spec:
     gvisor: { enabled: true }
     metricsServer: { enabled: true }
     certManager: { enabled: false }
-    argocd: { enabled: false }
+    flux:
+      enabled: false
+      repository:                       # optional; without it Flux runs with nothing to sync
+        url: https://github.com/you/apps.git   # public HTTPS
+        branch: main                    # default main
+        path: ./flux                    # default ./; one Flux Kustomization per app
+        interval: 5m                    # how often Flux fetches; default 5m
 ```
 
 Generated machine configs are Talos 1.14 multi-document: the v1alpha1 core plus
@@ -152,9 +159,18 @@ whole-disk volume, so that term fails the volume) — that Talos formats on firs
 mounts at `/var/mnt/data-N`; the node is labelled `kubit.dev/data-disks: N`. Adding a
 data disk to an existing node is a plain **Apply** (no reboot). The wizard's Design
 step lists every non-install disk per machine with a checkbox (*Use all* claims the
-lot), the add-node dialog does the same, and the node page shows path → mount. Kubit
-stops at the Talos layer: pods reach the volumes through `hostPath` or a StorageClass
-the operator deploys (local-path-provisioner pointed at `/var/mnt/data-*`, or a CSI).
+lot), the add-node dialog does the same, and the node page shows path → mount. Pods
+reach the volumes through the Longhorn add-on, `hostPath`, or a StorageClass the
+operator deploys (local-path-provisioner pointed at `/var/mnt/data-*`, or a CSI).
+
+**Default add-ons.** A drafted cluster (wizard, lab host) comes up ready to run apps
+from Git: MetalLB, ingress-nginx, metrics-server (Kubit's usage views read it),
+cert-manager, Flux and, when any node has a data disk, Longhorn, so its Talos
+extensions are in the first install and no re-image is needed. gVisor is opt-in. The
+wizard's Platform step and the lab host dialog take the apps repository (URL and path);
+Flux syncs it on the first platform apply. In the wizard, claiming the first data disk
+turns Longhorn on and releasing the last turns it off; the Platform step can still
+change either.
 
 ## Secrets
 
@@ -165,6 +181,40 @@ kept in the macOS Keychain as service `kubit` / account `master-key`.
 `$KUBIT_HOME` is used when present or when no keyring is reachable (headless Linux,
 systemd units) and is minted there automatically. `kubit serve` logs which source it
 used; back that up (`kubit key export`).
+
+### App secrets (SOPS + age)
+
+Kubit holds the **keys**, not the secrets, and is never in the data path, so a cluster
+keeps working while the laptop sleeps.
+
+- **Values** live in the apps repository as `*.sops.yaml` files: SOPS encrypts each value
+  with AES-256-GCM under a random data key, which is wrapped for every age recipient
+  listed in `.sops.yaml`. The ciphertext is safe in a public repo; names and structure
+  stay readable, and history is permanent (after a key leak, change the values).
+- **One key per cluster.** Kubit generates an X25519 age identity on the cluster's first
+  platform plan (or the first `GET …/sops`) and keeps it sealed in `sops_keys`. That
+  table has no foreign key, so the key outlives deleting the cluster: a cluster
+  rebuilt under the same name gets the same key back and everything in Git decrypts
+  again. It is in every Kubit backup.
+- **Delivery.** Every platform apply with Flux enabled server-side applies Secret
+  `flux-system/sops-age` (`age.agekey`; kustomize-controller only reads keys ending in
+  `.agekey`) before `tofu apply`, even when the plan is empty, so a deleted Secret comes
+  back on the next apply. It never passes through tfvars or tfstate. With Flux disabled
+  the next apply deletes it.
+- **Decryption.** Kubit's root Kustomization carries
+  `decryption: {provider: sops, secretRef: {name: sops-age}}`, so kustomize-controller
+  decrypts every SOPS-encrypted Secret in the build, inside the cluster. A `*.sops.yaml`
+  Secret is listed under `resources` like any other file; kustomize's `namespace:`
+  applies to it (Flux does not check the SOPS MAC by default). Kustomizations you add
+  in Git set the same `decryption` block themselves.
+- **Sharing.** Each file is encrypted to a list of recipients: your personal key (to
+  edit) plus every cluster that should read it. There is no global key; adding a cluster
+  means adding its recipient to `.sops.yaml` and running `sops updatekeys`.
+- **Rotation** (manual): add the new key's recipient next to the old one and
+  `sops updatekeys` every file, push; *Import key* (or `kubit sops import`) and apply the
+  platform; then drop the old recipient and `sops updatekeys` again.
+- **Surfaces:** Add-ons → Flux shows the recipient with *Copy*. *Export key* and
+  *Import key* are admin only and audited. `kubit sops recipient|export|import`.
 
 ## Discovery
 
@@ -295,6 +345,31 @@ Findings baked into the templates:
   on this Mac (2026-09-26): two workers with 20 GiB data disks give Longhorn two
   schedulable 19 GiB disks, and an app volume keeps two healthy replicas.
 
+- **Flux, headless** (`platform.flux`, `fluxcd-community/flux2` chart 2.19.1, Flux
+  2.9.5). Source, kustomize, helm and notification controllers only: the image
+  automation and reflector controllers are off, and there is no UI; Kubit's Flux card
+  shows controller readiness, every GitRepository, OCIRepository, HelmRepository,
+  Kustomization and HelmRelease (Ready, revision, message; pushed live from informers
+  that start when Flux's CRDs appear) and the SOPS recipient. An object not Ready for
+  two service collections raises `flux.not-ready` with Flux's first message line;
+  three Ready collections resolve it. Suspended objects never alert. The CRDs carry `helm.sh/resource-policy: keep`, so uninstalling
+  the chart never cascades into the objects. With `platform.flux.repository` set, Kubit
+  applies GitRepository and Kustomization `flux-system/flux-system` (prune on,
+  `deletionPolicy: Orphan`): removing a folder prunes it, but disabling Flux or
+  clearing the repository leaves the running apps alone. The path should hold one Flux
+  Kustomization per app (kubit-apps: `flux/<app>.yaml` → `apps/<app>/`, each with
+  `decryption` and `prune`): a single Kustomization over every folder applies all or
+  nothing, and in a five-user run on `lab` one malformed Deployment held back every
+  other push until it was fixed. Changing the path re-owns everything: the root
+  Kustomization prunes what it applied under the old path (namespaces and volumes
+  included) before the new Kustomizations re-create it. A failed chart pull shows on the
+  OCIRepository or HelmRepository while the HelmRelease stays Ready on the old chart,
+  which is why sources are listed. The GitRepository is created only after every other
+  platform release is up: on a fresh cluster the first sync once raced ingress-nginx's
+  admission webhook and both HelmReleases failed their install. Kustomize's `helmCharts` is not available; Helm
+  charts are HelmRelease objects. The controllers run with cluster-admin, so anything in the
+  repository can change anything in the cluster.
+
 Per-add-on Helm values: `platform.<addon>.values` in cluster.yaml is passed as `values = [yamlencode(...)]` only when non-empty, so declaring nothing never triggers a Helm upgrade.
 
 Verified on a single-node VM: ingress-nginx reachable from the Mac on its MetalLB IP, a
@@ -364,6 +439,8 @@ a no-op and the following `tofu plan` reports no changes.
 - `GET nodes`, `POST discover {targets}`, `GET nodes/{ip}/services|logs?service=&follow=`, `POST nodes/{ip}/reboot`
 - `POST config/validate` (raw YAML → defaulted YAML), `POST config/draft {name, ips}` (topology recommendation → cluster.yaml)
 - `GET operations[/{id}]`, `GET events` (SSE: every operation event and status change)
+- `GET clusters/{n}/flux` (GitRepositories, OCIRepositories, HelmRepositories, Kustomizations, HelmReleases with their Ready condition and revision; refreshed by the `flux` scope)
+- `GET clusters/{n}/sops` (the age recipient), `GET|PUT clusters/{n}/sops/identity` (admin: export, or import `{keys}`)
 - `GET auth/me`, `POST auth/setup|login|logout`, `GET auth/oidc/start|callback`; `GET/POST users`, `PUT/DELETE users/{name}`, `GET/POST users/{name}/tokens`, `DELETE users/{name}/tokens/{token}` (admin)
 
 Long-running calls return `{operationId}` immediately; the operation's events are
@@ -403,12 +480,12 @@ line each) · Fleet: Inventory, Network boot · Kubit: Activity, Settings.
 **Namespaces.** Workloads, Network and Storage open on **Apps**: every namespace that is
 not the platform. **Platform** is `kube-system`, `kube-public`, `kube-node-lease` and the
 namespaces of Kubit's add-ons (`metallb-system`, `ingress-nginx`, `cert-manager`,
-`argocd`, `longhorn-system`; `cluster.PlatformNamespace`, served with each namespace's
+`flux-system`, `longhorn-system`; `cluster.PlatformNamespace`, served with each namespace's
 Pod Security level by `GET /api/v1/clusters/{name}/namespaces`); the `kubernetes` API
 Service in `default` counts as platform too. **All** shows both. A namespace picker narrows
 to one namespace; scope and namespace live in the URL (`?scope=`, `?ns=`), so alert
 links land filtered. Kubit creates namespaces only for its add-ons: an app's namespace
-belongs in Git next to the app (Argo CD `CreateNamespace=true` or a Namespace manifest).
+belongs in Git next to the app (a Namespace manifest in the app's folder).
 Workloads also lists CronJobs; Jobs and CronJobs never count as unavailable controllers.
 
 A bottom **Activity drawer** (`a`) shows running operations full-width: stepper on the
@@ -946,6 +1023,9 @@ Not yet exercised: `runsc-kvm` (no nested virtualisation in the VMs).
 - [x] M19 — Storage: Longhorn platform add-on on data disks (node labelling in the generator, privileged namespace, replica default from the data-disk node count, wizard/Add-ons/Storage-tab hooks). Enabling it on an existing cluster re-images the nodes through **Upgrade Talos** (extension changes now produce a new schematic, even at the same version, and the upgrade re-applies machine configs first); platform runs refuse until then. Verified on a lab cluster on this Mac
 - [x] M19 — Honest health and right-sized labs: `hub.since(0)` replays nothing and replayed messages never toast; service alerts raise after two and clear after three collections; `status.health` (`healthy` / `degraded` / `down`) drives the cluster pill; `node.memory-small` alert with runbook; 2 GiB floor for every lab VM with host-fitting defaults; `worker-undersized` lint and preflight floor when add-ons are on; MetalLB layer-2 only with resource requests on every add-on and `atomic` releases; 2 s host CPU sample. Unit-tested (hub, tracker flap, Derive, lint, tofu golden, validate); the EliteDesk lab reshaped to 1 CP + 1 worker at 2816 MiB and re-applied without FRR
 - [x] M22 — Full lab run and GitOps (2026-09-26): from an empty `~/.kubit`, *Lab host on this Mac* (1 control plane + 2 workers with data disks) to a Ready cluster in 5 min 15 s; cert-manager and Argo CD (with `kustomize.buildOptions: --enable-helm`, `timeout.reconciliation: 60s`) in 54 s; Longhorn after a same-version re-image. Apps from [kubit-apps](https://github.com/mikaelhug/kubit-apps): Terraform creates the root Application, an ApplicationSet deploys each `apps/<name>/` (Helm chart via kustomize or plain YAML); four apps served over HTTPS with cert-manager certificates, a Longhorn volume survives pod replacement, a pushed change lands in 1–2 min, a deleted folder is pruned with its namespace. Walked every console view; fixes: stale "Last seen" (now the watcher's last contact), services without a health check shown as unhealthy, finished operations shown with skipped steps as incomplete, upgrade hint pointing at Settings, first-run screen without *Lab host on this Mac*
+- [x] M23 — App secrets (2026-09-26): SOPS + age with a per-cluster key held by Kubit (sealed, outlives the cluster, backed up), installed as `argocd/kubit-sops-age` on every platform apply, KSOPS in the Argo CD add-on, recipient/export/import in Add-ons and `kubit sops`. Argo CD's admin password no longer stored. Verified on `lab`: [kubit-apps](https://github.com/mikaelhug/kubit-apps) `apps/linkding` with an encrypted admin login synced 78 s after push and the login works; with Kubit stopped, a deleted app Secret came back decrypted from Git in 3 s; a deleted cluster key came back unchanged on an empty-plan apply
+- [x] M24 — Flux replaces Argo CD (2026-09-26): headless `flux2` 2.19.1 add-on, GitRepository and Kustomization from `platform.flux.repository` (prune, `deletionPolicy: Orphan`, SOPS via `flux-system/sops-age`), Argo CD and KSOPS removed, stale templates removed on render, Flux card with live sync state (`GET …/flux`, `flux` scope from CRD-gated informers). Verified on a rebuilt `lab` on this Mac (1 control plane + 2 workers with data disks, Ready in 4 min): cert-manager and Flux applied in 36 s; [kubit-apps](https://github.com/mikaelhug/kubit-apps) synced within seconds of the apply (GitRepository, Kustomization, the podinfo HelmRelease Ready); podinfo, whoami and it-tools served over HTTPS; linkding's Secret decrypted from Git with the key that outlived the old cluster, and came back 484 s after being deleted (the Kustomization's 10 min interval); Flux uses 105 MiB in 4 pods; disabling Flux removed the controllers and the key and left the apps running, re-enabling resumed the sync; a requested reconcile reached the UI as a `flux` refresh within a second. Five simulated users then pushed to kubit-apps from separate clones (concurrent pushes, rebased on rejection): a plain YAML app, a chart from an OCI registry, nginx basic auth from a SOPS Secret encrypted with public recipients only, a malformed Deployment, an update plus a removal. Fixes from that run: one Flux Kustomization per app (the single root held every push back behind the malformed one), `flux.not-ready` alerts, OCIRepository and HelmRepository on the card (a missing chart tag was invisible). After the fixes a broken app fails alone and alerts, the others land within a minute of the push, a password rotation takes effect without restarts, removals prune their namespace. Defaults then changed to a ready-to-go cluster (Flux, cert-manager, Longhorn on data disks; gVisor opt-in; apps repository in the lab dialog and wizard): `lab` rebuilt from the dialog with kubit-apps reached Ready with every add-on in 5 min 33 s, no re-image, and all 14 Flux objects were Ready 21 s later; every app served, Longhorn volumes Bound, health `healthy`
+
 - [x] M21 — Namespace scopes: Apps · Platform · All with a namespace picker on Workloads, Network and Storage (URL-backed, live on namespace changes), Overview counts app and platform pods apart, CronJobs listed. Verified on a lab cluster on this Mac: fresh cluster opens on an empty Apps (14 platform pods), a new `shop` namespace appears live, `?ns=` links filter Network and Storage
 - [x] M20 — Lab host drivers: `labhost.Driver` seam (libvirt unchanged), *Lab host on this Mac* with vfkit + vmnet-helper VMs under launchd, driver-aware lab host page, per-host memory reserve. Verified end to end on this Mac (see *On this Mac*); firmware reboot, sleep during setup and the launchd-run daemon are not. Hyper-V: feasibility only, in NOTES/backlog.md. Full-stack run on this Mac (2026-09-25): three control planes (4 GiB, data disks) from the dialog to Ready with MetalLB, ingress, gVisor and metrics-server in 3 min 35 s; cert-manager and Argo CD applied from the Add-ons tab in 51 s; an Argo CD Application (podinfo from GitHub) synced and served over HTTPS through ingress with a cert-manager certificate; a gVisor pod ran; a control plane killed and restarted kept the API up on the VIP and raised and auto-resolved `talos.unreachable`. Longhorn not exercised
 - [~] M7 — tests and packaging: gofmt/vet/race tests and `hack/e2e.sh` run locally; GitHub Actions (CI, signed releases, nightly e2e lab) removed as unused. The QEMU lab script (`hack/qemu/lab.sh`) stays for a Linux KVM box, **unverified**

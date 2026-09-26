@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"os"
 	"regexp"
+	"slices"
 	"strings"
 	"time"
 
@@ -253,7 +254,7 @@ type Platform struct {
 	GVisor        Addon   `yaml:"gvisor" json:"gvisor"`
 	MetricsServer Addon   `yaml:"metricsServer" json:"metricsServer"`
 	CertManager   Addon   `yaml:"certManager" json:"certManager"`
-	ArgoCD        Addon   `yaml:"argocd" json:"argocd"`
+	Flux          Flux    `yaml:"flux" json:"flux"`
 	// Longhorn is replicated block storage on the nodes' data disks: the default
 	// StorageClass, volume snapshots, backups to S3. Needs dataDisks on the nodes
 	// that should hold replicas; Talos gets the iscsi and util-linux extensions.
@@ -263,7 +264,7 @@ type Platform struct {
 // AddOns reports whether any in-cluster add-on is enabled: the workers then carry
 // MetalLB, ingress and metrics pods on top of the kubelet.
 func (p Platform) AddOns() bool {
-	return p.MetalLB.Enabled || p.IngressNginx.Enabled || p.MetricsServer.Enabled || p.CertManager.Enabled || p.ArgoCD.Enabled
+	return p.MetalLB.Enabled || p.IngressNginx.Enabled || p.MetricsServer.Enabled || p.CertManager.Enabled || p.Flux.Enabled || p.Longhorn.Enabled
 }
 
 // LonghornExtensions are the Talos system extensions Longhorn's engine needs.
@@ -296,6 +297,48 @@ type Addon struct {
 	Enabled bool `yaml:"enabled" json:"enabled"`
 	// Values are merged into the add-on's Helm chart values (free-form).
 	Values map[string]any `yaml:"values,omitempty" json:"values,omitempty"`
+}
+
+type Flux struct {
+	Enabled    bool            `yaml:"enabled" json:"enabled"`
+	Repository *FluxRepository `yaml:"repository,omitempty" json:"repository,omitempty"`
+	Values     map[string]any  `yaml:"values,omitempty" json:"values,omitempty"`
+}
+
+type FluxRepository struct {
+	URL      string `yaml:"url" json:"url"`
+	Branch   string `yaml:"branch,omitempty" json:"branch,omitempty"`
+	Path     string `yaml:"path,omitempty" json:"path,omitempty"`
+	Interval string `yaml:"interval,omitempty" json:"interval,omitempty"`
+}
+
+func (r *FluxRepository) Default() {
+	if r.Branch == "" {
+		r.Branch = "main"
+	}
+	if r.Path == "" {
+		r.Path = "./"
+	}
+	if r.Interval == "" {
+		r.Interval = "5m"
+	}
+}
+
+func (r *FluxRepository) Validate() error {
+	var errs []error
+	if u, err := url.Parse(r.URL); err != nil || u.Scheme != "https" || u.Host == "" {
+		errs = append(errs, fmt.Errorf("platform.flux.repository.url must be an https:// URL"))
+	}
+	if strings.HasPrefix(r.Path, "/") || slices.Contains(strings.Split(r.Path, "/"), "..") {
+		errs = append(errs, fmt.Errorf("platform.flux.repository.path %q must be relative to the repository root", r.Path))
+	}
+	if strings.ContainsAny(r.Branch, " \t\n") {
+		errs = append(errs, fmt.Errorf("platform.flux.repository.branch %q is not a branch name", r.Branch))
+	}
+	if d, err := time.ParseDuration(r.Interval); err != nil || d < 10*time.Second {
+		errs = append(errs, fmt.Errorf("platform.flux.repository.interval %q: a Go duration of at least 10s", r.Interval))
+	}
+	return errors.Join(errs...)
 }
 
 type MetalLB struct {
@@ -354,6 +397,12 @@ func (c *Cluster) applyDefaults() {
 	}
 	if c.Spec.Network.ServiceCIDR == "" {
 		c.Spec.Network.ServiceCIDR = constants.DefaultIPv4ServiceCIDR
+	}
+	if r := c.Spec.Platform.Flux.Repository; r != nil && r.URL == "" {
+		c.Spec.Platform.Flux.Repository = nil
+	}
+	if r := c.Spec.Platform.Flux.Repository; r != nil {
+		r.Default()
 	}
 	if c.Spec.Platform.GVisor.Enabled && !containsString(c.Spec.Extensions, "siderolabs/gvisor") {
 		c.Spec.Extensions = append(c.Spec.Extensions, "siderolabs/gvisor")
@@ -501,6 +550,11 @@ func (c *Cluster) Validate() error {
 	}
 	if c.Spec.Platform.Longhorn.Enabled && len(c.LonghornNodes()) == 0 {
 		errs = append(errs, fmt.Errorf("platform.longhorn needs dataDisks on at least one node to hold replicas"))
+	}
+	if r := c.Spec.Platform.Flux.Repository; r != nil {
+		if err := r.Validate(); err != nil {
+			errs = append(errs, err)
+		}
 	}
 	if o := c.Spec.Auth.OIDC; o != nil {
 		if !strings.HasPrefix(o.Issuer, "https://") {

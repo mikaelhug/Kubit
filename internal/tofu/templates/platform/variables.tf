@@ -29,8 +29,12 @@ variable "cert_manager" {
   type = object({ enabled = bool, values = optional(any, {}) })
 }
 
-variable "argocd" {
-  type = object({ enabled = bool, values = optional(any, {}) })
+variable "flux" {
+  type = object({
+    enabled    = bool
+    values     = optional(any, {})
+    repository = optional(object({ url = string, branch = string, path = string, interval = string }))
+  })
 }
 
 variable "longhorn" {
@@ -51,7 +55,7 @@ variable "chart_versions" {
     ingress_nginx  = "4.15.1"
     metrics_server = "3.14.0"
     cert_manager   = "v1.21.2"
-    argocd         = "10.9.0"
+    flux           = "2.19.1"
     longhorn       = "1.10.1"
   }
 }

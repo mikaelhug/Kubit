@@ -15,6 +15,7 @@ const (
 	ScopeNetwork   = "network"
 	ScopeStorage   = "storage"
 	ScopeNodes     = "nodes"
+	ScopeFlux      = "flux"
 )
 
 // WatchScopes runs shared informers for everything the console shows and calls
@@ -43,6 +44,7 @@ func (c *Client) WatchScopes(ctx context.Context, changed func(scope string)) {
 	_, _ = f.Core().V1().PersistentVolumes().Informer().AddEventHandler(hook(ScopeStorage))
 	_, _ = f.Storage().V1().StorageClasses().Informer().AddEventHandler(hook(ScopeStorage))
 	_, _ = f.Core().V1().Nodes().Informer().AddEventHandler(hook(ScopeNodes))
+	go c.watchFlux(ctx, hook(ScopeFlux))
 	f.Start(ctx.Done())
 	f.WaitForCacheSync(ctx.Done())
 	<-ctx.Done()

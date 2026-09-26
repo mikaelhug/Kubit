@@ -2,6 +2,7 @@ package watch
 
 import (
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/mikael/kubit/internal/cluster"
@@ -23,6 +24,7 @@ var serviceResolves = map[string]string{
 	"service.endpoints":  "service.no-endpoints",
 	"ingress.address":    "ingress.no-address",
 	"lb.pool-free":       "lb.pool-exhausted",
+	"flux.ready":         "flux.not-ready",
 }
 
 func init() {
@@ -70,7 +72,7 @@ func (t *ServiceTracker) Seed(open []store.EventRow) {
 	t.seeded = true
 }
 
-var serviceAlertKinds = map[string]bool{"workload.unavailable": true, "pod.crashloop": true, "pvc.pending": true, "service.no-endpoints": true, "ingress.no-address": true, "lb.pool-exhausted": true}
+var serviceAlertKinds = map[string]bool{"workload.unavailable": true, "pod.crashloop": true, "pvc.pending": true, "service.no-endpoints": true, "ingress.no-address": true, "lb.pool-exhausted": true, "flux.not-ready": true}
 
 // Key is the object identifier stored in EventRow.Node: kind/namespace/name.
 func Key(kind, ns, name string) string { return kind + "/" + ns + "/" + name }
@@ -213,6 +215,23 @@ func (t *ServiceTracker) Derive(name string, cur *cluster.ServiceHealth, now tim
 			} else {
 				present[key] = true
 			}
+		}
+	}
+
+	for _, f := range cur.Flux {
+		if skip[f.Namespace] || f.Suspended {
+			continue
+		}
+		key := Key(f.Kind, f.Namespace, f.Name)
+		obj := fmt.Sprintf("%s %s/%s", f.Kind, f.Namespace, f.Name)
+		switch f.Ready {
+		case "False":
+			msg, _, _ := strings.Cut(f.Message, "\n")
+			unhealthy(key, "flux.not-ready", "warn", fmt.Sprintf("%s is not ready: %s", obj, msg))
+		case "True":
+			healthy(key, "flux.ready", obj+" is ready again")
+		default:
+			present[key] = true
 		}
 	}
 

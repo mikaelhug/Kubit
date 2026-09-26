@@ -25,7 +25,7 @@ func rootCmd() *cobra.Command {
 		SilenceUsage:  true,
 		SilenceErrors: true,
 	}
-	root.AddCommand(versionCmd(), serveCmd(), configCmd(), discoverCmd(), clusterCmd(), nodeCmd(), platformCmd(), upgradeCmd(), etcdCmd(), statusCmd(), backupCmd(), restoreCmd(), keyCmd(), pxeCmd(), serviceCmd())
+	root.AddCommand(versionCmd(), serveCmd(), configCmd(), discoverCmd(), clusterCmd(), nodeCmd(), platformCmd(), sopsCmd(), upgradeCmd(), etcdCmd(), statusCmd(), backupCmd(), restoreCmd(), keyCmd(), pxeCmd(), serviceCmd())
 	return root
 }
 

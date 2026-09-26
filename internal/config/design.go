@@ -60,7 +60,7 @@ func Design(name string, machines []Machine, opts DesignOptions) (*Cluster, []Wa
 	})
 	c := &Cluster{APIVersion: APIVersion, Kind: KindCluster, Metadata: Metadata{Name: name}}
 	c.Spec.Pools = []Pool{{Name: "controlplane", Role: RoleControlPlane}, {Name: "worker", Role: RoleWorker}}
-	c.Spec.Platform = Platform{MetalLB: MetalLB{Enabled: true}, IngressNginx: Addon{Enabled: true}, GVisor: Addon{Enabled: true}, MetricsServer: Addon{Enabled: true}}
+	c.Spec.Platform = Platform{MetalLB: MetalLB{Enabled: true}, IngressNginx: Addon{Enabled: true}, MetricsServer: Addon{Enabled: true}, CertManager: Addon{Enabled: true}, Flux: Flux{Enabled: true}}
 	sched := topo.AllowScheduling
 	c.Spec.ControlPlane.AllowScheduling = &sched
 	cps, workers := 0, 0
@@ -83,6 +83,7 @@ func Design(name string, machines []Machine, opts DesignOptions) (*Cluster, []Wa
 		}
 		c.Spec.Nodes = append(c.Spec.Nodes, n)
 	}
+	c.Spec.Platform.Longhorn.Enabled = len(c.LonghornNodes()) > 0
 	if opts.MetalLBRange != "" {
 		c.Spec.Platform.MetalLB.Range = opts.MetalLBRange
 	} else if len(machines) > 0 {

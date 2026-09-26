@@ -79,7 +79,7 @@ func TestAddonOf(t *testing.T) {
 		"kubectl_manifest.runtimeclass_gvisor_kvm[0]": "gvisor",
 		"helm_release.metrics_server[0]":              "metrics-server",
 		"helm_release.cert_manager[0]":                "cert-manager",
-		"data.kubernetes_secret_v1.argocd_admin[0]":   "argocd",
+		"kubectl_manifest.flux_sync[0]":               "flux",
 		"helm_release.something_else":                 "something_else",
 	} {
 		if got := tofu.AddonOf(addr); got != want {

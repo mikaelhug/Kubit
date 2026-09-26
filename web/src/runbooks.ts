@@ -86,12 +86,17 @@ export function runbookFor(kind: string, c: Ctx): Runbook | null {
     case 'pod.crashloop':
       return { title: 'Pod crashlooping', why: 'The container exits shortly after start; Kubernetes backs off between restarts.', steps: [
         { text: 'Read the last log lines and events of the pod (usually a config, secret or dependency error).', link: { label: 'Workloads', href: `/clusters/${c.cluster}/workloads` } },
-        { text: 'Fix it in the deployment tooling (Argo CD / Helm); Kubit does not edit application manifests.' },
+        { text: 'Fix it in the deployment tooling (Flux / Helm); Kubit does not edit application manifests.' },
+      ] }
+    case 'flux.not-ready':
+      return { title: 'Flux sync failing', why: 'Flux cannot fetch, build or apply what is in Git; the cluster keeps the last revision that applied.', steps: [
+        { text: 'Read the error on the Flux card; it names the file or object.', link: { label: 'Add-ons', href: `/clusters/${c.cluster}/addons` } },
+        { text: 'Fix it in the apps repository and push; Flux retries on the next fetch.' },
       ] }
     case 'pvc.pending':
       return { title: 'PersistentVolumeClaim stuck Pending', why: 'No StorageClass provisioned a volume: the class does not exist, has no provisioner, or the provisioner is down.', steps: [
         { text: 'Check the storage classes and the claim\'s class name.', link: { label: 'Storage', href: `/clusters/${c.cluster}/storage` } },
-        { text: 'Kubit ships no storage; install one (local-path-provisioner, Longhorn) through Argo CD or Helm and mark it default.' },
+        { text: 'Kubit ships no storage; install one (local-path-provisioner, Longhorn) through Flux or Helm and mark it default.' },
       ] }
     case 'service.no-endpoints':
       return { title: 'Service without endpoints', why: 'Its selector matches no Ready pod: labels differ, or the pods are not Ready.', steps: [

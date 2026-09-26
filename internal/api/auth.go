@@ -82,7 +82,7 @@ func requiredRole(r *http.Request) store.Role {
 	switch {
 	case strings.HasPrefix(p, "/api/v1/users"), p == "/api/v1/settings" && !read, strings.HasPrefix(p, "/api/v1/backup"), strings.HasPrefix(p, "/api/v1/restore"), strings.HasPrefix(p, "/api/v1/key"):
 		return store.RoleAdmin
-	case strings.HasSuffix(p, "/kubeconfig"), strings.HasSuffix(p, "/talosconfig"), strings.HasSuffix(p, "/export"), strings.Contains(p, "/certificates"):
+	case strings.HasSuffix(p, "/kubeconfig"), strings.HasSuffix(p, "/talosconfig"), strings.HasSuffix(p, "/export"), strings.Contains(p, "/certificates"), strings.HasSuffix(p, "/sops/identity"):
 		return store.RoleAdmin
 	case read:
 		return store.RoleViewer

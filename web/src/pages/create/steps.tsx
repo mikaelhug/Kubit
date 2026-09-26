@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'preact/hooks'
-import { api, fmt, type ClusterSpec, type NodeRow, type NodeSpec, type Pool, type Warning } from '../../api'
+import { api, fmt, type ClusterSpec, type FluxRepository, type NodeRow, type NodeSpec, type Pool, type Warning } from '../../api'
 import { machineList, operations, settings, toast, watch } from '../../store'
 import { Field, Notice } from '../../components/ui'
 import { Tabs } from '../../components/Tabs'
@@ -112,11 +112,18 @@ export function topologyText(n: number) {
 
 // ─── 2 · Design ──────────────────────────────────────────────────────────────
 
+const hasData = (c: ClusterSpec) => c.spec.nodes.some((n) => n.dataDisks?.length)
+
+function followDisks(prev: ClusterSpec, next: ClusterSpec): ClusterSpec {
+  const on = hasData(next)
+  return hasData(prev) === on ? next : { ...next, spec: { ...next.spec, platform: { ...next.spec.platform, longhorn: { ...next.spec.platform.longhorn, enabled: on } } } }
+}
+
 export function DesignStep({ draft, setCluster, reset, busy }: { draft: Draft; setCluster: SetCluster; reset: () => Promise<void>; busy: boolean }) {
   const c = draft.cluster!
   const pools = c.spec.pools ?? []
   const poolOf = (name?: string) => pools.find((p) => p.name === name)
-  const updateNode = (i: number, patch: Partial<NodeSpec>) => setCluster((c) => ({ ...c, spec: { ...c.spec, nodes: c.spec.nodes.map((n, j) => j === i ? { ...n, ...patch } : n) } }))
+  const updateNode = (i: number, patch: Partial<NodeSpec>) => setCluster((c) => followDisks(c, { ...c, spec: { ...c.spec, nodes: c.spec.nodes.map((n, j) => j === i ? { ...n, ...patch } : n) } }))
   const setPools = (ps: Pool[]) => setCluster((c) => {
     // Renaming a pool with nodes is blocked in the editor, so only role changes matter.
     const nodes = c.spec.nodes.map((n) => { const p = ps.find((x) => x.name === n.pool); return p ? { ...n, role: p.role } : n })
@@ -129,7 +136,7 @@ export function DesignStep({ draft, setCluster, reset, busy }: { draft: Draft; s
   const cps = c.spec.nodes.filter((n) => n.role === 'controlplane').length
   const spare = c.spec.nodes.reduce((s, n) => s + dataCandidates(machineOf(draft, n), n.installDisk?.path).length, 0)
   const claimed = c.spec.nodes.reduce((s, n) => s + (n.dataDisks?.length ?? 0), 0)
-  const allData = (on: boolean) => setCluster((c) => ({ ...c, spec: { ...c.spec, nodes: c.spec.nodes.map((n) => ({ ...n, dataDisks: on ? dataCandidates(machineOf(draft, n), n.installDisk?.path).map((d) => d.devPath) : undefined })) } }))
+  const allData = (on: boolean) => setCluster((c) => followDisks(c, { ...c, spec: { ...c.spec, nodes: c.spec.nodes.map((n) => ({ ...n, dataDisks: on ? dataCandidates(machineOf(draft, n), n.installDisk?.path).map((d) => d.devPath) : undefined })) } }))
   const designCols: Column<number>[] = [
     { id: 'machine', header: 'Machine', cell: (i) => { const n = c.spec.nodes[i]; const m = machineOf(draft, n); return (
       <span class="flex flex-col">
@@ -284,15 +291,17 @@ export function NetworkStep({ draft, setCluster }: { draft: Draft; setCluster: S
 const addons: { key: keyof ClusterSpec['spec']['platform']; title: string; what: string; size: string }[] = [
   { key: 'metallb', title: 'MetalLB', what: 'LoadBalancer services on bare metal: announces addresses from the range over ARP.', size: '~120 MiB, 1 controller + 1 speaker per node' },
   { key: 'ingressNginx', title: 'ingress-nginx', what: 'HTTP(S) ingress controller behind a LoadBalancer address; the default IngressClass.', size: '~250 MiB, 1 pod' },
-  { key: 'gvisor', title: 'gVisor runtime class', what: 'RuntimeClass "gvisor" for sandboxed pods; uses KVM acceleration on machines that expose it.', size: 'no running pods' },
   { key: 'metricsServer', title: 'metrics-server', what: 'Resource metrics for kubectl top, HPA and Kubit\'s capacity views.', size: '~100 MiB, 1 pod' },
   { key: 'certManager', title: 'cert-manager', what: 'X.509 certificates from ACME (Let\'s Encrypt) or internal CAs; issuers are configured afterwards.', size: '~300 MiB, 3 pods' },
-  { key: 'argocd', title: 'Argo CD', what: 'GitOps: applications from Git repositories. Recommended home for everything above the platform layer.', size: '~1 GiB, 7 pods' },
+  { key: 'flux', title: 'Flux', what: 'GitOps: syncs workloads from the Git repository below. No UI of its own.', size: '~150 MiB, 4 pods' },
   { key: 'longhorn', title: 'Longhorn', what: 'Replicated block storage on the data disks chosen in the previous step; becomes the default StorageClass.', size: '~1 GiB, 1 manager + engine per node' },
+  { key: 'gvisor', title: 'gVisor runtime class', what: 'RuntimeClass "gvisor" for sandboxed pods; uses KVM acceleration on machines that expose it.', size: 'no running pods' },
 ]
 
 export function PlatformStep({ draft, setCluster, patch }: { draft: Draft; setCluster: SetCluster; patch: (p: Partial<Draft>) => void }) {
   const c = draft.cluster!
+  const repo = c.spec.platform.flux.repository
+  const setRepo = (r: FluxRepository) => setCluster((c) => ({ ...c, spec: { ...c.spec, platform: { ...c.spec.platform, flux: { ...c.spec.platform.flux, repository: r.url.trim() || r.path?.trim() ? { url: r.url.trim(), path: r.path?.trim() || undefined } : undefined } } } }))
   const toggle = (key: keyof ClusterSpec['spec']['platform'], enabled: boolean) => setCluster((c) => ({ ...c, spec: { ...c.spec, platform: { ...c.spec.platform, [key]: { ...c.spec.platform[key], enabled } } } }))
   return (
     <>
@@ -313,6 +322,12 @@ export function PlatformStep({ draft, setCluster, patch }: { draft: Draft; setCl
           )
         })}
       </div>
+      {c.spec.platform.flux.enabled && !draft.skipPlatform && (
+        <div class="grid grid-cols-1 md:grid-cols-[1fr_12rem] gap-3">
+          <Field label="Apps repository" hint="Public HTTPS Git URL Flux syncs; optional."><input class="input mono" value={repo?.url ?? ''} placeholder="https://github.com/you/apps.git" onInput={(e) => setRepo({ url: (e.target as HTMLInputElement).value, path: repo?.path })} /></Field>
+          <Field label="Path"><input class="input mono" value={repo?.path ?? ''} placeholder="./" onInput={(e) => setRepo({ url: repo?.url ?? '', path: (e.target as HTMLInputElement).value })} /></Field>
+        </div>
+      )}
       <label class="flex items-center gap-2 text-[13px]"><input type="checkbox" checked={draft.skipPlatform} onChange={(e) => patch({ skipPlatform: (e.target as HTMLInputElement).checked })} /> Skip the platform layer for now (nodes only; plan it later under Add-ons)</label>
     </>
   )

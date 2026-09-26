@@ -120,6 +120,7 @@ func TestLabLocalCreate(t *testing.T) {
 		`{"driver":"vfkit","manual":true}`:                                         400,
 		`{"driver":"vfkit","network":"routed"}`:                                    400,
 		`{"driver":"vfkit","vms":{"count":7,"cpus":2,"memMiB":3072,"diskGiB":20}}`: 422,
+		`{"driver":"vfkit","vms":{"count":1,"cpus":2,"memMiB":3072,"diskGiB":20},"cluster":{"name":"x","controlPlanes":1,"repository":{"url":"http://example.com/apps.git"}}}`: 400,
 	} {
 		if rec := call(t, s, "POST", "/api/v1/labhosts", body); rec.Code != want {
 			t.Errorf("%s: %d, want %d (%s)", body, rec.Code, want, rec.Body)

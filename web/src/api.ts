@@ -15,6 +15,9 @@ export const kubitKey = 'kubit'
 export interface HealthEvent { id: number; ts: string; cluster: string; node?: string; severity: 'info' | 'warn' | 'critical'; kind: string; message: string; acked: boolean }
 export interface ServiceHealth { collectedAt: string; metallb: boolean; workloads?: { kind: string; namespace: string; name: string; ready: number; desired: number; available: boolean; ageSec: number }[]; pods?: { namespace: string; name: string; node?: string; owner?: string; phase: string; restarts: number; ageSec: number }[]; claims?: { namespace: string; name: string; phase: string; ageSec: number }[]; services?: { namespace: string; name: string; type: string; hasSelector: boolean; endpoints: number; ageSec: number }[]; ingresses?: { namespace: string; name: string; hasAddress: boolean; ageSec: number }[]; pool?: { range: string; total: number; allocated: number } }
 export interface Sample { ts: string; node?: string; cpuMilli: number; cpuCap: number; memBytes: number; memCap: number; pods: number; ready: boolean; reachable: boolean; disk?: number; diskCap?: number }
+export interface SOPSKey { cluster: string; recipient: string; createdAt: string }
+export interface FluxRepository { url: string; branch?: string; path?: string; interval?: string }
+export interface FluxObject { kind: string; namespace: string; name: string; ready: 'True' | 'False' | 'Unknown'; reason?: string; message?: string; revision?: string; suspended?: boolean; since?: string }
 export interface ImageStatus { talosVersion: string; installed: string; desired: string; extensions?: string[]; outdated: boolean }
 export interface Namespace { name: string; phase: string; security?: string; ageSec: number; platform: boolean; addon?: string }
 export interface Workload { kind: string; namespace: string; name: string; ready: number; desired: number; available: boolean; images: string; age: string; selector?: string }
@@ -43,7 +46,7 @@ export interface Pool { name: string; role: 'controlplane' | 'worker'; labels?: 
 export interface Warning { level: 'info' | 'warn'; code: string; message: string; node?: string }
 export interface AddonSpec { enabled: boolean; values?: Record<string, unknown> }
 export interface Snapshot { id: number; cluster: string; ts: string; node: string; sizeBytes: number; sha256: string; keys: number; talosVersion?: string; k8sVersion?: string; source: 'manual' | 'schedule' | 'pre-upgrade'; status: 'ok' | 'corrupt' | 'missing'; offsite?: string }
-export interface PlatformSpec { metallb: AddonSpec & { range?: string }; ingressNginx: AddonSpec; gvisor: AddonSpec; metricsServer: AddonSpec; certManager: AddonSpec; argocd: AddonSpec; longhorn: AddonSpec }
+export interface PlatformSpec { metallb: AddonSpec & { range?: string }; ingressNginx: AddonSpec; gvisor: AddonSpec; metricsServer: AddonSpec; certManager: AddonSpec; flux: AddonSpec & { repository?: FluxRepository }; longhorn: AddonSpec }
 export interface ClusterSpec {
   apiVersion: string; kind: string; metadata: { name: string }
   spec: {
@@ -198,10 +201,10 @@ export const api = {
   oobTest: (mac: string, c?: OOBConfig) => req<{ ok: boolean; error?: string; info?: OOBInfo }>('POST', `/machines/${mac}/oob/test`, c ?? {}),
   power: (mac: string, action: 'on' | 'off' | 'reset' | 'cycle' | 'pxe') => req<OpRef>('POST', `/machines/${mac}/power`, { action }),
   addOOBMachine: (c: OOBConfig) => req<{ machine: NodeRow; info: OOBInfo }>('POST', '/machines/oob', c),
-  labProvision: (mac: string, plan?: { manual?: boolean; network?: 'bridge' | 'routed'; disk?: string; vms?: VMPlan; cluster?: { name: string; controlPlanes: 1 | 3; skipPlatform?: boolean } }) => req<OpRef>('POST', `/machines/${mac}/labhost`, plan ?? {}),
+  labProvision: (mac: string, plan?: { manual?: boolean; network?: 'bridge' | 'routed'; disk?: string; vms?: VMPlan; cluster?: { name: string; controlPlanes: 1 | 3; skipPlatform?: boolean; repository?: FluxRepository } }) => req<OpRef>('POST', `/machines/${mac}/labhost`, plan ?? {}),
   labRelease: (mac: string) => req<void>('DELETE', `/machines/${mac}/labhost`),
   labLocal: () => req<LabLocal>('GET', '/labhosts/local'),
-  labLocalCreate: (plan: { vms?: VMPlan; cluster?: { name: string; controlPlanes: 1 | 3; skipPlatform?: boolean } }) => req<OpRef & { mac: string }>('POST', '/labhosts', { driver: 'vfkit', ...plan }),
+  labLocalCreate: (plan: { vms?: VMPlan; cluster?: { name: string; controlPlanes: 1 | 3; skipPlatform?: boolean; repository?: FluxRepository } }) => req<OpRef & { mac: string }>('POST', '/labhosts', { driver: 'vfkit', ...plan }),
   addMachine: (r: { mac: string; ip?: string; hostname?: string; arch?: string }) => req<NodeRow>('POST', '/machines', r),
   labSamples: (mac: string, range: string) => req<Sample[]>('GET', `/machines/${mac}/labhost/samples?range=${range}`),
   labCheck: (mac: string) => req<LabUpdates>('POST', `/machines/${mac}/labhost/check`),
@@ -233,10 +236,13 @@ export const api = {
   saveSettings: (v: Settings) => req<Settings>('PUT', '/settings', v),
   pxe: () => req<PxeStatus>('GET', '/pxe'),
   addons: (name: string) => req<AddonStatus[]>('GET', `/clusters/${name}/addons`),
-  updateAddon: (name: string, key: string, body: { enabled?: boolean; range?: string; valuesYaml?: string }) => req<AddonStatus[]>('PUT', `/clusters/${name}/addons/${key}`, body),
+  updateAddon: (name: string, key: string, body: { enabled?: boolean; range?: string; valuesYaml?: string; repository?: FluxRepository }) => req<AddonStatus[]>('PUT', `/clusters/${name}/addons/${key}`, body),
   workloads: (name: string) => req<Workload[]>('GET', `/clusters/${name}/workloads`),
   namespaces: (name: string) => req<Namespace[]>('GET', `/clusters/${name}/namespaces`),
   imageStatus: (name: string) => req<ImageStatus>('GET', `/clusters/${name}/image`),
+  sopsKey: (name: string) => req<SOPSKey>('GET', `/clusters/${name}/sops`),
+  flux: (name: string) => req<FluxObject[]>('GET', `/clusters/${name}/flux`),
+  importSOPSKey: (name: string, keys: string) => req<SOPSKey>('PUT', `/clusters/${name}/sops/identity`, { keys }),
   pods: (name: string, namespace = '', selector = '') => req<PodSummary[]>('GET', `/clusters/${name}/pods?namespace=${encodeURIComponent(namespace)}&selector=${encodeURIComponent(selector)}`),
   podEvents: (name: string, ns: string, pod: string) => req<PodEvent[]>('GET', `/clusters/${name}/pods/${ns}/${pod}/events`),
   network: (name: string) => req<NetworkView>('GET', `/clusters/${name}/network`),

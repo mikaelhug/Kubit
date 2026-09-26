@@ -119,7 +119,6 @@ func (m *Manager) Status(ctx context.Context, name string) (*Status, error) {
 		KubernetesVersion: c.Spec.KubernetesVersion, Endpoint: c.Spec.ControlPlane.Endpoint,
 	}
 	if p, err := m.Store.GetPlatformStatus(ctx, name); err == nil && (p.AppliedAt != "" || p.Error != "") {
-		p.Outputs = redact(p.Outputs)
 		st.Platform = p
 	}
 	sec, err := m.Store.GetClusterSecrets(ctx, name)
@@ -351,15 +350,4 @@ func (m *Manager) etcdStatus(ctx context.Context, cps []config.Node, talosconfig
 		break
 	}
 	return e
-}
-
-func redact(outputs map[string]string) map[string]string {
-	out := map[string]string{}
-	for k, v := range outputs {
-		if k == "argocd_admin_password" {
-			continue
-		}
-		out[k] = v
-	}
-	return out
 }

@@ -17,9 +17,19 @@ type ServiceHealth struct {
 	Claims      []ClaimHealth    `json:"claims"`
 	Services    []ServiceRow     `json:"services"`
 	Ingresses   []IngressHealth  `json:"ingresses"`
+	Flux        []FluxHealth     `json:"flux,omitempty"`
 	Pool        *PoolHealth      `json:"pool,omitempty"`
 	MetalLB     bool             `json:"metallb"`
 	CollectedAt time.Time        `json:"collectedAt"`
+}
+
+type FluxHealth struct {
+	Kind      string `json:"kind"`
+	Namespace string `json:"namespace"`
+	Name      string `json:"name"`
+	Ready     string `json:"ready"`
+	Message   string `json:"message,omitempty"`
+	Suspended bool   `json:"suspended,omitempty"`
 }
 
 type WorkloadHealth struct {
@@ -117,6 +127,13 @@ func (m *Manager) ServiceHealth(ctx context.Context, name string) (*ServiceHealt
 	}
 	for _, i := range ings {
 		out.Ingresses = append(out.Ingresses, IngressHealth{Namespace: i.Namespace, Name: i.Name, HasAddress: len(i.Addresses) > 0, AgeSec: i.AgeSec})
+	}
+	if c.Spec.Platform.Flux.Enabled {
+		if objs, err := kc.FluxObjects(ctx); err == nil {
+			for _, o := range objs {
+				out.Flux = append(out.Flux, FluxHealth{Kind: o.Kind, Namespace: o.Namespace, Name: o.Name, Ready: o.Ready, Message: o.Message, Suspended: o.Suspended})
+			}
+		}
 	}
 	if out.MetalLB && c.Spec.Platform.MetalLB.Range != "" {
 		if pool, err := k8s.PoolUsageFor(c.Spec.Platform.MetalLB.Range, svcs); err == nil {

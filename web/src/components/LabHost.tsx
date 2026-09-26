@@ -378,6 +378,7 @@ function usePlan(memMiB: number, reserve: number, cluster = 'lab', most = Infini
   const [withCluster, setWithCluster] = useState(true)
   const [rows, setRows] = useState<VMRow[]>(() => planFor(memMiB, true, reserve, most))
   const [name, setName] = useState(cluster)
+  const [repo, setRepo] = useState({ url: '', path: '' })
   const cps = cpCount(rows)
   const need = withVMs ? totalMem(rows) : 0
   const over = memMiB > 0 && withVMs && need > memMiB - reserve
@@ -385,8 +386,8 @@ function usePlan(memMiB: number, reserve: number, cluster = 'lab', most = Infini
   const topologyOk = cps === 1 || cps === 3
   const vmProblem = withVMs ? rowsProblem(withCluster ? rows : rows.map((v) => ({ ...v, role: 'worker' as const }))) : null
   const blocked = over || !!vmProblem || (withVMs && withCluster && (!nameOk || !topologyOk))
-  const body = withVMs ? { vms: { each: rows.map(({ key: _k, ...v }) => (withCluster ? v : { ...v, role: 'worker' as const })) }, cluster: withCluster ? { name, controlPlanes: cps as 1 | 3 } : undefined } : {}
-  return { withVMs, setWithVMs, withCluster, setWithCluster, rows, setRows, name, setName, cps, need, over, vmProblem, topologyOk, blocked, body, memMiB, reserve }
+  const body = withVMs ? { vms: { each: rows.map(({ key: _k, ...v }) => (withCluster ? v : { ...v, role: 'worker' as const })) }, cluster: withCluster ? { name, controlPlanes: cps as 1 | 3, repository: repo.url.trim() ? { url: repo.url.trim(), path: repo.path.trim() || undefined } : undefined } : undefined } : {}
+  return { withVMs, setWithVMs, withCluster, setWithCluster, rows, setRows, name, setName, repo, setRepo, cps, need, over, vmProblem, topologyOk, blocked, body, memMiB, reserve }
 }
 
 function PlanFields({ p, keeps }: { p: ReturnType<typeof usePlan>; keeps: string }) {
@@ -407,6 +408,8 @@ function PlanFields({ p, keeps }: { p: ReturnType<typeof usePlan>; keeps: string
         <div class="grid grid-cols-2 gap-3 items-end">
           <Field label="Cluster name"><input class="input mono" value={p.name} onInput={(e) => p.setName((e.target as HTMLInputElement).value.toLowerCase())} /></Field>
           <div class="text-[13px] pb-2">{p.topologyOk ? <span>{p.cps} control plane{p.cps === 1 ? '' : 's'}, {p.rows.length - p.cps} worker{p.rows.length - p.cps === 1 ? '' : 's'}</span> : <span class="text-bad">Choose 1 or 3 control planes.</span>}</div>
+          <Field label="Apps repository" hint="Public HTTPS Git URL Flux syncs; optional."><input class="input mono" value={p.repo.url} placeholder="https://github.com/you/apps.git" onInput={(e) => p.setRepo({ ...p.repo, url: (e.target as HTMLInputElement).value })} /></Field>
+          <Field label="Path"><input class="input mono" value={p.repo.path} placeholder="./" onInput={(e) => p.setRepo({ ...p.repo, path: (e.target as HTMLInputElement).value })} /></Field>
         </div>
       )}
     </>

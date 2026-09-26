@@ -18,6 +18,7 @@ func (s *Server) k8sRoutes() {
 	r.HandleFunc("GET /api/v1/clusters/{name}/pods/{namespace}/{pod}/logs", s.handlePodLogs)
 	r.HandleFunc("GET /api/v1/clusters/{name}/network", s.handleNetwork)
 	r.HandleFunc("GET /api/v1/clusters/{name}/storage", s.handleStorage)
+	r.HandleFunc("GET /api/v1/clusters/{name}/flux", s.handleFlux)
 }
 
 func (s *Server) kube(w http.ResponseWriter, r *http.Request) (*k8s.Client, bool) {
@@ -41,6 +42,19 @@ func (s *Server) handleWorkloads(w http.ResponseWriter, r *http.Request) {
 	}
 	if list == nil {
 		list = []k8s.Workload{}
+	}
+	writeJSON(w, http.StatusOK, list)
+}
+
+func (s *Server) handleFlux(w http.ResponseWriter, r *http.Request) {
+	kc, ok := s.kube(w, r)
+	if !ok {
+		return
+	}
+	list, err := kc.FluxObjects(r.Context())
+	if err != nil {
+		writeErr(w, err)
+		return
 	}
 	writeJSON(w, http.StatusOK, list)
 }

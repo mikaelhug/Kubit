@@ -102,9 +102,10 @@ type labPlan struct {
 	Disk    string         `json:"disk,omitempty"`    // install device; "" = largest
 	VMs     *addVMsRequest `json:"vms,omitempty"`
 	Cluster *struct {
-		Name          string `json:"name"`
-		ControlPlanes int    `json:"controlPlanes"` // 1 or 3
-		SkipPlatform  bool   `json:"skipPlatform"`
+		Name          string                 `json:"name"`
+		ControlPlanes int                    `json:"controlPlanes"` // 1 or 3
+		SkipPlatform  bool                   `json:"skipPlatform"`
+		Repository    *config.FluxRepository `json:"repository,omitempty"`
 	} `json:"cluster,omitempty"`
 }
 
@@ -296,6 +297,15 @@ func (s *Server) checkLabPlan(ctx context.Context, plan *labPlan) (int, error) {
 		return http.StatusBadRequest, errors.New("disk must be a /dev path")
 	}
 	if plan.Cluster != nil {
+		if r := plan.Cluster.Repository; r != nil && r.URL == "" {
+			plan.Cluster.Repository = nil
+		}
+		if r := plan.Cluster.Repository; r != nil {
+			r.Default()
+			if err := r.Validate(); err != nil {
+				return http.StatusBadRequest, err
+			}
+		}
 		if plan.VMs == nil {
 			return http.StatusBadRequest, errors.New("a cluster needs vms")
 		}
@@ -346,6 +356,7 @@ func (s *Server) labRunPlan(ctx contextT, mac string, plan labPlan, sink cluster
 	if err != nil {
 		return nil, err
 	}
+	c.Spec.Platform.Flux.Repository = plan.Cluster.Repository
 	skip := plan.Cluster.SkipPlatform
 	opID, err := s.runOperation(c.Metadata.Name, "cluster.create", map[string]any{"yaml": mustYAML(c), "skipPlatform": skip, "from": "labhost"}, func(ctx contextT, sink clusterSink) (any, error) {
 		if err := s.manager.Create(ctx, c, sink); err != nil {

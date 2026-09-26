@@ -73,6 +73,13 @@ func (m *Manager) platformRunner(ctx context.Context, name string, sink Sink) (*
 		return nil, err
 	}
 	sink.emit(Info, "render", "", "rendered %s (tofu %s)", dir, bin)
+	if c.Spec.Platform.Flux.Enabled {
+		k, err := m.SOPSKey(ctx, name)
+		if err != nil {
+			return nil, err
+		}
+		sink.emit(Info, "render", "", "SOPS key %s goes to %s/%s on apply", k.Recipient, tofu.SOPSNamespace, tofu.SOPSSecret)
+	}
 	sink.end("render")
 	r := &tofu.Runner{Bin: bin, Dir: dir, Log: tofuLogger(sink)}
 	if err := sink.run("init", func() error { return r.Init(ctx) }); err != nil {
@@ -167,6 +174,9 @@ func (m *Manager) ApplyPlatform(ctx context.Context, name string, sink Sink) err
 		return err
 	}
 	if sum.Empty() {
+		if err := m.installSOPSKey(ctx, name, sink); err != nil {
+			return err
+		}
 		sink.emit(Info, "apply", "", "no changes")
 		sink.skip("apply")
 		return m.recordPlatform(ctx, name, r, sum, sink)
@@ -177,6 +187,9 @@ func (m *Manager) ApplyPlatform(ctx context.Context, name string, sink Sink) err
 func (m *Manager) applyWith(ctx context.Context, name string, r *tofu.Runner, sink Sink) error {
 	var sum tofu.Summary
 	err := sink.run("apply", func() error {
+		if err := m.installSOPSKey(ctx, name, sink); err != nil {
+			return err
+		}
 		var err error
 		sum, err = r.Apply(ctx)
 		if err != nil {
@@ -203,7 +216,7 @@ func (m *Manager) recordPlatform(ctx context.Context, name string, r *tofu.Runne
 	}
 	_ = m.Store.Audit(ctx, name, "platform.apply", sum.String())
 	for k, v := range outputs {
-		if v != "" && k != "argocd_admin_password" {
+		if v != "" {
 			sink.emit(Info, "apply", "", "%s = %s", k, v)
 		}
 	}

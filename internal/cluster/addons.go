@@ -30,7 +30,7 @@ var addonMeta = []struct{ key, namespace, pin string }{
 	{"gvisor", "", ""},
 	{"metricsServer", "kube-system", "3.14.0"},
 	{"certManager", "cert-manager", "v1.21.2"},
-	{"argocd", "argocd", "10.9.0"},
+	{"flux", "flux-system", "2.19.1"},
 	{"longhorn", "longhorn-system", "1.10.1"},
 }
 
@@ -47,7 +47,7 @@ func PlatformNamespace(ns string) (string, bool) {
 	return "", false
 }
 
-var addonTofuName = map[string]string{"metallb": "metallb", "ingressNginx": "ingress-nginx", "gvisor": "gvisor", "metricsServer": "metrics-server", "certManager": "cert-manager", "argocd": "argocd", "longhorn": "longhorn"}
+var addonTofuName = map[string]string{"metallb": "metallb", "ingressNginx": "ingress-nginx", "gvisor": "gvisor", "metricsServer": "metrics-server", "certManager": "cert-manager", "flux": "flux", "longhorn": "longhorn"}
 
 func addonSpec(p config.Platform, key string) (bool, map[string]any) {
 	switch key {
@@ -61,8 +61,8 @@ func addonSpec(p config.Platform, key string) (bool, map[string]any) {
 		return p.MetricsServer.Enabled, p.MetricsServer.Values
 	case "certManager":
 		return p.CertManager.Enabled, p.CertManager.Values
-	case "argocd":
-		return p.ArgoCD.Enabled, p.ArgoCD.Values
+	case "flux":
+		return p.Flux.Enabled, p.Flux.Values
 	case "longhorn":
 		return p.Longhorn.Enabled, p.Longhorn.Values
 	}

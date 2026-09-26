@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/mikael/kubit/internal/config"
@@ -23,7 +24,7 @@ spec:
     gvisor: { enabled: true }
     metricsServer: { enabled: false }
     certManager: { enabled: true, values: { replicaCount: 2, prometheus: { enabled: false } } }
-    argocd: { enabled: false }
+    flux: { enabled: true, repository: { url: https://github.com/mikaelhug/kubit-apps.git, path: ./apps } }
 `
 
 func TestRenderWritesModuleAndVars(t *testing.T) {
@@ -36,13 +37,19 @@ func TestRenderWritesModuleAndVars(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "terraform.tfstate"), []byte("{}"), 0o600); err != nil {
 		t.Fatal(err)
 	}
+	if err := os.WriteFile(filepath.Join(dir, "retired.tf"), []byte(`resource "x" "y" {}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	if err := tofu.Render(dir, c, "/x/kubeconfig"); err != nil {
 		t.Fatal(err)
 	}
-	for _, f := range []string{"versions.tf", "variables.tf", "metallb.tf", "ingress-nginx.tf", "gvisor.tf", "metrics-server.tf", "cert-manager.tf", "argocd.tf", "outputs.tf", "terraform.tfvars.json", "terraform.tfstate"} {
+	for _, f := range []string{"versions.tf", "variables.tf", "metallb.tf", "ingress-nginx.tf", "gvisor.tf", "metrics-server.tf", "cert-manager.tf", "flux.tf", "outputs.tf", "terraform.tfvars.json", "terraform.tfstate"} {
 		if _, err := os.Stat(filepath.Join(dir, f)); err != nil {
 			t.Errorf("%s missing", f)
 		}
+	}
+	if _, err := os.Stat(filepath.Join(dir, "retired.tf")); !os.IsNotExist(err) {
+		t.Errorf("a template that no longer exists must be removed: %v", err)
 	}
 	raw, _ := os.ReadFile(filepath.Join(dir, "terraform.tfvars.json"))
 	var vars map[string]json.RawMessage
@@ -56,7 +63,7 @@ func TestRenderWritesModuleAndVars(t *testing.T) {
 		"gvisor":         `{"enabled":true,"values":{}}`,
 		"metrics_server": `{"enabled":false,"values":{"resources":{"requests":{"cpu":"20m","memory":"48Mi"}}}}`,
 		"cert_manager":   `{"enabled":true,"values":{"prometheus":{"enabled":false},"replicaCount":2}}`,
-		"argocd":         `{"enabled":false,"values":{}}`,
+		"flux":           `{"enabled":true,"values":{},"repository":{"url":"https://github.com/mikaelhug/kubit-apps.git","branch":"main","path":"./apps","interval":"5m"}}`,
 	}
 	for k, w := range want {
 		var got, exp any
@@ -64,6 +71,26 @@ func TestRenderWritesModuleAndVars(t *testing.T) {
 		_ = json.Unmarshal([]byte(w), &exp)
 		if gb, _ := json.Marshal(got); string(gb) != mustCompact(w) {
 			t.Errorf("%s = %s, want %s", k, gb, w)
+		}
+	}
+}
+
+func TestFluxDecryptsWithKubitsKey(t *testing.T) {
+	c, err := config.Parse([]byte(decl))
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	if err := tofu.Render(dir, c, "/x/kubeconfig"); err != nil {
+		t.Fatal(err)
+	}
+	tf, _ := os.ReadFile(filepath.Join(dir, "flux.tf"))
+	if !strings.Contains(string(tf), `secretRef = { name = "`+tofu.SOPSSecret+`" }`) || !strings.Contains(string(tf), `namespace = "`+tofu.SOPSNamespace+`"`) {
+		t.Errorf("flux.tf does not read %s/%s:\n%s", tofu.SOPSNamespace, tofu.SOPSSecret, tf)
+	}
+	for _, r := range []string{"helm_release.ingress_nginx", "helm_release.cert_manager", "helm_release.longhorn", "kubectl_manifest.metallb_l2"} {
+		if !strings.Contains(string(tf), "    "+r+",\n") {
+			t.Errorf("the first sync must wait for %s", r)
 		}
 	}
 }
