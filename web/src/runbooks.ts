@@ -96,7 +96,7 @@ export function runbookFor(kind: string, c: Ctx): Runbook | null {
     case 'pvc.pending':
       return { title: 'PersistentVolumeClaim stuck Pending', why: 'No StorageClass provisioned a volume: the class does not exist, has no provisioner, or the provisioner is down.', steps: [
         { text: 'Check the storage classes and the claim\'s class name.', link: { label: 'Storage', href: `/clusters/${c.cluster}/storage` } },
-        { text: 'Kubit ships no storage; install one (local-path-provisioner, Longhorn) through Flux or Helm and mark it default.' },
+        { text: 'Enable Longhorn, or check that its pods are ready.', link: { label: 'Add-ons', href: `/clusters/${c.cluster}/addons` } },
       ] }
     case 'service.no-endpoints':
       return { title: 'Service without endpoints', why: 'Its selector matches no Ready pod: labels differ, or the pods are not Ready.', steps: [

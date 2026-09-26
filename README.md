@@ -377,7 +377,7 @@ Findings baked into the templates:
   and pushes to `registry.kubit-builds.svc:5000/<app>:<version>`; its Flux
   Kustomization has `wait` and `force`, and the app's Kustomization `dependsOn` it, so
   the app rolls once the image exists and a new version re-creates the Job. The Builds
-  card lists the Jobs with state and logs. Needs Longhorn and an IPv4 service CIDR.
+  card lists the Jobs with state and logs. Needs Longhorn and an IPv4 service CIDR of /22 or larger.
   Trade-offs: builds run as root on a node, the daemon and the registry have no
   authentication inside the cluster (any pod can push), no registry garbage
   collection, public repositories only.

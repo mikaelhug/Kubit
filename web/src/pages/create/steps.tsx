@@ -112,6 +112,8 @@ export function topologyText(n: number) {
 
 // ─── 2 · Design ──────────────────────────────────────────────────────────────
 
+const registryCIDROK = (cidr: string) => { const [ip, bits] = cidr.split('/'); return /^\d+\.\d+\.\d+\.\d+$/.test(ip ?? '') && Number(bits) >= 1 && Number(bits) <= 22 }
+
 const hasData = (c: ClusterSpec) => !!c.spec.storage?.systemDisk || c.spec.nodes.some((n) => n.dataDisks?.length)
 
 export function DesignStep({ draft, setCluster, reset, busy }: { draft: Draft; setCluster: SetCluster; reset: () => Promise<void>; busy: boolean }) {
@@ -197,7 +199,11 @@ export function NetworkStep({ draft, setCluster }: { draft: Draft; setCluster: S
   const c = draft.cluster!
   const cp = c.spec.controlPlane
   const setCP = (p: Partial<typeof cp>) => setCluster((c) => ({ ...c, spec: { ...c.spec, controlPlane: { ...c.spec.controlPlane, ...p } } }))
-  const setNet = (p: Partial<ClusterSpec['spec']['network']>) => setCluster((c) => ({ ...c, spec: { ...c.spec, network: { ...c.spec.network, ...p } } }))
+  const setNet = (p: Partial<ClusterSpec['spec']['network']>) => setCluster((c) => {
+    const network = { ...c.spec.network, ...p }
+    const platform = registryCIDROK(network.serviceCIDR) ? c.spec.platform : { ...c.spec.platform, builds: { ...c.spec.platform.builds, enabled: false } }
+    return { ...c, spec: { ...c.spec, network, platform } }
+  })
   const setRange = (range: string) => setCluster((c) => ({ ...c, spec: { ...c.spec, platform: { ...c.spec.platform, metallb: { ...c.spec.platform.metallb, range } } } }))
   const updateNode = (i: number, patch: Partial<NodeSpec>) => setCluster((c) => ({ ...c, spec: { ...c.spec, nodes: c.spec.nodes.map((n, j) => j === i ? { ...n, ...patch } : n) } }))
   const cps = c.spec.nodes.filter((n) => n.role === 'controlplane')
@@ -309,7 +315,7 @@ export function PlatformStep({ draft, setCluster, patch }: { draft: Draft; setCl
       <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
         {addons.map((a) => {
           const on = c.spec.platform[a.key].enabled
-          const blocked = a.key === 'longhorn' && !hasData(c) ? 'No node has storage.' : a.key === 'builds' && !c.spec.platform.longhorn?.enabled ? 'Needs Longhorn.' : ''
+          const blocked = a.key === 'longhorn' && !hasData(c) ? 'No node has storage.' : a.key === 'builds' && !c.spec.platform.longhorn?.enabled ? 'Needs Longhorn.' : a.key === 'builds' && !registryCIDROK(c.spec.network.serviceCIDR) ? 'Needs an IPv4 service CIDR of /22 or larger.' : ''
           return (
             <label key={a.key} class={`panel p-4 flex gap-3 cursor-pointer ${on ? 'border-accent/60' : ''} ${draft.skipPlatform || blocked ? 'opacity-50' : ''}`}>
               <input type="checkbox" class="mt-1" checked={on && !blocked} disabled={draft.skipPlatform || !!blocked} onChange={(e) => toggle(a.key, (e.target as HTMLInputElement).checked)} />
