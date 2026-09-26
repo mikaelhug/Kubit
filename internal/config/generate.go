@@ -3,6 +3,7 @@ package config
 import (
 	"encoding/json"
 	"fmt"
+	"net"
 	"net/netip"
 	"net/url"
 	"path"
@@ -364,7 +365,7 @@ func dataVolume(n int, path string) (*block.UserVolumeConfigV1Alpha1, error) {
 }
 
 func registryMirror(ip string) (*cri.RegistryMirrorConfigV1Alpha1, error) {
-	u, err := url.Parse(fmt.Sprintf("http://%s:%d", ip, RegistryPort))
+	u, err := url.Parse("http://" + net.JoinHostPort(ip, fmt.Sprint(RegistryPort)))
 	if err != nil {
 		return nil, err
 	}

@@ -61,6 +61,11 @@ func (m *Manager) platformRunner(ctx context.Context, name string, sink Sink) (*
 			return nil, fmt.Errorf("Longhorn needs the Talos extensions %s on every node first: upgrade Talos (Lifecycle), then plan again", strings.Join(config.LonghornExtensions, " and "))
 		}
 	}
+	if c.Spec.Platform.Builds.Enabled {
+		if host := m.registryMirrorMissing(ctx, c); host != "" {
+			return nil, fmt.Errorf("Builds needs the registry mirror in every node config (%s has none): apply node configs (Settings), then plan again", host)
+		}
+	}
 	kubeconfig, err := m.writeCredentials(ctx, name)
 	if err != nil {
 		return nil, err
@@ -178,9 +183,6 @@ func (m *Manager) ApplyPlatform(ctx context.Context, name string, sink Sink) err
 		if err := m.installSOPSKey(ctx, name, sink); err != nil {
 			return err
 		}
-		if err := m.ensureRegistryMirror(ctx, name, sink); err != nil {
-			return err
-		}
 		sink.emit(Info, "apply", "", "no changes")
 		sink.skip("apply")
 		return m.recordPlatform(ctx, name, r, sum, sink)
@@ -189,9 +191,6 @@ func (m *Manager) ApplyPlatform(ctx context.Context, name string, sink Sink) err
 }
 
 func (m *Manager) applyWith(ctx context.Context, name string, r *tofu.Runner, sink Sink) error {
-	if err := m.ensureRegistryMirror(ctx, name, sink); err != nil {
-		return err
-	}
 	var sum tofu.Summary
 	err := sink.run("apply", func() error {
 		if err := m.installSOPSKey(ctx, name, sink); err != nil {
@@ -252,19 +251,12 @@ func tofuLogger(sink Sink) func(tofu.Line) {
 	}
 }
 
-func (m *Manager) ensureRegistryMirror(ctx context.Context, name string, sink Sink) error {
-	c, _, err := m.LoadCluster(ctx, name)
-	if err != nil || !c.Spec.Platform.Builds.Enabled {
-		return err
-	}
-	want := fmt.Sprintf("http://%s:%d", c.RegistryIP(), config.RegistryPort)
+func (m *Manager) registryMirrorMissing(ctx context.Context, c *config.Cluster) string {
+	want := []byte(fmt.Sprintf("http://%s:%d", c.RegistryIP(), config.RegistryPort))
 	for _, n := range c.Spec.Nodes {
-		cfg, err := m.Store.GetNodeMachineConfig(ctx, n.IP)
-		if err == nil && bytes.Contains(cfg, []byte(want)) {
-			continue
+		if cfg, err := m.Store.GetNodeMachineConfig(ctx, n.IP); err != nil || !bytes.Contains(cfg, want) {
+			return n.Hostname
 		}
-		sink.emit(Info, "render", "", "updating node registry mirrors (%s → %s)", config.RegistryHost, want)
-		return m.ApplyConfigs(ctx, c, "", sink)
 	}
-	return nil
+	return ""
 }

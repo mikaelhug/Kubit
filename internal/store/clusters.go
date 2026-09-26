@@ -111,8 +111,10 @@ func (s *Store) DeleteCluster(ctx context.Context, name string) error {
 	if _, err := s.db.ExecContext(ctx, `UPDATE machines SET cluster = NULL, hostname = '', pool = '', role = '', machine_config = NULL, state = 'configured', updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE cluster = ?`, name); err != nil {
 		return err
 	}
-	if _, err := s.db.ExecContext(ctx, `UPDATE events SET acked = 1 WHERE cluster = ? AND acked = 0`, name); err != nil {
+	if res, err := s.db.ExecContext(ctx, `UPDATE events SET acked = 1 WHERE cluster = ? AND acked = 0`, name); err != nil {
 		return err
+	} else if n, _ := res.RowsAffected(); n > 0 {
+		s.notify(Change{Table: "events", Cluster: name, Key: "*", Op: "ack"})
 	}
 	_, err := s.db.ExecContext(ctx, `DELETE FROM clusters WHERE name = ?`, name)
 	if err == nil {

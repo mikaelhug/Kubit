@@ -28,7 +28,7 @@ export interface NetworkView { services: KService[]; ingresses: KIngress[]; pool
 export interface StorageView { classes: { name: string; provisioner: string; default: boolean; reclaim: string; binding: string; expandable: boolean }[]; volumes: { name: string; capacityBytes: number; phase: string; class: string; claim?: string; accessModes: string; reclaim: string; age: string }[]; claims: { namespace: string; name: string; phase: string; requestedBytes: number; capacityBytes: number; class: string; volume?: string; age: string }[] }
 export interface PodEvent { type: string; status: string; reason?: string; message?: string; since?: string }
 export interface AddonStatus {
-  key: string; enabled: boolean; values?: Record<string, unknown>; pinnedVersion?: string
+  key: string; enabled: boolean; address?: string; values?: Record<string, unknown>; pinnedVersion?: string
   release?: { name: string; namespace: string; chart: string; chartVersion: string; appVersion?: string; status: string; lastDeployed?: number }
   readiness?: { namespace: string; ready: number; total: number; detail?: string[] }
   state: 'disabled' | 'pending' | 'deploying' | 'ready' | 'degraded' | 'failed' | 'orphaned'

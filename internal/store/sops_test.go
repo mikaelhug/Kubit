@@ -42,3 +42,17 @@ func TestSOPSKeySealedAndOutlivesCluster(t *testing.T) {
 		t.Fatalf("deleted: %v", err)
 	}
 }
+
+func TestCreateSOPSKeyKeepsTheFirst(t *testing.T) {
+	s := open(t)
+	ctx := context.Background()
+	if err := s.CreateSOPSKey(ctx, "lab", []byte("AGE-SECRET-KEY-1FIRST"), "age1first"); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.CreateSOPSKey(ctx, "lab", []byte("AGE-SECRET-KEY-1SECOND"), "age1second"); err != nil {
+		t.Fatal(err)
+	}
+	if k, _ := s.GetSOPSKey(ctx, "lab"); k.Recipient != "age1first" {
+		t.Errorf("a racing second create replaced the key: %+v", k)
+	}
+}

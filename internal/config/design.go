@@ -85,7 +85,6 @@ func Design(name string, machines []Machine, opts DesignOptions) (*Cluster, []Wa
 	}
 	c.Spec.Storage.SystemDisk = true
 	c.Spec.Platform.Longhorn.Enabled = len(c.LonghornNodes()) > 0
-	c.Spec.Platform.Builds.Enabled = c.Spec.Platform.Longhorn.Enabled
 	if opts.MetalLBRange != "" {
 		c.Spec.Platform.MetalLB.Range = opts.MetalLBRange
 	} else if len(machines) > 0 {
@@ -94,6 +93,7 @@ func Design(name string, machines []Machine, opts DesignOptions) (*Cluster, []Wa
 			c.Spec.Platform.MetalLB.Range = fmt.Sprintf("%d.%d.%d.200-%d.%d.%d.220", b[0], b[1], b[2], b[0], b[1], b[2])
 		}
 	}
+	c.Spec.Platform.Builds.Enabled = c.Spec.Platform.Longhorn.Enabled && c.RegistryRangeOK()
 	if topo.HA && len(machines) > 0 {
 		if a, err := netip.ParseAddr(machines[0].IP); err == nil && a.Is4() {
 			b := a.As4()
@@ -113,6 +113,8 @@ type DesignOptions struct {
 // MinWorkerBytes is the usable RAM under which a worker cannot carry the platform
 // add-ons (a 2 GiB VM reports ~1.9 GiB; a 1 GiB VM ~940 MiB). Preflight enforces it.
 const MinWorkerBytes = 1500 << 20
+
+const talosPartitionsBytes = 2 << 30
 
 // Warning is a lint finding: something legal that an operator should know before
 // creating the cluster.
@@ -198,8 +200,8 @@ func Lint(c *Cluster, machines []Machine) []Warning {
 			if c.SharesSystemDisk(n) {
 				eph, _ := c.Spec.Storage.EphemeralBytes()
 				for _, d := range m.Disks {
-					if d.DevPath == n.InstallDisk.Path && d.SizeBytes < eph+(10<<30) {
-						warn("warn", "small-system-disk", n.Hostname, "%s: the %d GiB system disk leaves under 10 GiB for storage after /var (%s).", n.Hostname, d.SizeBytes>>30, c.Spec.Storage.EphemeralSize)
+					if d.DevPath == n.InstallDisk.Path && d.SizeBytes < eph+talosPartitionsBytes+(10<<30) {
+						warn("warn", "small-system-disk", n.Hostname, "%s: the %d GiB system disk leaves under 10 GiB for storage after Talos and /var (%s).", n.Hostname, d.SizeBytes>>30, c.Spec.Storage.EphemeralSize)
 					}
 				}
 			}

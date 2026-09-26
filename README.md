@@ -171,7 +171,8 @@ mounted at `/var/mnt/data-system` and handed to Longhorn: the EPHEMERAL `VolumeC
 gets an absolute `maxSize` with `grow: false`, and a `UserVolumeConfig` selects
 `system_disk` with `minSize: 10GiB` and `grow: true`. Talos sizes partitions only when
 it creates them and never shrinks EPHEMERAL, so this takes effect on fresh installs;
-an existing node needs to be removed and added again. Design warns
+an existing node needs to be removed and added again, so `storage` cannot change once
+the cluster is installed. The split happens only while Longhorn is enabled. Design warns
 (`small-system-disk`) when a disk leaves under 10 GiB after `/var`. Lab VMs default to
 60 GiB sparse disks for this.
 
@@ -377,8 +378,12 @@ Findings baked into the templates:
   has `wait` and `force`, and the app's Kustomization `dependsOn` it, so the app rolls
   once the image exists and a new version re-creates the Job. The Builds card lists
   the Jobs with state and logs. Needs MetalLB and Longhorn. Trade-offs: builds run as
-  root on a node, the daemon and the registry have no authentication, no registry
-  garbage collection, public repositories only.
+  root on a node, the daemon and the registry have no authentication (the registry is
+  readable and writable from the whole LAN on its MetalLB address, and every node
+  pulls `registry.kubit/*` from it), no registry garbage collection, public
+  repositories only. Plan and apply refuse while a node config lacks the mirror (turning
+  Builds on for an existing cluster: apply node configs first), and the MetalLB range
+  cannot change while Builds is on.
 - **Flux, headless** (`platform.flux`, `fluxcd-community/flux2` chart 2.19.1, Flux
   2.9.5). Source, kustomize, helm and notification controllers only: the image
   automation and reflector controllers are off, and there is no UI; Kubit's Flux card

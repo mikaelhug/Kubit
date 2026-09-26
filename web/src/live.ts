@@ -79,9 +79,13 @@ function apply(m: Message) {
     case 'cluster':
       if (m.clusterRow) upsertCluster(m.clusterRow)
       break
-    case 'clusterRemoved':
+    case 'clusterRemoved': {
       clusters.value = clusters.value.filter((c) => c.name !== m.key)
+      const hm = new Map(health.value)
+      hm.delete(m.key ?? '')
+      health.value = hm
       break
+    }
     case 'machine':
       if (m.machine) {
         const mm = new Map(machines.value)

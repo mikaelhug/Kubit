@@ -2,6 +2,8 @@ package cluster
 
 import (
 	"context"
+	"fmt"
+	"net"
 	"path/filepath"
 
 	"github.com/mikael/kubit/internal/config"
@@ -16,6 +18,7 @@ type AddonStatus struct {
 	Enabled   bool           `json:"enabled"`
 	Values    map[string]any `json:"values,omitempty"`
 	Pinned    string         `json:"pinnedVersion,omitempty"`
+	Address   string         `json:"address,omitempty"`
 	Release   *tofu.Release  `json:"release,omitempty"`
 	Readiness *k8s.Readiness `json:"readiness,omitempty"`
 	// State summarises: disabled | pending | deploying | ready | degraded | failed | orphaned
@@ -88,17 +91,21 @@ func (m *Manager) Addons(ctx context.Context, name string) ([]AddonStatus, error
 	for _, meta := range addonMeta {
 		enabled, values := addonSpec(c.Spec.Platform, meta.key)
 		st := AddonStatus{Key: meta.key, Enabled: enabled, Values: values, Pinned: meta.pin}
+		if meta.key == "builds" && c.RegistryRangeOK() {
+			st.Address = net.JoinHostPort(c.RegistryIP(), fmt.Sprint(config.RegistryPort))
+		}
 		for i := range releases {
 			if releases[i].Addon == addonTofuName[meta.key] {
 				st.Release = &releases[i]
 			}
 		}
-		if meta.namespace != "" && kerr == nil && (st.Release != nil || enabled) {
+		chartless := meta.pin == "" && meta.namespace != ""
+		if meta.namespace != "" && kerr == nil && (st.Release != nil || enabled || chartless) {
 			if r, err := kc.NamespaceReadiness(ctx, meta.namespace); err == nil {
 				st.Readiness = r
 			}
 		}
-		st.State = addonState(st, meta.namespace == "", meta.pin == "" && meta.namespace != "")
+		st.State = addonState(st, meta.namespace == "", chartless)
 		out = append(out, st)
 	}
 	return out, nil
@@ -106,6 +113,8 @@ func (m *Manager) Addons(ctx context.Context, name string) ([]AddonStatus, error
 
 func addonState(st AddonStatus, manifestOnly, chartless bool) string {
 	switch {
+	case !st.Enabled && chartless && st.Readiness != nil && st.Readiness.Total > 0:
+		return "orphaned"
 	case !st.Enabled && st.Release == nil:
 		return "disabled"
 	case !st.Enabled && st.Release != nil:

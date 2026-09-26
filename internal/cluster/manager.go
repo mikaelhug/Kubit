@@ -165,6 +165,11 @@ func (m *Manager) LoadCluster(ctx context.Context, name string) (*config.Cluster
 }
 
 func (m *Manager) SaveCluster(ctx context.Context, c *config.Cluster, state string) error {
+	if old, row, err := m.LoadCluster(ctx, c.Metadata.Name); err == nil {
+		if err := config.CheckChange(old, c, row.State == StateBootstrapped || row.State == StateReady); err != nil {
+			return err
+		}
+	}
 	spec, err := c.Marshal()
 	if err != nil {
 		return err

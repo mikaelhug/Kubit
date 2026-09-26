@@ -16,7 +16,7 @@ const defs: AddonDef[] = [
   { key: 'metricsServer', name: 'metrics-server', what: 'Pod and node CPU/memory usage for kubectl top, autoscaling and this UI.', docs: 'https://github.com/kubernetes-sigs/metrics-server/blob/master/charts/metrics-server/values.yaml', hint: 'Runs in kube-system with --kubelet-insecure-tls (Talos kubelets use self-signed serving certs).' },
   { key: 'certManager', name: 'cert-manager', what: 'Issues and renews TLS certificates for ingresses.', docs: 'https://cert-manager.io/docs/installation/helm/' },
   { key: 'longhorn', name: 'Longhorn', what: 'Replicated block storage on data disks, or on the system disk beyond /var: the default StorageClass, snapshots, backups to S3.', docs: 'https://longhorn.io/docs/latest/advanced-resources/deploy/customizing-default-settings/', hint: 'Replica count defaults to 3 or the number of storage nodes. Talos gets the iscsi-tools and util-linux-tools extensions on the next upgrade.' },
-  { key: 'builds', name: 'Builds', what: 'Builds images from the apps repository in the cluster and serves them from a private registry.', docs: 'https://github.com/moby/buildkit', hint: 'Apps pull registry.kubit/<app>:<version>; a build Job in the repo pushes it. The registry takes the last MetalLB address.' },
+  { key: 'builds', name: 'Builds', what: 'Builds images from the apps repository in the cluster and serves them from a private registry.', docs: 'https://github.com/moby/buildkit', hint: 'Pulled as registry.kubit/<app>:<version>.' },
   { key: 'flux', name: 'Flux', what: 'GitOps: syncs workloads from a Git repository. Runs without a UI.', docs: 'https://github.com/fluxcd-community/helm-charts/blob/main/charts/flux2/values.yaml', hint: 'Applies the repository path with pruning and decrypts *.sops.yaml files with the cluster key.' },
 ]
 
@@ -50,7 +50,6 @@ export function Addons({ ctx }: { ctx: ClusterCtx }) {
   const builds = !!cluster.spec.spec.platform.builds?.enabled
   const [buildList, setBuildList] = useState<Build[] | null>(null)
   useEffect(() => { if (builds) api.builds(name).then(setBuildList).catch(() => setBuildList(null)); else setBuildList(null) }, [name, builds, refreshKey(name, 'workloads')])
-  const registryIP = cluster.spec.spec.platform.metallb.range?.split('-')[1]
   const [pendingPlan, setPendingPlan] = useState<number | null>(null)
   const plan = () => api.platformPlan(name).then((r) => { watch(r, false); toast('Planning… the review opens when it finishes'); setPendingPlan(r.operationId) }).catch((e) => toast(e.message, 'error'))
   // The plan's completion arrives over SSE; open the review then.
@@ -100,7 +99,7 @@ export function Addons({ ctx }: { ctx: ClusterCtx }) {
                       {a.release && <><span class="text-muted">Helm status</span><span class={a.release.status === 'deployed' ? '' : 'text-bad'}>{a.release.status}{a.release.lastDeployed ? ` · ${fmt.when(new Date(a.release.lastDeployed * 1000).toISOString())}` : ''}</span></>}
                       {a.readiness && <><span class="text-muted">Workloads</span><span class={a.readiness.ready === a.readiness.total ? '' : 'text-warn'}>{a.readiness.ready}/{a.readiness.total} available in {a.readiness.namespace}{a.readiness.detail?.length ? ` — ${a.readiness.detail.join(', ')}` : ''}</span></>}
                       {a.key === 'metallb' && <><span class="text-muted">Pool</span><span class="mono">{cluster.spec.spec.platform.metallb.range || '—'}</span></>}
-                      {a.key === 'builds' && <><span class="text-muted">Registry</span><span class="mono">registry.kubit → {registryIP ?? '—'}:5000</span></>}
+                      {a.key === 'builds' && <><span class="text-muted">Registry</span><span class="mono">registry.kubit → {a.address ?? '—'}</span></>}
                       {a.key === 'flux' && <><span class="text-muted">Repository</span><span class="mono truncate" title={repo?.url}>{repo ? `${repo.url} @ ${repo.branch} · ${repo.path}` : 'not set'}</span></>}
                       {a.values && Object.keys(a.values).length > 0 && <><span class="text-muted">Values</span><span class="mono truncate" title={JSON.stringify(a.values)}>{Object.keys(a.values).join(', ')} overridden</span></>}
                     </div>

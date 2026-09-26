@@ -27,7 +27,7 @@ func (m *Manager) SOPSKey(ctx context.Context, name string) (*store.SOPSKey, err
 	if err != nil {
 		return nil, err
 	}
-	if err := m.Store.PutSOPSKey(ctx, name, keysFile(id), id.Recipient().String()); err != nil {
+	if err := m.Store.CreateSOPSKey(ctx, name, keysFile(id), id.Recipient().String()); err != nil {
 		return nil, err
 	}
 	return m.Store.GetSOPSKey(ctx, name)

@@ -43,6 +43,21 @@ func (s *Store) PutSOPSKey(ctx context.Context, cluster string, identity []byte,
 	return s.done(err, Change{Table: "sops", Cluster: cluster, Key: cluster, Op: "put"})
 }
 
+func (s *Store) CreateSOPSKey(ctx context.Context, cluster string, identity []byte, recipient string) error {
+	sealed, err := s.crypto.Seal(identity)
+	if err != nil {
+		return err
+	}
+	res, err := s.db.ExecContext(ctx, `INSERT INTO sops_keys (cluster, identity, recipient) VALUES (?, ?, ?) ON CONFLICT(cluster) DO NOTHING`, cluster, sealed, recipient)
+	if err != nil {
+		return err
+	}
+	if n, _ := res.RowsAffected(); n > 0 {
+		s.notify(Change{Table: "sops", Cluster: cluster, Key: cluster, Op: "put"})
+	}
+	return nil
+}
+
 func (s *Store) DeleteSOPSKey(ctx context.Context, cluster string) error {
 	_, err := s.db.ExecContext(ctx, `DELETE FROM sops_keys WHERE cluster = ?`, cluster)
 	return s.done(err, Change{Table: "sops", Cluster: cluster, Key: cluster, Op: "delete"})

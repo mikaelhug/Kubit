@@ -138,3 +138,55 @@ func TestRecommend(t *testing.T) {
 		}
 	}
 }
+
+func TestLegacyArgoCDStillParses(t *testing.T) {
+	c, err := config.Parse([]byte(sampleCluster + "    argocd: { enabled: true, values: { server: { replicas: 1 } } }\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !c.Spec.Platform.Flux.Enabled || c.Spec.Platform.LegacyArgoCD != nil {
+		t.Errorf("platform = %+v", c.Spec.Platform)
+	}
+	if b, _ := c.Marshal(); strings.Contains(string(b), "argocd") {
+		t.Errorf("argocd survived the save:\n%s", b)
+	}
+}
+
+func TestRegistryRange(t *testing.T) {
+	for r, ok := range map[string]bool{"10.0.0.200-10.0.0.220": true, "10.0.0.200-10.0.0.200": false, "fd00::1-fd00::9": false, "nope": false} {
+		c, _ := config.Parse([]byte(sampleCluster))
+		c.Spec.Platform.MetalLB.Range = r
+		if c.RegistryRangeOK() != ok {
+			t.Errorf("%s: RegistryRangeOK = %v", r, !ok)
+		}
+	}
+}
+
+func TestCheckChange(t *testing.T) {
+	load := func(extra string) *config.Cluster {
+		c, err := config.Parse([]byte(strings.Replace(sampleCluster, "spec:\n", "spec:\n"+extra, 1)))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return c
+	}
+	old := load("  storage: { systemDisk: true }\n")
+	old.Spec.Platform.Builds.Enabled = true
+	moved := load("  storage: { systemDisk: true }\n")
+	moved.Spec.Platform.Builds.Enabled = true
+	moved.Spec.Platform.MetalLB.Range = "192.168.64.200-192.168.64.230"
+	if err := config.CheckChange(old, moved, true); err == nil {
+		t.Error("a range change under Builds must be refused")
+	}
+	moved.Spec.Platform.Builds.Enabled = false
+	if err := config.CheckChange(old, moved, true); err != nil {
+		t.Errorf("turning Builds off with the change is fine: %v", err)
+	}
+	bigger := load("  storage: { systemDisk: true, ephemeralSize: 80GiB }\n")
+	if err := config.CheckChange(old, bigger, true); err == nil {
+		t.Error("storage must not change on an installed cluster")
+	}
+	if err := config.CheckChange(old, bigger, false); err != nil {
+		t.Errorf("before install storage may change: %v", err)
+	}
+}

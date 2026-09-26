@@ -557,3 +557,22 @@ func TestGenerateBuildsRegistryMirror(t *testing.T) {
 		t.Errorf("builds without MetalLB: %v", err)
 	}
 }
+
+func TestSystemDiskUntouchedWithoutLonghorn(t *testing.T) {
+	c, err := config.Parse([]byte(strings.Replace(sampleCluster, "spec:\n", "spec:\n  storage: { systemDisk: true }\n", 1)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	g, err := config.Generate(c, nil, func(config.Pool) string { return installer })
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, d := range load(t, g.Nodes["cp-01"]).Documents() {
+		if v, ok := d.(*block.UserVolumeConfigV1Alpha1); ok && v.MetaName == "data-system" {
+			t.Error("without Longhorn the system disk stays with Talos")
+		}
+		if v, ok := d.(*block.VolumeConfigV1Alpha1); ok && v.MetaName == "EPHEMERAL" && !v.ProvisioningSpec.ProvisioningMaxSize.IsZero() {
+			t.Error("without Longhorn EPHEMERAL must not be capped")
+		}
+	}
+}

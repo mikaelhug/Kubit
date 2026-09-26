@@ -76,7 +76,7 @@ export function NodePage({ ip: ipParam, mac }: { ip?: string; mac?: string }) {
       </header>
       <div class="p-5 flex flex-col gap-4 max-w-[1300px]">
         <ErrorBox error={error} />
-        {shown === 'overview' && <OverviewTab inv={inv} invErr={invErr} k8s={k8s} k8sErr={k8sErr} node={node} spec={spec} storage={cluster?.spec.spec.storage} />}
+        {shown === 'overview' && <OverviewTab inv={inv} invErr={invErr} k8s={k8s} k8sErr={k8sErr} node={node} spec={spec} storage={cluster?.spec.spec.platform.longhorn?.enabled ? cluster.spec.spec.storage : undefined} />}
         {shown === 'hardware' && <HardwareTab inv={inv} invErr={invErr} node={node} />}
         {shown === 'kubernetes' && <KubernetesTab k8s={k8s} err={k8sErr} />}
         {shown === 'services' && <ServicesTab ip={ip} cluster={node?.cluster} />}

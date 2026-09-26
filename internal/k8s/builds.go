@@ -40,7 +40,7 @@ func (c *Client) Builds(ctx context.Context) ([]Build, error) {
 }
 
 func buildOf(j batchv1.Job, pods []corev1.Pod) Build {
-	b := Build{Name: j.Name, State: "running", Image: buildImage(j)}
+	b := Build{Name: j.Name, State: "running", Image: buildImage(j), StartedAt: j.CreationTimestamp.UTC().Format(time.RFC3339)}
 	if t := j.Status.StartTime; t != nil {
 		b.StartedAt = t.UTC().Format(time.RFC3339)
 	}
@@ -53,6 +53,7 @@ func buildOf(j batchv1.Job, pods []corev1.Pod) Build {
 			b.State = "succeeded"
 		case batchv1.JobFailed:
 			b.State = "failed"
+			b.FinishedAt = cond.LastTransitionTime.UTC().Format(time.RFC3339)
 		}
 	}
 	if t := j.Status.CompletionTime; t != nil {

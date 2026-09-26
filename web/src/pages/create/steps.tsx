@@ -114,16 +114,12 @@ export function topologyText(n: number) {
 
 const hasData = (c: ClusterSpec) => !!c.spec.storage?.systemDisk || c.spec.nodes.some((n) => n.dataDisks?.length)
 
-function followDisks(prev: ClusterSpec, next: ClusterSpec): ClusterSpec {
-  const on = hasData(next)
-  return hasData(prev) === on ? next : { ...next, spec: { ...next.spec, platform: { ...next.spec.platform, longhorn: { ...next.spec.platform.longhorn, enabled: on } } } }
-}
 
 export function DesignStep({ draft, setCluster, reset, busy }: { draft: Draft; setCluster: SetCluster; reset: () => Promise<void>; busy: boolean }) {
   const c = draft.cluster!
   const pools = c.spec.pools ?? []
   const poolOf = (name?: string) => pools.find((p) => p.name === name)
-  const updateNode = (i: number, patch: Partial<NodeSpec>) => setCluster((c) => followDisks(c, { ...c, spec: { ...c.spec, nodes: c.spec.nodes.map((n, j) => j === i ? { ...n, ...patch } : n) } }))
+  const updateNode = (i: number, patch: Partial<NodeSpec>) => setCluster((c) => ({ ...c, spec: { ...c.spec, nodes: c.spec.nodes.map((n, j) => j === i ? { ...n, ...patch } : n) } }))
   const setPools = (ps: Pool[]) => setCluster((c) => {
     // Renaming a pool with nodes is blocked in the editor, so only role changes matter.
     const nodes = c.spec.nodes.map((n) => { const p = ps.find((x) => x.name === n.pool); return p ? { ...n, role: p.role } : n })
@@ -136,7 +132,7 @@ export function DesignStep({ draft, setCluster, reset, busy }: { draft: Draft; s
   const cps = c.spec.nodes.filter((n) => n.role === 'controlplane').length
   const spare = c.spec.nodes.reduce((s, n) => s + dataCandidates(machineOf(draft, n), n.installDisk?.path).length, 0)
   const claimed = c.spec.nodes.reduce((s, n) => s + (n.dataDisks?.length ?? 0), 0)
-  const allData = (on: boolean) => setCluster((c) => followDisks(c, { ...c, spec: { ...c.spec, nodes: c.spec.nodes.map((n) => ({ ...n, dataDisks: on ? dataCandidates(machineOf(draft, n), n.installDisk?.path).map((d) => d.devPath) : undefined })) } }))
+  const allData = (on: boolean) => setCluster((c) => ({ ...c, spec: { ...c.spec, nodes: c.spec.nodes.map((n) => ({ ...n, dataDisks: on ? dataCandidates(machineOf(draft, n), n.installDisk?.path).map((d) => d.devPath) : undefined })) } }))
   const designCols: Column<number>[] = [
     { id: 'machine', header: 'Machine', cell: (i) => { const n = c.spec.nodes[i]; const m = machineOf(draft, n); return (
       <span class="flex flex-col">
@@ -185,7 +181,7 @@ export function DesignStep({ draft, setCluster, reset, busy }: { draft: Draft; s
             <button class="btn !py-1" disabled={busy} onClick={() => reset().catch(() => {})}>Reset to proposal</button>
           </span>
         </div>
-        <p class="text-[13px] text-muted">Proposed roles: bare metal first for the control plane, KVM-capable machines as workers. Change any cell. Data disks are wiped and mounted at <span class="mono">/var/mnt/data-N</span>.{c.spec.storage?.systemDisk && <> On nodes without data disks, Talos keeps {c.spec.storage.ephemeralSize ?? '40GiB'} of the system disk and the rest goes to Longhorn.</>}</p>
+        <p class="text-[13px] text-muted">Proposed roles: bare metal first for the control plane, KVM-capable machines as workers. Change any cell. Data disks are wiped and mounted at <span class="mono">/var/mnt/data-N</span>.{c.spec.storage?.systemDisk && c.spec.platform.longhorn?.enabled && <> Without data disks, Longhorn gets the system disk beyond {c.spec.storage.ephemeralSize ?? '40GiB'} of /var.</>}</p>
       </div>
       <DataTable search={false} columns={designCols} rows={c.spec.nodes.map((_, i) => i)} rowKey={(i) => c.spec.nodes[i].mac ?? c.spec.nodes[i].ip} />
       <div class="flex flex-col gap-2">
@@ -303,7 +299,11 @@ export function PlatformStep({ draft, setCluster, patch }: { draft: Draft; setCl
   const c = draft.cluster!
   const repo = c.spec.platform.flux.repository
   const setRepo = (r: FluxRepository) => setCluster((c) => ({ ...c, spec: { ...c.spec, platform: { ...c.spec.platform, flux: { ...c.spec.platform.flux, repository: r.url.trim() || r.path?.trim() ? { url: r.url.trim(), path: r.path?.trim() || undefined } : undefined } } } }))
-  const toggle = (key: keyof ClusterSpec['spec']['platform'], enabled: boolean) => setCluster((c) => ({ ...c, spec: { ...c.spec, platform: { ...c.spec.platform, [key]: { ...c.spec.platform[key], enabled } } } }))
+  const toggle = (key: keyof ClusterSpec['spec']['platform'], enabled: boolean) => setCluster((c) => {
+    const platform = { ...c.spec.platform, [key]: { ...c.spec.platform[key], enabled } }
+    if (!enabled && (key === 'metallb' || key === 'longhorn')) platform.builds = { ...platform.builds, enabled: false }
+    return { ...c, spec: { ...c.spec, platform } }
+  })
   return (
     <>
       <div class="panel p-3"><p class="text-[13px] text-muted">Applied after the nodes are Ready; each can be changed later under Add-ons. ingress-nginx needs MetalLB.</p></div>

@@ -97,7 +97,7 @@ func (s Storage) EphemeralBytes() (uint64, error) {
 }
 
 func (c *Cluster) SharesSystemDisk(n Node) bool {
-	return c.Spec.Storage.SystemDisk && len(n.DataDisks) == 0
+	return c.Spec.Storage.SystemDisk && c.Spec.Platform.Longhorn.Enabled && len(n.DataDisks) == 0
 }
 
 type ClusterAuth struct {
@@ -289,6 +289,8 @@ type Platform struct {
 	// that should hold replicas; Talos gets the iscsi and util-linux extensions.
 	Longhorn Addon `yaml:"longhorn" json:"longhorn"`
 	Builds   Addon `yaml:"builds" json:"builds"`
+
+	LegacyArgoCD *Addon `yaml:"argocd,omitempty" json:"-"`
 }
 
 // AddOns reports whether any in-cluster add-on is enabled: the workers then carry
@@ -301,6 +303,11 @@ const (
 	RegistryHost = "registry.kubit"
 	RegistryPort = 5000
 )
+
+func (c *Cluster) RegistryRangeOK() bool {
+	start, end, err := ParseIPRange(c.Spec.Platform.MetalLB.Range)
+	return err == nil && start.Is4() && end.Is4() && start != end
+}
 
 func (c *Cluster) RegistryIP() string {
 	_, end, err := ParseIPRange(c.Spec.Platform.MetalLB.Range)
@@ -330,7 +337,7 @@ var LonghornExtensions = []string{"siderolabs/iscsi-tools", "siderolabs/util-lin
 func (c *Cluster) LonghornNodes() []Node {
 	var out []Node
 	for _, n := range c.Spec.Nodes {
-		if len(n.DataDisks) > 0 || c.SharesSystemDisk(n) {
+		if len(n.DataDisks) > 0 || c.Spec.Storage.SystemDisk {
 			out = append(out, n)
 		}
 	}
@@ -453,6 +460,10 @@ func (c *Cluster) applyDefaults() {
 	}
 	if c.Spec.Network.ServiceCIDR == "" {
 		c.Spec.Network.ServiceCIDR = constants.DefaultIPv4ServiceCIDR
+	}
+	if p := &c.Spec.Platform; p.LegacyArgoCD != nil {
+		p.Flux.Enabled = p.Flux.Enabled || p.LegacyArgoCD.Enabled
+		p.LegacyArgoCD = nil
 	}
 	if c.Spec.Storage.SystemDisk && c.Spec.Storage.EphemeralSize == "" {
 		c.Spec.Storage.EphemeralSize = DefaultEphemeralSize
@@ -611,9 +622,8 @@ func (c *Cluster) Validate() error {
 		errs = append(errs, fmt.Errorf("platform.longhorn needs storage.systemDisk or dataDisks on at least one node to hold replicas"))
 	}
 	if b := c.Spec.Platform; b.Builds.Enabled {
-		start, end, err := ParseIPRange(b.MetalLB.Range)
-		if !b.MetalLB.Enabled || err != nil || start == end {
-			errs = append(errs, fmt.Errorf("platform.builds needs MetalLB with a range of at least 2 addresses; the last one serves the registry"))
+		if !b.MetalLB.Enabled || !c.RegistryRangeOK() {
+			errs = append(errs, fmt.Errorf("platform.builds needs MetalLB with an IPv4 range of at least 2 addresses; the last one serves the registry"))
 		}
 		if !b.Longhorn.Enabled {
 			errs = append(errs, fmt.Errorf("platform.builds needs Longhorn for the registry's volume"))
@@ -864,4 +874,15 @@ func containsString(list []string, s string) bool {
 		}
 	}
 	return false
+}
+
+func CheckChange(old, next *Cluster, installed bool) error {
+	o, n := old.Spec.Platform, next.Spec.Platform
+	if o.Builds.Enabled && n.Builds.Enabled && o.MetalLB.Range != n.MetalLB.Range {
+		return fmt.Errorf("the MetalLB range must stay while Builds is on (the registry holds its last address); disable Builds first")
+	}
+	if installed && old.Spec.Storage != next.Spec.Storage {
+		return fmt.Errorf("storage must stay as installed: Talos sizes the system disk only when a node is installed")
+	}
+	return nil
 }
