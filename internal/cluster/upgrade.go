@@ -43,8 +43,13 @@ func (m *Manager) UpgradeTalos(ctx context.Context, name, version string, sink S
 	if !strings.HasPrefix(version, "v") {
 		version = "v" + version
 	}
-	if version == c.Spec.TalosVersion {
-		sink.emit(Info, "upgrade", "", "cluster already on Talos %s", version)
+	schematic, pools, err := m.desiredSchematics(ctx, c)
+	if err != nil {
+		return err
+	}
+	reimage := imageOutdated(c, schematic, pools)
+	if version == c.Spec.TalosVersion && !reimage {
+		sink.emit(Info, "upgrade", "", "cluster already on Talos %s with its current extensions", version)
 		return nil
 	}
 	sec, err := m.Store.GetClusterSecrets(ctx, name)
@@ -55,13 +60,37 @@ func (m *Manager) UpgradeTalos(ctx context.Context, name, version string, sink S
 	if err != nil {
 		return err
 	}
-	if err := m.EnsureSchematic(ctx, c); err != nil {
-		return err
+	imageFor := func(n config.Node) string {
+		if id, ok := pools[c.PoolOf(n).Name]; ok {
+			return m.Factory.InstallerImage(id, version)
+		}
+		return m.Factory.InstallerImage(schematic, version)
 	}
-	imageFor := func(n config.Node) string { return m.Factory.InstallerImage(c.SchematicFor(c.PoolOf(n)), version) }
+	var gen *config.Generated
+	if reimage {
+		_, bundle, err := m.loadSecrets(ctx, name)
+		if err != nil {
+			return err
+		}
+		next := *c
+		next.Spec.SchematicID = schematic
+		next.Spec.Pools = append([]config.Pool(nil), c.Spec.Pools...)
+		for i := range next.Spec.Pools {
+			if id, ok := pools[next.Spec.Pools[i].Name]; ok {
+				next.Spec.Pools[i].SchematicID = id
+			}
+		}
+		if gen, err = config.Generate(&next, bundle, func(p config.Pool) string { return m.Factory.InstallerImage(next.SchematicFor(p), version) }); err != nil {
+			return err
+		}
+	}
 	nodes := orderedNodes(c)
 	sink.plan(append(upgradePrechecks, nodeSteps(nodes, "Upgrade")...)...)
-	sink.emit(Info, "precheck", "", "Talos %s → %s", c.Spec.TalosVersion, version)
+	if reimage {
+		sink.emit(Info, "precheck", "", "Talos %s → %s with a new image: extensions %s", c.Spec.TalosVersion, version, strings.Join(c.Spec.Extensions, ", "))
+	} else {
+		sink.emit(Info, "precheck", "", "Talos %s → %s", c.Spec.TalosVersion, version)
+	}
 	if err := sink.run("precheck", func() error { return m.precheckUpgrade(ctx, c, kc, sec.Talosconfig, "talos", version, sink) }); err != nil {
 		return err
 	}
@@ -73,6 +102,11 @@ func (m *Manager) UpgradeTalos(ctx context.Context, name, version string, sink S
 	for _, n := range nodes {
 		step := nodeStep(n)
 		err := sink.run(step, func() error {
+			if gen != nil {
+				if err := m.applyNodeConfig(ctx, n, gen.Nodes[n.Hostname], sec.Talosconfig, step, sink); err != nil {
+					return fmt.Errorf("machine config for the new extensions: %w", err)
+				}
+			}
 			dial, cancel := context.WithTimeout(ctx, 30*time.Second)
 			tc, err := talos.Dial(dial, n.IP, sec.Talosconfig)
 			cancel()
@@ -80,7 +114,7 @@ func (m *Manager) UpgradeTalos(ctx context.Context, name, version string, sink S
 				return err
 			}
 			v, err := tc.Version(tc.Context(ctx))
-			if err == nil && len(v.Messages) > 0 && v.Messages[0].Version.Tag == version {
+			if err == nil && !reimage && len(v.Messages) > 0 && v.Messages[0].Version.Tag == version {
 				tc.Close()
 				sink.emit(Info, step, n.Hostname, "already on %s", version)
 				return nil
@@ -112,6 +146,12 @@ func (m *Manager) UpgradeTalos(ctx context.Context, name, version string, sink S
 		}
 	}
 	c.Spec.TalosVersion = version
+	c.Spec.SchematicID = schematic
+	for i := range c.Spec.Pools {
+		if id, ok := pools[c.Spec.Pools[i].Name]; ok {
+			c.Spec.Pools[i].SchematicID = id
+		}
+	}
 	if err := m.SaveCluster(ctx, c, row.State); err != nil {
 		return err
 	}

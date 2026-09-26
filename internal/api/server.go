@@ -80,6 +80,7 @@ func New(version string, m *cluster.Manager, token string, crypto *store.Crypto)
 	r.HandleFunc("POST /api/v1/clusters/{name}/platform/apply", s.handlePlatformApply)
 	r.HandleFunc("POST /api/v1/clusters/{name}/platform/apply/{planId}", s.handlePlatformApplyPlan)
 	r.HandleFunc("POST /api/v1/clusters/{name}/upgrade/talos", s.disruptive(s.handleUpgradeTalos))
+	r.HandleFunc("GET /api/v1/clusters/{name}/image", s.handleImageStatus)
 	r.HandleFunc("POST /api/v1/clusters/{name}/upgrade/kubernetes", s.disruptive(s.handleUpgradeKubernetes))
 	r.HandleFunc("POST /api/v1/clusters/{name}/export", s.handleExport)
 	r.HandleFunc("POST /api/v1/clusters/{name}/nodes", s.handleNodeAdd)
@@ -488,6 +489,15 @@ func (s *Server) latestPlan(ctx contextT, name string) int64 {
 	return 0
 }
 
+func (s *Server) handleImageStatus(w http.ResponseWriter, r *http.Request) {
+	st, err := s.manager.ImageStatus(r.Context(), r.PathValue("name"))
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, st)
+}
+
 func (s *Server) handleUpgradeTalos(w http.ResponseWriter, r *http.Request) {
 	s.upgrade(w, r, "upgrade.talos", s.manager.UpgradeTalos)
 }
@@ -741,6 +751,7 @@ type serviceView struct {
 	ID      string `json:"id"`
 	State   string `json:"state"`
 	Healthy bool   `json:"healthy"`
+	Unknown bool   `json:"unknown,omitempty"`
 	Last    string `json:"last"`
 }
 
@@ -762,6 +773,7 @@ func (s *Server) handleNodeServices(w http.ResponseWriter, r *http.Request) {
 			v := serviceView{ID: svc.Id, State: svc.State}
 			if svc.Health != nil {
 				v.Healthy = svc.Health.Healthy
+				v.Unknown = svc.Health.Unknown
 				v.Last = svc.Health.LastMessage
 			}
 			if n := len(svc.Events.Events); n > 0 {

@@ -77,6 +77,57 @@ func (m *Manager) EnsureSchematic(ctx context.Context, c *config.Cluster) error 
 	return nil
 }
 
+func (m *Manager) desiredSchematics(ctx context.Context, c *config.Cluster) (string, map[string]string, error) {
+	id, err := m.Factory.CreateSchematic(ctx, c.Spec.Extensions)
+	if err != nil {
+		return "", nil, err
+	}
+	pools := map[string]string{}
+	for _, p := range c.Spec.Pools {
+		if len(p.Extensions) == 0 {
+			continue
+		}
+		pid, err := m.Factory.CreateSchematic(ctx, p.Extensions)
+		if err != nil {
+			return "", nil, fmt.Errorf("pool %s: %w", p.Name, err)
+		}
+		pools[p.Name] = pid
+	}
+	return id, pools, nil
+}
+
+func imageOutdated(c *config.Cluster, id string, pools map[string]string) bool {
+	if id != c.Spec.SchematicID {
+		return true
+	}
+	for _, p := range c.Spec.Pools {
+		if want, ok := pools[p.Name]; ok && want != p.SchematicID {
+			return true
+		}
+	}
+	return false
+}
+
+type ImageStatus struct {
+	TalosVersion string   `json:"talosVersion"`
+	Installed    string   `json:"installed"`
+	Desired      string   `json:"desired"`
+	Extensions   []string `json:"extensions"`
+	Outdated     bool     `json:"outdated"`
+}
+
+func (m *Manager) ImageStatus(ctx context.Context, name string) (ImageStatus, error) {
+	c, _, err := m.LoadCluster(ctx, name)
+	if err != nil {
+		return ImageStatus{}, err
+	}
+	id, pools, err := m.desiredSchematics(ctx, c)
+	if err != nil {
+		return ImageStatus{}, err
+	}
+	return ImageStatus{TalosVersion: c.Spec.TalosVersion, Installed: c.Spec.SchematicID, Desired: id, Extensions: c.Spec.Extensions, Outdated: imageOutdated(c, id, pools)}, nil
+}
+
 // installer maps each pool to its installer image at the cluster's Talos version.
 func (m *Manager) installer(c *config.Cluster) config.Installer {
 	return func(p config.Pool) string {

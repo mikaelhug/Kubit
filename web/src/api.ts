@@ -15,6 +15,7 @@ export const kubitKey = 'kubit'
 export interface HealthEvent { id: number; ts: string; cluster: string; node?: string; severity: 'info' | 'warn' | 'critical'; kind: string; message: string; acked: boolean }
 export interface ServiceHealth { collectedAt: string; metallb: boolean; workloads?: { kind: string; namespace: string; name: string; ready: number; desired: number; available: boolean; ageSec: number }[]; pods?: { namespace: string; name: string; node?: string; owner?: string; phase: string; restarts: number; ageSec: number }[]; claims?: { namespace: string; name: string; phase: string; ageSec: number }[]; services?: { namespace: string; name: string; type: string; hasSelector: boolean; endpoints: number; ageSec: number }[]; ingresses?: { namespace: string; name: string; hasAddress: boolean; ageSec: number }[]; pool?: { range: string; total: number; allocated: number } }
 export interface Sample { ts: string; node?: string; cpuMilli: number; cpuCap: number; memBytes: number; memCap: number; pods: number; ready: boolean; reachable: boolean; disk?: number; diskCap?: number }
+export interface ImageStatus { talosVersion: string; installed: string; desired: string; extensions?: string[]; outdated: boolean }
 export interface Namespace { name: string; phase: string; security?: string; ageSec: number; platform: boolean; addon?: string }
 export interface Workload { kind: string; namespace: string; name: string; ready: number; desired: number; available: boolean; images: string; age: string; selector?: string }
 export interface KService { namespace: string; name: string; type: string; clusterIP: string; externalIPs?: string[]; ports: string[]; endpoints: number; selector?: string; age: string }
@@ -118,7 +119,7 @@ export interface Status {
   platform?: { appliedAt?: string; outputs?: Record<string, string>; error?: string }
   observedAt?: string; lastSnapshotAt?: string; snapshotInterval?: string
 }
-export interface Service { id: string; state: string; healthy: boolean; last: string }
+export interface Service { id: string; state: string; healthy: boolean; unknown?: boolean; last: string }
 
 export interface AttrDiff { key: string; before?: string; after?: string; unknown?: boolean; sensitive?: boolean }
 export interface PlanChange { address: string; type: string; name: string; action: 'create' | 'update' | 'replace' | 'delete'; attrs?: AttrDiff[] }
@@ -235,6 +236,7 @@ export const api = {
   updateAddon: (name: string, key: string, body: { enabled?: boolean; range?: string; valuesYaml?: string }) => req<AddonStatus[]>('PUT', `/clusters/${name}/addons/${key}`, body),
   workloads: (name: string) => req<Workload[]>('GET', `/clusters/${name}/workloads`),
   namespaces: (name: string) => req<Namespace[]>('GET', `/clusters/${name}/namespaces`),
+  imageStatus: (name: string) => req<ImageStatus>('GET', `/clusters/${name}/image`),
   pods: (name: string, namespace = '', selector = '') => req<PodSummary[]>('GET', `/clusters/${name}/pods?namespace=${encodeURIComponent(namespace)}&selector=${encodeURIComponent(selector)}`),
   podEvents: (name: string, ns: string, pod: string) => req<PodEvent[]>('GET', `/clusters/${name}/pods/${ns}/${pod}/events`),
   network: (name: string) => req<NetworkView>('GET', `/clusters/${name}/network`),

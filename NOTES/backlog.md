@@ -244,3 +244,21 @@
   out on purpose: app namespaces live in Git with the app. Revisit only if Kubit ever
   deploys apps itself. The node page's pod table still lists every namespace (platform pods
   matter there); a scope toggle could follow if it gets long.
+- Full lab run (2026-09-26) leftovers:
+  - Machine rows of cluster members get `source: manual` from `storeRow` on every
+    create/add (the scan/lab/amt provenance is overwritten). Unused anywhere today; fix
+    by keeping an existing non-empty source in `UpsertNode`.
+  - `api.unreachable` is raised during Kubit's own single-control-plane upgrade (the API
+    is down while the only control plane reboots). Correct, but it could be marked as
+    expected while an `upgrade.*` operation runs.
+  - Settings → *Apply node configs* runs at once with no confirmation, though a config
+    change can reboot nodes; a dialog stating "may reboot nodes one at a time" would fit.
+  - Lab VMs keep the Talos ISO attached (read-only `sda`) until their next cold start;
+    harmless, visible on the Hardware tab.
+  - Longhorn has no *Open* link: its UI service is ClusterIP. An Ingress or a
+    LoadBalancer toggle in its Configure dialog would expose it.
+  - Longhorn enabled while a node had no data disk at the time: Longhorn never adds the
+    disk later. A new data disk on an existing node needs the disk added in Longhorn
+    (or the node object recreated); Kubit could patch `nodes.longhorn.io` after Apply.
+  - Lab host disk metrics on macOS measure the whole APFS container, so the 85 % disk
+    alert can fire from unrelated files on the Mac.

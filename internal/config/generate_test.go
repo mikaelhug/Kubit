@@ -6,6 +6,8 @@ import (
 	"testing"
 
 	"github.com/mikael/kubit/internal/config"
+	blockpb "github.com/siderolabs/talos/pkg/machinery/api/resource/definitions/block"
+	"github.com/siderolabs/talos/pkg/machinery/cel/celenv"
 	talosconfig "github.com/siderolabs/talos/pkg/machinery/config"
 	"github.com/siderolabs/talos/pkg/machinery/config/configloader"
 	"github.com/siderolabs/talos/pkg/machinery/config/types/block"
@@ -145,8 +147,14 @@ func TestGenerateDataDisks(t *testing.T) {
 		if v.MetaName != fmt.Sprintf("data-%d", i+1) || *v.VolumeType != blockres.VolumeTypeDisk || v.FilesystemSpec.FilesystemType != blockres.FilesystemTypeXFS {
 			t.Errorf("volume %d = %s %v %v", i, v.MetaName, v.VolumeType, v.FilesystemSpec.FilesystemType)
 		}
-		if got := v.ProvisioningSpec.DiskSelectorSpec.Match.String(); got != fmt.Sprintf(`disk.dev_path == %q && !system_disk`, want) {
+		if got := v.ProvisioningSpec.DiskSelectorSpec.Match.String(); got != fmt.Sprintf(`disk.dev_path == %q`, want) {
 			t.Errorf("volume %d selector = %q", i, got)
+		}
+		for _, disk := range []string{want, "/dev/vda"} {
+			ok, err := v.ProvisioningSpec.DiskSelectorSpec.Match.EvalBool(celenv.DiskLocator(), map[string]any{"disk": &blockpb.DiskSpec{DevPath: disk}})
+			if err != nil || ok != (disk == want) {
+				t.Errorf("volume %d on %s: matched=%v err=%v", i, disk, ok, err)
+			}
 		}
 	}
 	if config.DataMount(2) != "/var/mnt/data-2" {

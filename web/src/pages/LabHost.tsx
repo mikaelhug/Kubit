@@ -6,7 +6,7 @@ import { AddVMsDialog, HostAlerts, HostMetrics, HostStateNotice, HostSystem, Hos
 import { RemoteManagement } from '../components/RemoteManagement'
 import { Tabs } from '../components/Tabs'
 import { AlertPill, Breadcrumbs, KeyValue, Pill, Section, SeenAgo, stateTone } from '../components/ui'
-import { hostName, labOffline, labState, modelOf, onMac } from '../machine'
+import { hostName, labOffline, labState, lastSeenOf, modelOf, onMac } from '../machine'
 
 type TabId = 'overview' | 'vms' | 'actions'
 const tabs: { id: TabId; label: string }[] = [{ id: 'overview', label: 'Overview' }, { id: 'vms', label: 'VMs' }, { id: 'actions', label: 'Actions' }]
@@ -64,7 +64,7 @@ function OverviewTab({ host, busy }: { host: NodeRow; busy: boolean }) {
               ['Model', modelOf(host)],
               ['Identity', <span class="mono text-[12px]">{host.mac}{host.uuid ? ` · ${host.uuid}` : ''}{host.serial ? ` · ${host.serial}` : ''}</span>],
               ['Addresses seen', <span class="mono text-[12px]">{[...new Set([...(host.ipsSeen ?? []), host.ip])].filter(Boolean).join(' → ') || '—'}</span>],
-              ['Last seen', fmt.datetime(host.lastSeen)],
+              ['Last seen', fmt.datetime(lastSeenOf(host))],
               ['Network', onMac(lh) ? `vmnet ${host.ip.replace(/\.\d+$/, '.0/24')}` : lh.network === 'routed' ? 'routed (192.168.123.0/24)' : `bridged on ${lh.capacity.bridge || 'br0'}`],
             ]} />
           </div>

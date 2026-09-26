@@ -8,8 +8,8 @@ PCs and VMs. Single Go binary: CLI, daemon, embedded web UI.
 | Layer | Owner | Mechanism |
 |---|---|---|
 | Discovery, machine config, apply, bootstrap, kubeconfig, OS/K8s upgrades, drain, reset, etcd | Kubit | Talos API via `siderolabs/talos/pkg/machinery` + `client-go` |
-| Platform add-ons: MetalLB, ingress-nginx, gVisor RuntimeClasses, metrics-server, cert-manager, ArgoCD | OpenTofu (`infra/platform/`), executed by Kubit with a pinned binary | `hashicorp/helm` for charts, `alekc/kubectl` for CRs |
-| User workloads | ArgoCD (optional) | Generated `gitops/` app-of-apps |
+| Platform add-ons: MetalLB, ingress-nginx, gVisor RuntimeClasses, metrics-server, cert-manager, Longhorn, ArgoCD | OpenTofu (`infra/platform/`), executed by Kubit with a pinned binary | `hashicorp/helm` for charts, `alekc/kubectl` for CRs |
+| User workloads | Argo CD add-on, syncing an apps repository you own | One ApplicationSet turns every `apps/<name>/` folder into an app; Terraform bootstraps the root Application once. Example: [github.com/mikaelhug/kubit-apps](https://github.com/mikaelhug/kubit-apps) |
 | Escape hatch | Operator | `infra/talos/` export (talos provider HCL + `import {}`) and native artifacts (`secrets.yaml`, `talosconfig`, machine configs, kubeconfig) — never executed by Kubit |
 
 `cluster.yaml` under `~/.kubit/clusters/<name>/` is the single declarative input.
@@ -147,7 +147,8 @@ overlapping, VIP or MetalLB range taken by another stored cluster).
 **Disk roles.** A node has one install disk and any number of *data disks*
 (`dataDisks`, up to 8, never the install disk). Each data disk becomes a
 `UserVolumeConfig` `data-N` of type `disk` — whole disk, xfs, selector
-`disk.dev_path == "<path>" && !system_disk` — that Talos formats on first use and
+`disk.dev_path == "<path>"` (Talos does not supply `system_disk` when it matches a
+whole-disk volume, so that term fails the volume) — that Talos formats on first use and
 mounts at `/var/mnt/data-N`; the node is labelled `kubit.dev/data-disks: N`. Adding a
 data disk to an existing node is a plain **Apply** (no reboot). The wizard's Design
 step lists every non-install disk per machine with a checkbox (*Use all* claims the
@@ -234,6 +235,12 @@ reset; refuses to drop to 0 or, without `--force`, 2 control planes), `upgrade t
 `upgrade kubernetes` (config re-apply with new component images, control planes first),
 `status`, `cluster export`.
 
+`upgrade talos` also re-images. The schematic is recomputed from the current
+extensions (Image Factory IDs are content hashes); when it differs from what the nodes
+were installed with, every node gets its regenerated machine config and then the new
+installer, even at the same Talos version. `GET /api/v1/clusters/{name}/image` reports
+installed vs desired, and Lifecycle says when the nodes are behind.
+
 Talos < 1.14 is rejected: Kubit only emits the multi-document config set.
 
 ## Platform layer (OpenTofu)
@@ -274,12 +281,19 @@ Findings baked into the templates:
   `createDefaultDiskLabeledNodes`, so replicas never land on the system disk. Enabling
   it adds the `siderolabs/iscsi-tools` and `siderolabs/util-linux-tools` extensions
   to the cluster schematic (picked up by new nodes and the next Talos upgrade), and
-  refuses a cluster where no node has a data disk. Default replica count is 3 or the
+  refuses a cluster where no node has a data disk. On an existing cluster the order is
+  enforced: after enabling Longhorn, Lifecycle and Add-ons say the nodes' image lacks
+  the extensions, and platform plan/apply refuse until **Upgrade Talos** (at the same
+  version is fine) has re-imaged the nodes. That upgrade first applies each node's
+  regenerated machine config, so the Longhorn disk labels land before the chart
+  installs; Longhorn only reads them when it first registers a node. Default replica
+  count is 3 or the
   number of data-disk nodes. `longhorn-system` is created `privileged` like
   `metallb-system`. In multi-document Talos configs the kubelet document forbids
   `.machine.kubelet.extraMounts`, which is why the classic `/var/lib/longhorn` bind
-  mount is not used and user volumes carry the data instead. **Unverified on a
-  cluster** (`terraform validate` passes; node labelling is unit-tested).
+  mount is not used and user volumes carry the data instead. Verified on a lab cluster
+  on this Mac (2026-09-26): two workers with 20 GiB data disks give Longhorn two
+  schedulable 19 GiB disks, and an app volume keeps two healthy replicas.
 
 Per-add-on Helm values: `platform.<addon>.values` in cluster.yaml is passed as `values = [yamlencode(...)]` only when non-empty, so declaring nothing never triggers a Helm upgrade.
 
@@ -909,8 +923,7 @@ via the VIP, platform applied), `node add` worker and control plane, `node remov
 worker and — with `--force` — a control plane (graceful etcd leave, membership 3→2, node
 back in maintenance mode), quorum guard refusing 3→2 without `--force`.
 
-Not yet exercised: `runsc-kvm` (no nested virtualisation in the VMs); ArgoCD and
-cert-manager add-ons.
+Not yet exercised: `runsc-kvm` (no nested virtualisation in the VMs).
 - [x] M1 — structured operations, Activity drawer, plan review/apply, IA skeleton, component library
 - [x] M2 — node page: Overview (Talos + etcd member + Kubernetes requests), Hardware, Kubernetes (conditions, pods with usage, labels), Services, Logs, Actions (cordon/uncordon/drain/reboot[-with-drain]/upgrade node) — verified drain→reboot→uncordon on ha-worker-01
 - [x] M3 — `internal/watch`: per-cluster poll (15 s, `--watch-interval`), `samples` (24 h fine / 30 d hourly) and `events` tables, SSE `status`/`health` pushes (UI no longer polls while connected), alerts with ack and auto-resolve on recovery, Overview capacity sparklines (1h–7d), `/versions` feed (Image Factory releases ≥ 1.14, Kubernetes minors supported by the built machinery) in Settings — verified: VM stop raised `talos.unreachable` within 15 s without reload, `node.notready` after the kubelet grace period, both cleared by `talos.back`/`node.ready` on restart
@@ -926,12 +939,13 @@ cert-manager add-ons.
 - [~] M14 — Out-of-band: Intel AMT and Redfish backends (probe, power on/off/reset/cycle, one-shot PXE boot; Redfish also reports CPUs, memory and drives before Talos), per-machine remote-management config sealed at rest with a type selector, *Add by remote management* in Inventory, default BMC credentials in settings, discovery finds Redfish roots, `machine.power` operations; member-aware PXE (no offer + iPXE exit for members, `/pxe/decide`, enrollment open/closed, one-shot arming cleared on maintenance sighting; unit-tested). **Redfish is unverified on a real BMC** (fake-BMC tests only); AMT verified on an EliteDesk 800 G3
 - [~] M15 — Lab hosts: `internal/labhost` (preseed, SSH client, virsh domain lifecycle, direct kernel boot), PXE Debian profile + preseed proxy, lab-host API/operations, watcher refresh, install-time disk-boot switch, wizard/machine-page/Inventory UI. **Unverified on hardware** (needs the EliteDesk): the Debian install and every virsh call; unit-tested rendering only
 - [~] M16 — Lab host operations: host metrics (SSH tick → `samples` under `labhost:<mac>`, live `hostSample`), disk/memory/unreachable/updates alerts with runbooks and hysteresis (unit-tested), hourly apt check, unattended security upgrades in the preseed, `labhost.update` / `labhost.reboot` operations (VMs parked, autostart, cluster Ready wait, maintenance-window gate), *Lab host* tab with utilisation cards, System panel and confirm dialogs, Inventory alert pill, heartbeat line. **Verified with a seeded host only** (`hack/seedlab`): parsing, thresholds, UI, the failure path of the operation; the real upgrade/reboot path needs the EliteDesk
-- [~] M17 — Disk roles: `dataDisks` per node → Talos `UserVolumeConfig` whole-disk xfs volumes at `/var/mnt/data-N` (generation and validation unit-tested), wizard Design step and add-node dialog with per-disk checkboxes, node page mounts, lab VMs with an optional second qcow2 (`vdb`) that the lab plan claims automatically, `vda` pinned as the install disk for VMs. **Unverified on a live node**: the volume actually formatting and mounting needs a machine with a spare disk
+- [x] M17 — Disk roles: `dataDisks` per node → Talos `UserVolumeConfig` whole-disk xfs volumes at `/var/mnt/data-N` (generation and validation unit-tested), wizard Design step and add-node dialog with per-disk checkboxes, node page mounts, lab VMs with an optional second qcow2 (`vdb`) that the lab plan claims automatically, `vda` pinned as the install disk for VMs. Verified on lab VMs (2026-09-26), which found that Talos rejected the old selector's `!system_disk` for whole-disk volumes and failed every data volume; the selector is now the device path alone, and a test evaluates it the way Talos does
 - [~] M17 — Lab install observable: installer progress reports, phased waits with diagnoses, PXE log mirrored into operations, manual (no-AMT) mode, `kubit pxe --http-only`/`--ip`, `POST /machines`, per-arch preseed packages, UEFI loaders in domain XML, `hack/lab/lab.sh` vfkit harness (EFI via systemd-boot volume, nested virt). routed VM network (`kubit` libvirt network + masquerade unit). **Verified in the VM harness**: EFI install via systemd-boot volume (3 min), every progress stage, SSH, setup with nested KVM, four Talos VMs to maintenance mode on the routed network, cluster `lab` Ready with MetalLB/ingress in 9 minutes, and M16's *Update host* (VMs parked, reboot, autostart, 4/4 Ready again in 2 min). **Verified on the EliteDesk (2026-09-16)**: AMT one-shot PXE, every phase with the PXE log mirrored, Debian installed and SSH-ready in 7 min, three bridged Talos VMs to maintenance mode; the VM plan has to fit the real host (7.7 GiB RAM). Bridged VMs get no address from libvirt (no leases, no ARP until the host talks to them), so the VM wait sweeps the discovery subnets and matches Talos nodes by MAC. See NOTES/backlog for what was found
 - [x] M18 — Machine kinds: `Machine.Kind()` derived from stored fields and sent with every row; node endpoints, PXE decision, watcher and the provision/release/retire/power handlers refuse by kind with one-line reasons; machine page, Inventory, wizard, Add node, palette and Remote management render by kind (`web/src/machine.tsx`). Lab-host install disk selectable in the dialog and pinned in the preseed. Unit-tested (kind table, endpoint refusals, closed port, PXE decision, migration) and checked in the console against a seeded set of every kind; the real lab host page opens on its Debian facts
 - [x] M18 — Identity: local accounts with viewer/operator/admin roles enforced per route, sessions and API tokens, first-admin setup, OpenID Connect sign-in with group→role mapping, audit actor, cluster `spec.auth.oidc` → API server `AuthenticationConfiguration` + admin group binding. Unit-tested end to end (fake IdP); **unverified against a real provider**
-- [~] M19 — Storage: Longhorn platform add-on on data disks (node labelling in the generator, privileged namespace, replica default from the data-disk node count, wizard/Add-ons/Storage-tab hooks). **Unverified on a cluster**
+- [x] M19 — Storage: Longhorn platform add-on on data disks (node labelling in the generator, privileged namespace, replica default from the data-disk node count, wizard/Add-ons/Storage-tab hooks). Enabling it on an existing cluster re-images the nodes through **Upgrade Talos** (extension changes now produce a new schematic, even at the same version, and the upgrade re-applies machine configs first); platform runs refuse until then. Verified on a lab cluster on this Mac
 - [x] M19 — Honest health and right-sized labs: `hub.since(0)` replays nothing and replayed messages never toast; service alerts raise after two and clear after three collections; `status.health` (`healthy` / `degraded` / `down`) drives the cluster pill; `node.memory-small` alert with runbook; 2 GiB floor for every lab VM with host-fitting defaults; `worker-undersized` lint and preflight floor when add-ons are on; MetalLB layer-2 only with resource requests on every add-on and `atomic` releases; 2 s host CPU sample. Unit-tested (hub, tracker flap, Derive, lint, tofu golden, validate); the EliteDesk lab reshaped to 1 CP + 1 worker at 2816 MiB and re-applied without FRR
+- [x] M22 — Full lab run and GitOps (2026-09-26): from an empty `~/.kubit`, *Lab host on this Mac* (1 control plane + 2 workers with data disks) to a Ready cluster in 5 min 15 s; cert-manager and Argo CD (with `kustomize.buildOptions: --enable-helm`, `timeout.reconciliation: 60s`) in 54 s; Longhorn after a same-version re-image. Apps from [kubit-apps](https://github.com/mikaelhug/kubit-apps): Terraform creates the root Application, an ApplicationSet deploys each `apps/<name>/` (Helm chart via kustomize or plain YAML); four apps served over HTTPS with cert-manager certificates, a Longhorn volume survives pod replacement, a pushed change lands in 1–2 min, a deleted folder is pruned with its namespace. Walked every console view; fixes: stale "Last seen" (now the watcher's last contact), services without a health check shown as unhealthy, finished operations shown with skipped steps as incomplete, upgrade hint pointing at Settings, first-run screen without *Lab host on this Mac*
 - [x] M21 — Namespace scopes: Apps · Platform · All with a namespace picker on Workloads, Network and Storage (URL-backed, live on namespace changes), Overview counts app and platform pods apart, CronJobs listed. Verified on a lab cluster on this Mac: fresh cluster opens on an empty Apps (14 platform pods), a new `shop` namespace appears live, `?ns=` links filter Network and Storage
 - [x] M20 — Lab host drivers: `labhost.Driver` seam (libvirt unchanged), *Lab host on this Mac* with vfkit + vmnet-helper VMs under launchd, driver-aware lab host page, per-host memory reserve. Verified end to end on this Mac (see *On this Mac*); firmware reboot, sleep during setup and the launchd-run daemon are not. Hyper-V: feasibility only, in NOTES/backlog.md. Full-stack run on this Mac (2026-09-25): three control planes (4 GiB, data disks) from the dialog to Ready with MetalLB, ingress, gVisor and metrics-server in 3 min 35 s; cert-manager and Argo CD applied from the Add-ons tab in 51 s; an Argo CD Application (podinfo from GitHub) synced and served over HTTPS through ingress with a cert-manager certificate; a gVisor pod ran; a control plane killed and restarted kept the API up on the VIP and raised and auto-resolved `talos.unreachable`. Longhorn not exercised
 - [~] M7 — tests and packaging: gofmt/vet/race tests and `hack/e2e.sh` run locally; GitHub Actions (CI, signed releases, nightly e2e lab) removed as unused. The QEMU lab script (`hack/qemu/lab.sh`) stays for a Linux KVM box, **unverified**

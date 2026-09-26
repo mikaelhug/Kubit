@@ -1,5 +1,5 @@
 import type { LabHost, MachineKind, NodeRow } from './api'
-import { machines } from './store'
+import { machines, statuses } from './store'
 import { Pill, stateTone, type Tone } from './components/ui'
 
 export const kindLabel: Record<MachineKind, string> = {
@@ -22,6 +22,12 @@ export function kindTone(m: NodeRow): Tone {
 }
 
 export function isLabVM(m?: NodeRow | null) { return !!m?.host }
+export function lastSeenOf(m: NodeRow) {
+  if (m.labhost?.metrics?.at) return m.labhost.metrics.at
+  const st = m.cluster ? statuses.value.get(m.cluster) : undefined
+  const contact = st?.nodes.find((n) => n.hostname === m.hostname)?.talosReachable ? st.lastContactAt : undefined
+  return contact && contact > m.lastSeen ? contact : m.lastSeen
+}
 export function onMac(lh?: LabHost | null) { return lh?.driver === 'vfkit' }
 export function hostOf(m?: NodeRow | null) { return m?.host ? machines.value.get(m.host.toLowerCase()) : undefined }
 export function hostName(m?: NodeRow | null) { return m ? m.labhost?.capacity.hostname || m.hostname || m.mac : '' }

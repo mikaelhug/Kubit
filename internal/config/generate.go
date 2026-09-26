@@ -316,12 +316,11 @@ func uplinkSelector(mac string) (cel.Expression, error) {
 func DataMount(n int) string { return fmt.Sprintf("/var/mnt/data-%d", n) }
 
 // dataVolume claims a whole disk for node-local storage: xfs, mounted at DataMount.
-// The selector excludes the system disk as a second guard against a stale path.
 func dataVolume(n int, path string) (*block.UserVolumeConfigV1Alpha1, error) {
 	vol := block.NewUserVolumeConfigV1Alpha1()
 	vol.MetaName = fmt.Sprintf("data-%d", n)
 	vol.VolumeType = new(blockres.VolumeTypeDisk)
-	match, err := cel.ParseBooleanExpression(fmt.Sprintf("disk.dev_path == %q && !system_disk", path), celenv.DiskLocator())
+	match, err := cel.ParseBooleanExpression(fmt.Sprintf("disk.dev_path == %q", path), celenv.DiskLocator())
 	if err != nil {
 		return nil, err
 	}

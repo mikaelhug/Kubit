@@ -4,7 +4,7 @@ import { useLocation } from 'preact-iso'
 import { clusters, connected, daemon, health, latestTalos, loadHealth, machineList, operations, resyncing, settings, toast, watch } from '../../store'
 import { DataTable, type Column } from '../../components/DataTable'
 import { AlertPill, ConfirmDialog, Pill, Section } from '../../components/ui'
-import { bootTalosBlocked, canAdopt, canMakeLabHost, canRetire, formOf, groupLabel, groupOf, hostName, hostOf, KindPill, modelOf, onMac, provisionLabel, type MachineGroup } from '../../machine'
+import { bootTalosBlocked, canAdopt, canMakeLabHost, canRetire, formOf, groupLabel, groupOf, hostName, hostOf, KindPill, lastSeenOf, modelOf, onMac, provisionLabel, type MachineGroup } from '../../machine'
 import { AddAMTDialog } from '../../components/RemoteManagement'
 import { MakeLabHostDialog, ThisMacDialog } from '../../components/LabHost'
 import { PxeGate } from '../../components/PxeGate'
@@ -82,7 +82,7 @@ export function Inventory() {
       return <span class="text-muted">—</span>
     } },
     { id: 'resources', header: 'CPU · RAM · Disk', align: 'right', sort: (n) => n.inventory?.memoryBytes ?? 0, text: (n) => (n.inventory?.disks ?? []).map((d) => d.devPath).join(' '), cell: (n) => { const disks = (n.inventory?.disks ?? []).filter((d) => !d.readonly && !d.cdrom && d.transport !== 'usb'); return n.inventory ? <span class="num whitespace-nowrap" title={disks.map((d) => `${d.devPath} ${fmt.bytes(d.sizeBytes)}`).join(', ')}>{n.inventory.cpus} · {fmt.bytes(n.inventory.memoryBytes)} · {disks.length ? `${fmt.bytes(disks[0].sizeBytes)}${disks.length > 1 ? ` +${disks.length - 1}` : ''}` : '—'}<span class="block text-[10px] text-muted">{n.arch}{n.inventory.kvm ? ' · kvm' : ''}</span></span> : <span class="text-muted">—</span> } },
-    { id: 'seen', header: 'Last seen', sort: (n) => n.lastSeen, cell: (n) => <span class="num text-muted">{fmt.when(n.lastSeen)}</span> },
+    { id: 'seen', header: 'Last seen', sort: (n) => lastSeenOf(n), cell: (n) => <span class="num text-muted">{fmt.when(lastSeenOf(n))}</span> },
     { id: 'actions', header: '', align: 'right', cell: (n) => (
       <span class="whitespace-nowrap flex gap-1 justify-end">
         {canAdopt(n) && <button class="btn btn-primary !py-1" onClick={() => adopt(n)}>Adopt</button>}

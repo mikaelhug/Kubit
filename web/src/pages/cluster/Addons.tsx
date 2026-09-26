@@ -4,6 +4,7 @@ import { api, fmt, type AddonStatus } from '../../api'
 import { operations, toast, watch, refreshKey } from '../../store'
 import { Dialog, ErrorBox, Field, Notice, Pill, Section, StatusDot, type Tone } from '../../components/ui'
 import type { ClusterCtx } from './ClusterPage'
+import { useImageStatus } from './Lifecycle'
 
 interface AddonDef { key: string; name: string; what: string; docs: string; link?: (ctx: ClusterCtx) => string | undefined; hint?: string }
 
@@ -33,6 +34,8 @@ export function Addons({ ctx }: { ctx: ClusterCtx }) {
   const planStale = lastPlan && cluster.updatedAt > lastPlan.startedAt
   const busy = ops.some((o) => o.status === 'running' && o.kind.startsWith('platform'))
   const drift = (addons ?? []).some((a) => a.state === 'pending' || a.state === 'orphaned')
+  const image = useImageStatus(name, cluster.updatedAt)
+  const longhornWaits = image?.outdated && cluster.spec.spec.platform.longhorn?.enabled
   const [pendingPlan, setPendingPlan] = useState<number | null>(null)
   const plan = () => api.platformPlan(name).then((r) => { watch(r, false); toast('Planning… the review opens when it finishes'); setPendingPlan(r.operationId) }).catch((e) => toast(e.message, 'error'))
   // The plan's completion arrives over SSE; open the review then.
@@ -55,6 +58,7 @@ export function Addons({ ctx }: { ctx: ClusterCtx }) {
         }>
         <ErrorBox error={error} />
         {status?.platform?.error && <Notice tone="bad">Last apply failed: {status.platform.error}</Notice>}
+        {longhornWaits && <Notice tone="warn"><span class="flex items-center gap-2">Longhorn needs Talos extensions the nodes do not have yet. Upgrade Talos first.<a href={`/clusters/${name}/lifecycle`} class="ml-auto text-accent hover:underline text-[12px] shrink-0">Lifecycle →</a></span></Notice>}
         {drift && <Notice tone="warn">cluster.yaml differs from what is installed. Plan to review the change.</Notice>}
         {!drift && status?.platform?.appliedAt && <Notice tone="muted">In sync with cluster.yaml; last applied {fmt.datetime(status.platform.appliedAt)}.</Notice>}
         <div class="grid grid-cols-1 lg:grid-cols-2 gap-3">

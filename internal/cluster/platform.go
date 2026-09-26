@@ -5,8 +5,10 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
+	"github.com/mikael/kubit/internal/config"
 	"github.com/mikael/kubit/internal/store"
 	"github.com/mikael/kubit/internal/tofu"
 )
@@ -50,6 +52,13 @@ func (m *Manager) platformRunner(ctx context.Context, name string, sink Sink) (*
 	}
 	if row.State != StateBootstrapped && row.State != StateReady {
 		return nil, fmt.Errorf("cluster %s is %s; the platform needs a bootstrapped cluster", name, row.State)
+	}
+	if c.Spec.Platform.Longhorn.Enabled {
+		if id, pools, err := m.desiredSchematics(ctx, c); err != nil {
+			sink.emit(Warn, "render", "", "could not check the node image for Longhorn's extensions: %v", err)
+		} else if imageOutdated(c, id, pools) {
+			return nil, fmt.Errorf("Longhorn needs the Talos extensions %s on every node first: upgrade Talos (Lifecycle), then plan again", strings.Join(config.LonghornExtensions, " and "))
+		}
 	}
 	kubeconfig, err := m.writeCredentials(ctx, name)
 	if err != nil {

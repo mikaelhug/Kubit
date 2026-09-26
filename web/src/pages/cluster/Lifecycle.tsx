@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'preact/hooks'
 import { useLocation } from 'preact-iso'
-import { api, fmt, type CertInfo, type Versions } from '../../api'
+import { api, fmt, type CertInfo, type ImageStatus, type Versions } from '../../api'
 import { latestTalos, operations, toast, watch, refreshKey } from '../../store'
 import { ConfirmDialog, ErrorBox, Field, MaintenanceNotice, Notice, Pill, Section } from '../../components/ui'
 import type { ClusterCtx } from './ClusterPage'
@@ -13,7 +13,7 @@ export function Lifecycle({ ctx }: { ctx: ClusterCtx }) {
   const spec = cluster.spec.spec
   return (
     <div class="flex flex-col gap-5">
-      <UpgradesSection name={name} talos={spec.talosVersion} k8s={spec.kubernetesVersion} />
+      <UpgradesSection name={name} talos={spec.talosVersion} k8s={spec.kubernetesVersion} updatedAt={cluster.updatedAt} />
       <CredentialsSection name={name} />
       <Section title="Export" help="Everything needed to run this cluster without Kubit: Talos secrets and configs, kubeconfig, an OpenTofu root.">
         <div class="flex gap-2">
@@ -26,7 +26,14 @@ export function Lifecycle({ ctx }: { ctx: ClusterCtx }) {
   )
 }
 
-function UpgradesSection({ name, talos, k8s }: { name: string; talos: string; k8s: string }) {
+export function useImageStatus(name: string, updatedAt: string) {
+  const [image, setImage] = useState<ImageStatus | null>(null)
+  useEffect(() => { api.imageStatus(name).then(setImage).catch(() => setImage(null)) }, [name, updatedAt])
+  return image
+}
+
+function UpgradesSection({ name, talos, k8s, updatedAt }: { name: string; talos: string; k8s: string; updatedAt: string }) {
+  const image = useImageStatus(name, updatedAt)
   const [versions, setVersions] = useState<Versions | null>(null)
   const [upgrade, setUpgrade] = useState({ talos, k8s })
   useEffect(() => { api.versions().then(setVersions).catch(() => {}) }, [latestTalos.value])
@@ -40,13 +47,14 @@ function UpgradesSection({ name, talos, k8s }: { name: string; talos: string; k8
   return (
     <Section title="Upgrades" help={`Rolling, one node at a time, control planes first. Pre-flight checks and a pre-upgrade etcd snapshot come first. ${versions?.note ?? ''}`}>
       <MaintenanceNotice cluster={name} />
+      {image?.outdated && <Notice tone="warn">The nodes run an image without the current extensions ({(image.extensions ?? []).join(', ')}). Upgrade Talos, at {talos} or newer, to re-image them.</Notice>}
       {(talosNew || k8sNew) && <Notice tone="info">Update available: {[talosNew && `Talos ${talosNew}`, k8sNew && `Kubernetes ${k8sNew}`].filter(Boolean).join(' · ')}</Notice>}
       <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
         <Field label={`Talos (now ${talos})`} hint={versions ? `Releases from ${versions.talosSource}; A/B partition swap with automatic rollback on boot failure.` : 'A/B partition swap; Talos rolls back on its own if the new system does not boot.'}>
           <div class="flex gap-2">
             <input class="input mono" list="talos-versions" value={upgrade.talos} onInput={(e) => setUpgrade({ ...upgrade, talos: (e.target as HTMLInputElement).value })} />
             <datalist id="talos-versions">{versions?.talos.map((v) => <option key={v} value={v} />)}</datalist>
-            <button class="btn btn-primary shrink-0" disabled={busy || upgrade.talos === talos} onClick={() => api.upgradeTalos(name, upgrade.talos).then(watch).catch((e) => toast(e.message, 'error'))}>Upgrade</button>
+            <button class="btn btn-primary shrink-0" disabled={busy || (upgrade.talos === talos && !image?.outdated)} onClick={() => api.upgradeTalos(name, upgrade.talos).then(watch).catch((e) => toast(e.message, 'error'))}>Upgrade</button>
           </div>
         </Field>
         <Field label={`Kubernetes (now ${k8s})`} hint={`Re-applies machine configs with the new component images. Supported minors with Talos ${versions?.machinery ?? ''}: ${(versions?.kubernetesMinors ?? []).join(', ')}; no downgrades.`}>

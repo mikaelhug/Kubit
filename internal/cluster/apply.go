@@ -35,32 +35,8 @@ func (m *Manager) ApplyConfigs(ctx context.Context, c *config.Cluster, wantKubel
 	for _, n := range nodes {
 		step := nodeStep(n)
 		err := sink.run(step, func() error {
-			cfg := gen.Nodes[n.Hostname]
-			dial, cancel := context.WithTimeout(ctx, 30*time.Second)
-			tc, err := talos.Dial(dial, n.IP, sec.Talosconfig)
-			cancel()
-			if err != nil {
+			if err := m.applyNodeConfig(ctx, n, gen.Nodes[n.Hostname], sec.Talosconfig, step, sink); err != nil {
 				return err
-			}
-			details, err := tc.ApplyDryRun(ctx, cfg)
-			if err != nil {
-				tc.Close()
-				return fmt.Errorf("dry run: %w", err)
-			}
-			bootID, _ := tc.BootID(ctx)
-			err = tc.Apply(ctx, cfg)
-			tc.Close()
-			if err != nil {
-				return fmt.Errorf("apply: %w", err)
-			}
-			if err := m.Store.PutNodeMachineConfig(ctx, n.IP, cfg); err != nil {
-				return err
-			}
-			sink.emit(Info, step, n.Hostname, "applied: %s", summarizeDryRun(details))
-			if wantReboot(details) {
-				if err := talos.WaitForReboot(ctx, n.IP, sec.Talosconfig, bootID, m.Timeouts.Install); err != nil {
-					return err
-				}
 			}
 			if wantKubelet != "" {
 				if err := waitKubeletVersion(ctx, kc, n.Hostname, wantKubelet, m.Timeouts.Ready); err != nil {
@@ -75,6 +51,34 @@ func (m *Manager) ApplyConfigs(ctx context.Context, c *config.Cluster, wantKubel
 		if err != nil {
 			return fmt.Errorf("%s: %w", n.Hostname, err)
 		}
+	}
+	return nil
+}
+
+func (m *Manager) applyNodeConfig(ctx context.Context, n config.Node, cfg []byte, talosconfig []byte, step string, sink Sink) error {
+	dial, cancel := context.WithTimeout(ctx, 30*time.Second)
+	tc, err := talos.Dial(dial, n.IP, talosconfig)
+	cancel()
+	if err != nil {
+		return err
+	}
+	details, err := tc.ApplyDryRun(ctx, cfg)
+	if err != nil {
+		tc.Close()
+		return fmt.Errorf("dry run: %w", err)
+	}
+	bootID, _ := tc.BootID(ctx)
+	err = tc.Apply(ctx, cfg)
+	tc.Close()
+	if err != nil {
+		return fmt.Errorf("apply: %w", err)
+	}
+	if err := m.Store.PutNodeMachineConfig(ctx, n.IP, cfg); err != nil {
+		return err
+	}
+	sink.emit(Info, step, n.Hostname, "applied: %s", summarizeDryRun(details))
+	if wantReboot(details) {
+		return talos.WaitForReboot(ctx, n.IP, talosconfig, bootID, m.Timeouts.Install)
 	}
 	return nil
 }

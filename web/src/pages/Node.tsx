@@ -5,7 +5,7 @@ import { clusters, connected, machineList, machines, operations, refreshKey, res
 import { ReaddressDialog } from './cluster/Nodes'
 import { RemoteManagement } from '../components/RemoteManagement'
 import { LabVMControls, MakeLabHostDialog } from '../components/LabHost'
-import { canAdopt, canMakeLabHost, canRetire, hostName, hostOf, isLabVM, kindDetail, kindLabel, KindPill, modelOf, TypePill } from '../machine'
+import { canAdopt, canMakeLabHost, canRetire, hostName, hostOf, isLabVM, kindDetail, kindLabel, KindPill, lastSeenOf, modelOf, TypePill } from '../machine'
 import { Tabs } from '../components/Tabs'
 import { DataTable, type Column } from '../components/DataTable'
 import { Breadcrumbs, ConfirmDialog, Dialog, ErrorBox, Field, KeyValue, MaintenanceNotice, Meter, Notice, Pill, Section, SeenAgo, StatusDot, stateTone } from '../components/ui'
@@ -111,7 +111,7 @@ function OverviewTab({ inv, invErr, k8s, k8sErr, node, spec }: { inv: Inventory 
           ...(host ? [['Lab host', <a class="text-accent hover:underline" href={`/labhosts/${host.mac}/overview`}>{hostName(host)}</a>] as [string, any]] : []),
           ['Identity', <span class="mono text-[12px]">{node.mac}{node.uuid ? ` · ${node.uuid}` : ''}{node.serial ? ` · ${node.serial}` : ''}</span>],
           ['Addresses seen', <span class="mono text-[12px]">{[...new Set([...(node.ipsSeen ?? []), node.ip])].filter(Boolean).join(' → ') || '—'}</span>],
-          ['Last seen', fmt.datetime(node.lastSeen)],
+          ['Last seen', fmt.datetime(lastSeenOf(node))],
           ...(spec ? [['Install disk', <span class="mono">{spec.installDisk?.path ?? (spec.installDisk?.selector ? JSON.stringify(spec.installDisk.selector) : 'pool policy')}</span>] as [string, any]] : []),
           ...(spec?.dataDisks?.length ? [['Data disks', <span class="mono">{spec.dataDisks.map((d, i) => `${d} → /var/mnt/data-${i + 1}`).join(' · ')}</span>] as [string, any]] : []),
         ]} />
@@ -287,7 +287,7 @@ function ServicesTab({ ip, cluster }: { ip: string; cluster?: string }) {
       <ErrorBox error={error} />
       <DataTable search={false} columns={[
         { id: 'id', header: 'Service', mono: true, sort: (s) => s.id, cell: (s) => s.id },
-        { id: 'state', header: 'State', sort: (s) => s.state, cell: (s) => <Pill tone={s.healthy ? 'good' : s.state === 'Running' ? 'warn' : stateTone(s.state.toLowerCase())}>{s.state}{s.healthy ? '' : ' · unhealthy'}</Pill> },
+        { id: 'state', header: 'State', sort: (s) => s.state, cell: (s) => { const ok = s.healthy || (s.unknown && s.state === 'Running'); return <Pill tone={ok ? 'good' : s.state === 'Running' ? 'warn' : stateTone(s.state.toLowerCase())}>{s.state}{ok ? '' : ' · unhealthy'}</Pill> } },
         { id: 'last', header: 'Last event', cell: (s) => <span class="text-muted">{s.last}</span> },
       ] as Column<Service>[]} rows={services} rowKey={(s) => s.id} />
     </Section>
@@ -362,7 +362,7 @@ function ActionsTab({ node, k8s, inv, cluster, spec, talosVersion }: { node: Nod
         button={k8s?.unschedulable ? 'Uncordon' : 'Cordon'} disabled={!k8s} onClick={() => run(k8s?.unschedulable ? api.uncordon(name, host) : api.cordon(name, host))} />
       <Action title="Drain" what={`Cordon, then evict ${pods} running pod${pods === 1 ? '' : 's'} (DaemonSet pods stay). Use before maintenance; uncordon afterwards.`} button="Drain" disabled={!k8s} onClick={() => setConfirm('drain')} />
       <Action title="Reboot" what="Reboot via the Talos API and wait for Ready. Drain first to move pods." button="Reboot" disabled={!inv} onClick={() => setConfirm('reboot')} secondary={{ label: 'Drain, reboot, uncordon', onClick: () => setConfirm('reboot-drain') }} />
-      <Action title="Upgrade Talos on this node" what={needsUpgrade ? `This node runs ${inv?.talosVersion}; the cluster declares ${talosVersion}. Upgrades just this node (A/B slot, automatic rollback on boot failure).` : `Already on the cluster's declared version ${talosVersion}. Change the version under the cluster's Settings to upgrade.`} button="Upgrade" disabled={!needsUpgrade} onClick={() => setConfirm('upgrade')} />
+      <Action title="Upgrade Talos on this node" what={needsUpgrade ? `This node runs ${inv?.talosVersion}; the cluster declares ${talosVersion}. Upgrades just this node (A/B slot, automatic rollback on boot failure).` : `Already on the cluster's declared version ${talosVersion}. Cluster upgrades are under Lifecycle.`} button="Upgrade" disabled={!needsUpgrade} onClick={() => setConfirm('upgrade')} />
       <Action title="Rename" what="Change the hostname and the Kubernetes Node name. Pods are drained once and the old Node object is deleted; no reboot." button="Rename" disabled={!inv || !k8s} onClick={() => { setTo(host); setConfirm('rename') }} />
       <Action title="Move to another pool" what={pools.length ? `Same-role pools: ${pools.map((p) => p.name).join(', ')}. Labels and taints follow the pool; a different extension set means a re-image.` : `No other ${cp ? 'control-plane' : 'worker'} pool exists. Add one under Settings → Pools.`} button="Move" disabled={!inv || pools.length === 0} onClick={() => { setPool(pools[0]?.name ?? ''); setConfirm('pool') }} />
       <Action title="Update address" what={spec?.network ? `Static ${spec.network.addresses.join(', ')}${spec.network.vlan ? ` on VLAN ${spec.network.vlan}` : ''}. Change it or go back to DHCP.` : `DHCP; declared ${node.ip}${status?.seenAt && status.seenAt !== node.ip ? `, last seen at ${status.seenAt}` : ''}. Record a new lease or pin a static address.`} button="Update" disabled={!inv} onClick={() => setConfirm('readdress')} />

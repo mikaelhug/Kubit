@@ -44,7 +44,7 @@ export function Operations({ id }: { id?: string }) {
     { id: 'kind', header: 'Operation', sort: (o) => o.kind, cell: (o) => <a href={`/operations/${o.id}`} class="font-medium hover:underline">{fmt.kind(o.kind)}</a> },
     { id: 'cluster', header: 'Cluster', sort: (o) => o.cluster, cell: (o) => o.cluster ? <a href={`/clusters/${o.cluster}/overview`} class="text-accent hover:underline">{o.cluster}</a> : <span class="text-muted">—</span> },
     { id: 'status', header: 'Status', sort: (o) => o.status, cell: (o) => <Pill tone={stateTone(o.status)}>{o.status}</Pill> },
-    { id: 'steps', header: 'Steps', cell: (o) => { const s = o.steps ?? []; const r = s.find((x) => x.status === 'running'); return <span class="text-[12px] text-muted">{r ? r.title : s.length ? `${s.filter((x) => x.status === 'done').length}/${s.length}` : '—'}</span> } },
+    { id: 'steps', header: 'Steps', cell: (o) => { const s = (o.steps ?? []).filter((x) => x.status !== 'skipped'); const r = s.find((x) => x.status === 'running'); return <span class="text-[12px] text-muted">{r ? r.title : s.length ? `${s.filter((x) => x.status === 'done').length}/${s.length}` : '—'}</span> } },
     { id: 'started', header: 'Started', sort: (o) => o.startedAt, cell: (o) => <span class="num text-muted">{fmt.datetime(o.startedAt)}</span> },
     { id: 'duration', header: 'Duration', align: 'right', cell: (o) => <span class="num">{elapsed(o.startedAt, o.finishedAt)}</span> },
   ]

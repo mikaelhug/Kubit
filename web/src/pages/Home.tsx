@@ -1,10 +1,11 @@
 import { useEffect, useState } from 'preact/hooks'
 import { api, fmt, kubitKey, labHostKey, type HealthEvent, type NodeRow, type OffsiteStatus, type PxeStatus, type Versions } from '../api'
-import { authState, clusters, health, latestTalos, loadAllHealth, machineList, observer, operations, refreshKey, settings, statuses, ack } from '../store'
+import { authState, clusters, daemon, health, latestTalos, loadAllHealth, machineList, observer, operations, refreshKey, settings, statuses, ack } from '../store'
 import { ClusterPill, Notice, Pill, Section, StatusDot, stateTone } from '../components/ui'
 import { EventRow, verLess } from './cluster/Overview'
 import { groupOf, hostName, labOffline, labState, type MachineGroup } from '../machine'
 import { elapsed } from '../clock'
+import { ThisMacDialog } from '../components/LabHost'
 
 const vanillaSchematic = '376567988ad370138ad8b2698212367b8edcb69b5fd68c80be1f2ec7d603b4ba'
 
@@ -165,6 +166,7 @@ function Welcome({ versions }: { versions: Versions | null }) {
   const factory = settings.value?.factoryUrl ?? 'https://factory.talos.dev'
   const talos = versions?.talos.find((v) => !v.includes('-')) ?? versions?.minTalos ?? 'v1.14.0'
   const iso = (arch: 'amd64' | 'arm64') => `${factory}/image/${vanillaSchematic}/${talos}/metal-${arch}.iso`
+  const [mac, setMac] = useState(false)
   return (
     <div class="p-8 max-w-3xl flex flex-col gap-6">
       <div>
@@ -187,7 +189,14 @@ function Welcome({ versions }: { versions: Versions | null }) {
         <p>Pick the machines; Kubit proposes roles, a VIP and a LoadBalancer range and lints the design.</p>
         <a class="btn btn-primary mt-2 self-start" href="/clusters/new">Create a cluster</a>
       </Step>
+      {daemon.value?.os === 'darwin' && (
+        <div class="panel p-4 flex items-center gap-4">
+          <div class="flex-1 text-[13px]"><div class="font-medium">Or run a cluster on this Mac</div><p class="text-muted">Talos VMs under vfkit, created and joined in one step.</p></div>
+          <button class="btn shrink-0" onClick={() => setMac(true)}>Lab host on this Mac</button>
+        </div>
+      )}
       <p class="text-[13px] text-muted">One machine with AMT or a BMC can instead become a lab host: Debian + KVM installed by Kubit, Talos VMs carved from it. Add it by remote management in Inventory, then <b>Make lab host</b>.</p>
+      {mac && <ThisMacDialog onClose={() => setMac(false)} />}
     </div>
   )
 }
