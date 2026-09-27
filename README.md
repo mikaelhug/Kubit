@@ -281,8 +281,8 @@ Kubelet registration takes 2–3 minutes after the API server starts (bootstrap-
 A node with static `network:` is applied on its maintenance-mode lease and awaited on
 the static address; cluster.yaml and the machine row then switch to it. Node
 operations: **rename** (drain → `HostnameConfig` without reboot → kubelet re-registers
-→ old Node deleted → uncordon), **move to pool** (same role; label/taint re-apply, or a
-single-node upgrade to the pool's installer when the extension set differs),
+→ old Node deleted → uncordon), **move to pool** (same role; label/taint re-apply, and a
+re-image to the pool's installer when the node reports another schematic or none),
 **re-address** (DHCP↔static; applies via whichever address answers, waits on the new
 one, then restarts the kubelet on workers or reboots control planes — etcd and the
 static pods keep the old address until restart; refused for the no-VIP endpoint node). `PUT
@@ -296,7 +296,8 @@ warnings for any declaration.
 
 Other commands: `cluster apply` (regenerate + re-apply every machine config from
 cluster.yaml, then platform), `node add`, `node remove` (drain → delete → graceful
-reset; refuses to drop to 0 or, without `--force`, 2 control planes), `upgrade talos`,
+reset; refuses to drop to 0 or, without `--force`, 2 control planes, and always refuses
+the no-VIP endpoint node), `upgrade talos`,
 `upgrade kubernetes` (config re-apply with new component images, control planes first),
 `status`, `cluster export`.
 
@@ -421,11 +422,13 @@ Verified on a single-node VM: ingress-nginx reachable from the Mac on its MetalL
 machine configs fed verbatim via `machine_configuration_input`, kubeconfig read.
 `talos_machine_bootstrap` is gated behind `bootstrap = false` because the provider fails
 with `AlreadyExists` on a bootstrapped node. Verified: `tofu apply` on a live cluster is
-a no-op and the following `tofu plan` reports no changes.
+a no-op and the following `tofu plan` reports no changes. `.kubit-export.json` lists the
+files Kubit wrote; a re-export removes only listed files that no longer apply, so files
+of your own in the directory stay.
 
 ## Web UI and API
 
-`kubit serve` (default `127.0.0.1:8080`) hosts the SPA and `/api/v1`. Who may call it:
+`kubit serve` (default `127.0.0.1:8090`) hosts the SPA and `/api/v1`. Who may call it:
 
 ### Identity and roles
 
@@ -486,15 +489,34 @@ Long-running calls return `{operationId}` immediately; the operation's events ar
 persisted in the `operations` table and streamed. Operations are serialised per cluster.
 A daemon restart marks operations left `running` as failed.
 
+Errors are `{error, code?, command?}`: 400 for invalid input (anything wrapping
+`store.ErrInvalid`, such as a spec change `config.CheckChange` refuses), 404 for unknown
+objects, 409 for a precondition, 422 for a declaration that fails validation, 502/504
+when a Talos node is unavailable or times out, 500 otherwise. `code` names the
+failed check (`pxe-down`, `pxe-no-address`, `pxe-segment`,
+`amt-down`, `vfkit-missing`, `vip-taken`, `metallb-overlap`, `unauthorized`,
+`forbidden`) and `command` is the command that fixes it.
+
 ## PXE
 
 `sudo kubit pxe --iface en0 [--talos-version v1.14.0] [--schematic ID]` answers PXE
 firmware as a proxyDHCP (no addresses handed out; the LAN's DHCP stays authoritative),
 serves iPXE binaries (`undionly.kpxe`, `ipxe.efi`, `ipxe-arm64.efi`, fetched once from
 boot.ipxe.org into `~/.kubit/cache`) over TFTP, and on `:8069` an iPXE script that
-boots the Talos kernel/initramfs of the profile with `talos.platform=metal`. Boot
-assets are proxied from the Image Factory through the same cache, so a rack of machines
-downloads them once. iPXE's own DHCP round is recognised (user class / option 175) and
+boots the Talos kernel/initramfs of the profile with `talos.platform=metal` (serial
+console `ttyS0`, `ttyAMA0` on arm64). Boot assets are proxied from the Image Factory
+through the same cache, so a rack of machines downloads them once; `/assets` serves only
+the profile's schematic and Talos version (exact kernel/initramfs names), and at start
+the cache keeps the profile's version plus the newest three per schematic and drops
+`.part` leftovers older than an hour. Factory assets are content-addressed and cached
+for good; the Debian netboot installer (`current`) is revalidated once a day as a
+`linux`/`initrd.gz` pair against the mirror's ETag/Last-Modified (kept in a `.meta`
+sidecar), and served stale, with a 10-minute backoff, while the mirror is slow or down. The DHCP sockets are bound to `--iface` (`SO_BINDTODEVICE` on Linux,
+`IP_BOUND_IF` on macOS). Without `--ip` the advertised address follows the interface
+(looked up at most every 5 s, logged on change); while the interface has no IPv4
+address nothing is answered, `/status.json` reports `ip: ""`, the Network boot page and
+Home say so, and lab-host provisioning or a PXE boot answers 409 `pxe-no-address`.
+On :67 only DISCOVERs and REQUESTs naming this server are answered; :4011 answers every boot-server REQUEST. iPXE's own DHCP round is recognised (user class / option 175) and
 pointed at the script instead of the binary. BIOS firmware and iPXE get the option 43
 discovery bypass; UEFI firmware gets a plain proxy offer and comes back to the boot
 server on :4011 (the variant every firmware supports). Needs root for UDP 67/69/4011
@@ -563,6 +585,11 @@ and the kubelet, not enough for the platform add-ons — and clears with `node.m
 once it is resized. `GET /clusters/{name}/status` serves the
 watcher's latest result; `?fresh=true` forces a live query; it carries `observedAt`,
 `lastSnapshotAt` and `snapshotInterval` for the Overview's Backups card.
+
+**Retention.** Hourly the watcher prunes the store: samples keep full resolution for
+24 h, then one per hour for 30 d; acknowledged events go after 90 days (open alerts
+stay); finished operations older than 90 days go with their logs, except the newest 500
+per cluster; the audit log keeps a year.
 
 **Confirmation, gaps and the blind observer.** A reachability fact (`talos.unreachable`,
 `api.unreachable`, `etcd.unhealthy`, `node.notready`) becomes an alert only after it has
@@ -651,7 +678,9 @@ first while the cluster is still healthy.
 
 - **Pre-upgrade checks** — every Talos/Kubernetes upgrade starts with `precheck`
   (API reachable, etcd healthy, all nodes Ready/uncordoned/Talos-reachable, ≥ 1 GiB
-  free on `/var` per node, Talos target published by the Image Factory, and for
+  free on `/var` per node, Talos target published by the Image Factory, Talos and
+  Kubernetes versions supported together per the machinery's compatibility tables, a
+  Kubernetes target at most one minor above the oldest kubelet and never below it, and for
   Kubernetes the `apiserver_requested_deprecated_apis` metric checked against the
   target release — usage of an API removed in the target blocks the upgrade) and a
   `pre-upgrade` etcd snapshot.
@@ -742,7 +771,9 @@ heartbeat that stops arriving means the daemon is down — the dead-man's switch
   clears its data when its identity deps change and reloads in place on `refresh` values, and
   each scope is its own signal, so a `refresh` re-renders only its subscribers. Messages carry
   sequence numbers: a reconnect replays from `?since=` out of a 2000-message ring, or
-  gets `resync` and reloads base state once. Writes by another process (the CLI while
+  gets `resync` and reloads base state once. A client that falls 256 messages behind,
+  or whose write stalls for 5 s, is disconnected rather than slowing the others; it
+  reconnects with `?since=` and catches up from the ring. Writes by another process (the CLI while
   the daemon runs) are detected daemon-side via SQLite's `data_version` and trigger
   `resync`. While disconnected the console shows a banner and the status dot pulses;
   the only timer in the UI is the shared clock (`web/src/clock.ts`), read only by leaf
@@ -766,7 +797,7 @@ heartbeat that stops arriving means the daemon is down — the dead-man's switch
 
 ## End-to-end script
 
-`hack/e2e.sh <subnet> [--name e2e] [--url http://127.0.0.1:8080] [--with-restore] [--teardown --vm-ids "1 2 3 4"]` drives a
+`hack/e2e.sh <subnet> [--name e2e] [--url http://127.0.0.1:8090] [--with-restore] [--teardown --vm-ids "1 2 3 4"]` drives a
 running daemon through discover → design → create (3 control planes) → add worker →
 rename → snapshot + verify → [restore drill] → crashloop alert → remove worker, every
 step as an API operation visible in Activity, asserting with `kubectl` after each.
@@ -829,7 +860,7 @@ Reference` and boots normally, so a non-zero return fails the operation. Every r
 and reply is mirrored into the operation log as `amt:` lines.
 
 Install the PXE server once as a root service — `sudo kubit service install --pxe
---iface en0 --kubit-url http://127.0.0.1:8080` (launchd system daemon / systemd unit;
+--iface en0 --kubit-url http://127.0.0.1:8090` (launchd system daemon / systemd unit;
 `service uninstall --pxe` removes it) — the only sudo Kubit ever needs; the Network
 boot page prints the exact command while it is not running. The machine finds it by
 broadcast: UEFI network boot sends a DHCP request, the LAN's DHCP answers with the
@@ -992,8 +1023,14 @@ reaching the VM subnet through macOS Local Network privacy.
 The host itself gets the treatment nodes get. Every service interval the watcher's
 SSH tick also reads `/proc` and `df` (`libvirt.Client.Metrics`: load, CPU %, memory
 used, the filesystem carrying `/var/lib/kubit`, running VMs, uptime) and files a
-sample under the pseudo-cluster `labhost:<mac>` in the same `samples` table
-(`disk`/`disk_cap` columns, migration v11) — so the lab host page shows CPU, memory,
+sample. CPU % is the `/proc/stat` delta since the previous tick (a 1 s sample when there
+is none or it is older than 5 min; on a Mac `top` samples 1 s, as macOS has no
+cumulative tick counter outside Mach calls). Capacity (CPUs, memory, free disk, kernel,
+bridge) is cached per host for an hour while the host is ready, dropped when a VM is
+defined or deleted and after an upgrade or reboot, and re-read on demand with
+`labhost.FreshCapacity`; `labhost.Observe` runs `List` and `Metrics` side by side
+(separate SSH sessions on one connection). The sample goes under the pseudo-cluster
+`labhost:<mac>` in the same `samples` table (`disk`/`disk_cap` columns, migration v11) — so the lab host page shows CPU, memory,
 VM disk and VM count with the same sparklines and ranges as a cluster overview, and
 a `hostSample` live message appends each reading. Alerts come from the same path
 (`events` under `labhost:<mac>`, runbooks, Inventory pill, forwarders):
@@ -1012,8 +1049,11 @@ installed kernel, release, whether unattended-upgrades is on); *Check now* does 
 demand. The preseed installs `unattended-upgrades`, so Debian security and stable
 fixes land daily on their own, never with a reboot.
 
-**Update host** (`labhost.update`) is the reboot: `check` → `upgrade` (apt
-`full-upgrade` + `autoremove`, non-interactive, config files kept) → if no reboot is
+**Update host** (`labhost.update`) is the reboot: `check` → `upgrade` (`dpkg
+--configure -a`, then apt `full-upgrade` + `autoremove`, non-interactive, config files
+kept, waiting up to 10 min for the dpkg lock; it runs as the transient unit
+`kubit-upgrade.service` with its output in `/var/lib/kubit/upgrade.log`, so a dropped
+SSH connection never kills dpkg — Kubit reconnects and waits for the unit) → if no reboot is
 needed the operation ends there and the VMs were never touched → otherwise `vms`
 (graceful `virsh shutdown`, 90 s, then destroy) → `reboot` (wait for SSH, up to
 10 min) → `resume` (domains are `virsh autostart`, stragglers started) → `cluster`
@@ -1036,19 +1076,28 @@ user unit and starts it at login: `~/Library/LaunchAgents/dev.kubit.serve.plist`
 `~/.config/systemd/user/kubit.service` on Linux (`--system` for
 `/etc/systemd/system`, run as root; `loginctl enable-linger` keeps a user unit alive
 while logged out). `service status` / `service uninstall` manage it; the unit sets
-`KUBIT_SERVICE=1`, shown as "service" in the status bar. `kubit serve` stops cleanly
-on SIGTERM: running operations are recorded as cancelled, the listener drains and
-the WAL is checkpointed.
+`KUBIT_SERVICE=1`, shown as "service" in the status bar. `kubit serve` takes the home
+lock, opens the store and binds the address before anything starts, so a second
+daemon or a busy port fails at once; "listening on" is printed after the bind. Every
+command stops cleanly on SIGINT/SIGTERM (a second signal kills it): `serve` records
+running operations as cancelled, drains the listener and checkpoints the WAL.
+
+Under `sudo` (`kubit pxe`, `service install --pxe`, `--system`) Kubit uses the invoking
+user's home (`SUDO_USER`'s `~/.kubit`) unless `KUBIT_HOME` is set, and hands the
+directories it creates there (the home, `log`, `cache`) to the home's owner, so the
+daemon keeps working as that user. Files the root PXE service writes into them stay
+root-owned but deletable by the user.
 
 ## Backup and restore
 
 `kubit backup -o file.kubitbak` (or Settings → Download backup) writes a tar.gz of
-`~/.kubit` minus `bin/`, `cache/`, `vms/` and `.terraform/`, sealed with the master key
+`~/.kubit` minus `bin/`, `cache/`, `vms/`, `.terraform/` and `serve.lock`, sealed with the master key
 (AES-256-GCM; magic `KUBITBAK1`). The database's WAL is checkpointed first. Cluster
 secrets are therefore double-sealed; kubeconfig/talosconfig files and tofu state are
-sealed once. `kubit restore file` unpacks into an empty `KUBIT_HOME` (`--force` to
-overwrite) and needs the same master key: `kubit key export` prints it for
-`KUBIT_MASTER_KEY` on another machine.
+sealed once. `kubit restore file` takes the home lock, so it refuses while the daemon
+runs, and unpacks into an empty `KUBIT_HOME` (`bin/`, `cache/`, `vms/` and the lock
+file do not count; `--force` to overwrite). It needs the same master key: `kubit key
+export` prints it for `KUBIT_MASTER_KEY` on another machine.
 
 ## Status
 

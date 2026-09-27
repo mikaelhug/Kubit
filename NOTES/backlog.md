@@ -3,8 +3,6 @@
 - vfkit console: arm64 ISO logs to ttyAMA0; direct-kernel boot with `console=hvc0` would
   give a readable `console.log`.
 - vmnet NAT is flaky for ~2 min after VM boot; harness could poll :50000 before returning.
-- Two clusters on one L2 with the same MetalLB range collide (both announce .200); the
-  create wizard could warn when a range overlaps another stored cluster's.
 - `status` etcd leader detection only asks the first reachable control plane; a
   cluster whose first CP is down reports no leader.
 - Stale mirror pods (`Pending`, old image) linger in kube-system for a while after a
@@ -52,9 +50,9 @@
   old Node entries linger until deleted).
 - Maintenance window: the daemon's own scheduled snapshots ignore it on purpose
   (non-disruptive); consider a per-cluster switch for "quiet hours" on alerts.
-- Kubit's default :8080 collided with another local app during M9 testing; the daemon
-  was run with `--addr 127.0.0.1:8090`. Consider a free-port fallback with a clear log
-  line, or making the port part of Kubit settings.
+- Kubit's old default :8080 collided with another local app during M9 testing; the
+  default is now :8090. Consider a free-port fallback with a clear log line, or making
+  the port part of Kubit settings.
 - Maintenance-window notice in confirm dialogs is fetched when the dialog opens (not
   live); computing open/closed client-side from the spec would remove that fetch.
 - The live ring buffer (2000 messages) is per daemon process; a long outage still ends
@@ -202,10 +200,8 @@
   the macOS per-process LAN denial seen on 2026-09-19 (an orphaned `kubit serve` got
   `EHOSTUNREACH` for every LAN address while other processes did not) is detected and
   reported but its cause is not proven.
-- Console rework leftovers (2026-09-19): Home computes update notices from
-  `api.versions()` per page load rather than the daemon's `versions` message carrying
-  the latest Kubernetes too; Inventory's *Boot all into Talos* fires one power op per
-  machine (no single bulk operation); the lab host Hardware tab shows host capacity
+- Console rework leftovers (2026-09-19): Inventory's *Boot all into Talos* fires one
+  power op per machine (no single bulk operation); the lab host Hardware tab shows host capacity
   only, no disks or links until Debian reports them (`labTick` refresh from lsblk is
   still open above); Kubit-level events (`kubit` pseudo-cluster: test alert,
   heartbeat) are not listed anywhere in the console.
@@ -226,8 +222,6 @@
     empty (arm64 ISO logs to ttyAMA0); Intel Macs untested (amd64 path exists).
   - Runbook text for `labhost.unreachable` and the Home empty state still speak of SSH/Debian.
   - README Endpoints list is stale (machines, oob, labhost, labhosts routes missing).
-  - `vfkit.download` repeats `internal/pxe/assets.go`'s `.part`/size/rename rules; share
-    one exported helper if either changes.
 - Hyper-V lab host (feasibility, no Windows machine yet): fits the `labhost.Driver` seam.
   Kubit stays on macOS/Linux and drives Windows over its built-in OpenSSH server with
   `powershell -EncodedCommand` returning JSON (Kubit's ed25519 key in
@@ -239,7 +233,6 @@
   subnet scan by MAC. Blockers: `designDisks` and the web `installCandidates` pin
   `/dev/vda`, but Hyper-V SCSI disks are `sda`/`sdb`; needs Windows Pro/Server.
 
-- Web copy: `Scanning…` (create wizard scan button) and `linting…` (review checks) still carry ellipses; Inventory already uses `Scanning`.
 - Namespace management (create/delete an app namespace with a Pod Security level) is left
   out on purpose: app namespaces live in Git with the app. Revisit only if Kubit ever
   deploys apps itself. The node page's pod table still lists every namespace (platform pods
@@ -313,17 +306,18 @@
   - JSON handlers accept any Content-Type (hack scripts post with `curl -d`); requiring
     `application/json` would close form-post CSRF from other origins.
 - Review follow-ups (phase 2):
-  - `MoveNodeToPool` reimages through `UpgradeNode` with `force=false`, so a node already
-    on the cluster's Talos version never gets the new pool's image; its steps also
-    replace the pool move's declared step list instead of nesting under it
-    (`internal/cluster/nodeedit.go`).
-  - `handleLive` subscribes before `since()`, so a message published in between is
-    sent twice; the web client only suppresses replayed toasts, not the message, so a
-    live operation log can show a line twice. Drop `seq <= lastSeq` on either side.
-  - The cached REST mapper resets only on NoMatch; after a Kubernetes upgrade it can
-    serve stale resource versions until one lookup misses.
+  - `platform.argocd` is still parsed as `LegacyArgoCD` and folded into Flux on load;
+    dropping the field needs a store migration that rewrites stored specs first.
   - Locks held across remote I/O: the pools edit calls `EnsureSchematic` (Image
     Factory) under the spec lock; lab VM resize/delete hold `labhost:<mac>` across SSH.
   - `handleLabRelease` returns on a partial error before writing the audit entry.
   - WebSocket `OriginPatterns` is same-origin plus the dev server; a reverse proxy that
     rewrites `Host` fails the check. Accept `X-Forwarded-Host` or a configured origin.
+- Lab host metrics: one `virsh domstats --list-running` call could replace the per-domain
+  `virsh domstate`/`dumpxml`/`qemu-img info` loop in `libvirt.Client.List` (needs a real
+  libvirt host to verify the field mapping).
+- Rename leftovers: a failed rename after the new hostname registers leaves the old
+  cordoned Node object; the error names it. Marking it (annotation) would let a later
+  pass delete it safely.
+- A Debian mirror without ETags can still answer 304 for an older-dated `current`
+  file; deb.debian.org sends ETags.
