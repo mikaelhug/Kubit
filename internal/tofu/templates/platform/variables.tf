@@ -55,12 +55,4 @@ variable "oidc_admin_group" {
 
 variable "chart_versions" {
   type = map(string)
-  default = {
-    metallb        = "0.16.1"
-    ingress_nginx  = "4.15.1"
-    metrics_server = "3.14.0"
-    cert_manager   = "v1.21.2"
-    flux           = "2.19.1"
-    longhorn       = "1.10.1"
-  }
 }

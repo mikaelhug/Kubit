@@ -1,13 +1,17 @@
 BIN     := bin/kubit
 VERSION := $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 
-.PHONY: build test web run clean
+.PHONY: build test web clean
 
 build: web
 	go build -ldflags "-X main.version=$(VERSION)" -o $(BIN) ./cmd/kubit
 
-web:
-	@if [ -d web/node_modules ]; then cd web && npm run build; fi
+web: web/node_modules/.package-lock.json
+	cd web && npm run build
+
+web/node_modules/.package-lock.json: web/package-lock.json
+	cd web && npm ci
+	@touch $@
 
 test:
 	go test ./...

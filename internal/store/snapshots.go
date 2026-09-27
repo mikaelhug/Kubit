@@ -37,7 +37,7 @@ func (s *Store) AddSnapshot(ctx context.Context, sn Snapshot) (int64, error) {
 
 const snapshotCols = `id, cluster, ts, node, path, size_bytes, sha256, keys, talos_version, k8s_version, source, status, offsite`
 
-func scanSnapshot(r interface{ Scan(...any) error }) (*Snapshot, error) {
+func scanSnapshot(r scanner) (*Snapshot, error) {
 	var sn Snapshot
 	if err := r.Scan(&sn.ID, &sn.Cluster, &sn.TS, &sn.Node, &sn.Path, &sn.SizeBytes, &sn.SHA256, &sn.Keys, &sn.TalosVersion, &sn.K8sVersion, &sn.Source, &sn.Status, &sn.Offsite); err != nil {
 		return nil, err
@@ -46,20 +46,7 @@ func scanSnapshot(r interface{ Scan(...any) error }) (*Snapshot, error) {
 }
 
 func (s *Store) ListSnapshots(ctx context.Context, cluster string) ([]Snapshot, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT `+snapshotCols+` FROM snapshots WHERE cluster = ? ORDER BY ts DESC, id DESC`, cluster)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	out := []Snapshot{}
-	for rows.Next() {
-		sn, err := scanSnapshot(rows)
-		if err != nil {
-			return nil, err
-		}
-		out = append(out, *sn)
-	}
-	return out, rows.Err()
+	return queryAll(ctx, s.db, scanSnapshot, `SELECT `+snapshotCols+` FROM snapshots WHERE cluster = ? ORDER BY ts DESC, id DESC`, cluster)
 }
 
 func (s *Store) GetSnapshot(ctx context.Context, id int64) (*Snapshot, error) {

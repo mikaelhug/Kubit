@@ -2,6 +2,7 @@ package k8s
 
 import (
 	"context"
+	"fmt"
 	"sort"
 	"sync"
 
@@ -11,9 +12,11 @@ import (
 	discoveryv1 "k8s.io/api/discovery/v1"
 	networkingv1 "k8s.io/api/networking/v1"
 	storagev1 "k8s.io/api/storage/v1"
+	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/fields"
 	"k8s.io/apimachinery/pkg/labels"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/client-go/informers"
 	"k8s.io/client-go/tools/cache"
@@ -28,24 +31,40 @@ type Cache struct {
 	flux   map[schema.GroupVersionResource]cache.SharedIndexInformer
 }
 
+type informerScope struct {
+	gvr   schema.GroupVersionResource
+	scope string
+}
+
+var informerScopes = []informerScope{
+	{corev1.SchemeGroupVersion.WithResource("pods"), ScopeWorkloads},
+	{appsv1.SchemeGroupVersion.WithResource("deployments"), ScopeWorkloads},
+	{appsv1.SchemeGroupVersion.WithResource("daemonsets"), ScopeWorkloads},
+	{appsv1.SchemeGroupVersion.WithResource("statefulsets"), ScopeWorkloads},
+	{batchv1.SchemeGroupVersion.WithResource("jobs"), ScopeWorkloads},
+	{batchv1.SchemeGroupVersion.WithResource("cronjobs"), ScopeWorkloads},
+	{corev1.SchemeGroupVersion.WithResource("namespaces"), ScopeWorkloads},
+	{corev1.SchemeGroupVersion.WithResource("services"), ScopeNetwork},
+	{discoveryv1.SchemeGroupVersion.WithResource("endpointslices"), ScopeNetwork},
+	{networkingv1.SchemeGroupVersion.WithResource("ingresses"), ScopeNetwork},
+	{corev1.SchemeGroupVersion.WithResource("persistentvolumeclaims"), ScopeStorage},
+	{corev1.SchemeGroupVersion.WithResource("persistentvolumes"), ScopeStorage},
+	{storagev1.SchemeGroupVersion.WithResource("storageclasses"), ScopeStorage},
+	{corev1.SchemeGroupVersion.WithResource("nodes"), ScopeNodes},
+}
+
+func (is informerScope) informer(f informers.SharedInformerFactory) cache.SharedIndexInformer {
+	g, err := f.ForResource(is.gvr)
+	if err != nil {
+		panic(err)
+	}
+	return g.Informer()
+}
+
 func NewCache(f informers.SharedInformerFactory) *Cache {
 	k := &Cache{f: f}
-	for _, inf := range []cache.SharedIndexInformer{
-		f.Core().V1().Pods().Informer(),
-		f.Core().V1().Namespaces().Informer(),
-		f.Core().V1().Services().Informer(),
-		f.Core().V1().PersistentVolumeClaims().Informer(),
-		f.Core().V1().PersistentVolumes().Informer(),
-		f.Apps().V1().Deployments().Informer(),
-		f.Apps().V1().DaemonSets().Informer(),
-		f.Apps().V1().StatefulSets().Informer(),
-		f.Batch().V1().Jobs().Informer(),
-		f.Batch().V1().CronJobs().Informer(),
-		f.Discovery().V1().EndpointSlices().Informer(),
-		f.Networking().V1().Ingresses().Informer(),
-		f.Storage().V1().StorageClasses().Informer(),
-	} {
-		k.synced = append(k.synced, inf.HasSynced)
+	for _, is := range informerScopes {
+		k.synced = append(k.synced, is.informer(f).HasSynced)
 	}
 	return k
 }
@@ -136,59 +155,62 @@ func cached[T any, P interface {
 	return sortedValues(objs), nil
 }
 
-func (c *Client) deployments(ctx context.Context, ns string) ([]appsv1.Deployment, error) {
+func cachedOr[T any, P interface {
+	*T
+	metav1.Object
+}](c *Client, lister func(informers.SharedInformerFactory) ([]P, error), live func() (runtime.Object, error)) ([]T, error) {
 	if f := c.listers(); f != nil {
-		return cached(f.Apps().V1().Deployments().Lister().Deployments(ns).List(labels.Everything()))
+		return cached(lister(f))
 	}
-	list, err := c.AppsV1().Deployments(ns).List(ctx, metav1.ListOptions{})
+	list, err := live()
 	if err != nil {
 		return nil, err
 	}
-	return list.Items, nil
+	objs, err := meta.ExtractList(list)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]T, 0, len(objs))
+	for _, o := range objs {
+		p, ok := o.(P)
+		if !ok {
+			return nil, fmt.Errorf("unexpected %T in %T", o, list)
+		}
+		out = append(out, *p)
+	}
+	return out, nil
+}
+
+var listAll = metav1.ListOptions{}
+
+func (c *Client) deployments(ctx context.Context, ns string) ([]appsv1.Deployment, error) {
+	return cachedOr(c, func(f informers.SharedInformerFactory) ([]*appsv1.Deployment, error) {
+		return f.Apps().V1().Deployments().Lister().Deployments(ns).List(labels.Everything())
+	}, func() (runtime.Object, error) { return c.AppsV1().Deployments(ns).List(ctx, listAll) })
 }
 
 func (c *Client) daemonSets(ctx context.Context, ns string) ([]appsv1.DaemonSet, error) {
-	if f := c.listers(); f != nil {
-		return cached(f.Apps().V1().DaemonSets().Lister().DaemonSets(ns).List(labels.Everything()))
-	}
-	list, err := c.AppsV1().DaemonSets(ns).List(ctx, metav1.ListOptions{})
-	if err != nil {
-		return nil, err
-	}
-	return list.Items, nil
+	return cachedOr(c, func(f informers.SharedInformerFactory) ([]*appsv1.DaemonSet, error) {
+		return f.Apps().V1().DaemonSets().Lister().DaemonSets(ns).List(labels.Everything())
+	}, func() (runtime.Object, error) { return c.AppsV1().DaemonSets(ns).List(ctx, listAll) })
 }
 
 func (c *Client) statefulSets(ctx context.Context, ns string) ([]appsv1.StatefulSet, error) {
-	if f := c.listers(); f != nil {
-		return cached(f.Apps().V1().StatefulSets().Lister().StatefulSets(ns).List(labels.Everything()))
-	}
-	list, err := c.AppsV1().StatefulSets(ns).List(ctx, metav1.ListOptions{})
-	if err != nil {
-		return nil, err
-	}
-	return list.Items, nil
+	return cachedOr(c, func(f informers.SharedInformerFactory) ([]*appsv1.StatefulSet, error) {
+		return f.Apps().V1().StatefulSets().Lister().StatefulSets(ns).List(labels.Everything())
+	}, func() (runtime.Object, error) { return c.AppsV1().StatefulSets(ns).List(ctx, listAll) })
 }
 
 func (c *Client) jobs(ctx context.Context, ns string) ([]batchv1.Job, error) {
-	if f := c.listers(); f != nil {
-		return cached(f.Batch().V1().Jobs().Lister().Jobs(ns).List(labels.Everything()))
-	}
-	list, err := c.BatchV1().Jobs(ns).List(ctx, metav1.ListOptions{})
-	if err != nil {
-		return nil, err
-	}
-	return list.Items, nil
+	return cachedOr(c, func(f informers.SharedInformerFactory) ([]*batchv1.Job, error) {
+		return f.Batch().V1().Jobs().Lister().Jobs(ns).List(labels.Everything())
+	}, func() (runtime.Object, error) { return c.BatchV1().Jobs(ns).List(ctx, listAll) })
 }
 
 func (c *Client) cronJobs(ctx context.Context) ([]batchv1.CronJob, error) {
-	if f := c.listers(); f != nil {
-		return cached(f.Batch().V1().CronJobs().Lister().List(labels.Everything()))
-	}
-	list, err := c.BatchV1().CronJobs("").List(ctx, metav1.ListOptions{})
-	if err != nil {
-		return nil, err
-	}
-	return list.Items, nil
+	return cachedOr(c, func(f informers.SharedInformerFactory) ([]*batchv1.CronJob, error) {
+		return f.Batch().V1().CronJobs().Lister().List(labels.Everything())
+	}, func() (runtime.Object, error) { return c.BatchV1().CronJobs("").List(ctx, listAll) })
 }
 
 func (c *Client) pods(ctx context.Context, ns string, opts metav1.ListOptions) ([]corev1.Pod, error) {
@@ -217,78 +239,60 @@ func (c *Client) pods(ctx context.Context, ns string, opts metav1.ListOptions) (
 }
 
 func (c *Client) namespaces(ctx context.Context) ([]corev1.Namespace, error) {
-	if f := c.listers(); f != nil {
-		return cached(f.Core().V1().Namespaces().Lister().List(labels.Everything()))
-	}
-	list, err := c.CoreV1().Namespaces().List(ctx, metav1.ListOptions{})
-	if err != nil {
-		return nil, err
-	}
-	return list.Items, nil
+	return cachedOr(c, func(f informers.SharedInformerFactory) ([]*corev1.Namespace, error) {
+		return f.Core().V1().Namespaces().Lister().List(labels.Everything())
+	}, func() (runtime.Object, error) { return c.CoreV1().Namespaces().List(ctx, listAll) })
 }
 
 func (c *Client) services(ctx context.Context) ([]corev1.Service, error) {
-	if f := c.listers(); f != nil {
-		return cached(f.Core().V1().Services().Lister().List(labels.Everything()))
-	}
-	list, err := c.CoreV1().Services("").List(ctx, metav1.ListOptions{})
-	if err != nil {
-		return nil, err
-	}
-	return list.Items, nil
+	return cachedOr(c, func(f informers.SharedInformerFactory) ([]*corev1.Service, error) {
+		return f.Core().V1().Services().Lister().List(labels.Everything())
+	}, func() (runtime.Object, error) { return c.CoreV1().Services("").List(ctx, listAll) })
 }
 
 func (c *Client) endpointSlices(ctx context.Context) ([]discoveryv1.EndpointSlice, error) {
-	if f := c.listers(); f != nil {
-		return cached(f.Discovery().V1().EndpointSlices().Lister().List(labels.Everything()))
-	}
-	list, err := c.DiscoveryV1().EndpointSlices("").List(ctx, metav1.ListOptions{})
-	if err != nil {
-		return nil, err
-	}
-	return list.Items, nil
+	return cachedOr(c, func(f informers.SharedInformerFactory) ([]*discoveryv1.EndpointSlice, error) {
+		return f.Discovery().V1().EndpointSlices().Lister().List(labels.Everything())
+	}, func() (runtime.Object, error) { return c.DiscoveryV1().EndpointSlices("").List(ctx, listAll) })
 }
 
 func (c *Client) ingresses(ctx context.Context) ([]networkingv1.Ingress, error) {
-	if f := c.listers(); f != nil {
-		return cached(f.Networking().V1().Ingresses().Lister().List(labels.Everything()))
-	}
-	list, err := c.NetworkingV1().Ingresses("").List(ctx, metav1.ListOptions{})
-	if err != nil {
-		return nil, err
-	}
-	return list.Items, nil
+	return cachedOr(c, func(f informers.SharedInformerFactory) ([]*networkingv1.Ingress, error) {
+		return f.Networking().V1().Ingresses().Lister().List(labels.Everything())
+	}, func() (runtime.Object, error) { return c.NetworkingV1().Ingresses("").List(ctx, listAll) })
 }
 
 func (c *Client) claims(ctx context.Context) ([]corev1.PersistentVolumeClaim, error) {
-	if f := c.listers(); f != nil {
-		return cached(f.Core().V1().PersistentVolumeClaims().Lister().List(labels.Everything()))
-	}
-	list, err := c.CoreV1().PersistentVolumeClaims("").List(ctx, metav1.ListOptions{})
-	if err != nil {
-		return nil, err
-	}
-	return list.Items, nil
+	return cachedOr(c, func(f informers.SharedInformerFactory) ([]*corev1.PersistentVolumeClaim, error) {
+		return f.Core().V1().PersistentVolumeClaims().Lister().List(labels.Everything())
+	}, func() (runtime.Object, error) { return c.CoreV1().PersistentVolumeClaims("").List(ctx, listAll) })
 }
 
 func (c *Client) volumes(ctx context.Context) ([]corev1.PersistentVolume, error) {
-	if f := c.listers(); f != nil {
-		return cached(f.Core().V1().PersistentVolumes().Lister().List(labels.Everything()))
-	}
-	list, err := c.CoreV1().PersistentVolumes().List(ctx, metav1.ListOptions{})
-	if err != nil {
-		return nil, err
-	}
-	return list.Items, nil
+	return cachedOr(c, func(f informers.SharedInformerFactory) ([]*corev1.PersistentVolume, error) {
+		return f.Core().V1().PersistentVolumes().Lister().List(labels.Everything())
+	}, func() (runtime.Object, error) { return c.CoreV1().PersistentVolumes().List(ctx, listAll) })
 }
 
 func (c *Client) storageClasses(ctx context.Context) ([]storagev1.StorageClass, error) {
+	return cachedOr(c, func(f informers.SharedInformerFactory) ([]*storagev1.StorageClass, error) {
+		return f.Storage().V1().StorageClasses().Lister().List(labels.Everything())
+	}, func() (runtime.Object, error) { return c.StorageV1().StorageClasses().List(ctx, listAll) })
+}
+
+func (c *Client) nodes(ctx context.Context) ([]corev1.Node, error) {
+	return cachedOr(c, func(f informers.SharedInformerFactory) ([]*corev1.Node, error) {
+		return f.Core().V1().Nodes().Lister().List(labels.Everything())
+	}, func() (runtime.Object, error) { return c.CoreV1().Nodes().List(ctx, listAll) })
+}
+
+func (c *Client) node(ctx context.Context, name string) (*corev1.Node, error) {
 	if f := c.listers(); f != nil {
-		return cached(f.Storage().V1().StorageClasses().Lister().List(labels.Everything()))
+		n, err := f.Core().V1().Nodes().Lister().Get(name)
+		if err != nil {
+			return nil, err
+		}
+		return n.DeepCopy(), nil
 	}
-	list, err := c.StorageV1().StorageClasses().List(ctx, metav1.ListOptions{})
-	if err != nil {
-		return nil, err
-	}
-	return list.Items, nil
+	return c.CoreV1().Nodes().Get(ctx, name, metav1.GetOptions{})
 }

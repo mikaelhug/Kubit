@@ -9,6 +9,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/informers"
 	"k8s.io/client-go/kubernetes/fake"
+	"k8s.io/client-go/rest"
 )
 
 func deployment(ns, name string) *appsv1.Deployment {
@@ -77,5 +78,76 @@ func TestReadsFallBackToLiveUntilTheCacheSynced(t *testing.T) {
 	c.dropCache(k)
 	if got, _ := c.Workloads(ctx); len(got) != 1 || got[0].Name != "live" {
 		t.Errorf("a dropped cache must fall back to live reads: %v", names(got))
+	}
+}
+
+func TestEveryScopeInformerFeedsTheCache(t *testing.T) {
+	f := informers.NewSharedInformerFactory(fake.NewClientset(), 0)
+	k := NewCache(f)
+	if len(k.synced) != len(informerScopes) {
+		t.Fatalf("%d synced checks for %d scoped informers", len(k.synced), len(informerScopes))
+	}
+	scopes := map[string]bool{}
+	for _, is := range informerScopes {
+		scopes[is.scope] = true
+	}
+	for _, s := range []string{ScopeWorkloads, ScopeNetwork, ScopeStorage, ScopeNodes} {
+		if !scopes[s] {
+			t.Errorf("no informer refreshes %s", s)
+		}
+	}
+}
+
+func readyNode(name, bootID string) *corev1.Node {
+	return &corev1.Node{
+		ObjectMeta: metav1.ObjectMeta{Name: name},
+		Status: corev1.NodeStatus{
+			NodeInfo:   corev1.NodeSystemInfo{BootID: bootID},
+			Conditions: []corev1.NodeCondition{{Type: corev1.NodeReady, Status: corev1.ConditionTrue}},
+		},
+	}
+}
+
+func TestWaitRebootedNeedsANewBootID(t *testing.T) {
+	ctx := context.Background()
+	live := fake.NewClientset(readyNode("cp-01", "boot-1"))
+	c := &Client{Interface: live}
+	before, err := c.NodeBootIDs(ctx, "cp-01")
+	if err != nil || before["cp-01"] != "boot-1" {
+		t.Fatalf("boot ids: %v %v", before, err)
+	}
+	if err := c.WaitRebooted(ctx, before, 0); err == nil {
+		t.Fatal("a Ready node still on its old boot must not count as back")
+	}
+	if _, err := live.CoreV1().Nodes().Update(ctx, readyNode("cp-01", "boot-2"), metav1.UpdateOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.WaitRebooted(ctx, before, 0); err != nil {
+		t.Fatalf("new boot and Ready: %v", err)
+	}
+	if err := c.WaitRebooted(ctx, map[string]string{"cp-01": ""}, 0); err != nil {
+		t.Errorf("an unknown previous boot falls back to Ready: %v", err)
+	}
+}
+
+func TestNodeReadsComeFromTheCacheOnceSynced(t *testing.T) {
+	ctx := context.Background()
+	c := &Client{Interface: fake.NewClientset(), rest: &rest.Config{Host: "http://127.0.0.1:1"}}
+	f := informers.NewSharedInformerFactory(fake.NewClientset(readyNode("w-01", "b")), 0)
+	k := NewCache(f)
+	c.UseCache(k)
+	stop := make(chan struct{})
+	defer close(stop)
+	f.Start(stop)
+	f.WaitForCacheSync(stop)
+	if err := c.WaitReady(ctx, []string{"w-01"}, 0, nil); err != nil {
+		t.Fatalf("WaitReady from the cache: %v", err)
+	}
+	d, err := c.NodeDetail(ctx, "w-01")
+	if err != nil || !d.Ready {
+		t.Fatalf("NodeDetail from the cache: %+v %v", d, err)
+	}
+	if nodes, err := c.Nodes(ctx); err != nil || len(nodes) != 0 {
+		t.Errorf("Nodes stays live: %v %v", nodes, err)
 	}
 }

@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/mikael/kubit/internal/cluster"
+	"github.com/mikael/kubit/internal/config"
 	"github.com/mikael/kubit/internal/store"
 )
 
@@ -28,20 +29,17 @@ func (s *Server) maybeScheduleSnapshot(ctx context.Context, name string, st *clu
 	if st.State != cluster.StateReady || !st.APIReachable || !st.Etcd.Healthy || st.Health == cluster.HealthUnknown || st.Observer == cluster.ObserverOffline || s.locks.busy(name) {
 		return
 	}
-	s.scheduleMu.Lock()
-	defer s.scheduleMu.Unlock()
-	if time.Since(s.scheduleAttempt[name]) < scheduleRetry {
+	if !s.scheduleDue(name) {
 		return
 	}
 	c, _, err := s.manager.LoadCluster(ctx, name)
-	if err != nil || !s.manager.SnapshotDue(ctx, c) {
+	if err != nil || !s.manager.SnapshotDue(ctx, c) || !s.claimSchedule(name) {
 		return
 	}
-	if s.manager.SnapshotStale(ctx, c) && s.observedSince(name) && !s.store.HasOpenEvent(ctx, name, "", "backup.stale") {
+	if s.manager.SnapshotStale(ctx, c) && s.observedSince(ctx, c) && !s.store.HasOpenEvent(ctx, name, "", "backup.stale") {
 		age, _ := s.manager.SnapshotAge(ctx, name)
 		s.raiseEvent(ctx, store.EventRow{Cluster: name, Severity: "warn", Kind: "backup.stale", Message: fmt.Sprintf("Last etcd snapshot is %s old; schedule is every %s. Check the Backups tab for failed snapshot operations.", age.Round(time.Minute), c.Spec.Backup.Etcd.Interval)})
 	}
-	s.scheduleAttempt[name] = time.Now()
 	if _, err := s.runOperation(name, "etcd.snapshot", map[string]string{"source": "schedule"}, func(ctx context.Context, sink cluster.Sink) (any, error) {
 		sn, err := s.manager.SnapshotEtcd(ctx, name, "schedule", sink)
 		if err == nil {
@@ -54,15 +52,27 @@ func (s *Server) maybeScheduleSnapshot(ctx context.Context, name string, st *clu
 	}
 }
 
-func (s *Server) observedSince(name string) bool {
+func (s *Server) scheduleDue(name string) bool {
+	s.scheduleMu.Lock()
+	defer s.scheduleMu.Unlock()
+	return time.Since(s.scheduleAttempt[name]) >= scheduleRetry
+}
+
+func (s *Server) claimSchedule(name string) bool {
+	s.scheduleMu.Lock()
+	defer s.scheduleMu.Unlock()
+	if time.Since(s.scheduleAttempt[name]) < scheduleRetry {
+		return false
+	}
+	s.scheduleAttempt[name] = time.Now()
+	return true
+}
+
+func (s *Server) observedSince(ctx context.Context, c *config.Cluster) bool {
 	if s.watcher == nil {
 		return true
 	}
-	c, _, err := s.manager.LoadCluster(context.Background(), name)
-	if err != nil {
-		return true
-	}
-	age, ok := s.manager.SnapshotAge(context.Background(), name)
+	age, ok := s.manager.SnapshotAge(ctx, c.Metadata.Name)
 	if !ok {
 		return true
 	}
@@ -108,7 +118,7 @@ func (s *Server) handleSnapshotTake(w http.ResponseWriter, r *http.Request) {
 func (s *Server) snapshotOf(r *http.Request) (*store.Snapshot, error) {
 	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
 	if err != nil {
-		return nil, fmt.Errorf("bad snapshot id")
+		return nil, badRequest("bad snapshot id")
 	}
 	sn, err := s.store.GetSnapshot(r.Context(), id)
 	if err != nil {
@@ -177,7 +187,7 @@ func (s *Server) handleSnapshotRestore(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if req.Confirm != sn.Cluster {
-		writeErr(w, &statusError{http.StatusBadRequest, `body must be {"confirm": "<cluster name>"}: restoring wipes etcd on every control plane`})
+		writeErr(w, badRequest(`body must be {"confirm": "<cluster name>"}: restoring wipes etcd on every control plane`))
 		return
 	}
 	s.startOp(w, sn.Cluster, "etcd.restore", map[string]any{"snapshot": sn.ID}, func(ctx context.Context, sink cluster.Sink) (any, error) {

@@ -3,8 +3,10 @@ package api
 import (
 	"bytes"
 	"context"
+	"database/sql"
 	"encoding/json"
 	"net/http"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"testing"
@@ -45,7 +47,7 @@ func TestEditWaitsForTheOperationAndKeepsItsWork(t *testing.T) {
 	f.NTP = []string{"time.example"}
 	body, _ := json.Marshal(f)
 
-	s.locks.lock(specLock("c"))
+	s.locks.lockContext(t.Context(), specLock("c"))
 	result := make(chan int)
 	go func() { result <- call(t, s, "PUT", "/api/v1/clusters/c/form", string(body)).Code }()
 	time.Sleep(100 * time.Millisecond)
@@ -89,7 +91,7 @@ func TestEditRefusedWhileAnOperationKeepsTheCluster(t *testing.T) {
 	defer func(d time.Duration) { lockWait = d }(lockWait)
 	lockWait = 50 * time.Millisecond
 	body, _ := json.Marshal(formOf(t, s))
-	s.locks.lock(specLock("c"))
+	s.locks.lockContext(t.Context(), specLock("c"))
 	defer s.locks.unlock(specLock("c"))
 	if rec := call(t, s, "PUT", "/api/v1/clusters/c/form", string(body)); rec.Code != http.StatusConflict {
 		t.Errorf("form: %d %s", rec.Code, rec.Body)
@@ -202,5 +204,32 @@ func TestMaintenanceStatusTellsWhenTheWindowCloses(t *testing.T) {
 	closes, err := time.Parse(time.RFC3339, out.Closes)
 	if !out.Open || err != nil || closes.Sub(now) < 58*time.Minute || closes.Sub(now) > time.Hour {
 		t.Errorf("open window: %s", rec.Body)
+	}
+}
+
+func TestEditSaveErrors(t *testing.T) {
+	s, st := editServer(t)
+	ctx := t.Context()
+	if err := st.UpsertNode(ctx, store.NodeRow{MAC: "52:54:00:00:00:01", IP: "10.0.0.1", Source: "scan", Cluster: "c", State: "ready"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.PutNodeMachineConfig(ctx, "10.0.0.1", []byte("cfg"), true); err != nil {
+		t.Fatal(err)
+	}
+	yaml := "apiVersion: kubit.dev/v1\nkind: Cluster\nmetadata: {name: c}\nspec:\n  nodes:\n    - {hostname: a, ip: 10.0.0.1, role: controlplane, installDisk: {path: /dev/sda}}\n  storage: {ephemeralSize: 20GiB}\n"
+	if rec := call(t, s, "PUT", "/api/v1/clusters/c/yaml", yaml); rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "storage must stay") {
+		t.Errorf("a refused spec change: %d %s", rec.Code, rec.Body)
+	}
+	db, err := sql.Open("sqlite", filepath.Join(s.manager.Home, "kubit.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if _, err := db.ExecContext(ctx, `CREATE TRIGGER refuse BEFORE UPDATE ON clusters BEGIN SELECT RAISE(ABORT, 'refused'); END`); err != nil {
+		t.Fatal(err)
+	}
+	body, _ := json.Marshal(formOf(t, s))
+	if rec := call(t, s, "PUT", "/api/v1/clusters/c/form", string(body)); rec.Code != http.StatusInternalServerError || !strings.Contains(rec.Body.String(), "refused") {
+		t.Errorf("a failed write: %d %s", rec.Code, rec.Body)
 	}
 }

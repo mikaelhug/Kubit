@@ -23,11 +23,12 @@ type Workload struct {
 	Images    string `json:"images"`
 	Age       string `json:"age"`
 	AgeSec    int64  `json:"ageSec"`
+	CreatedAt string `json:"createdAt,omitempty"`
 	Selector  string `json:"selector,omitempty"`
 }
 
 func (c *Client) Workloads(ctx context.Context) ([]Workload, error) {
-	var out []Workload
+	out := []Workload{}
 	deps, err := c.deployments(ctx, "")
 	if err != nil {
 		return nil, err
@@ -78,6 +79,7 @@ func cronWorkload(j batchv1.CronJob) Workload {
 
 func aged(w Workload, created metav1.Time) Workload {
 	w.Age, w.AgeSec = age(created)
+	w.CreatedAt = createdAt(created)
 	return w
 }
 
@@ -86,11 +88,19 @@ func age(created metav1.Time) (string, int64) {
 	return d.Truncate(time.Second).String(), int64(d.Seconds())
 }
 
+func createdAt(t metav1.Time) string {
+	if t.IsZero() {
+		return ""
+	}
+	return t.UTC().Format(time.RFC3339)
+}
+
 type Namespace struct {
-	Name     string `json:"name"`
-	Phase    string `json:"phase"`
-	Security string `json:"security,omitempty"`
-	AgeSec   int64  `json:"ageSec"`
+	Name      string `json:"name"`
+	Phase     string `json:"phase"`
+	Security  string `json:"security,omitempty"`
+	AgeSec    int64  `json:"ageSec"`
+	CreatedAt string `json:"createdAt,omitempty"`
 }
 
 func (c *Client) Namespaces(ctx context.Context) ([]Namespace, error) {
@@ -109,6 +119,7 @@ func (c *Client) Namespaces(ctx context.Context) ([]Namespace, error) {
 func namespaceOf(n corev1.Namespace) Namespace {
 	ns := Namespace{Name: n.Name, Phase: string(n.Status.Phase), Security: n.Labels["pod-security.kubernetes.io/enforce"]}
 	_, ns.AgeSec = age(n.CreationTimestamp)
+	ns.CreatedAt = createdAt(n.CreationTimestamp)
 	return ns
 }
 
@@ -149,6 +160,7 @@ func (c *Client) PodSummaries(ctx context.Context, namespace, selector string) (
 func podSummary(p *corev1.Pod) PodSummary {
 	ps := PodSummary{Namespace: p.Namespace, Name: p.Name, Phase: string(p.Status.Phase), Node: p.Spec.NodeName}
 	ps.Age, ps.AgeSec = age(p.CreationTimestamp)
+	ps.CreatedAt = createdAt(p.CreationTimestamp)
 	ready := 0
 	for _, cs := range p.Status.ContainerStatuses {
 		if cs.Ready {

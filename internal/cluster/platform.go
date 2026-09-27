@@ -3,6 +3,8 @@ package cluster
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"net"
@@ -50,7 +52,18 @@ func (m *Manager) writeCredentials(ctx context.Context, name string) (kubeconfig
 	return kubeconfigPath, nil
 }
 
-func (m *Manager) platformRunner(ctx context.Context, name string, sink Sink) (*tofu.Runner, error) {
+type platformRun struct {
+	*tofu.Runner
+	cluster  *config.Cluster
+	specHash string
+}
+
+func specHash(spec []byte) string {
+	sum := sha256.Sum256(spec)
+	return hex.EncodeToString(sum[:])
+}
+
+func (m *Manager) platformRunner(ctx context.Context, name string, sink Sink) (*platformRun, error) {
 	sink.Plan(platformSteps...)
 	sink.Begin("render")
 	c, row, err := m.LoadCluster(ctx, name)
@@ -97,7 +110,7 @@ func (m *Manager) platformRunner(ctx context.Context, name string, sink Sink) (*
 	if err := sink.Run("init", func() error { return r.Init(ctx) }); err != nil {
 		return nil, err
 	}
-	return r, nil
+	return &platformRun{Runner: r, cluster: c, specHash: specHash(row.Spec)}, nil
 }
 
 var platformSteps = Steps(
@@ -121,6 +134,7 @@ func (m *Manager) PlanPlatform(ctx context.Context, name string, sink Sink) (*to
 		if diff, err = r.ShowPlan(ctx, r.Warnings()); err != nil {
 			return err
 		}
+		diff.SpecHash = r.specHash
 		sink.Emit(Info, "plan", "", "%s", sum)
 		return nil
 	})
@@ -133,15 +147,15 @@ func (m *Manager) PlanPlatform(ctx context.Context, name string, sink Sink) (*to
 
 var errStalePlan = errors.New("plan is stale: cluster.yaml changed since it was made; plan again")
 
-func (m *Manager) ApplyPlan(ctx context.Context, name string, planTime string, sink Sink) error {
+func (m *Manager) ApplyPlan(ctx context.Context, name, planSpecHash string, sink Sink) error {
 	sink.Plan(platformSteps...)
 	sink.Skip("render")
 	sink.Skip("plan")
-	row, err := m.Store.GetCluster(ctx, name)
+	c, row, err := m.LoadCluster(ctx, name)
 	if err != nil {
 		return err
 	}
-	if planTime != "" && row.UpdatedAt > planTime {
+	if planSpecHash != "" && planSpecHash != specHash(row.Spec) {
 		return errStalePlan
 	}
 	dir := m.platformDir(name)
@@ -156,7 +170,7 @@ func (m *Manager) ApplyPlan(ctx context.Context, name string, planTime string, s
 	if err := sink.Run("init", func() error { return r.Init(ctx) }); err != nil {
 		return err
 	}
-	return m.applyWith(ctx, name, r, sink)
+	return m.applyWith(ctx, c, r, sink)
 }
 
 func (m *Manager) ApplyPlatform(ctx context.Context, name string, sink Sink) error {
@@ -179,20 +193,21 @@ func (m *Manager) ApplyPlatform(ctx context.Context, name string, sink Sink) err
 		return err
 	}
 	if sum.Empty() {
-		if err := m.installSOPSKey(ctx, name, sink); err != nil {
+		if err := m.installSOPSKey(ctx, r.cluster, sink); err != nil {
 			return err
 		}
 		sink.Emit(Info, "apply", "", "no changes")
 		sink.Skip("apply")
-		return m.recordPlatform(ctx, name, r, sum, sink)
+		return m.recordPlatform(ctx, name, r.Runner, sum, sink)
 	}
-	return m.applyWith(ctx, name, r, sink)
+	return m.applyWith(ctx, r.cluster, r.Runner, sink)
 }
 
-func (m *Manager) applyWith(ctx context.Context, name string, r *tofu.Runner, sink Sink) error {
+func (m *Manager) applyWith(ctx context.Context, c *config.Cluster, r *tofu.Runner, sink Sink) error {
+	name := c.Metadata.Name
 	var sum tofu.Summary
 	err := sink.Run("apply", func() error {
-		if err := m.installSOPSKey(ctx, name, sink); err != nil {
+		if err := m.installSOPSKey(ctx, c, sink); err != nil {
 			return err
 		}
 		var err error

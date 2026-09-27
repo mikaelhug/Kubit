@@ -30,7 +30,7 @@ func (s *Server) handleAddonUpdate(w http.ResponseWriter, r *http.Request) {
 	var values map[string]any
 	if req.ValuesYAML != nil {
 		if err := yaml.Unmarshal([]byte(*req.ValuesYAML), &values); err != nil {
-			writeErr(w, &statusError{http.StatusUnprocessableEntity, "values: " + err.Error()})
+			writeErr(w, &statusError{Status: http.StatusUnprocessableEntity, Msg: "values: " + err.Error()})
 			return
 		}
 	}
@@ -94,7 +94,7 @@ func (req addonUpdate) apply(p *config.Platform, key string, values map[string]a
 	case "builds":
 		set(&p.Builds)
 	default:
-		return &statusError{http.StatusNotFound, fmt.Sprintf("unknown add-on %q", key)}
+		return &statusError{Status: http.StatusNotFound, Msg: fmt.Sprintf("unknown add-on %q", key)}
 	}
 	return nil
 }

@@ -3,6 +3,8 @@ package cluster
 import (
 	"context"
 	"fmt"
+	"slices"
+	"strings"
 
 	"github.com/mikael/kubit/internal/config"
 	"github.com/mikael/kubit/internal/store"
@@ -23,16 +25,40 @@ func (m *Manager) AddNode(ctx context.Context, name string, n config.Node, sink 
 	if !Observable(row.State) {
 		return fmt.Errorf("cluster %s is %s; nodes can only join a bootstrapped cluster", name, row.State)
 	}
-	for _, existing := range c.Spec.Nodes {
-		if existing.Hostname == n.Hostname || existing.IP == n.IP {
+	i, installed, moved := -1, false, false
+	for j, existing := range c.Spec.Nodes {
+		if existing.Hostname != n.Hostname && existing.IP != n.IP {
+			continue
+		}
+		if !sameDeclaredNode(existing, n) || !m.addUnfinished(ctx, existing.IP) {
 			return fmt.Errorf("node %s/%s already declared in cluster %s", n.Hostname, n.IP, name)
 		}
+		i = j
 	}
-	c.Spec.Nodes = append(c.Spec.Nodes, n)
-	if err := c.Validate(); err != nil {
-		return err
+	if i < 0 {
+		c.Spec.Nodes = append(c.Spec.Nodes, n)
+		if err := c.Validate(); err != nil {
+			return err
+		}
+		i = len(c.Spec.Nodes) - 1
+	} else {
+		sink.Emit(Info, "preflight", n.Hostname, "resuming the unfinished add of %s", n.Hostname)
+		sec, err := m.Store.GetClusterSecrets(ctx, name)
+		if err != nil {
+			return err
+		}
+		installed, moved = m.installedAt(ctx, c, i, sec.Talosconfig, sink)
+		if !installed {
+			c.Spec.Nodes[i] = n
+			if err := c.Validate(); err != nil {
+				return err
+			}
+		}
 	}
-	if err := sink.Run("preflight", func() error { return m.preflight(ctx, c, []config.Node{n}, sink) }); err != nil {
+	n = c.Spec.Nodes[i]
+	if installed {
+		sink.Skip("preflight")
+	} else if err := sink.Run("preflight", func() error { return m.preflight(ctx, c, []config.Node{n}, sink) }); err != nil {
 		return err
 	}
 	var sec *store.ClusterSecrets
@@ -49,7 +75,11 @@ func (m *Manager) AddNode(ctx context.Context, name string, n config.Node, sink 
 		if gen, err = config.Generate(c, bundle, m.installer(c)); err != nil {
 			return err
 		}
-		if err := m.recordNode(ctx, c, n, NodeDiscovered, gen.Nodes[n.Hostname]); err != nil {
+		state := NodeDiscovered
+		if installed {
+			state = NodeJoined
+		}
+		if err := m.recordNode(ctx, c, n, state, gen.Nodes[n.Hostname]); err != nil {
 			return err
 		}
 		if err := m.saveExisting(ctx, c); err != nil {
@@ -62,7 +92,12 @@ func (m *Manager) AddNode(ctx context.Context, name string, n config.Node, sink 
 	if err != nil {
 		return err
 	}
-	if err := sink.Run("install", func() error {
+	if installed {
+		if moved {
+			sink.Emit(Info, "install", n.Hostname, "now on %s", n.IP)
+		}
+		sink.Skip("install")
+	} else if err := sink.Run("install", func() error {
 		return m.installAll(ctx, c, []config.Node{n}, gen.Nodes, sec.Talosconfig, sink)
 	}); err != nil {
 		return err
@@ -72,4 +107,13 @@ func (m *Manager) AddNode(ctx context.Context, name string, n config.Node, sink 
 	}
 	sink.Emit(Done, "ready", n.Hostname, "joined cluster %s as %s", name, n.Role)
 	return nil
+}
+
+func sameDeclaredNode(a, b config.Node) bool {
+	return a.Hostname == b.Hostname && a.IP == b.IP && strings.EqualFold(a.MAC, b.MAC)
+}
+
+func (m *Manager) addUnfinished(ctx context.Context, ip string) bool {
+	row, err := m.Store.GetNode(ctx, ip)
+	return err == nil && slices.Contains([]string{NodeDiscovered, NodeInstalling, NodeFailed}, row.State)
 }

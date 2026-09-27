@@ -17,9 +17,28 @@ var hostnameRE = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$`)
 
 func (c *Cluster) Validate() error {
 	var errs []error
+	for _, section := range []func() []error{
+		c.validateHeader, c.validateBackup, c.validatePlatform, c.validateStorage, c.validateAuth,
+		c.validateTalosVersion, c.validateControlPlane, c.validateNetwork, c.validatePools, c.validateNodes,
+	} {
+		errs = append(errs, section()...)
+	}
+	return errors.Join(errs...)
+}
+
+func (c *Cluster) validateHeader() []error {
+	var errs []error
 	if c.APIVersion != APIVersion || c.Kind != KindCluster {
 		errs = append(errs, fmt.Errorf("expected apiVersion %s kind %s", APIVersion, KindCluster))
 	}
+	if !hostnameRE.MatchString(c.Metadata.Name) {
+		errs = append(errs, fmt.Errorf("metadata.name %q must be a DNS label", c.Metadata.Name))
+	}
+	return errs
+}
+
+func (c *Cluster) validateBackup() []error {
+	var errs []error
 	if iv := c.Spec.Backup.Etcd.Interval; iv != "" && iv != "0" {
 		if d, err := time.ParseDuration(iv); err != nil || d < 5*time.Minute {
 			errs = append(errs, fmt.Errorf("backup.etcd.interval %q: a Go duration of at least 5m, or 0 to disable", iv))
@@ -31,48 +50,82 @@ func (c *Cluster) Validate() error {
 	if err := c.Spec.Maintenance.Validate(); err != nil {
 		errs = append(errs, err)
 	}
-	if c.Spec.Platform.Longhorn.Enabled && len(c.LonghornNodes()) == 0 {
+	return errs
+}
+
+func (c *Cluster) validatePlatform() []error {
+	var errs []error
+	p := c.Spec.Platform
+	if p.Longhorn.Enabled && len(c.LonghornNodes()) == 0 {
 		errs = append(errs, fmt.Errorf("platform.longhorn needs storage.systemDisk or dataDisks on at least one node to hold replicas"))
 	}
-	if b := c.Spec.Platform; b.Builds.Enabled {
+	if p.Builds.Enabled {
 		if c.RegistryIP() == "" {
 			errs = append(errs, fmt.Errorf("platform.builds needs an IPv4 network.serviceCIDR of /22 or larger for the registry address"))
 		}
-		if !b.Longhorn.Enabled {
+		if !p.Longhorn.Enabled {
 			errs = append(errs, fmt.Errorf("platform.builds needs Longhorn for the registry's volume"))
 		}
 	}
-	if s := c.Spec.Storage; s.EphemeralSize != "" {
-		if b, err := s.EphemeralBytes(); err != nil {
-			errs = append(errs, fmt.Errorf("storage.ephemeralSize %q: %w", s.EphemeralSize, err))
-		} else if b < MinEphemeralBytes {
-			errs = append(errs, fmt.Errorf("storage.ephemeralSize %q: at least 10GiB", s.EphemeralSize))
-		}
-	}
-	if r := c.Spec.Platform.Flux.Repository; r != nil {
+	if r := p.Flux.Repository; r != nil {
 		if err := r.Validate(); err != nil {
 			errs = append(errs, err)
 		}
 	}
-	if o := c.Spec.Auth.OIDC; o != nil {
-		if !strings.HasPrefix(o.Issuer, "https://") {
-			errs = append(errs, fmt.Errorf("auth.oidc.issuer must be an https:// URL"))
-		}
-		if o.ClientID == "" {
-			errs = append(errs, fmt.Errorf("auth.oidc.clientID is required"))
-		}
-		if o.AdminGroup != "" && o.GroupsClaim == "" {
-			errs = append(errs, fmt.Errorf("auth.oidc.adminGroup needs groupsClaim"))
+	if p.MetalLB.Enabled {
+		if _, _, err := ParseIPRange(p.MetalLB.Range); err != nil {
+			errs = append(errs, fmt.Errorf("platform.metallb.range: %w", err))
 		}
 	}
-	if contract, err := talosconfig.ParseContractFromVersion(c.Spec.TalosVersion); err != nil {
-		errs = append(errs, fmt.Errorf("talosVersion: %w", err))
-	} else if !contract.UnattendedInstallConfig() || !contract.MultidocKubernetesConfigSupported() {
-		errs = append(errs, fmt.Errorf("talosVersion %s: Kubit requires Talos %s or newer", c.Spec.TalosVersion, MinTalosVersion))
+	return errs
+}
+
+func (c *Cluster) validateStorage() []error {
+	s := c.Spec.Storage
+	if s.EphemeralSize == "" {
+		return nil
 	}
-	if !hostnameRE.MatchString(c.Metadata.Name) {
-		errs = append(errs, fmt.Errorf("metadata.name %q must be a DNS label", c.Metadata.Name))
+	b, err := s.EphemeralBytes()
+	if err != nil {
+		return []error{fmt.Errorf("storage.ephemeralSize %q: %w", s.EphemeralSize, err)}
 	}
+	if b < MinEphemeralBytes {
+		return []error{fmt.Errorf("storage.ephemeralSize %q: at least 10GiB", s.EphemeralSize)}
+	}
+	return nil
+}
+
+func (c *Cluster) validateAuth() []error {
+	o := c.Spec.Auth.OIDC
+	if o == nil {
+		return nil
+	}
+	var errs []error
+	if !strings.HasPrefix(o.Issuer, "https://") {
+		errs = append(errs, fmt.Errorf("auth.oidc.issuer must be an https:// URL"))
+	}
+	if o.ClientID == "" {
+		errs = append(errs, fmt.Errorf("auth.oidc.clientID is required"))
+	}
+	if o.AdminGroup != "" && o.GroupsClaim == "" {
+		errs = append(errs, fmt.Errorf("auth.oidc.adminGroup needs groupsClaim"))
+	}
+	return errs
+}
+
+func (c *Cluster) validateTalosVersion() []error {
+	contract, err := talosconfig.ParseContractFromVersion(c.Spec.TalosVersion)
+	if err != nil {
+		return []error{fmt.Errorf("talosVersion: %w", err)}
+	}
+	if !contract.UnattendedInstallConfig() || !contract.MultidocKubernetesConfigSupported() {
+		return []error{fmt.Errorf("talosVersion %s: Kubit requires Talos %s or newer", c.Spec.TalosVersion, MinTalosVersion)}
+	}
+	return nil
+}
+
+func (c *Cluster) validateControlPlane() []error {
+	var errs []error
 	if len(c.Spec.Nodes) == 0 {
 		errs = append(errs, errors.New("spec.nodes must not be empty"))
 	}
@@ -87,11 +140,26 @@ func (c *Cluster) Validate() error {
 			errs = append(errs, fmt.Errorf("controlPlane.vip: %w", err))
 		}
 	}
+	return errs
+}
+
+func (c *Cluster) validateNetwork() []error {
+	var errs []error
 	for _, cidr := range []string{c.Spec.Network.PodCIDR, c.Spec.Network.ServiceCIDR} {
 		if _, err := netip.ParsePrefix(cidr); err != nil {
 			errs = append(errs, fmt.Errorf("network CIDR %q: %w", cidr, err))
 		}
 	}
+	for _, ns := range c.Spec.Network.Nameservers {
+		if _, err := netip.ParseAddr(ns); err != nil {
+			errs = append(errs, fmt.Errorf("network.nameservers %q: %w", ns, err))
+		}
+	}
+	return errs
+}
+
+func (c *Cluster) validatePools() []error {
+	var errs []error
 	poolNames := map[string]bool{}
 	cpPools := 0
 	for i, pl := range c.Spec.Pools {
@@ -118,11 +186,16 @@ func (c *Cluster) Validate() error {
 	if cpPools != 1 {
 		errs = append(errs, fmt.Errorf("exactly one pool must have role controlplane, found %d", cpPools))
 	}
+	return errs
+}
+
+func (c *Cluster) validateNodes() []error {
+	var errs []error
 	var staticAddrs []netip.Prefix
 	seenHost, seenIP, seenMAC := map[string]bool{}, map[string]bool{}, map[string]bool{}
 	for i, n := range c.Spec.Nodes {
 		p := fmt.Sprintf("nodes[%d]", i)
-		if !poolNames[n.Pool] {
+		if c.poolByName(n.Pool) == nil {
 			errs = append(errs, fmt.Errorf("%s.pool %q is not declared in spec.pools", p, n.Pool))
 		}
 		if n.MAC != "" {
@@ -137,46 +210,7 @@ func (c *Cluster) Validate() error {
 			}
 		}
 		if nn := n.Network; nn != nil {
-			if len(nn.Addresses) == 0 {
-				errs = append(errs, fmt.Errorf("%s.network.addresses must not be empty", p))
-			}
-			for _, a := range nn.Addresses {
-				pfx, err := netip.ParsePrefix(a)
-				if err != nil {
-					errs = append(errs, fmt.Errorf("%s.network.addresses %q: must be CIDR notation", p, a))
-					continue
-				}
-				for _, other := range staticAddrs {
-					if other.Addr() == pfx.Addr() {
-						errs = append(errs, fmt.Errorf("%s.network.addresses %q used by another node", p, a))
-					}
-				}
-				staticAddrs = append(staticAddrs, pfx)
-				if v := c.Spec.ControlPlane.VIP; v != "" && v == pfx.Addr().String() {
-					errs = append(errs, fmt.Errorf("%s.network.addresses %q collides with the control plane VIP", p, a))
-				}
-				if m := c.Spec.Platform.MetalLB; m.Enabled {
-					if lo, hi, err := ParseIPRange(m.Range); err == nil && inRange(pfx.Addr(), lo, hi) {
-						errs = append(errs, fmt.Errorf("%s.network.addresses %q lies inside the MetalLB range", p, a))
-					}
-				}
-			}
-			if nn.Gateway != "" {
-				if _, err := netip.ParseAddr(nn.Gateway); err != nil {
-					errs = append(errs, fmt.Errorf("%s.network.gateway: %w", p, err))
-				}
-			}
-			for _, ns := range nn.Nameservers {
-				if _, err := netip.ParseAddr(ns); err != nil {
-					errs = append(errs, fmt.Errorf("%s.network.nameservers %q: %w", p, ns, err))
-				}
-			}
-			if len(nn.Nameservers) == 0 && len(c.Spec.Network.Nameservers) == 0 {
-				errs = append(errs, fmt.Errorf("%s uses static addressing but no nameservers are set (on the node or the cluster) — the node would have no DNS and image pulls would fail; add network.nameservers", p))
-			}
-			if nn.VLAN > 4094 {
-				errs = append(errs, fmt.Errorf("%s.network.vlan %d out of range", p, nn.VLAN))
-			}
+			errs = append(errs, c.validateNodeNetwork(p, nn, &staticAddrs)...)
 		}
 		if !hostnameRE.MatchString(n.Hostname) {
 			errs = append(errs, fmt.Errorf("%s.hostname %q must be a DNS label", p, n.Hostname))
@@ -200,36 +234,77 @@ func (c *Cluster) Validate() error {
 		if n.Arch != ArchAMD64 && n.Arch != ArchARM64 {
 			errs = append(errs, fmt.Errorf("%s.arch %q must be amd64 or arm64", p, n.Arch))
 		}
-		if (n.InstallDisk.Path == "") == (n.InstallDisk.Selector == nil) {
-			errs = append(errs, fmt.Errorf("%s.installDisk needs exactly one of path or selector", p))
+		errs = append(errs, validateNodeDisks(p, n)...)
+	}
+	return errs
+}
+
+func (c *Cluster) validateNodeNetwork(p string, nn *NodeNetwork, staticAddrs *[]netip.Prefix) []error {
+	var errs []error
+	if len(nn.Addresses) == 0 {
+		errs = append(errs, fmt.Errorf("%s.network.addresses must not be empty", p))
+	}
+	for _, a := range nn.Addresses {
+		pfx, err := netip.ParsePrefix(a)
+		if err != nil {
+			errs = append(errs, fmt.Errorf("%s.network.addresses %q: must be CIDR notation", p, a))
+			continue
 		}
-		if len(n.DataDisks) > MaxDataDisks {
-			errs = append(errs, fmt.Errorf("%s.dataDisks: at most %d", p, MaxDataDisks))
-		}
-		seenDisk := map[string]bool{}
-		for _, d := range n.DataDisks {
-			switch {
-			case d == "":
-				errs = append(errs, fmt.Errorf("%s.dataDisks: empty path", p))
-			case d == n.InstallDisk.Path:
-				errs = append(errs, fmt.Errorf("%s.dataDisks: %s is the install disk", p, d))
-			case seenDisk[d]:
-				errs = append(errs, fmt.Errorf("%s.dataDisks: %s listed twice", p, d))
+		for _, other := range *staticAddrs {
+			if other.Addr() == pfx.Addr() {
+				errs = append(errs, fmt.Errorf("%s.network.addresses %q used by another node", p, a))
 			}
-			seenDisk[d] = true
+		}
+		*staticAddrs = append(*staticAddrs, pfx)
+		if v := c.Spec.ControlPlane.VIP; v != "" && v == pfx.Addr().String() {
+			errs = append(errs, fmt.Errorf("%s.network.addresses %q collides with the control plane VIP", p, a))
+		}
+		if m := c.Spec.Platform.MetalLB; m.Enabled {
+			if lo, hi, err := ParseIPRange(m.Range); err == nil && inRange(pfx.Addr(), lo, hi) {
+				errs = append(errs, fmt.Errorf("%s.network.addresses %q lies inside the MetalLB range", p, a))
+			}
 		}
 	}
-	if m := c.Spec.Platform.MetalLB; m.Enabled {
-		if _, _, err := ParseIPRange(m.Range); err != nil {
-			errs = append(errs, fmt.Errorf("platform.metallb.range: %w", err))
+	if nn.Gateway != "" {
+		if _, err := netip.ParseAddr(nn.Gateway); err != nil {
+			errs = append(errs, fmt.Errorf("%s.network.gateway: %w", p, err))
 		}
 	}
-	for _, ns := range c.Spec.Network.Nameservers {
+	for _, ns := range nn.Nameservers {
 		if _, err := netip.ParseAddr(ns); err != nil {
-			errs = append(errs, fmt.Errorf("network.nameservers %q: %w", ns, err))
+			errs = append(errs, fmt.Errorf("%s.network.nameservers %q: %w", p, ns, err))
 		}
 	}
-	return errors.Join(errs...)
+	if len(nn.Nameservers) == 0 && len(c.Spec.Network.Nameservers) == 0 {
+		errs = append(errs, fmt.Errorf("%s uses static addressing but no nameservers are set (on the node or the cluster) — the node would have no DNS and image pulls would fail; add network.nameservers", p))
+	}
+	if nn.VLAN > 4094 {
+		errs = append(errs, fmt.Errorf("%s.network.vlan %d out of range", p, nn.VLAN))
+	}
+	return errs
+}
+
+func validateNodeDisks(p string, n Node) []error {
+	var errs []error
+	if (n.InstallDisk.Path == "") == (n.InstallDisk.Selector == nil) {
+		errs = append(errs, fmt.Errorf("%s.installDisk needs exactly one of path or selector", p))
+	}
+	if len(n.DataDisks) > MaxDataDisks {
+		errs = append(errs, fmt.Errorf("%s.dataDisks: at most %d", p, MaxDataDisks))
+	}
+	seenDisk := map[string]bool{}
+	for _, d := range n.DataDisks {
+		switch {
+		case d == "":
+			errs = append(errs, fmt.Errorf("%s.dataDisks: empty path", p))
+		case d == n.InstallDisk.Path:
+			errs = append(errs, fmt.Errorf("%s.dataDisks: %s is the install disk", p, d))
+		case seenDisk[d]:
+			errs = append(errs, fmt.Errorf("%s.dataDisks: %s listed twice", p, d))
+		}
+		seenDisk[d] = true
+	}
+	return errs
 }
 
 func validTaint(key, value string) error {

@@ -5,8 +5,9 @@ import (
 	"database/sql"
 	"errors"
 	"strconv"
-	"strings"
 	"time"
+
+	"github.com/mikael/kubit/internal/netx"
 )
 
 type Sample struct {
@@ -25,7 +26,7 @@ type Sample struct {
 
 const KubitKey = "kubit"
 
-func LabHostKey(mac string) string { return "labhost:" + strings.ToLower(mac) }
+func LabHostKey(mac string) string { return "labhost:" + netx.MACKey(mac) }
 
 func (s *Store) AddSamples(ctx context.Context, cluster string, ts time.Time, samples []Sample) error {
 	tx, err := s.db.BeginTx(ctx, nil)
@@ -43,33 +44,45 @@ func (s *Store) AddSamples(ctx context.Context, cluster string, ts time.Time, sa
 	return tx.Commit()
 }
 
-func (s *Store) Samples(ctx context.Context, cluster, node string, since time.Time) ([]Sample, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT ts, node, cpu_milli, cpu_cap, mem, mem_cap, pods, ready, reachable, disk, disk_cap FROM samples WHERE cluster = ? AND node = ? AND ts >= ? ORDER BY ts`, cluster, node, since.UTC().Format(time.RFC3339))
-	if err != nil {
+func scanSample(sc scanner) (*Sample, error) {
+	var sm Sample
+	var ready, reach int
+	if err := sc.Scan(&sm.TS, &sm.Node, &sm.CPUMilli, &sm.CPUCap, &sm.MemBytes, &sm.MemCap, &sm.Pods, &ready, &reach, &sm.Disk, &sm.DiskCap); err != nil {
 		return nil, err
 	}
-	defer rows.Close()
-	out := []Sample{}
-	for rows.Next() {
-		var sm Sample
-		var ready, reach int
-		if err := rows.Scan(&sm.TS, &sm.Node, &sm.CPUMilli, &sm.CPUCap, &sm.MemBytes, &sm.MemCap, &sm.Pods, &ready, &reach, &sm.Disk, &sm.DiskCap); err != nil {
-			return nil, err
-		}
-		sm.Ready, sm.Reachable = ready == 1, reach == 1
-		out = append(out, sm)
-	}
-	return out, rows.Err()
+	sm.Ready, sm.Reachable = ready == 1, reach == 1
+	return &sm, nil
 }
 
-func (s *Store) PruneSamples(ctx context.Context) error {
-	day := time.Now().Add(-24 * time.Hour).UTC().Format(time.RFC3339)
-	month := time.Now().Add(-30 * 24 * time.Hour).UTC().Format(time.RFC3339)
-	if _, err := s.db.ExecContext(ctx, `DELETE FROM samples WHERE ts < ? AND strftime('%M', ts) != '00'`, day); err != nil {
-		return err
+func (s *Store) Samples(ctx context.Context, cluster, node string, since time.Time) ([]Sample, error) {
+	return queryAll(ctx, s.db, scanSample, `SELECT ts, node, cpu_milli, cpu_cap, mem, mem_cap, pods, ready, reachable, disk, disk_cap FROM samples WHERE cluster = ? AND node = ? AND ts >= ? ORDER BY ts`, cluster, node, since.UTC().Format(time.RFC3339))
+}
+
+const (
+	eventRetention     = 90 * 24 * time.Hour
+	operationRetention = 90 * 24 * time.Hour
+	operationsKept     = 500
+	auditRetention     = 365 * 24 * time.Hour
+)
+
+func (s *Store) Prune(ctx context.Context) error {
+	now := time.Now()
+	before := func(d time.Duration) string { return now.Add(-d).UTC().Format(time.RFC3339) }
+	for _, p := range []struct {
+		query string
+		args  []any
+	}{
+		{`DELETE FROM samples WHERE ts < ? AND strftime('%M', ts) != '00'`, []any{before(24 * time.Hour)}},
+		{`DELETE FROM samples WHERE ts < ?`, []any{before(30 * 24 * time.Hour)}},
+		{`DELETE FROM events WHERE acked = 1 AND ts < ?`, []any{before(eventRetention)}},
+		{`DELETE FROM operations WHERE finished_at IS NOT NULL AND finished_at < ? AND id NOT IN (SELECT id FROM (SELECT id, ROW_NUMBER() OVER (PARTITION BY cluster ORDER BY id DESC) AS n FROM operations) WHERE n <= ?)`, []any{before(operationRetention), operationsKept}},
+		{`DELETE FROM audit_log WHERE at < ?`, []any{before(auditRetention)}},
+	} {
+		if _, err := s.db.ExecContext(ctx, p.query, p.args...); err != nil {
+			return err
+		}
 	}
-	_, err := s.db.ExecContext(ctx, `DELETE FROM samples WHERE ts < ?`, month)
-	return err
+	return nil
 }
 
 type EventRow struct {
@@ -91,35 +104,32 @@ func (s *Store) AddEvent(ctx context.Context, e EventRow) (int64, error) {
 	return res.LastInsertId()
 }
 
+const selectEvents = `SELECT id, ts, cluster, node, severity, kind, message, acked FROM events WHERE cluster = ?`
+
 func (s *Store) Events(ctx context.Context, cluster string, limit int, unackedOnly bool) ([]EventRow, error) {
-	q := `SELECT id, ts, cluster, node, severity, kind, message, acked FROM events WHERE cluster = ?`
+	q := selectEvents
 	if unackedOnly {
 		q += ` AND acked = 0`
 	}
-	return s.queryEvents(ctx, q, cluster, limit)
+	return queryAll(ctx, s.db, scanEvent, q+` ORDER BY id DESC LIMIT ?`, cluster, limit)
 }
 
 func (s *Store) OpenWorkloadEvents(ctx context.Context, cluster string, limit int) ([]EventRow, error) {
-	return s.queryEvents(ctx, `SELECT id, ts, cluster, node, severity, kind, message, acked FROM events WHERE cluster = ? AND acked = 0 AND instr(node, '/') > 0`, cluster, limit)
+	return queryAll(ctx, s.db, scanEvent, selectEvents+` AND acked = 0 AND instr(node, '/') > 0 ORDER BY id DESC LIMIT ?`, cluster, limit)
 }
 
-func (s *Store) queryEvents(ctx context.Context, q, cluster string, limit int) ([]EventRow, error) {
-	rows, err := s.db.QueryContext(ctx, q+` ORDER BY id DESC LIMIT ?`, cluster, limit)
-	if err != nil {
+func (s *Store) OpenAlerts(ctx context.Context, cluster string) ([]EventRow, error) {
+	return queryAll(ctx, s.db, scanEvent, selectEvents+` AND acked = 0 AND severity != 'info' ORDER BY id DESC`, cluster)
+}
+
+func scanEvent(sc scanner) (*EventRow, error) {
+	var e EventRow
+	var acked int
+	if err := sc.Scan(&e.ID, &e.TS, &e.Cluster, &e.Node, &e.Severity, &e.Kind, &e.Message, &acked); err != nil {
 		return nil, err
 	}
-	defer rows.Close()
-	out := []EventRow{}
-	for rows.Next() {
-		var e EventRow
-		var acked int
-		if err := rows.Scan(&e.ID, &e.TS, &e.Cluster, &e.Node, &e.Severity, &e.Kind, &e.Message, &acked); err != nil {
-			return nil, err
-		}
-		e.Acked = acked == 1
-		out = append(out, e)
-	}
-	return out, rows.Err()
+	e.Acked = acked == 1
+	return &e, nil
 }
 
 func (s *Store) AckEvent(ctx context.Context, id int64) error {

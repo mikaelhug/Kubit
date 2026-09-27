@@ -6,6 +6,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/mikael/kubit/internal/config"
 )
@@ -121,6 +122,23 @@ func merged(defaults, over map[string]any) map[string]any {
 	return out
 }
 
+var ChartVersions = map[string]string{
+	"metallb":        "0.16.1",
+	"ingress-nginx":  "4.15.1",
+	"metrics-server": "3.14.0",
+	"cert-manager":   "v1.21.2",
+	"flux":           "2.19.1",
+	"longhorn":       "1.10.1",
+}
+
+func chartVersionVars() map[string]string {
+	out := make(map[string]string, len(ChartVersions))
+	for addon, v := range ChartVersions {
+		out[strings.ReplaceAll(addon, "-", "_")] = v
+	}
+	return out
+}
+
 func Vars(c *config.Cluster, kubeconfigPath string) map[string]any {
 	p := c.Spec.Platform
 	return map[string]any{
@@ -134,6 +152,7 @@ func Vars(c *config.Cluster, kubeconfigPath string) map[string]any {
 		"flux":             fluxVars{Enabled: p.Flux.Enabled, Values: vals(p.Flux.Values), Repository: p.Flux.Repository},
 		"longhorn":         longhornVars{Enabled: p.Longhorn.Enabled, Values: vals(p.Longhorn.Values), Replicas: c.LonghornReplicas()},
 		"oidc_admin_group": c.Spec.Auth.AdminGroupSubject(),
+		"chart_versions":   chartVersionVars(),
 	}
 }
 

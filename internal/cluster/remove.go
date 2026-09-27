@@ -25,12 +25,7 @@ func (m *Manager) RemoveNode(ctx context.Context, name, hostname string, opts Re
 	if err != nil {
 		return err
 	}
-	idx := -1
-	for i, n := range c.Spec.Nodes {
-		if n.Hostname == hostname {
-			idx = i
-		}
-	}
+	idx := c.NodeIndex(hostname)
 	if idx < 0 {
 		return fmt.Errorf("node %s is not part of cluster %s", hostname, name)
 	}
@@ -41,9 +36,12 @@ func (m *Manager) RemoveNode(ctx context.Context, name, hostname string, opts Re
 			return nil
 		}
 		remaining := len(c.ControlPlanes()) - 1
+		ep, isEndpoint := c.EndpointNode()
 		switch {
 		case remaining == 0:
 			return fmt.Errorf("%s is the last control plane; removing it destroys the cluster", hostname)
+		case isEndpoint && ep.Hostname == hostname:
+			return fmt.Errorf("%s is the API endpoint (no VIP); removing it would break every kubeconfig — set a VIP first", hostname)
 		case remaining == 2 && !opts.Force:
 			return fmt.Errorf("removing %s leaves 2 control planes, which cannot survive another failure; pass --force to accept", hostname)
 		case remaining == 2:

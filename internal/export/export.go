@@ -6,10 +6,13 @@ import (
 	"encoding/json"
 	"fmt"
 	"io/fs"
+	"maps"
 	"os"
 	"path/filepath"
+	"slices"
 
 	"github.com/mikael/kubit/internal/config"
+	"github.com/mikael/kubit/internal/fsx"
 )
 
 //go:embed templates
@@ -60,6 +63,10 @@ func Write(_ context.Context, dir string, in Input) error {
 	files[filepath.Join("infra", "talos", "terraform.tfvars.json")] = append(vars, '\n')
 	files[filepath.Join("infra", "talos", "README.md")] = []byte(readme)
 
+	previous, err := readManifest(dir)
+	if err != nil {
+		return err
+	}
 	for rel, b := range files {
 		p := filepath.Join(dir, rel)
 		if err := os.MkdirAll(filepath.Dir(p), 0o700); err != nil {
@@ -69,7 +76,42 @@ func Write(_ context.Context, dir string, in Input) error {
 			return fmt.Errorf("write %s: %w", rel, err)
 		}
 	}
-	return nil
+	for _, rel := range previous {
+		if _, current := files[rel]; current || !filepath.IsLocal(rel) {
+			continue
+		}
+		if err := os.Remove(filepath.Join(dir, rel)); err != nil && !os.IsNotExist(err) {
+			return err
+		}
+	}
+	return writeManifest(dir, slices.Sorted(maps.Keys(files)))
+}
+
+const manifestFile = ".kubit-export.json"
+
+type manifest struct {
+	Files []string `json:"files"`
+}
+
+func readManifest(dir string) ([]string, error) {
+	b, err := os.ReadFile(filepath.Join(dir, manifestFile))
+	if os.IsNotExist(err) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	var m manifest
+	_ = json.Unmarshal(b, &m)
+	return m.Files, nil
+}
+
+func writeManifest(dir string, files []string) error {
+	b, err := json.MarshalIndent(manifest{Files: files}, "", "  ")
+	if err != nil {
+		return err
+	}
+	return fsx.WriteFile(filepath.Join(dir, manifestFile), append(b, '\n'), 0o600)
 }
 
 type nodeVar struct {

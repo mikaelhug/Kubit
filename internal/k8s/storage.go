@@ -12,6 +12,7 @@ type StorageClass struct {
 	Reclaim     string `json:"reclaim"`
 	Binding     string `json:"binding"`
 	Expandable  bool   `json:"expandable"`
+	CreatedAt   string `json:"createdAt,omitempty"`
 }
 
 type Volume struct {
@@ -23,6 +24,7 @@ type Volume struct {
 	AccessMode string `json:"accessModes"`
 	Reclaim    string `json:"reclaim"`
 	Age        string `json:"age"`
+	CreatedAt  string `json:"createdAt,omitempty"`
 }
 
 type Claim struct {
@@ -35,6 +37,7 @@ type Claim struct {
 	Volume    string `json:"volume,omitempty"`
 	Age       string `json:"age"`
 	AgeSec    int64  `json:"ageSec"`
+	CreatedAt string `json:"createdAt,omitempty"`
 }
 
 type Storage struct {
@@ -50,7 +53,7 @@ func (c *Client) Storage(ctx context.Context) (*Storage, error) {
 		return nil, err
 	}
 	for _, sc := range scs {
-		s := StorageClass{Name: sc.Name, Provisioner: sc.Provisioner, Default: sc.Annotations["storageclass.kubernetes.io/is-default-class"] == "true"}
+		s := StorageClass{Name: sc.Name, Provisioner: sc.Provisioner, Default: sc.Annotations["storageclass.kubernetes.io/is-default-class"] == "true", CreatedAt: createdAt(sc.CreationTimestamp)}
 		if sc.ReclaimPolicy != nil {
 			s.Reclaim = string(*sc.ReclaimPolicy)
 		}
@@ -69,6 +72,7 @@ func (c *Client) Storage(ctx context.Context) (*Storage, error) {
 	for _, pv := range pvs {
 		v := Volume{Name: pv.Name, Capacity: pv.Spec.Capacity.Storage().Value(), Phase: string(pv.Status.Phase), Class: pv.Spec.StorageClassName, Reclaim: string(pv.Spec.PersistentVolumeReclaimPolicy)}
 		v.Age, _ = age(pv.CreationTimestamp)
+		v.CreatedAt = createdAt(pv.CreationTimestamp)
 		if pv.Spec.ClaimRef != nil {
 			v.Claim = pv.Spec.ClaimRef.Namespace + "/" + pv.Spec.ClaimRef.Name
 		}
@@ -92,6 +96,7 @@ func (c *Client) Claims(ctx context.Context) ([]Claim, error) {
 	for _, pvc := range pvcs {
 		cl := Claim{Namespace: pvc.Namespace, Name: pvc.Name, Phase: string(pvc.Status.Phase), Requested: pvc.Spec.Resources.Requests.Storage().Value(), Capacity: pvc.Status.Capacity.Storage().Value(), Volume: pvc.Spec.VolumeName}
 		cl.Age, cl.AgeSec = age(pvc.CreationTimestamp)
+		cl.CreatedAt = createdAt(pvc.CreationTimestamp)
 		if pvc.Spec.StorageClassName != nil {
 			cl.Class = *pvc.Spec.StorageClassName
 		}

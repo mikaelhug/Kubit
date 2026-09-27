@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"slices"
+	"strconv"
 	"testing"
 
 	"github.com/mikael/kubit/internal/store"
@@ -249,5 +251,123 @@ func TestOperationRoundTrip(t *testing.T) {
 	list, err := s.ListOperations(ctx, 10)
 	if err != nil || len(list) != 1 || list[0].ID != id || list[0].Log != "" || string(list[0].Steps) != `[{"id":"x"}]` {
 		t.Errorf("list: %+v %v", list, err)
+	}
+}
+
+func TestOpenAlertsIgnoreInfoAndLimits(t *testing.T) {
+	s := open(t)
+	ctx := t.Context()
+	if _, err := s.AddEvent(ctx, store.EventRow{Cluster: "c", Node: "n", Severity: "critical", Kind: "talos.unreachable", Message: "down"}); err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 1100; i++ {
+		if _, err := s.AddEvent(ctx, store.EventRow{Cluster: "c", Severity: "info", Kind: "node.cordoned", Message: "info"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := s.AddEvent(ctx, store.EventRow{Cluster: "other", Severity: "warn", Kind: "node.notready", Message: "x"}); err != nil {
+		t.Fatal(err)
+	}
+	alerts, err := s.OpenAlerts(ctx, "c")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(alerts) != 1 || alerts[0].Kind != "talos.unreachable" || alerts[0].Node != "n" {
+		t.Errorf("open alerts %+v", alerts)
+	}
+}
+
+func TestGetAuditReadsTheRow(t *testing.T) {
+	s := open(t)
+	ctx := t.Context()
+	var ids []string
+	s.OnChange(func(c store.Change) {
+		if c.Table == "audit" {
+			ids = append(ids, c.Key)
+		}
+	})
+	_ = s.Audit(ctx, "a", "first", "1")
+	_ = s.Audit(ctx, "b", "second", "2")
+	id, _ := strconv.ParseInt(ids[0], 10, 64)
+	e, err := s.GetAudit(ctx, id)
+	if err != nil || e.Action != "first" || e.Cluster != "a" {
+		t.Errorf("audit %d: %+v %v", id, e, err)
+	}
+	if _, err := s.GetAudit(ctx, 999); !errors.Is(err, store.ErrNotFound) {
+		t.Errorf("missing entry: %v", err)
+	}
+}
+
+func TestListsAreEmptyNotNil(t *testing.T) {
+	s := open(t)
+	ctx := t.Context()
+	clusters, _ := s.ListClusters(ctx)
+	nodes, _ := s.ListNodes(ctx, "")
+	ops, _ := s.ListOperations(ctx, 10)
+	if clusters == nil || nodes == nil || ops == nil {
+		t.Errorf("empty lists must be [] not null: %v %v %v", clusters == nil, nodes == nil, ops == nil)
+	}
+}
+
+func TestMachineChangesAreKeyedByMAC(t *testing.T) {
+	s := open(t)
+	ctx := t.Context()
+	if err := s.PutCluster(ctx, store.ClusterRow{Name: "c", Spec: []byte("x")}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.UpsertNode(ctx, store.NodeRow{MAC: "AA:BB:CC:00:00:01", IP: "10.0.0.5", State: "maintenance"}); err != nil {
+		t.Fatal(err)
+	}
+	var keys []string
+	s.OnChange(func(c store.Change) {
+		if c.Table == "machines" {
+			keys = append(keys, c.Key)
+		}
+	})
+	_ = s.SetNodeState(ctx, "10.0.0.5", "configured")
+	_ = s.AssignNode(ctx, "10.0.0.5", "c", "n1", "worker")
+	_ = s.UnassignNode(ctx, "10.0.0.5", "maintenance")
+	_ = s.SetNodeState(ctx, "10.9.9.9", "configured")
+	if !slices.Equal(keys, []string{"aa:bb:cc:00:00:01", "aa:bb:cc:00:00:01", "aa:bb:cc:00:00:01"}) {
+		t.Errorf("change keys %v", keys)
+	}
+	if m, _ := s.GetMachine(ctx, "aa:bb:cc:00:00:01"); m.State != "maintenance" || m.Hostname != "" {
+		t.Errorf("machine %+v", m)
+	}
+}
+
+func TestUpsertNodeSkipsARepeatedSighting(t *testing.T) {
+	s := open(t)
+	ctx := t.Context()
+	var n int
+	s.OnChange(func(c store.Change) {
+		if c.Table == "machines" {
+			n++
+		}
+	})
+	row := store.NodeRow{MAC: "aa:bb:cc:00:00:02", IP: "10.0.0.6", Hostname: "h", State: "configured", Hardware: []byte(`{"cpus":4}`)}
+	for i := 0; i < 3; i++ {
+		if err := s.UpsertNode(ctx, row); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if n != 1 {
+		t.Errorf("repeated sightings notified %d times, want 1", n)
+	}
+	row.TalosVersion = "v1.11.0"
+	if err := s.UpsertNode(ctx, row); err != nil {
+		t.Fatal(err)
+	}
+	if m, _ := s.GetMachine(ctx, row.MAC); n != 2 || m.TalosVersion != "v1.11.0" {
+		t.Errorf("a changed sighting must write and notify: n=%d %+v", n, m)
+	}
+	if err := s.UpsertNode(ctx, store.NodeRow{MAC: "aa:bb:cc:00:00:03", IP: "10.0.0.6", State: "maintenance"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.UpsertNode(ctx, row); err != nil {
+		t.Fatal(err)
+	}
+	if m, _ := s.GetMachine(ctx, row.MAC); m.IP != "10.0.0.6" || n != 4 {
+		t.Errorf("an address taken back must write: n=%d ip=%s", n, m.IP)
 	}
 }

@@ -83,6 +83,7 @@ type NodeStatus struct {
 	KubeletVersion string
 	OSImage        string
 	InternalIP     string
+	BootID         string
 	Labels         map[string]string
 	AllocatableCPU int64
 	AllocatableMem int64
@@ -107,7 +108,7 @@ func statusOf(n *corev1.Node) NodeStatus {
 	s := NodeStatus{
 		Name: n.Name, Unschedulable: n.Spec.Unschedulable,
 		KubeletVersion: n.Status.NodeInfo.KubeletVersion, OSImage: n.Status.NodeInfo.OSImage,
-		Labels: n.Labels,
+		BootID: n.Status.NodeInfo.BootID, Labels: n.Labels,
 	}
 	s.AllocatableCPU = n.Status.Allocatable.Cpu().MilliValue()
 	s.AllocatableMem = n.Status.Allocatable.Memory().Value()
@@ -127,7 +128,33 @@ func statusOf(n *corev1.Node) NodeStatus {
 	return s
 }
 
+func (c *Client) NodeBootIDs(ctx context.Context, names ...string) (map[string]string, error) {
+	out := map[string]string{}
+	for _, name := range names {
+		n, err := c.CoreV1().Nodes().Get(ctx, name, metav1.GetOptions{})
+		if err != nil {
+			return nil, err
+		}
+		out[name] = n.Status.NodeInfo.BootID
+	}
+	return out, nil
+}
+
 func (c *Client) WaitReady(ctx context.Context, names []string, timeout time.Duration, progress func(ready, total int)) error {
+	return c.WaitNodes(ctx, names, timeout, func(n NodeStatus) bool { return n.Ready }, progress)
+}
+
+func (c *Client) WaitRebooted(ctx context.Context, before map[string]string, timeout time.Duration) error {
+	names := make([]string, 0, len(before))
+	for name := range before {
+		names = append(names, name)
+	}
+	return c.WaitNodes(ctx, names, timeout, func(n NodeStatus) bool {
+		return n.Ready && (before[n.Name] == "" || n.BootID != before[n.Name])
+	}, nil)
+}
+
+func (c *Client) WaitNodes(ctx context.Context, names []string, timeout time.Duration, done func(NodeStatus) bool, progress func(ready, total int)) error {
 	deadline := time.Now().Add(timeout)
 	want := map[string]bool{}
 	for _, n := range names {
@@ -136,9 +163,9 @@ func (c *Client) WaitReady(ctx context.Context, names []string, timeout time.Dur
 	lastReady := -1
 	for {
 		ready := 0
-		nodes, err := c.Nodes(ctx)
-		for _, n := range nodes {
-			if want[n.Name] && n.Ready {
+		nodes, err := c.nodes(ctx)
+		for i := range nodes {
+			if want[nodes[i].Name] && done(statusOf(&nodes[i])) {
 				ready++
 			}
 		}
@@ -162,3 +189,5 @@ func (c *Client) WaitReady(ctx context.Context, names []string, timeout time.Dur
 		}
 	}
 }
+
+func (c *Client) ResetDiscovery() { c.restMapper().Reset() }

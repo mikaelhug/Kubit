@@ -45,16 +45,16 @@ func (s *Server) handleMachineRetire(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if m.Cluster != "" {
-		writeErr(w, &statusError{http.StatusConflict, fmt.Sprintf("%s is a member of cluster %s; remove it from the cluster first", m.Hostname, m.Cluster)})
+		writeErr(w, conflict(fmt.Sprintf("%s is a member of cluster %s; remove it from the cluster first", m.Hostname, m.Cluster)))
 		return
 	}
 	if m.LabHost != nil {
-		writeErr(w, &statusError{http.StatusConflict, "Release the lab host first."})
+		writeErr(w, conflict("Release the lab host first."))
 		return
 	}
 	if m.IsLabVM() {
 		if _, err := s.store.GetMachine(r.Context(), m.Host); err == nil {
-			writeErr(w, &statusError{http.StatusConflict, "Delete the VM from its lab host instead."})
+			writeErr(w, conflict("Delete the VM from its lab host instead."))
 			return
 		}
 	}
@@ -71,7 +71,7 @@ func (s *Server) handleMachineWOL(w http.ResponseWriter, r *http.Request) {
 		Enabled *bool `json:"enabled"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Enabled == nil {
-		writeErr(w, &statusError{http.StatusBadRequest, `body must be {"enabled": true|false}`})
+		writeErr(w, badRequest(`body must be {"enabled": true|false}`))
 		return
 	}
 	if err := s.store.SetMachineWOL(r.Context(), r.PathValue("mac"), *req.Enabled); err != nil {
@@ -88,7 +88,7 @@ func (s *Server) handleMachineWake(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !m.WOL {
-		writeErr(w, &statusError{http.StatusConflict, "Wake-on-LAN is not enabled for this machine"})
+		writeErr(w, conflict("Wake-on-LAN is not enabled for this machine"))
 		return
 	}
 	if err := wakeOnLAN(m.MAC); err != nil {
@@ -312,7 +312,7 @@ func (s *Server) handleNodeRename(w http.ResponseWriter, r *http.Request) {
 		To string `json:"to"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.To == "" {
-		writeErr(w, &statusError{http.StatusBadRequest, `body must be {"to": "<new-hostname>"}`})
+		writeErr(w, badRequest(`body must be {"to": "<new-hostname>"}`))
 		return
 	}
 	s.startOp(w, name, "node.rename", map[string]string{"hostname": hostname, "to": req.To}, func(ctx context.Context, sink cluster.Sink) (any, error) {
@@ -326,7 +326,7 @@ func (s *Server) handleNodePool(w http.ResponseWriter, r *http.Request) {
 		Pool string `json:"pool"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Pool == "" {
-		writeErr(w, &statusError{http.StatusBadRequest, `body must be {"pool": "<pool>"}`})
+		writeErr(w, badRequest(`body must be {"pool": "<pool>"}`))
 		return
 	}
 	s.startOp(w, name, "node.pool", map[string]string{"hostname": hostname, "pool": req.Pool}, func(ctx context.Context, sink cluster.Sink) (any, error) {

@@ -15,7 +15,10 @@ import (
 	"github.com/mikael/kubit/internal/labhost"
 	"github.com/mikael/kubit/internal/labhost/vfkit"
 	"github.com/mikael/kubit/internal/store"
+	"github.com/mikael/kubit/internal/talos"
 	"github.com/siderolabs/talos/pkg/machinery/config/generate/secrets"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
 
 const (
@@ -55,6 +58,10 @@ type Manager struct {
 	kubeMu sync.Mutex
 	kube   map[string]kubeEntry
 
+	talosMu   sync.Mutex
+	talos     map[string]map[string]talosEntry
+	talosGone map[string]bool
+
 	addonErrMu sync.Mutex
 	addonErr   map[string]string
 }
@@ -64,11 +71,23 @@ type kubeEntry struct {
 	kc  *k8s.Client
 }
 
+type talosEntry struct {
+	sum [sha256.Size]byte
+	tc  *talos.Client
+}
+
 func NewManager(s *store.Store, home string) *Manager {
 	m := &Manager{Store: s, Factory: factory.New(), Timeouts: defaultTimeouts, Home: home, Local: func() (labhost.Driver, error) { return vfkit.New(home) }}
 	s.OnChange(func(c store.Change) {
-		if c.Table == "clusters" && c.Op == "delete" {
+		if c.Table != "clusters" {
+			return
+		}
+		switch c.Op {
+		case "delete":
 			m.dropKube(c.Cluster)
+			m.forgetTalos(c.Cluster)
+		case "put":
+			m.rememberTalos(c.Cluster)
 		}
 	})
 	return m
@@ -143,7 +162,7 @@ func (m *Manager) ImageStatus(ctx context.Context, name string) (ImageStatus, er
 	if err != nil {
 		return ImageStatus{}, err
 	}
-	return ImageStatus{TalosVersion: c.Spec.TalosVersion, Installed: c.Spec.SchematicID, Desired: id, Extensions: c.Spec.Extensions, Outdated: imageOutdated(c, id, pools)}, nil
+	return ImageStatus{TalosVersion: c.Spec.TalosVersion, Installed: c.Spec.SchematicID, Desired: id, Extensions: append([]string{}, c.Spec.Extensions...), Outdated: imageOutdated(c, id, pools)}, nil
 }
 
 func (m *Manager) installer(c *config.Cluster) config.Installer {
@@ -184,7 +203,7 @@ func (m *Manager) SaveCluster(ctx context.Context, c *config.Cluster, state stri
 	if old, _, err := m.LoadCluster(ctx, c.Metadata.Name); err == nil {
 		installed, split := m.installedLayout(ctx, old)
 		if err := config.CheckChange(old, c, installed, split); err != nil {
-			return err
+			return invalidSpec{err}
 		}
 	}
 	spec, err := c.Marshal()
@@ -193,6 +212,12 @@ func (m *Manager) SaveCluster(ctx context.Context, c *config.Cluster, state stri
 	}
 	return m.Store.PutCluster(ctx, store.ClusterRow{Name: c.Metadata.Name, Spec: spec, SchematicID: c.Spec.SchematicID, State: state})
 }
+
+type invalidSpec struct{ error }
+
+func (e invalidSpec) Unwrap() error { return e.error }
+
+func (e invalidSpec) Is(target error) bool { return target == store.ErrInvalid }
 
 func (m *Manager) saveExisting(ctx context.Context, c *config.Cluster) error {
 	if _, err := m.Store.GetCluster(ctx, c.Metadata.Name); err != nil {
@@ -233,12 +258,104 @@ func (m *Manager) dropKube(name string) {
 	delete(m.kube, name)
 }
 
+const talosRetireDelay = time.Minute
+
+func (m *Manager) talosClientFor(name, ip string, talosconfig []byte) (*talos.Client, error) {
+	sum := sha256.Sum256(talosconfig)
+	m.talosMu.Lock()
+	defer m.talosMu.Unlock()
+	if m.talosGone[name] {
+		return nil, fmt.Errorf("cluster %q: %w", name, store.ErrNotFound)
+	}
+	if e, ok := m.talos[name][ip]; ok {
+		if e.sum == sum {
+			return e.tc, nil
+		}
+		retire(e.tc)
+		delete(m.talos[name], ip)
+	}
+	tc, err := talos.Dial(context.Background(), ip, talosconfig)
+	if err != nil {
+		return nil, err
+	}
+	if m.talos == nil {
+		m.talos = map[string]map[string]talosEntry{}
+	}
+	if m.talos[name] == nil {
+		m.talos[name] = map[string]talosEntry{}
+	}
+	m.talos[name][ip] = talosEntry{sum: sum, tc: tc}
+	return tc, nil
+}
+
+func staleConn(tc *talos.Client, err error) bool {
+	code := status.Code(err)
+	if code == codes.Unavailable {
+		return true
+	}
+	return (code == codes.DeadlineExceeded || errors.Is(err, context.DeadlineExceeded)) && tc.TransientFailure()
+}
+
+func (m *Manager) noteTalosErr(name, ip string, tc *talos.Client, err error) {
+	if !staleConn(tc, err) {
+		return
+	}
+	m.talosMu.Lock()
+	defer m.talosMu.Unlock()
+	if e, ok := m.talos[name][ip]; ok && e.tc == tc {
+		retire(tc)
+		delete(m.talos[name], ip)
+	}
+}
+
+func (m *Manager) keepTalos(name string, ips map[string]bool) {
+	m.talosMu.Lock()
+	defer m.talosMu.Unlock()
+	for ip, e := range m.talos[name] {
+		if !ips[ip] {
+			retire(e.tc)
+			delete(m.talos[name], ip)
+		}
+	}
+}
+
+func (m *Manager) dropTalosCluster(name string) {
+	m.talosMu.Lock()
+	defer m.talosMu.Unlock()
+	m.dropTalosLocked(name)
+}
+
+func (m *Manager) forgetTalos(name string) {
+	m.talosMu.Lock()
+	defer m.talosMu.Unlock()
+	m.dropTalosLocked(name)
+	if m.talosGone == nil {
+		m.talosGone = map[string]bool{}
+	}
+	m.talosGone[name] = true
+}
+
+func (m *Manager) rememberTalos(name string) {
+	m.talosMu.Lock()
+	defer m.talosMu.Unlock()
+	delete(m.talosGone, name)
+}
+
+func (m *Manager) dropTalosLocked(name string) {
+	for _, e := range m.talos[name] {
+		retire(e.tc)
+	}
+	delete(m.talos, name)
+}
+
+func retire(tc *talos.Client) {
+	time.AfterFunc(talosRetireDelay, func() { tc.Close() })
+}
+
 func (m *Manager) clusterClients(ctx context.Context, name string) (*store.ClusterSecrets, *k8s.Client, error) {
 	sec, err := m.Store.GetClusterSecrets(ctx, name)
-	if errors.Is(err, store.ErrNotFound) {
-		m.dropKube(name)
-	}
 	if err != nil {
+		m.dropClientsIfGone(name, err)
 		return nil, nil, err
 	}
 	kc, err := m.KubeClientFor(name, sec)
@@ -246,6 +363,13 @@ func (m *Manager) clusterClients(ctx context.Context, name string) (*store.Clust
 		return nil, nil, err
 	}
 	return sec, kc, nil
+}
+
+func (m *Manager) dropClientsIfGone(name string, err error) {
+	if errors.Is(err, store.ErrNotFound) {
+		m.dropKube(name)
+		m.dropTalosCluster(name)
+	}
 }
 
 func storeRow(c *config.Cluster, n config.Node) store.NodeRow {

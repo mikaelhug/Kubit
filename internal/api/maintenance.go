@@ -19,7 +19,7 @@ func (s *Server) disruptive(h http.HandlerFunc) http.HandlerFunc {
 		name := r.PathValue("name")
 		if name != "" && r.URL.Query().Get("ignoreWindow") != "true" {
 			if msg, closed := s.windowClosed(r.Context(), name); closed {
-				writeErr(w, &statusError{http.StatusConflict, msg})
+				writeErr(w, conflict(msg))
 				return
 			}
 		}

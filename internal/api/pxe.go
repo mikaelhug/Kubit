@@ -35,7 +35,7 @@ func pxeCommand(host string, httpOnly bool) string {
 }
 
 func pxeDown(w http.ResponseWriter, cmd string) {
-	writeJSON(w, http.StatusConflict, map[string]string{"error": "The PXE server is not running, so the machine would find nothing to boot. Start it in a terminal (it can stay open): " + cmd, "code": "pxe-down", "command": cmd})
+	writeErr(w, &statusError{Status: http.StatusConflict, Msg: "The PXE server is not running, so the machine would find nothing to boot. Start it in a terminal (it can stay open): " + cmd, Code: "pxe-down", Command: cmd})
 }
 
 func (s *Server) pxeFetch(ctx context.Context) (string, []byte, error) {
@@ -67,6 +67,10 @@ func (s *Server) pxeStatus(ctx context.Context) (*pxe.Status, error) {
 	if err != nil {
 		return nil, err
 	}
+	return parsePXE(body)
+}
+
+func parsePXE(body []byte) (*pxe.Status, error) {
 	var st pxe.Status
 	if err := json.Unmarshal(body, &st); err != nil {
 		return nil, err
@@ -74,9 +78,21 @@ func (s *Server) pxeStatus(ctx context.Context) (*pxe.Status, error) {
 	return &st, nil
 }
 
-func (s *Server) pxeRunning(ctx context.Context) bool {
-	_, _, err := s.pxeFetch(ctx)
-	return err == nil
+func (s *Server) pxeServing(w http.ResponseWriter, r *http.Request, httpOnly bool) (*pxe.Status, bool) {
+	_, body, err := s.pxeFetch(r.Context())
+	var st *pxe.Status
+	if err == nil {
+		st, err = parsePXE(body)
+	}
+	if err != nil {
+		pxeDown(w, pxeCommand(r.Host, httpOnly))
+		return nil, false
+	}
+	if st.IP == "" {
+		writeErr(w, &statusError{Status: http.StatusConflict, Msg: fmt.Sprintf("The PXE server has no address on %s.", st.Interface), Code: "pxe-no-address"})
+		return nil, false
+	}
+	return st, true
 }
 
 type pxeSnapshot struct {

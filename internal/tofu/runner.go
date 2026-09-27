@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"slices"
 	"strings"
+	"time"
 )
 
 type Line struct {
@@ -106,6 +107,8 @@ func (r *Runner) command(ctx context.Context, args ...string) *exec.Cmd {
 	cmd := exec.CommandContext(ctx, r.Bin, args...)
 	cmd.Dir = r.Dir
 	cmd.Env = r.env()
+	cmd.Cancel = func() error { return cmd.Process.Signal(os.Interrupt) }
+	cmd.WaitDelay = time.Minute
 	return cmd
 }
 

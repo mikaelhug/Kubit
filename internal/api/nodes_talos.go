@@ -66,13 +66,13 @@ func (s *Server) nodeClient(r *http.Request) (*talos.Client, error) {
 		return nil, err
 	}
 	if row.IP == "" {
-		return nil, &statusError{http.StatusConflict, "No address is known for this machine."}
+		return nil, conflict("No address is known for this machine.")
 	}
 	if !row.Talos() {
-		return nil, &statusError{http.StatusConflict, noTalosReason(row)}
+		return nil, conflict(noTalosReason(row))
 	}
 	if !talos.PortOpen(r.Context(), ip, 2*time.Second) {
-		return nil, &statusError{http.StatusBadGateway, fmt.Sprintf("Talos API at %s:%s is not answering.", ip, talos.Port)}
+		return nil, &statusError{Status: http.StatusBadGateway, Msg: fmt.Sprintf("Talos API at %s:%s is not answering.", ip, talos.Port)}
 	}
 	if row.Cluster == "" {
 		return talos.DialMaintenance(r.Context(), ip)
@@ -101,9 +101,9 @@ func (s *Server) handleNodeLogs(w http.ResponseWriter, r *http.Request) {
 			fl.Flush()
 		}
 	}
-	ctx := tc.Context(r.Context())
+	ctx := r.Context()
 	if svc := r.URL.Query().Get("service"); svc != "" {
-		st, err := tc.Logs(ctx, "system", 0, svc, follow, 500)
+		st, err := tc.ServiceLog(ctx, svc, follow, 500)
 		if err != nil {
 			writeErr(w, err)
 			return
@@ -116,7 +116,7 @@ func (s *Server) handleNodeLogs(w http.ResponseWriter, r *http.Request) {
 			write(m.Bytes)
 		}
 	}
-	st, err := tc.Dmesg(ctx, follow, false)
+	st, err := tc.KernelLog(ctx, follow)
 	if err != nil {
 		writeErr(w, err)
 		return
@@ -145,25 +145,23 @@ func (s *Server) handleNodeServices(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer tc.Close()
-	resp, err := tc.ServiceList(tc.Context(r.Context()))
+	services, err := tc.Services(r.Context())
 	if err != nil {
 		writeErr(w, err)
 		return
 	}
 	out := []serviceView{}
-	for _, m := range resp.Messages {
-		for _, svc := range m.Services {
-			v := serviceView{ID: svc.Id, State: svc.State}
-			if svc.Health != nil {
-				v.Healthy = svc.Health.Healthy
-				v.Unknown = svc.Health.Unknown
-				v.Last = svc.Health.LastMessage
-			}
-			if n := len(svc.Events.Events); n > 0 {
-				v.Last = svc.Events.Events[n-1].Msg
-			}
-			out = append(out, v)
+	for _, svc := range services {
+		v := serviceView{ID: svc.Id, State: svc.State}
+		if svc.Health != nil {
+			v.Healthy = svc.Health.Healthy
+			v.Unknown = svc.Health.Unknown
+			v.Last = svc.Health.LastMessage
 		}
+		if n := len(svc.Events.Events); n > 0 {
+			v.Last = svc.Events.Events[n-1].Msg
+		}
+		out = append(out, v)
 	}
 	writeJSON(w, http.StatusOK, out)
 }
@@ -175,7 +173,7 @@ func (s *Server) handleNodeRebootNow(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer tc.Close()
-	if err := tc.Reboot(tc.Context(r.Context())); err != nil {
+	if err := tc.RebootMachine(r.Context()); err != nil {
 		writeErr(w, err)
 		return
 	}

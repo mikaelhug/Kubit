@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/mikael/kubit/internal/cluster"
+	"github.com/mikael/kubit/internal/labhost"
 	"github.com/mikael/kubit/internal/labhost/libvirt"
 	"github.com/mikael/kubit/internal/store"
 )
@@ -28,7 +29,7 @@ func (s *Server) handleLabCheck(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if host.LabHost.Driver != "" {
-		writeErr(w, &statusError{http.StatusConflict, "Not available on this lab host."})
+		writeErr(w, conflict("Not available on this lab host."))
 		return
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 3*time.Minute)
@@ -66,18 +67,18 @@ func (s *Server) handleLabMaintain(upgrade bool) http.HandlerFunc {
 			return
 		}
 		if host.LabHost.Driver != "" {
-			writeErr(w, &statusError{http.StatusConflict, "Not available on this lab host."})
+			writeErr(w, conflict("Not available on this lab host."))
 			return
 		}
 		if host.LabHost.State != "ready" {
-			writeErr(w, &statusError{http.StatusConflict, "the host is " + host.LabHost.State})
+			writeErr(w, conflict("the host is "+host.LabHost.State))
 			return
 		}
 		affected := s.labClusters(r.Context(), host)
 		if r.URL.Query().Get("ignoreWindow") != "true" {
 			for _, name := range affected {
 				if msg, closed := s.windowClosed(r.Context(), name); closed {
-					writeErr(w, &statusError{http.StatusConflict, name + ": " + msg})
+					writeErr(w, conflict(name+": "+msg))
 					return
 				}
 			}
@@ -199,34 +200,47 @@ func (s *Server) labMaintain(ctx context.Context, host *store.Machine, upgrade b
 	sink.End("reboot")
 
 	sink.Begin("resume")
-	for _, v := range host.LabHost.VMs {
-		if v.State == "running" {
-			_ = lc.Start(ctx, v.Name)
-		}
-	}
-	vms, listErr := lc.List(ctx)
-	m, metricsErr := lc.Metrics(ctx)
-	_ = s.store.UpdateLabHost(ctx, mac, func(lh *store.LabHost) {
-		if listErr == nil {
-			lh.VMs = vms
-		}
-		if metricsErr == nil {
-			lh.Metrics = &m
-		}
-	})
-	nowRunning := 0
-	if metricsErr == nil {
-		nowRunning = m.VMsRunning
-	} else if host.LabHost.Metrics != nil {
-		nowRunning = host.LabHost.Metrics.VMsRunning
-	}
-	logf("resume", cluster.Done, "%d VMs running", nowRunning)
+	s.labResumeVMs(ctx, lc, host, logf)
 	sink.End("resume")
 
 	if len(affected) == 0 {
 		return nil
 	}
 	sink.Begin("cluster")
+	if err := s.labWaitClusters(ctx, mac, affected, logf); err != nil {
+		return err
+	}
+	sink.End("cluster")
+	return nil
+}
+
+type stepLog func(step string, level cluster.Level, format string, a ...any)
+
+func (s *Server) labResumeVMs(ctx context.Context, lc *libvirt.Client, host *store.Machine, logf stepLog) {
+	for _, v := range host.LabHost.VMs {
+		if v.State == "running" {
+			_ = lc.Start(ctx, v.Name)
+		}
+	}
+	o := labhost.Observe(ctx, lc)
+	_ = s.store.UpdateLabHost(ctx, host.MAC, func(lh *store.LabHost) {
+		if o.ListErr == nil {
+			lh.VMs = o.VMs
+		}
+		if o.MetricsErr == nil {
+			lh.Metrics = &o.Metrics
+		}
+	})
+	nowRunning := 0
+	if o.MetricsErr == nil {
+		nowRunning = o.Metrics.VMsRunning
+	} else if host.LabHost.Metrics != nil {
+		nowRunning = host.LabHost.Metrics.VMsRunning
+	}
+	logf("resume", cluster.Done, "%d VMs running", nowRunning)
+}
+
+func (s *Server) labWaitClusters(ctx context.Context, mac string, affected []string, logf stepLog) error {
 	for _, name := range affected {
 		c, _, err := s.manager.LoadCluster(ctx, name)
 		if err != nil {
@@ -247,7 +261,6 @@ func (s *Server) labMaintain(ctx context.Context, host *store.Machine, upgrade b
 		}
 		logf("cluster", cluster.Done, "%s: all %d nodes on this host Ready", name, len(names))
 	}
-	sink.End("cluster")
 	return nil
 }
 

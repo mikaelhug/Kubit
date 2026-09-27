@@ -249,7 +249,7 @@ func TestLabHostChangesWaitForTheHostLock(t *testing.T) {
 	if err := st.SetLabHost(ctx, mac, &store.LabHost{State: "ready"}); err != nil {
 		t.Fatal(err)
 	}
-	s.locks.lock("labhost:" + mac)
+	s.locks.lockContext(t.Context(), "labhost:"+mac)
 	for _, r := range []struct{ method, path, body string }{
 		{"DELETE", "/api/v1/machines/" + mac + "/labhost", ""},
 		{"DELETE", "/api/v1/machines/" + mac + "/labhost/vms/vm-01", ""},
@@ -262,5 +262,29 @@ func TestLabHostChangesWaitForTheHostLock(t *testing.T) {
 	s.locks.unlock("labhost:" + mac)
 	if m, _ := st.GetMachine(ctx, mac); m.LabHost == nil {
 		t.Fatal("refused release must leave the host alone")
+	}
+}
+
+func TestProvisionRefusedWhilePXEHasNoAddress(t *testing.T) {
+	s, st, _ := localServer(t)
+	ctx := t.Context()
+	fake := &fakePXE{st: pxe.Status{Interface: "en7", HTTPPort: 8069, Boots: []pxe.Boot{}}}
+	srv := httptest.NewServer(fake)
+	defer srv.Close()
+	v, _ := st.GetSettings(ctx)
+	v.PXEStatusURL = srv.URL + "/status.json"
+	if err := st.PutSettings(ctx, v); err != nil {
+		t.Fatal(err)
+	}
+	mac := "52:54:00:4c:41:04"
+	if err := st.UpsertNode(ctx, store.NodeRow{MAC: mac, IP: "192.168.5.22", Source: "manual", State: "unknown", Arch: "amd64"}); err != nil {
+		t.Fatal(err)
+	}
+	rec := call(t, s, "POST", "/api/v1/machines/"+mac+"/labhost", `{"manual":true}`)
+	if rec.Code != http.StatusConflict || !strings.Contains(rec.Body.String(), `"code":"pxe-no-address"`) || !strings.Contains(rec.Body.String(), "en7") {
+		t.Fatalf("provision while the PXE interface has no address: %d %s", rec.Code, rec.Body)
+	}
+	if m, _ := st.GetMachine(ctx, mac); m.LabHost != nil || m.Provision {
+		t.Errorf("a refused provision leaves the machine alone: %+v", m.LabHost)
 	}
 }

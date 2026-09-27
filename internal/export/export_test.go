@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/mikael/kubit/internal/config"
@@ -57,5 +58,45 @@ func TestWriteLayout(t *testing.T) {
 	}
 	if vars.Endpoint != "https://10.0.0.1:6443" || vars.Bootstrap != "10.0.0.1" || vars.Nodes["w-01"]["role"] != "worker" {
 		t.Errorf("vars: %+v", vars)
+	}
+}
+
+func TestWriteDropsMachineConfigsOfRemovedNodes(t *testing.T) {
+	c, err := config.Parse([]byte(decl))
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	in := export.Input{Cluster: c, ClusterYAML: []byte("c"), SecretsYAML: []byte("s"), Talosconfig: []byte("tc"),
+		MachineConfigs: map[string][]byte{"cp-01": []byte("a"), "w-01": []byte("b"), "w-02": []byte("c")}}
+	if err := export.Write(context.Background(), dir, in); err != nil {
+		t.Fatal(err)
+	}
+	mine := filepath.Join(dir, "machineconfigs", "patch.yaml")
+	if err := os.WriteFile(mine, []byte("user"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	delete(in.MachineConfigs, "w-02")
+	if err := export.Write(context.Background(), dir, in); err != nil {
+		t.Fatal(err)
+	}
+	for _, sub := range []string{"machineconfigs", "infra/talos/machineconfigs"} {
+		if _, err := os.Stat(filepath.Join(dir, sub, "w-02.yaml")); !os.IsNotExist(err) {
+			t.Errorf("%s/w-02.yaml survived the node's removal: %v", sub, err)
+		}
+		if _, err := os.Stat(filepath.Join(dir, sub, "w-01.yaml")); err != nil {
+			t.Errorf("%s/w-01.yaml: %v", sub, err)
+		}
+	}
+	if b, err := os.ReadFile(mine); err != nil || string(b) != "user" {
+		t.Errorf("a file Kubit did not write must survive an export: %q %v", b, err)
+	}
+	raw, _ := os.ReadFile(filepath.Join(dir, ".kubit-export.json"))
+	if !strings.Contains(string(raw), "w-01.yaml") || strings.Contains(string(raw), "w-02.yaml") {
+		t.Errorf("manifest lists the current export only:\n%s", raw)
+	}
+	tf, _ := os.ReadFile(filepath.Join(dir, "infra/talos/versions.tf"))
+	if !strings.Contains(string(tf), "< 1.0") {
+		t.Errorf("provider major not pinned:\n%s", tf)
 	}
 }

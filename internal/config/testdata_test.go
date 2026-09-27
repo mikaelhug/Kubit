@@ -1,5 +1,32 @@
 package config_test
 
+import (
+	"sync"
+	"testing"
+	"time"
+
+	"github.com/mikael/kubit/internal/config"
+	talosconfig "github.com/siderolabs/talos/pkg/machinery/config"
+	"github.com/siderolabs/talos/pkg/machinery/config/generate/secrets"
+)
+
+var sharedBundle = sync.OnceValues(func() (*secrets.Bundle, error) {
+	contract, err := talosconfig.ParseContractFromVersion(config.MinTalosVersion)
+	if err != nil {
+		return nil, err
+	}
+	return secrets.NewBundle(secrets.NewFixedClock(time.Now()), contract)
+})
+
+func sharedSecrets(t *testing.T) *secrets.Bundle {
+	t.Helper()
+	b, err := sharedBundle()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return b
+}
+
 const sampleCluster = `
 apiVersion: kubit.dev/v1
 kind: Cluster

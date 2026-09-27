@@ -2,11 +2,11 @@ package main
 
 import (
 	"fmt"
-	"os"
 	"strconv"
 	"text/tabwriter"
 
 	"github.com/mikael/kubit/internal/cluster"
+	"github.com/mikael/kubit/internal/fsx"
 	"github.com/spf13/cobra"
 )
 
@@ -62,7 +62,7 @@ func etcdCmd() *cobra.Command {
 			if out == "" {
 				out = fmt.Sprintf("%s-etcd-%d.db", sn.Cluster, sn.ID)
 			}
-			return os.WriteFile(out, plain, 0o600)
+			return fsx.WriteOut(out, 0o600, fsx.Bytes(plain))
 		}),
 	}
 	download.Flags().StringVarP(&out, "out", "o", "", "output file")

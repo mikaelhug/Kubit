@@ -25,6 +25,7 @@ type memDriver struct {
 	mac     string
 	vms     []labhost.VM
 	deleted []string
+	gate    chan struct{}
 }
 
 func (d *memDriver) Capacity(context.Context) (labhost.Capacity, error) { return d.capa, nil }
@@ -41,6 +42,9 @@ func (d *memDriver) Metrics(context.Context) (labhost.Metrics, error)           
 func (d *memDriver) Close() error                                                     { return nil }
 func (d *memDriver) HostMAC(context.Context) (string, error)                          { return d.mac, nil }
 func (d *memDriver) List(context.Context) ([]labhost.VM, error) {
+	if d.gate != nil {
+		<-d.gate
+	}
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	return append([]labhost.VM(nil), d.vms...), nil
@@ -223,4 +227,43 @@ func TestLabLocalDesignAndRelease(t *testing.T) {
 			t.Errorf("VM row %s must go with the host", mac)
 		}
 	}
+}
+
+func TestStartDoesNotWaitForLabHostCleanup(t *testing.T) {
+	s, st, d := localServer(t)
+	ctx := t.Context()
+	d.gate = make(chan struct{})
+	if err := st.UpsertNode(ctx, store.NodeRow{MAC: d.mac, IP: "192.168.105.1", Source: "labhost", State: "labhost"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.SetLabHost(ctx, d.mac, &store.LabHost{State: "setup", Driver: labhost.DriverVFKit}); err != nil {
+		t.Fatal(err)
+	}
+	id, err := st.CreateOperation(ctx, "", "labhost.local", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	started := make(chan struct{})
+	go func() {
+		s.Start()
+		close(started)
+	}()
+	select {
+	case <-started:
+	case <-time.After(2 * time.Second):
+		close(d.gate)
+		t.Fatal("Start waited for the lab host release")
+	}
+	if op, _ := st.GetOperation(ctx, id); op.Status != "failed" {
+		t.Errorf("interrupted operations are marked before Start returns: %s", op.Status)
+	}
+	close(d.gate)
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if _, err := st.GetMachine(ctx, d.mac); err != nil {
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Error("the half-made local lab host was not released")
 }

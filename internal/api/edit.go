@@ -4,10 +4,10 @@ import (
 	"context"
 	"fmt"
 	"net/http"
-	"strings"
 	"time"
 
 	"github.com/mikael/kubit/internal/config"
+	"github.com/mikael/kubit/internal/netx"
 )
 
 var lockWait = 5 * time.Second
@@ -17,7 +17,7 @@ func (s *Server) holdLock(w http.ResponseWriter, r *http.Request, busy string, k
 	defer cancel()
 	unlock, err := s.locks.lockAllContext(ctx, keys)
 	if err != nil {
-		writeErr(w, &statusError{http.StatusConflict, busy})
+		writeErr(w, conflict(busy))
 		return nil, false
 	}
 	return unlock, true
@@ -55,13 +55,13 @@ func (s *Server) editCluster(w http.ResponseWriter, r *http.Request, action, det
 	return c, true
 }
 
-func pathMAC(r *http.Request) string { return strings.ToLower(r.PathValue("mac")) }
+func pathMAC(r *http.Request) string { return netx.MACKey(r.PathValue("mac")) }
 
-func queryMAC(r *http.Request) string { return strings.ToLower(r.URL.Query().Get("mac")) }
+func queryMAC(r *http.Request) string { return netx.MACKey(r.URL.Query().Get("mac")) }
 
 func adoptDeclaration(stored, updated *config.Cluster) error {
 	if updated.Metadata.Name != stored.Metadata.Name {
-		return &statusError{http.StatusUnprocessableEntity, fmt.Sprintf("declaration names cluster %q", updated.Metadata.Name)}
+		return &statusError{Status: http.StatusUnprocessableEntity, Msg: fmt.Sprintf("declaration names cluster %q", updated.Metadata.Name)}
 	}
 	updated.Spec.SchematicID = stored.Spec.SchematicID
 	return nil

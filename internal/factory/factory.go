@@ -108,12 +108,7 @@ func (c *Client) Versions(ctx context.Context) ([]string, error) {
 }
 
 func (c *Client) host() string {
-	const p = "https://"
-	base := c.BaseURL()
-	if len(base) > len(p) && base[:len(p)] == p {
-		return base[len(p):]
-	}
-	return base
+	return strings.TrimPrefix(c.BaseURL(), "https://")
 }
 
 func (c *Client) InstallerImage(schematicID, talosVersion string) string {

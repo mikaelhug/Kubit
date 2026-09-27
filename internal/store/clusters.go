@@ -59,7 +59,7 @@ func (s *Store) ClusterVIPs(ctx context.Context) map[string]string {
 
 const clusterCols = `name, spec, schematic_id, state, created_at, updated_at`
 
-func scanCluster(sc interface{ Scan(...any) error }) (*ClusterRow, error) {
+func scanCluster(sc scanner) (*ClusterRow, error) {
 	var c ClusterRow
 	var spec string
 	if err := sc.Scan(&c.Name, &spec, &c.SchematicID, &c.State, &c.CreatedAt, &c.UpdatedAt); err != nil {
@@ -78,20 +78,7 @@ func (s *Store) GetCluster(ctx context.Context, name string) (*ClusterRow, error
 }
 
 func (s *Store) ListClusters(ctx context.Context) ([]ClusterRow, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT `+clusterCols+` FROM clusters ORDER BY name`)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var out []ClusterRow
-	for rows.Next() {
-		c, err := scanCluster(rows)
-		if err != nil {
-			return nil, err
-		}
-		out = append(out, *c)
-	}
-	return out, rows.Err()
+	return queryAll(ctx, s.db, scanCluster, `SELECT `+clusterCols+` FROM clusters ORDER BY name`)
 }
 
 func notFound(err error, format string, args ...any) error {
@@ -192,6 +179,7 @@ func (s *Store) SetTalosconfig(ctx context.Context, name string, talosconfig []b
 	if n, _ := res.RowsAffected(); n == 0 {
 		return fmt.Errorf("secrets for cluster %q: %w", name, ErrNotFound)
 	}
+	s.notify(Change{Table: "secrets", Cluster: name, Key: name, Op: "put"})
 	return nil
 }
 

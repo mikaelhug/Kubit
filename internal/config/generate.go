@@ -74,7 +74,7 @@ func Generate(c *Cluster, bundle *secrets.Bundle, installer Installer) (*Generat
 		generate.WithVersionContract(contract),
 		generate.WithSecretsBundle(bundle),
 		generate.WithEndpointList(cpIPs),
-		generate.WithInstallImage(installer(c.PoolOf(Node{Pool: "controlplane"}))),
+		generate.WithInstallImage(installer(c.controlPlaneInstallPool())),
 		generate.WithAllowSchedulingOnControlPlanes(*c.Spec.ControlPlane.AllowScheduling),
 		generate.WithSkipUnattendedInstallConfig(true),
 	}
@@ -103,6 +103,13 @@ func Generate(c *Cluster, bundle *secrets.Bundle, installer Installer) (*Generat
 		return nil, err
 	}
 	return out, nil
+}
+
+func (c *Cluster) controlPlaneInstallPool() Pool {
+	if p := c.ControlPlanePool(); p != nil {
+		return *p
+	}
+	return Pool{Name: string(RoleControlPlane), Role: RoleControlPlane}
 }
 
 func generateNode(c *Cluster, in *generate.Input, n Node, installerImage string) ([]byte, error) {

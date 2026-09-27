@@ -137,13 +137,11 @@ func (m *Manager) RotateCredential(ctx context.Context, name, which string, sink
 			return fmt.Errorf("unknown credential %q (talosconfig | kubeconfig)", which)
 		}
 		cp, tc, err := firstControlPlane(ctx, cps, sec.Talosconfig, func(_ config.Node, tc *talos.Client) error {
-			call, cancel := context.WithTimeout(ctx, 60*time.Second)
-			defer cancel()
 			var err error
 			if which == "talosconfig" {
-				fresh, err = tc.GenerateTalosconfig(call, 365*24*time.Hour)
+				fresh, err = generateTalosconfig(ctx, tc, 365*24*time.Hour)
 			} else {
-				fresh, err = tc.Kubeconfig(tc.Context(call))
+				fresh, err = adminKubeconfig(ctx, tc, credentialTimeout)
 			}
 			return err
 		})

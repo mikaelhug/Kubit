@@ -23,22 +23,18 @@ type AddonStatus struct {
 	State     string         `json:"state"`
 }
 
-var addonMeta = []struct{ key, namespace, pin string }{
-	{"metallb", "metallb-system", "0.16.1"},
-	{"ingressNginx", "ingress-nginx", "4.15.1"},
-	{"gvisor", "", ""},
-	{"metricsServer", "kube-system", "3.14.0"},
-	{"certManager", "cert-manager", "v1.21.2"},
-	{"flux", "flux-system", "2.19.1"},
-	{"longhorn", "longhorn-system", "1.10.1"},
-	{"builds", "kubit-builds", ""},
+var addonMeta = []struct{ key, tofu, namespace string }{
+	{"metallb", "metallb", "metallb-system"},
+	{"ingressNginx", "ingress-nginx", "ingress-nginx"},
+	{"gvisor", "gvisor", ""},
+	{"metricsServer", "metrics-server", "kube-system"},
+	{"certManager", "cert-manager", "cert-manager"},
+	{"flux", "flux", "flux-system"},
+	{"longhorn", "longhorn", "longhorn-system"},
+	{"builds", "builds", "kubit-builds"},
 }
 
-func PlatformNamespace(ns string) (string, bool) {
-	switch ns {
-	case "kube-system", "kube-public", "kube-node-lease":
-		return "kubernetes", true
-	}
+func addonOf(ns string) (string, bool) {
 	for _, a := range addonMeta {
 		if a.namespace != "" && a.namespace == ns {
 			return a.key, true
@@ -47,16 +43,18 @@ func PlatformNamespace(ns string) (string, bool) {
 	return "", false
 }
 
-func AddonNamespace(ns string) bool {
-	for _, a := range addonMeta {
-		if a.namespace != "" && a.namespace == ns {
-			return true
-		}
+func PlatformNamespace(ns string) (string, bool) {
+	switch ns {
+	case "kube-system", "kube-public", "kube-node-lease":
+		return "kubernetes", true
 	}
-	return false
+	return addonOf(ns)
 }
 
-var addonTofuName = map[string]string{"metallb": "metallb", "ingressNginx": "ingress-nginx", "gvisor": "gvisor", "metricsServer": "metrics-server", "certManager": "cert-manager", "flux": "flux", "longhorn": "longhorn", "builds": "builds"}
+func AddonNamespace(ns string) bool {
+	_, ok := addonOf(ns)
+	return ok
+}
 
 func addonSpec(p config.Platform, key string) (bool, map[string]any) {
 	switch key {
@@ -98,16 +96,17 @@ func (m *Manager) Addons(ctx context.Context, name string) ([]AddonStatus, error
 	for i, meta := range addonMeta {
 		enabled, values := addonSpec(c.Spec.Platform, meta.key)
 		st := &out[i]
-		*st = AddonStatus{Key: meta.key, Enabled: enabled, Values: values, Pinned: meta.pin}
+		pin := tofu.ChartVersions[meta.tofu]
+		*st = AddonStatus{Key: meta.key, Enabled: enabled, Values: values, Pinned: pin}
 		if meta.key == "builds" && c.RegistryIP() != "" {
 			st.Address = net.JoinHostPort(c.RegistryIP(), fmt.Sprint(config.RegistryPort))
 		}
 		for i := range releases {
-			if releases[i].Addon == addonTofuName[meta.key] {
+			if releases[i].Addon == meta.tofu {
 				st.Release = &releases[i]
 			}
 		}
-		chartless := meta.pin == "" && meta.namespace != ""
+		chartless := pin == "" && meta.namespace != ""
 		if meta.namespace == "" || kerr != nil || (st.Release == nil && !enabled && !chartless) {
 			st.State = addonState(*st, meta.namespace == "", chartless)
 			continue

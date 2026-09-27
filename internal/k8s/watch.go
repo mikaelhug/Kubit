@@ -40,20 +40,9 @@ func (c *Client) WatchScopes(ctx context.Context, changed func(scope, namespace 
 			DeleteFunc: func(obj any) { changed(scope, objectNamespace(obj)) },
 		}
 	}
-	_, _ = f.Core().V1().Pods().Informer().AddEventHandler(hook(ScopeWorkloads))
-	_, _ = f.Apps().V1().Deployments().Informer().AddEventHandler(hook(ScopeWorkloads))
-	_, _ = f.Apps().V1().DaemonSets().Informer().AddEventHandler(hook(ScopeWorkloads))
-	_, _ = f.Apps().V1().StatefulSets().Informer().AddEventHandler(hook(ScopeWorkloads))
-	_, _ = f.Batch().V1().Jobs().Informer().AddEventHandler(hook(ScopeWorkloads))
-	_, _ = f.Batch().V1().CronJobs().Informer().AddEventHandler(hook(ScopeWorkloads))
-	_, _ = f.Core().V1().Namespaces().Informer().AddEventHandler(hook(ScopeWorkloads))
-	_, _ = f.Core().V1().Services().Informer().AddEventHandler(hook(ScopeNetwork))
-	_, _ = f.Discovery().V1().EndpointSlices().Informer().AddEventHandler(hook(ScopeNetwork))
-	_, _ = f.Networking().V1().Ingresses().Informer().AddEventHandler(hook(ScopeNetwork))
-	_, _ = f.Core().V1().PersistentVolumeClaims().Informer().AddEventHandler(hook(ScopeStorage))
-	_, _ = f.Core().V1().PersistentVolumes().Informer().AddEventHandler(hook(ScopeStorage))
-	_, _ = f.Storage().V1().StorageClasses().Informer().AddEventHandler(hook(ScopeStorage))
-	_, _ = f.Core().V1().Nodes().Informer().AddEventHandler(hook(ScopeNodes))
+	for _, is := range informerScopes {
+		_, _ = is.informer(f).AddEventHandler(hook(is.scope))
+	}
 	k := NewCache(f)
 	go c.watchFlux(ctx, k, hook(ScopeFlux))
 	c.UseCache(k)

@@ -20,27 +20,41 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 }
 
 type statusError struct {
-	Status int
-	Msg    string
+	Status  int
+	Msg     string
+	Code    string
+	Command string
 }
 
 func (e *statusError) Error() string { return e.Msg }
 
+func badRequest(msg string) error { return &statusError{Status: http.StatusBadRequest, Msg: msg} }
+
+func conflict(msg string) error { return &statusError{Status: http.StatusConflict, Msg: msg} }
+
+func invalid(err error) error { return badRequest(err.Error()) }
+
+type errorBody struct {
+	Error   string `json:"error"`
+	Code    string `json:"code,omitempty"`
+	Command string `json:"command,omitempty"`
+}
+
 func writeErr(w http.ResponseWriter, err error) {
 	var se *statusError
 	status := http.StatusInternalServerError
-	msg := err.Error()
+	body := errorBody{Error: err.Error()}
 	switch {
 	case errors.As(err, &se):
-		status, msg = se.Status, se.Msg
+		status, body = se.Status, errorBody{Error: se.Msg, Code: se.Code, Command: se.Command}
 	case errors.Is(err, store.ErrNotFound):
 		status = http.StatusNotFound
-	case grpcstatus.Code(err) != codes.Unknown && grpcstatus.Code(err) != codes.OK:
-		status, msg = talos.HTTPStatus(err), talos.ShortGRPC(err).Error()
-	case strings.Contains(msg, "already exists"), strings.Contains(msg, "must"), strings.Contains(msg, "required"):
+	case errors.Is(err, store.ErrInvalid):
 		status = http.StatusBadRequest
+	case grpcstatus.Code(err) != codes.Unknown && grpcstatus.Code(err) != codes.OK:
+		status, body.Error = talos.HTTPStatus(err), talos.ShortGRPC(err).Error()
 	}
-	writeJSON(w, status, map[string]string{"error": msg})
+	writeJSON(w, status, body)
 }
 
 func spaHandler(root http.FileSystem) http.Handler {
@@ -74,10 +88,10 @@ func decodeBody(w http.ResponseWriter, r *http.Request, v any, optional bool) bo
 	if err == nil || (optional && errors.Is(err, io.EOF)) {
 		return true
 	}
-	writeErr(w, &statusError{http.StatusBadRequest, "body: " + err.Error()})
+	writeErr(w, badRequest("body: "+err.Error()))
 	return false
 }
 
 func unprocessable(err error) error {
-	return &statusError{http.StatusUnprocessableEntity, err.Error()}
+	return &statusError{Status: http.StatusUnprocessableEntity, Msg: err.Error()}
 }

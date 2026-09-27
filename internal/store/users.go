@@ -28,7 +28,7 @@ func ParseRole(s string) (Role, error) {
 	case RoleViewer, RoleOperator, RoleAdmin:
 		return Role(s), nil
 	}
-	return "", fmt.Errorf("role must be viewer, operator or admin")
+	return "", invalid("role must be viewer, operator or admin")
 }
 
 func (r Role) AtLeast(min Role) bool { return rank(r) >= rank(min) }
@@ -91,11 +91,19 @@ func ActorFrom(ctx context.Context) string {
 
 var ErrBadCredentials = errors.New("wrong user or password")
 
+var ErrInvalid = errors.New("invalid input")
+
+type invalid string
+
+func (e invalid) Error() string { return string(e) }
+
+func (e invalid) Is(target error) bool { return target == ErrInvalid }
+
 var dummyHash, _ = bcrypt.GenerateFromPassword([]byte("kubit-timing-pad"), bcrypt.DefaultCost)
 
 const userCols = `id, name, role, disabled, source, created_at, last_login, password_hash != ''`
 
-func scanUser(sc interface{ Scan(...any) error }) (*User, error) {
+func scanUser(sc scanner) (*User, error) {
 	var u User
 	var disabled int
 	if err := sc.Scan(&u.ID, &u.Name, &u.Role, &disabled, &u.Source, &u.CreatedAt, &u.LastLogin, &u.HasPass); err != nil {
@@ -112,20 +120,7 @@ func (s *Store) CountUsers(ctx context.Context) (int, error) {
 }
 
 func (s *Store) ListUsers(ctx context.Context) ([]User, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT `+userCols+` FROM users ORDER BY name`)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	out := []User{}
-	for rows.Next() {
-		u, err := scanUser(rows)
-		if err != nil {
-			return nil, err
-		}
-		out = append(out, *u)
-	}
-	return out, rows.Err()
+	return queryAll(ctx, s.db, scanUser, `SELECT `+userCols+` FROM users ORDER BY name`)
 }
 
 func (s *Store) GetUser(ctx context.Context, name string) (*User, error) {
@@ -135,7 +130,7 @@ func (s *Store) GetUser(ctx context.Context, name string) (*User, error) {
 
 func validName(name string) error {
 	if len(name) < 2 || len(name) > 64 || strings.ContainsAny(name, " \t\n/\\") {
-		return fmt.Errorf("name must be 2-64 characters without spaces or slashes")
+		return invalid("name must be 2-64 characters without spaces or slashes")
 	}
 	return nil
 }
@@ -148,7 +143,7 @@ func (s *Store) CreateUser(ctx context.Context, name, password string, role Role
 	hash := ""
 	if password != "" {
 		if len(password) < 8 {
-			return nil, fmt.Errorf("password must be at least 8 characters")
+			return nil, invalid("password must be at least 8 characters")
 		}
 		h, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
 		if err != nil {
@@ -161,7 +156,7 @@ func (s *Store) CreateUser(ctx context.Context, name, password string, role Role
 	}
 	if _, err := s.db.ExecContext(ctx, `INSERT INTO users (name, password_hash, role, source) VALUES (?, ?, ?, ?)`, name, hash, role, source); err != nil {
 		if strings.Contains(err.Error(), "UNIQUE") {
-			return nil, fmt.Errorf("user %s exists", name)
+			return nil, invalid(fmt.Sprintf("user %s already exists", name))
 		}
 		return nil, err
 	}
@@ -174,7 +169,7 @@ func (s *Store) UpdateUser(ctx context.Context, name string, role *Role, disable
 	var hash []byte
 	if password != "" {
 		if len(password) < 8 {
-			return fmt.Errorf("password must be at least 8 characters")
+			return invalid("password must be at least 8 characters")
 		}
 		h, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
 		if err != nil {
@@ -339,21 +334,16 @@ func (s *Store) RevokeToken(ctx context.Context, token string) error {
 }
 
 func (s *Store) ListTokens(ctx context.Context, user string) ([]Token, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT s.name, s.kind, s.created_at, s.expires_at, s.last_used, substr(s.token_hash, 1, 8)
+	return queryAll(ctx, s.db, scanToken, `SELECT s.name, s.kind, s.created_at, s.expires_at, s.last_used, substr(s.token_hash, 1, 8)
 		FROM sessions s JOIN users u ON u.id = s.user_id WHERE u.name = ? AND s.kind = 'api' ORDER BY s.created_at`, strings.ToLower(user))
-	if err != nil {
+}
+
+func scanToken(sc scanner) (*Token, error) {
+	var t Token
+	if err := sc.Scan(&t.Name, &t.Kind, &t.CreatedAt, &t.ExpiresAt, &t.LastUsed, &t.Prefix); err != nil {
 		return nil, err
 	}
-	defer rows.Close()
-	out := []Token{}
-	for rows.Next() {
-		var t Token
-		if err := rows.Scan(&t.Name, &t.Kind, &t.CreatedAt, &t.ExpiresAt, &t.LastUsed, &t.Prefix); err != nil {
-			return nil, err
-		}
-		out = append(out, t)
-	}
-	return out, rows.Err()
+	return &t, nil
 }
 
 func (s *Store) DeleteAPIToken(ctx context.Context, user, name string) error {

@@ -11,7 +11,6 @@ import (
 	"github.com/mikael/kubit/internal/store"
 	"github.com/mikael/kubit/internal/talos"
 	"github.com/mikael/kubit/internal/tofu"
-	machineapi "github.com/siderolabs/talos/pkg/machinery/api/machine"
 )
 
 const (
@@ -93,6 +92,7 @@ type Totals struct {
 func (m *Manager) Status(ctx context.Context, name string) (*Status, error) {
 	c, row, err := m.LoadCluster(ctx, name)
 	if err != nil {
+		m.dropClientsIfGone(name, err)
 		return nil, err
 	}
 	st := &Status{
@@ -109,65 +109,21 @@ func (m *Manager) Status(ctx context.Context, name string) (*Status, error) {
 	}
 	sec, err := m.Store.GetClusterSecrets(ctx, name)
 	if err != nil {
+		m.dropClientsIfGone(name, err)
 		return nil, err
 	}
 	ctx, cancel := context.WithTimeout(ctx, 20*time.Second)
 	defer cancel()
 
-	ordered := orderedNodes(c)
-	st.Nodes = make([]NodeStatus, len(ordered))
-	byHost := map[string]*NodeStatus{}
-	var macs []string
-	for _, n := range ordered {
-		if n.MAC != "" {
-			macs = append(macs, n.MAC)
-		}
-	}
-	seen, _ := m.Store.MachineIPs(ctx, macs)
-	for i, n := range ordered {
-		st.Nodes[i] = NodeStatus{Hostname: n.Hostname, IP: n.IP, Role: string(n.Role), Pool: n.Pool, Arch: string(n.Arch), KVM: n.KVM}
-		if ip := seen[strings.ToLower(n.MAC)]; n.MAC != "" && ip != "" && ip != n.IP {
-			st.Nodes[i].SeenAt = ip
-		}
-		byHost[n.Hostname] = &st.Nodes[i]
-	}
-
-	probes := make([]*talosProbe, len(c.Spec.Nodes))
-	probeOf := map[string]*talosProbe{}
-	for i, n := range c.Spec.Nodes {
-		probes[i] = &talosProbe{dialed: make(chan struct{})}
-		probeOf[n.Hostname] = probes[i]
-	}
+	byHost := m.nodeRows(ctx, c, st)
 	var wg sync.WaitGroup
 	var mu sync.Mutex
-	for i, n := range c.Spec.Nodes {
-		wg.Add(1)
-		go func(n config.Node, p *talosProbe) {
-			defer wg.Done()
-			nctx, cancel := context.WithTimeout(ctx, 6*time.Second)
-			defer cancel()
-			ver, stage, err := p.probe(nctx, n.IP, sec.Talosconfig)
-			mu.Lock()
-			defer mu.Unlock()
-			ns := byHost[n.Hostname]
-			if err != nil {
-				ns.TalosError = err.Error()
-				if Classify(err) == ReachNoNetwork {
-					ns.TalosReach = "no-network"
-					ns.TalosError = ShortNet(err)
-				}
-				return
-			}
-			ns.TalosReachable = true
-			ns.Stage = stage
-			ns.TalosVersion = ver
-		}(n, probes[i])
-	}
+	probeOf := m.probeNodes(ctx, c, sec.Talosconfig, byHost, &wg, &mu)
 	if cps := c.ControlPlanes(); len(cps) > 0 && sec.Kubeconfig != nil {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			e := m.etcdStatus(ctx, cps, func(n config.Node) *talos.Client {
+			e := m.etcdStatus(ctx, name, cps, func(n config.Node) *talos.Client {
 				p := probeOf[n.Hostname]
 				if p == nil {
 					return nil
@@ -188,54 +144,15 @@ func (m *Manager) Status(ctx context.Context, name string) (*Status, error) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			kc, err := m.KubeClientFor(name, sec)
-			if err != nil {
-				mu.Lock()
-				st.APIError = err.Error()
-				mu.Unlock()
-				return
-			}
-			nodes, err := kc.Nodes(ctx)
-			if err != nil {
-				mu.Lock()
-				st.APIError = err.Error()
-				if Classify(err) == ReachNoNetwork {
-					st.APIReach = "no-network"
-				}
-				mu.Unlock()
-				return
-			}
-			usage, _ := kc.NodeUsages(ctx)
-			pods, _ := kc.PodCount(ctx)
-			mu.Lock()
-			defer mu.Unlock()
-			st.APIReachable = true
-			for _, kn := range nodes {
-				ns, ok := byHost[kn.Name]
-				if !ok {
-					continue
-				}
-				ns.Registered = true
-				ns.Ready = kn.Ready
-				ns.Unschedulable = kn.Unschedulable
-				ns.KubeletVersion = kn.KubeletVersion
-				ns.CPUCapMilli = kn.CapacityCPU
-				ns.MemCapBytes = kn.CapacityMem
-				ns.MemAllocBytes = kn.AllocatableMem
-				ns.PodCap = kn.CapacityPods
-				ns.GVisor = kn.Labels[config.LabelGVisor] == "true"
-				ns.CPUMilli = usage[kn.Name].CPUMilli
-				ns.MemBytes = usage[kn.Name].MemoryBytes
-				ns.Pods = pods[kn.Name]
-			}
+			m.collectKube(ctx, name, sec, st, byHost, &mu)
 		}()
 	}
 	wg.Wait()
-	for _, p := range probes {
-		if p.tc != nil {
-			p.tc.Close()
-		}
+	ips := map[string]bool{}
+	for _, n := range c.Spec.Nodes {
+		ips[n.IP] = true
 	}
+	m.keepTalos(name, ips)
 	st.Observer, st.ObserverError = observe(ctx, st)
 
 	st.Etcd.Expected = len(c.ControlPlanes())
@@ -255,6 +172,100 @@ func (m *Manager) Status(ctx context.Context, name string) (*Status, error) {
 	st.LastSnapshotAt, _ = m.Store.LatestSnapshotTS(ctx, name)
 	st.SnapshotInterval = c.Spec.Backup.Etcd.Interval
 	return st, nil
+}
+
+func (m *Manager) nodeRows(ctx context.Context, c *config.Cluster, st *Status) map[string]*NodeStatus {
+	ordered := orderedNodes(c)
+	st.Nodes = make([]NodeStatus, len(ordered))
+	byHost := map[string]*NodeStatus{}
+	var macs []string
+	for _, n := range ordered {
+		if n.MAC != "" {
+			macs = append(macs, n.MAC)
+		}
+	}
+	seen, _ := m.Store.MachineIPs(ctx, macs)
+	for i, n := range ordered {
+		st.Nodes[i] = NodeStatus{Hostname: n.Hostname, IP: n.IP, Role: string(n.Role), Pool: n.Pool, Arch: string(n.Arch), KVM: n.KVM}
+		if ip := seen[strings.ToLower(n.MAC)]; n.MAC != "" && ip != "" && ip != n.IP {
+			st.Nodes[i].SeenAt = ip
+		}
+		byHost[n.Hostname] = &st.Nodes[i]
+	}
+	return byHost
+}
+
+func (m *Manager) probeNodes(ctx context.Context, c *config.Cluster, talosconfig []byte, byHost map[string]*NodeStatus, wg *sync.WaitGroup, mu *sync.Mutex) map[string]*talosProbe {
+	probeOf := map[string]*talosProbe{}
+	for _, n := range c.Spec.Nodes {
+		p := &talosProbe{m: m, cluster: c.Metadata.Name, dialed: make(chan struct{})}
+		probeOf[n.Hostname] = p
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			nctx, cancel := context.WithTimeout(ctx, 6*time.Second)
+			defer cancel()
+			ver, stage, err := p.probe(nctx, n.IP, talosconfig)
+			mu.Lock()
+			defer mu.Unlock()
+			ns := byHost[n.Hostname]
+			if err != nil {
+				ns.TalosError = err.Error()
+				if Classify(err) == ReachNoNetwork {
+					ns.TalosReach = "no-network"
+					ns.TalosError = ShortNet(err)
+				}
+				return
+			}
+			ns.TalosReachable = true
+			ns.Stage = stage
+			ns.TalosVersion = ver
+		}()
+	}
+	return probeOf
+}
+
+func (m *Manager) collectKube(ctx context.Context, name string, sec *store.ClusterSecrets, st *Status, byHost map[string]*NodeStatus, mu *sync.Mutex) {
+	kc, err := m.KubeClientFor(name, sec)
+	if err != nil {
+		mu.Lock()
+		st.APIError = err.Error()
+		mu.Unlock()
+		return
+	}
+	nodes, err := kc.Nodes(ctx)
+	if err != nil {
+		mu.Lock()
+		st.APIError = err.Error()
+		if Classify(err) == ReachNoNetwork {
+			st.APIReach = "no-network"
+		}
+		mu.Unlock()
+		return
+	}
+	usage, _ := kc.NodeUsages(ctx)
+	pods, _ := kc.PodCount(ctx)
+	mu.Lock()
+	defer mu.Unlock()
+	st.APIReachable = true
+	for _, kn := range nodes {
+		ns, ok := byHost[kn.Name]
+		if !ok {
+			continue
+		}
+		ns.Registered = true
+		ns.Ready = kn.Ready
+		ns.Unschedulable = kn.Unschedulable
+		ns.KubeletVersion = kn.KubeletVersion
+		ns.CPUCapMilli = kn.CapacityCPU
+		ns.MemCapBytes = kn.CapacityMem
+		ns.MemAllocBytes = kn.AllocatableMem
+		ns.PodCap = kn.CapacityPods
+		ns.GVisor = kn.Labels[config.LabelGVisor] == "true"
+		ns.CPUMilli = usage[kn.Name].CPUMilli
+		ns.MemBytes = usage[kn.Name].MemoryBytes
+		ns.Pods = pods[kn.Name]
+	}
 }
 
 func observe(ctx context.Context, st *Status) (string, string) {
@@ -294,8 +305,10 @@ func observe(ctx context.Context, st *Status) (string, string) {
 }
 
 type talosProbe struct {
-	dialed chan struct{}
-	tc     *talos.Client
+	m       *Manager
+	cluster string
+	dialed  chan struct{}
+	tc      *talos.Client
 }
 
 func (p *talosProbe) dial(ctx context.Context, ip string, talosconfig []byte) error {
@@ -306,7 +319,7 @@ func (p *talosProbe) dial(ctx context.Context, ip string, talosconfig []byte) er
 		}
 		return fmt.Errorf("port 50000 closed or host down")
 	}
-	tc, err := talos.Dial(ctx, ip, talosconfig)
+	tc, err := p.m.talosClientFor(p.cluster, ip, talosconfig)
 	if err != nil {
 		return fmt.Errorf("dial: %w", err)
 	}
@@ -319,50 +332,40 @@ func (p *talosProbe) probe(ctx context.Context, ip string, talosconfig []byte) (
 		return "", "", err
 	}
 	tc := p.tc
-	v, err := tc.Version(tc.Context(ctx))
+	version, err = versionTag(ctx, tc)
 	if err != nil {
+		p.m.noteTalosErr(p.cluster, ip, tc, err)
 		return "", "", fmt.Errorf("version: %w", talos.ShortGRPC(err))
-	}
-	if len(v.Messages) > 0 {
-		version = v.Messages[0].Version.Tag
 	}
 	stage, err = tc.Stage(ctx)
 	if err != nil {
+		p.m.noteTalosErr(p.cluster, ip, tc, err)
 		return version, "", fmt.Errorf("machine status: %w", talos.ShortGRPC(err))
 	}
 	return version, stage, nil
 }
 
-func (m *Manager) etcdStatus(ctx context.Context, cps []config.Node, dialed func(config.Node) *talos.Client) EtcdStatus {
+func (m *Manager) etcdStatus(ctx context.Context, name string, cps []config.Node, dialed func(config.Node) *talos.Client) EtcdStatus {
 	var e EtcdStatus
 	for _, cp := range cps {
 		tc := dialed(cp)
 		if tc == nil {
 			continue
 		}
-		members, err := tc.EtcdMemberList(tc.Context(ctx), &machineapi.EtcdMemberListRequest{})
+		members, err := tc.EtcdMemberCount(ctx)
 		if err != nil {
+			m.noteTalosErr(name, cp.IP, tc, err)
 			continue
 		}
-		for _, msg := range members.Messages {
-			e.Members = len(msg.Members)
-		}
-		if status, err := tc.EtcdStatus(tc.Context(ctx)); err == nil {
-			for _, msg := range status.Messages {
-				if msg.MemberStatus != nil && msg.MemberStatus.Leader == msg.MemberStatus.MemberId {
-					e.Leader = cp.Hostname
-				}
-				for _, ms := range msg.MemberStatus.GetErrors() {
-					e.Alarms = append(e.Alarms, ms)
-				}
+		e.Members = members
+		if info, err := tc.EtcdMemberInfo(ctx); err == nil {
+			if info.Leader {
+				e.Leader = cp.Hostname
 			}
+			e.Alarms = append(e.Alarms, info.Errors...)
 		}
-		if alarms, err := tc.EtcdAlarmList(tc.Context(ctx)); err == nil {
-			for _, msg := range alarms.Messages {
-				for _, a := range msg.MemberAlarms {
-					e.Alarms = append(e.Alarms, a.Alarm.String())
-				}
-			}
+		if alarms, err := tc.EtcdAlarms(ctx); err == nil {
+			e.Alarms = append(e.Alarms, alarms...)
 		}
 		healthy, _ := tc.ServiceHealthy(ctx, "etcd")
 		e.Healthy = healthy && len(e.Alarms) == 0

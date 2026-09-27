@@ -77,7 +77,7 @@ type clusterLoop struct {
 
 func (w *Watcher) Run(ctx context.Context) {
 	w.Store.OnChange(w.onStoreChange)
-	sync := func() {
+	reconcile := func() {
 		rows, err := w.Store.ListClusters(ctx)
 		if err != nil {
 			return
@@ -103,7 +103,7 @@ func (w *Watcher) Run(ctx context.Context) {
 			}
 		}
 	}
-	sync()
+	reconcile()
 	go w.labLoop(ctx)
 	go w.candidateLoop(ctx)
 	t := time.NewTicker(w.Interval())
@@ -119,9 +119,9 @@ func (w *Watcher) Run(ctx context.Context) {
 			retune = w.retuned()
 			t.Reset(w.Interval())
 		case <-t.C:
-			sync()
+			reconcile()
 		case <-prune.C:
-			_ = w.Store.PruneSamples(ctx)
+			_ = w.Store.Prune(ctx)
 		}
 	}
 }

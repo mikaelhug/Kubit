@@ -87,7 +87,10 @@ func (m *Manager) ServiceHealth(ctx context.Context, name string) (*ServiceHealt
 	if err != nil {
 		return nil, err
 	}
-	out := &ServiceHealth{CollectedAt: time.Now(), MetalLB: c.Spec.Platform.MetalLB.Enabled}
+	out := &ServiceHealth{
+		Workloads: []WorkloadHealth{}, Pods: []PodHealth{}, Claims: []ClaimHealth{}, Services: []ServiceRow{}, Ingresses: []IngressHealth{},
+		CollectedAt: time.Now(), MetalLB: c.Spec.Platform.MetalLB.Enabled,
+	}
 	wls, err := kc.Workloads(ctx)
 	if err != nil {
 		return nil, err

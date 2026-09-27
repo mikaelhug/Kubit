@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/mikael/kubit/internal/fsx"
 	"github.com/mikael/kubit/internal/offsite"
 	"github.com/mikael/kubit/internal/store"
 )
@@ -69,7 +70,10 @@ func (m *Manager) BackupOffsite(ctx context.Context, sink Sink) (string, error) 
 	if err != nil {
 		return "", err
 	}
-	tmp, err := os.CreateTemp(m.Home, "backup-*.part")
+	if err := fsx.SweepParts(m.Home, time.Hour); err != nil {
+		return "", err
+	}
+	tmp, err := os.CreateTemp(m.Home, ".backup-*.part")
 	if err != nil {
 		return "", err
 	}
@@ -77,9 +81,6 @@ func (m *Manager) BackupOffsite(ctx context.Context, sink Sink) (string, error) 
 	defer tmp.Close()
 	var size int64
 	if err := sink.Run("archive", func() error {
-		if err := m.Store.Checkpoint(ctx); err != nil {
-			return err
-		}
 		if err := store.Backup(m.Home, m.Store.Crypto(), tmp); err != nil {
 			return err
 		}

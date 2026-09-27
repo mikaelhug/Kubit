@@ -94,7 +94,10 @@ type DesignOptions struct {
 	DataDisks    bool
 }
 
-const MinWorkerBytes = 1500 << 20
+const (
+	MinWorkerBytes       = 1500 << 20
+	MinControlPlaneBytes = 1600 << 20
+)
 
 const talosPartitionsBytes = 2 << 30
 
@@ -161,7 +164,7 @@ func Lint(c *Cluster, machines []Machine) []Warning {
 		}
 	}
 	for _, n := range cps {
-		if m, ok := byMAC[strings.ToLower(n.MAC)]; ok && m.MemBytes > 0 && m.MemBytes < 1600<<20 {
+		if m, ok := byMAC[strings.ToLower(n.MAC)]; ok && m.MemBytes > 0 && m.MemBytes < MinControlPlaneBytes {
 			warn("warn", "control-plane-undersized", n.Hostname, "Control plane %s has under ~1.6 GiB usable RAM; a control plane cannot run etcd and the API server on that — give it a 2 GiB machine (provisioning will refuse it).", n.Hostname)
 		}
 	}

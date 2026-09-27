@@ -241,7 +241,7 @@ func (w *Watcher) serviceTick(ctx context.Context, name string) {
 	w.mu.Unlock()
 	if tr == nil {
 		fresh := newServiceTracker()
-		if open, err := w.Store.Events(ctx, name, 1000, true); err == nil {
+		if open, err := w.Store.OpenAlerts(ctx, name); err == nil {
 			fresh.Seed(open)
 		}
 		w.mu.Lock()
@@ -287,8 +287,8 @@ func zeroed[T any](in []T, zero func(*T)) []T {
 func (w *Watcher) emit(ctx context.Context, name string, events []store.EventRow) {
 	now := time.Now()
 	for _, e := range events {
-		if resolves, ok := resolves[e.Kind]; ok {
-			_ = w.Store.ResolveEvents(ctx, name, e.Node, resolves)
+		if alert, ok := resolves[e.Kind]; ok {
+			_ = w.Store.ResolveEvents(ctx, name, e.Node, alert)
 		}
 		if e.Kind == "node.removed" {
 			for _, k := range []string{"talos.unreachable", "node.notready", "machine.ip-changed"} {
@@ -319,9 +319,6 @@ func (w *Watcher) tick(ctx context.Context, name string) {
 	w.mu.Lock()
 	prev := w.last[name]
 	gap := isGap(w.lastTick[name], start, now, w.Interval())
-	if gap {
-		w.gaps = append(w.gaps, now)
-	}
 	if st.Observer == cluster.ObserverOnline && (st.APIReachable || anyReachable(st)) {
 		w.lastContact[name] = now
 	}
@@ -330,9 +327,12 @@ func (w *Watcher) tick(ctx context.Context, name string) {
 	}
 	c := w.confirms[name]
 	w.mu.Unlock()
+	if gap {
+		w.noteGap(now)
+	}
 	if c == nil {
 		fresh := newConfirm()
-		if open, err := w.Store.Events(ctx, name, 1000, true); err == nil {
+		if open, err := w.Store.OpenAlerts(ctx, name); err == nil {
 			fresh.Seed(open)
 		}
 		w.mu.Lock()

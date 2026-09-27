@@ -2,7 +2,6 @@ package cluster
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -160,18 +159,8 @@ func (m *Manager) pendingInstall(ctx context.Context, c *config.Cluster, talosco
 	cfgs := map[string][]byte{}
 	moved := false
 	for i, n := range c.Spec.Nodes {
-		probe, cancel := context.WithTimeout(ctx, 10*time.Second)
-		stage, err := talos.Stage(probe, n.TargetIP(), talosconfig)
-		cancel()
-		if err == nil && stage != "maintenance" {
-			sink.Emit(Info, "install", n.Hostname, "already installed (stage %s)", stage)
-			if target := n.TargetIP(); target != n.IP {
-				c.Spec.Nodes[i].IP = target
-				n.IP = target
-				_ = m.Store.UpsertNode(ctx, storeRow(c, n))
-				moved = true
-			}
-			_ = m.Store.SetNodeState(ctx, n.IP, NodeJoined)
+		if installed, ipMoved := m.installedAt(ctx, c, i, talosconfig, sink); installed {
+			moved = moved || ipMoved
 			continue
 		}
 		cfg, err := m.Store.GetNodeMachineConfig(ctx, n.IP)
@@ -187,6 +176,25 @@ func (m *Manager) pendingInstall(ctx context.Context, c *config.Cluster, talosco
 		}
 	}
 	return pending, cfgs, nil
+}
+
+func (m *Manager) installedAt(ctx context.Context, c *config.Cluster, i int, talosconfig []byte, sink Sink) (installed, moved bool) {
+	n := c.Spec.Nodes[i]
+	probe, cancel := context.WithTimeout(ctx, 10*time.Second)
+	stage, err := talos.Stage(probe, n.TargetIP(), talosconfig)
+	cancel()
+	if err != nil || stage == "maintenance" {
+		return false, false
+	}
+	sink.Emit(Info, "install", n.Hostname, "already installed (stage %s)", stage)
+	if target := n.TargetIP(); target != n.IP {
+		c.Spec.Nodes[i].IP = target
+		n.IP = target
+		_ = m.Store.UpsertNode(ctx, storeRow(c, n))
+		moved = true
+	}
+	_ = m.Store.SetNodeState(ctx, n.IP, NodeJoined)
+	return true, moved
 }
 
 func sameNodes(a, b *config.Cluster) bool {
@@ -211,8 +219,6 @@ func sameNodes(a, b *config.Cluster) bool {
 	return true
 }
 
-const minControlPlaneBytes = 1600 << 20
-
 func (m *Manager) preflight(ctx context.Context, c *config.Cluster, nodes []config.Node, sink Sink) error {
 	for _, n := range nodes {
 		r := talos.Probe(ctx, n.IP, 3*time.Second)
@@ -223,7 +229,7 @@ func (m *Manager) preflight(ctx context.Context, c *config.Cluster, nodes []conf
 			return fmt.Errorf("%s (%s) is %s, not in maintenance mode", n.Hostname, n.IP, r.State)
 		case r.Inventory.Arch != string(n.Arch):
 			return fmt.Errorf("%s (%s) is %s, declared %s", n.Hostname, n.IP, r.Inventory.Arch, n.Arch)
-		case n.Role == config.RoleControlPlane && r.Inventory.MemoryBytes > 0 && r.Inventory.MemoryBytes < minControlPlaneBytes:
+		case n.Role == config.RoleControlPlane && r.Inventory.MemoryBytes > 0 && r.Inventory.MemoryBytes < config.MinControlPlaneBytes:
 			return fmt.Errorf("%s (%s) is a control plane with only %s RAM; a control plane needs at least 2 GiB (etcd + API server) — give it more or make it a worker", n.Hostname, n.IP, HumanBytes(r.Inventory.MemoryBytes))
 		case n.Role == config.RoleWorker && c.Spec.Platform.AddOns() && r.Inventory.MemoryBytes > 0 && r.Inventory.MemoryBytes < config.MinWorkerBytes:
 			return fmt.Errorf("%s (%s) is a worker with only %s RAM; Talos and the kubelet leave it too little for the platform add-ons — give it at least 2 GiB", n.Hostname, n.IP, HumanBytes(r.Inventory.MemoryBytes))
@@ -253,10 +259,8 @@ func (m *Manager) installAll(ctx context.Context, c *config.Cluster, nodes []con
 				mu.Unlock()
 			} else if target := n.TargetIP(); target != n.IP {
 				mu.Lock()
-				for i := range c.Spec.Nodes {
-					if c.Spec.Nodes[i].Hostname == n.Hostname {
-						c.Spec.Nodes[i].IP = target
-					}
+				if i := c.NodeIndex(n.Hostname); i >= 0 {
+					c.Spec.Nodes[i].IP = target
 				}
 				moved = true
 				mu.Unlock()
@@ -296,7 +300,7 @@ func (m *Manager) installOne(ctx context.Context, n config.Node, cfg []byte, tal
 			sink.Emit(Info, "install", n.Hostname, "lab VM set to boot from disk")
 		}
 	}
-	err = applyConfig(ctx, tc, cfg)
+	err = applyConfig(ctx, tc, cfg, applyTimeout)
 	tc.Close()
 	if err != nil {
 		return fmt.Errorf("apply: %w", err)
@@ -374,10 +378,8 @@ func (m *Manager) fetchKubeconfig(ctx context.Context, cp config.Node, talosconf
 	defer tc.Close()
 	var kc []byte
 	err = talos.Retry(ctx, m.Timeouts.Bootstrap, 5*time.Second, func() error {
-		call, cancel := context.WithTimeout(ctx, 30*time.Second)
-		defer cancel()
 		var err error
-		kc, err = tc.Kubeconfig(tc.Context(call))
+		kc, err = adminKubeconfig(ctx, tc, 30*time.Second)
 		return err
 	})
 	if err != nil {
@@ -410,52 +412,4 @@ func (m *Manager) waitReady(ctx context.Context, c *config.Cluster, nodes []conf
 		return err
 	}
 	return nil
-}
-
-func RowFromScan(res talos.ScanResult) store.NodeRow {
-	row := store.NodeRow{IP: res.IP, Source: "scan", State: string(res.State)}
-	if inv := res.Inventory; inv != nil {
-		row.MAC, row.Arch, row.TalosVersion = inv.PrimaryMAC(), inv.Arch, inv.TalosVersion
-		row.UUID, row.Serial = inv.UUID, inv.Serial
-		row.Hardware, _ = json.Marshal(inv)
-	}
-	return row
-}
-
-func RecordScan(ctx context.Context, st *store.Store, results []talos.ScanResult, note func(res talos.ScanResult, vipOf string)) (int, error) {
-	vips := st.ClusterVIPs(ctx)
-	found := 0
-	for _, res := range results {
-		if res.Err != nil {
-			continue
-		}
-		name, isVIP := vips[res.IP]
-		if !isVIP {
-			if err := st.UpsertNode(ctx, RowFromScan(res)); err != nil {
-				return found, err
-			}
-			found++
-		}
-		if note != nil {
-			note(res, name)
-		}
-	}
-	return found, nil
-}
-
-func HumanBytes(b uint64) string {
-	const unit = 1024
-	if b < unit {
-		return fmt.Sprintf("%dB", b)
-	}
-	div, exp := uint64(unit), 0
-	for n := b / unit; n >= unit; n /= unit {
-		div *= unit
-		exp++
-	}
-	v := float64(b) / float64(div)
-	if exp >= 2 && v < 100 {
-		return fmt.Sprintf("%.1f%c", v, "KMGTPE"[exp])
-	}
-	return fmt.Sprintf("%.0f%c", v, "KMGTPE"[exp])
 }

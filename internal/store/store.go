@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -16,7 +17,6 @@ type Store struct {
 	db     *sql.DB
 	crypto *Crypto
 	n      notifier
-	dsn    string
 
 	labMu    sync.Mutex
 	labLocks map[string]*sync.Mutex
@@ -46,13 +46,13 @@ func Open(dir string, crypto *Crypto) (*Store, error) {
 		return nil, err
 	}
 	path := filepath.Join(dir, "kubit.db")
-	dsn := path + "?_pragma=journal_mode(WAL)&_pragma=foreign_keys(ON)&_pragma=busy_timeout(5000)"
+	dsn := path + "?_pragma=journal_mode(WAL)&_pragma=synchronous(NORMAL)&_pragma=foreign_keys(ON)&_pragma=busy_timeout(5000)"
 	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		return nil, err
 	}
 	db.SetMaxOpenConns(1)
-	s := &Store{db: db, crypto: crypto, dsn: dsn}
+	s := &Store{db: db, crypto: crypto}
 	if err := s.migrate(context.Background()); err != nil {
 		db.Close()
 		return nil, err
@@ -66,9 +66,36 @@ func Open(dir string, crypto *Crypto) (*Store, error) {
 
 func (s *Store) Close() error { return s.db.Close() }
 
+var ErrCheckpointBusy = errors.New("checkpoint incomplete: the database is busy")
+
 func (s *Store) Checkpoint(ctx context.Context) error {
-	_, err := s.db.ExecContext(ctx, `PRAGMA wal_checkpoint(TRUNCATE)`)
-	return err
+	var busy, frames, done int
+	if err := s.db.QueryRowContext(ctx, `PRAGMA wal_checkpoint(TRUNCATE)`).Scan(&busy, &frames, &done); err != nil {
+		return err
+	}
+	if busy != 0 {
+		return ErrCheckpointBusy
+	}
+	return nil
+}
+
+type scanner interface{ Scan(...any) error }
+
+func queryAll[T any](ctx context.Context, db *sql.DB, scan func(scanner) (*T, error), query string, args ...any) ([]T, error) {
+	rows, err := db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []T{}
+	for rows.Next() {
+		v, err := scan(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, *v)
+	}
+	return out, rows.Err()
 }
 
 const sqlNow = `strftime('%Y-%m-%dT%H:%M:%fZ','now')`
@@ -231,6 +258,8 @@ var migrations = []string{
 		line  TEXT NOT NULL,
 		PRIMARY KEY (op_id, seq)
 	);`,
+	`CREATE INDEX IF NOT EXISTS events_open ON events (cluster, kind, node) WHERE acked = 0;
+	 CREATE INDEX IF NOT EXISTS operations_kind ON operations (kind, cluster, id);`,
 }
 
 var alreadyApplied = map[int]string{
@@ -299,26 +328,27 @@ type AuditEntry struct {
 	Actor   string `json:"actor,omitempty"`
 }
 
+const auditCols = `id, at, cluster, action, detail, actor`
+
+func scanAudit(sc scanner) (*AuditEntry, error) {
+	var e AuditEntry
+	if err := sc.Scan(&e.ID, &e.At, &e.Cluster, &e.Action, &e.Detail, &e.Actor); err != nil {
+		return nil, err
+	}
+	return &e, nil
+}
+
+func (s *Store) GetAudit(ctx context.Context, id int64) (*AuditEntry, error) {
+	e, err := scanAudit(s.db.QueryRowContext(ctx, `SELECT `+auditCols+` FROM audit_log WHERE id = ?`, id))
+	return e, notFound(err, "audit entry %d", id)
+}
+
 func (s *Store) ListAudit(ctx context.Context, cluster string, limit int) ([]AuditEntry, error) {
 	if limit <= 0 || limit > 5000 {
 		limit = 500
 	}
-	q, args := `SELECT id, at, cluster, action, detail, actor FROM audit_log ORDER BY id DESC LIMIT ?`, []any{limit}
 	if cluster != "" {
-		q, args = `SELECT id, at, cluster, action, detail, actor FROM audit_log WHERE cluster = ? ORDER BY id DESC LIMIT ?`, []any{cluster, limit}
+		return queryAll(ctx, s.db, scanAudit, `SELECT `+auditCols+` FROM audit_log WHERE cluster = ? ORDER BY id DESC LIMIT ?`, cluster, limit)
 	}
-	rows, err := s.db.QueryContext(ctx, q, args...)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	out := []AuditEntry{}
-	for rows.Next() {
-		var e AuditEntry
-		if err := rows.Scan(&e.ID, &e.At, &e.Cluster, &e.Action, &e.Detail, &e.Actor); err != nil {
-			return nil, err
-		}
-		out = append(out, e)
-	}
-	return out, rows.Err()
+	return queryAll(ctx, s.db, scanAudit, `SELECT `+auditCols+` FROM audit_log ORDER BY id DESC LIMIT ?`, limit)
 }

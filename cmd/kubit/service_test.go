@@ -6,7 +6,7 @@ import (
 )
 
 func TestRenderUnit(t *testing.T) {
-	u := unit{Label: serviceLabel, Binary: "/usr/local/bin/kubit", Addr: "127.0.0.1:8080", Home: "/home/op/.kubit", Log: "/home/op/.kubit/log/serve.log", User: "op"}
+	u := unit{Label: serviceLabel, Binary: "/usr/local/bin/kubit", Addr: "127.0.0.1:8090", Home: "/home/op/.kubit", Log: "/home/op/.kubit/log/serve.log", User: "op"}
 	plist, err := renderUnit("darwin", u, false)
 	if err != nil {
 		t.Fatal(err)
@@ -20,7 +20,7 @@ func TestRenderUnit(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if strings.Contains(user, "User=") || !strings.Contains(user, "WantedBy=default.target") || !strings.Contains(user, "ExecStart=/usr/local/bin/kubit serve --addr 127.0.0.1:8080") {
+	if strings.Contains(user, "User=") || !strings.Contains(user, "WantedBy=default.target") || !strings.Contains(user, "ExecStart=/usr/local/bin/kubit serve --addr 127.0.0.1:8090") {
 		t.Errorf("user unit wrong:\n%s", user)
 	}
 	sys, err := renderUnit("linux", u, true)

@@ -30,6 +30,19 @@ func (w *Watcher) noteOnline() {
 	w.setOnline(true, "")
 }
 
+func (w *Watcher) noteGap(at time.Time) {
+	w.mu.Lock()
+	n := len(w.gaps)
+	fresh := n == 0 || at.Sub(w.gaps[n-1]) >= 2*w.Interval()
+	if fresh {
+		w.gaps = append(w.gaps, at)
+	}
+	w.mu.Unlock()
+	if fresh && w.OnObserver != nil {
+		w.OnObserver(w.Observer())
+	}
+}
+
 func (w *Watcher) resetOffline() {
 	w.mu.Lock()
 	w.offlineTicks = 0

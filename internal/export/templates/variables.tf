@@ -13,6 +13,6 @@ variable "bootstrap" {
 variable "nodes" {
   type = map(object({
     ip   = string
-    role = string # controlplane | worker
+    role = string
   }))
 }

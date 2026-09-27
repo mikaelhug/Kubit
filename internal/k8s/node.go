@@ -55,12 +55,13 @@ type PodSummary struct {
 	MemBytes   int64    `json:"memBytes"`
 	Age        string   `json:"age"`
 	AgeSec     int64    `json:"ageSec"`
+	CreatedAt  string   `json:"createdAt,omitempty"`
 	UsageCPU   int64    `json:"usageCpuMilli,omitempty"`
 	UsageMem   int64    `json:"usageMemBytes,omitempty"`
 }
 
 func (c *Client) NodeDetail(ctx context.Context, name string) (*NodeDetail, error) {
-	n, err := c.CoreV1().Nodes().Get(ctx, name, metav1.GetOptions{})
+	n, err := c.node(ctx, name)
 	if err != nil {
 		return nil, err
 	}

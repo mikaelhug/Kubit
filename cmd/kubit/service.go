@@ -45,7 +45,10 @@ func serviceCmd() *cobra.Command {
 				return nil
 			}
 			u := unit{Label: serviceLabel, Binary: bin, Addr: addr, Home: home, Log: filepath.Join(home, "log", "serve.log"), User: os.Getenv("USER")}
-			if err := os.MkdirAll(filepath.Dir(u.Log), 0o700); err != nil {
+			if err := ensureDir(home, home, 0o700); err != nil {
+				return err
+			}
+			if err := ensureDir(home, filepath.Dir(u.Log), 0o700); err != nil {
 				return err
 			}
 			path, err := installUnit(u, system)
@@ -60,11 +63,11 @@ func serviceCmd() *cobra.Command {
 			return nil
 		},
 	}
-	install.Flags().StringVar(&addr, "addr", "127.0.0.1:8080", "listen address for the service")
+	install.Flags().StringVar(&addr, "addr", "127.0.0.1:8090", "listen address for the service")
 	install.Flags().BoolVar(&system, "system", false, "Linux: install a system unit in /etc/systemd/system (run as root; uses KUBIT_HOME of the invoking user)")
 	install.Flags().BoolVar(&pxe, "pxe", false, "install the always-on PXE server as a root service (needs sudo once)")
 	install.Flags().StringVar(&pxeIface, "iface", "en0", "with --pxe: LAN interface to answer on")
-	install.Flags().StringVar(&kubitURL, "kubit-url", "http://127.0.0.1:8080", "with --pxe: the daemon the PXE server asks about each MAC")
+	install.Flags().StringVar(&kubitURL, "kubit-url", "http://127.0.0.1:8090", "with --pxe: the daemon the PXE server asks about each MAC")
 	uninstall := &cobra.Command{
 		Use:   "uninstall",
 		Short: "Stop the service and remove its unit; ~/.kubit is left untouched (--pxe: the PXE service)",
@@ -152,7 +155,10 @@ WantedBy=multi-user.target
 `))
 
 func installPXEUnit(u unit) (string, error) {
-	if err := os.MkdirAll(filepath.Dir(u.Log), 0o755); err != nil {
+	if err := ensureDir(u.Home, u.Home, 0o700); err != nil {
+		return "", err
+	}
+	if err := ensureDir(u.Home, filepath.Dir(u.Log), 0o755); err != nil {
 		return "", err
 	}
 	switch runtime.GOOS {

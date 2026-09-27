@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"filippo.io/age"
+	"github.com/mikael/kubit/internal/config"
 	"github.com/mikael/kubit/internal/store"
 	"github.com/mikael/kubit/internal/tofu"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -58,11 +59,8 @@ func keysFile(id *age.X25519Identity) []byte {
 	return fmt.Appendf(nil, "# created: %s\n# public key: %s\n%s\n", time.Now().UTC().Format(time.RFC3339), id.Recipient(), id)
 }
 
-func (m *Manager) installSOPSKey(ctx context.Context, name string, sink Sink) error {
-	c, _, err := m.LoadCluster(ctx, name)
-	if err != nil {
-		return err
-	}
+func (m *Manager) installSOPSKey(ctx context.Context, c *config.Cluster, sink Sink) error {
+	name := c.Metadata.Name
 	kc, err := m.KubeClient(ctx, name)
 	if err != nil {
 		return err

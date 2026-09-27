@@ -83,63 +83,10 @@ func (m *Manager) SnapshotEtcd(ctx context.Context, name, source string, sink Si
 	ts := time.Now().UTC()
 	plainPath := filepath.Join(dir, ts.Format("20060102T150405Z")+".db")
 	sn := store.Snapshot{Cluster: name, Node: cp.Hostname, Source: source, Status: "ok", TalosVersion: c.Spec.TalosVersion, K8sVersion: c.Spec.KubernetesVersion}
-	err = sink.Run("snapshot", func() error {
-		stream, err := tc.EtcdSnapshot(ctx)
-		if err != nil {
-			return err
-		}
-		defer stream.Close()
-		f, err := os.OpenFile(plainPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
-		if err != nil {
-			return err
-		}
-		h := sha256.New()
-		n, err := io.Copy(io.MultiWriter(f, h), stream)
-		if cerr := f.Close(); err == nil {
-			err = cerr
-		}
-		if err != nil {
-			os.Remove(plainPath)
-			return err
-		}
-		sn.SizeBytes, sn.SHA256 = n, hex.EncodeToString(h.Sum(nil))
-		sink.Emit(Info, "snapshot", cp.Hostname, "%s received, sha256 %s…", HumanBytes(uint64(n)), sn.SHA256[:12])
-		return nil
-	})
-	if err != nil {
+	if err := sink.Run("snapshot", func() error { return streamSnapshot(ctx, tc, plainPath, &sn, sink) }); err != nil {
 		return nil, err
 	}
-	err = sink.Run("verify", func() error {
-		defer os.Remove(plainPath)
-		keys, err := talos.VerifySnapshot(plainPath)
-		if err != nil {
-			return err
-		}
-		sn.Keys = keys
-		plain, err := os.ReadFile(plainPath)
-		if err != nil {
-			return err
-		}
-		var zb bytes.Buffer
-		zw := gzip.NewWriter(&zb)
-		if _, err := zw.Write(plain); err != nil {
-			return err
-		}
-		if err := zw.Close(); err != nil {
-			return err
-		}
-		sealed, err := m.Store.SealFile(zb.Bytes())
-		if err != nil {
-			return err
-		}
-		sn.Path = plainPath + ".gz.sealed"
-		if err := fsx.WriteFile(sn.Path, sealed, 0o600); err != nil {
-			return err
-		}
-		sink.Emit(Info, "verify", "", "%d keys; %s on disk, sealed to %s", keys, HumanBytes(uint64(len(sealed))), filepath.Base(sn.Path))
-		return nil
-	})
-	if err != nil {
+	if err := sink.Run("verify", func() error { return m.sealSnapshot(plainPath, &sn, sink) }); err != nil {
 		return nil, err
 	}
 	sn.ID, err = m.Store.AddSnapshot(ctx, sn)
@@ -181,6 +128,63 @@ func (m *Manager) SnapshotEtcd(ctx context.Context, name, source string, sink Si
 	_ = m.Store.Audit(ctx, name, "etcd.snapshot", fmt.Sprintf("%d from %s (%s)", sn.ID, cp.Hostname, source))
 	sink.Emit(Done, "prune", "", "snapshot #%d stored", sn.ID)
 	return &sn, nil
+}
+
+func streamSnapshot(ctx context.Context, tc *talos.Client, plainPath string, sn *store.Snapshot, sink Sink) error {
+	call, cancel := context.WithTimeout(ctx, snapshotTimeout)
+	defer cancel()
+	stream, err := tc.EtcdSnapshot(call)
+	if err != nil {
+		return err
+	}
+	defer stream.Close()
+	f, err := os.OpenFile(plainPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
+	if err != nil {
+		return err
+	}
+	h := sha256.New()
+	n, err := io.Copy(io.MultiWriter(f, h), stream)
+	if cerr := f.Close(); err == nil {
+		err = cerr
+	}
+	if err != nil {
+		os.Remove(plainPath)
+		return err
+	}
+	sn.SizeBytes, sn.SHA256 = n, hex.EncodeToString(h.Sum(nil))
+	sink.Emit(Info, "snapshot", sn.Node, "%s received, sha256 %s…", HumanBytes(uint64(n)), sn.SHA256[:12])
+	return nil
+}
+
+func (m *Manager) sealSnapshot(plainPath string, sn *store.Snapshot, sink Sink) error {
+	defer os.Remove(plainPath)
+	keys, err := talos.VerifySnapshot(plainPath)
+	if err != nil {
+		return err
+	}
+	sn.Keys = keys
+	plain, err := os.ReadFile(plainPath)
+	if err != nil {
+		return err
+	}
+	var zb bytes.Buffer
+	zw := gzip.NewWriter(&zb)
+	if _, err := zw.Write(plain); err != nil {
+		return err
+	}
+	if err := zw.Close(); err != nil {
+		return err
+	}
+	sealed, err := m.Store.SealFile(zb.Bytes())
+	if err != nil {
+		return err
+	}
+	sn.Path = plainPath + ".gz.sealed"
+	if err := fsx.WriteFile(sn.Path, sealed, 0o600); err != nil {
+		return err
+	}
+	sink.Emit(Info, "verify", "", "%d keys; %s on disk, sealed to %s", keys, HumanBytes(uint64(len(sealed))), filepath.Base(sn.Path))
+	return nil
 }
 
 func (m *Manager) pruneSnapshots(ctx context.Context, name string, keep int) (int, error) {
@@ -324,23 +328,8 @@ func (m *Manager) RestoreEtcd(ctx context.Context, name string, snapshotID int64
 	var sn *store.Snapshot
 	err = sink.Run("check", func() error {
 		var err error
-		sn, plain, err = m.OpenSnapshot(ctx, snapshotID)
-		if err != nil {
-			return err
-		}
-		if sn.Cluster != name {
-			return fmt.Errorf("snapshot %d belongs to cluster %s", snapshotID, sn.Cluster)
-		}
-		sink.Emit(Info, "check", "", "snapshot #%d from %s (%s, %d keys) verified", sn.ID, sn.Node, sn.TS, sn.Keys)
-		for _, n := range cps {
-			probe, cancel := context.WithTimeout(ctx, 10*time.Second)
-			_, err := talos.Stage(probe, n.IP, sec.Talosconfig)
-			cancel()
-			if err != nil {
-				return fmt.Errorf("%s (%s) must answer the Talos API before a restore: %w", n.Hostname, n.IP, err)
-			}
-		}
-		return nil
+		sn, plain, err = m.restoreCheck(ctx, name, snapshotID, cps, sec.Talosconfig, sink)
+		return err
 	})
 	if err != nil {
 		return err
@@ -350,73 +339,14 @@ func (m *Manager) RestoreEtcd(ctx context.Context, name string, snapshotID int64
 		_ = m.Store.SetClusterState(ctx, name, StateFailed)
 		return err
 	}
-	err = sink.Run("wipe", func() error {
-		boots := map[string]string{}
-		for _, n := range cps {
-			tc, err := talos.Dial(ctx, n.IP, sec.Talosconfig)
-			if err != nil {
-				return err
-			}
-			id, err := readBootID(ctx, tc)
-			if err == nil {
-				err = resetEphemeral(ctx, tc)
-			}
-			tc.Close()
-			if err != nil {
-				return fmt.Errorf("%s: reset: %w", n.Hostname, err)
-			}
-			boots[n.Hostname] = id
-			sink.Emit(Info, "wipe", n.Hostname, "EPHEMERAL wiped, rebooting")
-		}
-		for _, n := range cps {
-			if err := talos.WaitForReboot(ctx, n.IP, sec.Talosconfig, boots[n.Hostname], m.Timeouts.Install); err != nil {
-				return fmt.Errorf("%s: %w", n.Hostname, err)
-			}
-			sink.Emit(Info, "wipe", n.Hostname, "back up, waiting for etcd")
-		}
-		return nil
-	})
-	if err != nil {
+	if err := sink.Run("wipe", func() error { return m.wipeEtcd(ctx, cps, sec.Talosconfig, sink) }); err != nil {
 		return fail(err)
 	}
 	cp1 := cps[0]
-	err = sink.Run("upload", func() error {
-		return talos.Retry(ctx, m.Timeouts.Bootstrap, 5*time.Second, func() error {
-			call, cancel := context.WithTimeout(ctx, 2*time.Minute)
-			defer cancel()
-			tc, err := talos.Dial(call, cp1.IP, sec.Talosconfig)
-			if err != nil {
-				return err
-			}
-			defer tc.Close()
-			if err := tc.EtcdRecoverUpload(call, bytes.NewReader(plain)); err != nil {
-				return err
-			}
-			sink.Emit(Info, "upload", cp1.Hostname, "%s uploaded", HumanBytes(uint64(len(plain))))
-			return nil
-		})
-	})
-	if err != nil {
+	if err := sink.Run("upload", func() error { return m.uploadSnapshot(ctx, cp1, sec.Talosconfig, plain, sink) }); err != nil {
 		return fail(err)
 	}
-	err = sink.Run("bootstrap", func() error {
-		tc, err := talos.Dial(ctx, cp1.IP, sec.Talosconfig)
-		if err != nil {
-			return err
-		}
-		defer tc.Close()
-		err = talos.Retry(ctx, m.Timeouts.Bootstrap, 5*time.Second, func() error {
-			call, cancel := context.WithTimeout(ctx, 30*time.Second)
-			defer cancel()
-			return tc.BootstrapRecover(call)
-		})
-		if err != nil {
-			return fmt.Errorf("bootstrap --recover: %w", err)
-		}
-		sink.Emit(Info, "bootstrap", cp1.Hostname, "etcd bootstrapped from the snapshot; waiting for %d members", len(cps))
-		return m.waitEtcdMembers(ctx, tc, len(cps))
-	})
-	if err != nil {
+	if err := sink.Run("bootstrap", func() error { return m.bootstrapRecovered(ctx, cp1, sec.Talosconfig, len(cps), sink) }); err != nil {
 		return fail(err)
 	}
 	if err := sink.Run("ready", func() error { return m.waitReady(ctx, c, c.Spec.Nodes, sink) }); err != nil {
@@ -424,23 +354,107 @@ func (m *Manager) RestoreEtcd(ctx context.Context, name string, snapshotID int64
 	}
 	if len(c.Workers()) == 0 {
 		sink.Skip("workers")
-	} else if err := sink.Run("workers", func() error {
-		kc, err := m.KubeClient(ctx, name)
-		if err != nil {
-			return err
-		}
-		for _, w := range c.Workers() {
-			n, err := kc.DeletePodsOnNode(ctx, w.Hostname)
-			if err != nil {
-				return fmt.Errorf("%s: %w", w.Hostname, err)
-			}
-			sink.Emit(Info, "workers", w.Hostname, "%d pod(s) deleted; controllers recreate them with fresh watches", n)
-		}
-		return nil
-	}); err != nil {
+	} else if err := sink.Run("workers", func() error { return m.restartWorkerPods(ctx, name, c.Workers(), sink) }); err != nil {
 		return fail(err)
 	}
 	_ = m.Store.Audit(ctx, name, "etcd.restore", fmt.Sprintf("snapshot %d", snapshotID))
 	sink.Emit(Done, "workers", "", "cluster %s restored from snapshot #%d (%s)", name, sn.ID, sn.TS)
+	return nil
+}
+
+func (m *Manager) restoreCheck(ctx context.Context, name string, snapshotID int64, cps []config.Node, talosconfig []byte, sink Sink) (*store.Snapshot, []byte, error) {
+	sn, plain, err := m.OpenSnapshot(ctx, snapshotID)
+	if err != nil {
+		return nil, nil, err
+	}
+	if sn.Cluster != name {
+		return nil, nil, fmt.Errorf("snapshot %d belongs to cluster %s", snapshotID, sn.Cluster)
+	}
+	sink.Emit(Info, "check", "", "snapshot #%d from %s (%s, %d keys) verified", sn.ID, sn.Node, sn.TS, sn.Keys)
+	for _, n := range cps {
+		probe, cancel := context.WithTimeout(ctx, 10*time.Second)
+		_, err := talos.Stage(probe, n.IP, talosconfig)
+		cancel()
+		if err != nil {
+			return nil, nil, fmt.Errorf("%s (%s) must answer the Talos API before a restore: %w", n.Hostname, n.IP, err)
+		}
+	}
+	return sn, plain, nil
+}
+
+func (m *Manager) wipeEtcd(ctx context.Context, cps []config.Node, talosconfig []byte, sink Sink) error {
+	boots := map[string]string{}
+	for _, n := range cps {
+		tc, err := talos.Dial(ctx, n.IP, talosconfig)
+		if err != nil {
+			return err
+		}
+		id, err := readBootID(ctx, tc)
+		if err == nil {
+			err = resetEphemeral(ctx, tc)
+		}
+		tc.Close()
+		if err != nil {
+			return fmt.Errorf("%s: reset: %w", n.Hostname, err)
+		}
+		boots[n.Hostname] = id
+		sink.Emit(Info, "wipe", n.Hostname, "EPHEMERAL wiped, rebooting")
+	}
+	for _, n := range cps {
+		if err := talos.WaitForReboot(ctx, n.IP, talosconfig, boots[n.Hostname], m.Timeouts.Install); err != nil {
+			return fmt.Errorf("%s: %w", n.Hostname, err)
+		}
+		sink.Emit(Info, "wipe", n.Hostname, "back up, waiting for etcd")
+	}
+	return nil
+}
+
+func (m *Manager) uploadSnapshot(ctx context.Context, cp config.Node, talosconfig, plain []byte, sink Sink) error {
+	return talos.Retry(ctx, m.Timeouts.Bootstrap, 5*time.Second, func() error {
+		call, cancel := context.WithTimeout(ctx, 2*time.Minute)
+		defer cancel()
+		tc, err := talos.Dial(call, cp.IP, talosconfig)
+		if err != nil {
+			return err
+		}
+		defer tc.Close()
+		if err := tc.EtcdRecoverUpload(call, bytes.NewReader(plain)); err != nil {
+			return err
+		}
+		sink.Emit(Info, "upload", cp.Hostname, "%s uploaded", HumanBytes(uint64(len(plain))))
+		return nil
+	})
+}
+
+func (m *Manager) bootstrapRecovered(ctx context.Context, cp config.Node, talosconfig []byte, members int, sink Sink) error {
+	tc, err := talos.Dial(ctx, cp.IP, talosconfig)
+	if err != nil {
+		return err
+	}
+	defer tc.Close()
+	err = talos.Retry(ctx, m.Timeouts.Bootstrap, 5*time.Second, func() error {
+		call, cancel := context.WithTimeout(ctx, 30*time.Second)
+		defer cancel()
+		return tc.BootstrapRecover(call)
+	})
+	if err != nil {
+		return fmt.Errorf("bootstrap --recover: %w", err)
+	}
+	sink.Emit(Info, "bootstrap", cp.Hostname, "etcd bootstrapped from the snapshot; waiting for %d members", members)
+	return m.waitEtcdMembers(ctx, tc, members)
+}
+
+func (m *Manager) restartWorkerPods(ctx context.Context, name string, workers []config.Node, sink Sink) error {
+	kc, err := m.KubeClient(ctx, name)
+	if err != nil {
+		return err
+	}
+	for _, w := range workers {
+		n, err := kc.DeletePodsOnNode(ctx, w.Hostname)
+		if err != nil {
+			return fmt.Errorf("%s: %w", w.Hostname, err)
+		}
+		sink.Emit(Info, "workers", w.Hostname, "%d pod(s) deleted; controllers recreate them with fresh watches", n)
+	}
 	return nil
 }

@@ -1,6 +1,7 @@
 package config
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"net"
@@ -244,7 +245,7 @@ func Load(path string) (*Cluster, error) {
 
 func Parse(b []byte) (*Cluster, error) {
 	var c Cluster
-	dec := yaml.NewDecoder(strings.NewReader(string(b)))
+	dec := yaml.NewDecoder(bytes.NewReader(b))
 	dec.KnownFields(true)
 	if err := dec.Decode(&c); err != nil {
 		return nil, fmt.Errorf("parse cluster.yaml: %w", err)
@@ -314,7 +315,7 @@ func (c *Cluster) applyDefaults() {
 			if n.Role == "" {
 				n.Role = RoleWorker
 			}
-			n.Pool = string(n.Role)
+			n.Pool = c.defaultPoolFor(n.Role)
 		}
 		if p := c.poolByName(n.Pool); p != nil {
 			n.Role = p.Role
@@ -338,20 +339,34 @@ func (c *Cluster) applyDefaults() {
 
 func (c *Cluster) defaultPools() {
 	have := map[string]bool{}
-	for _, p := range c.Spec.Pools {
-		have[p.Name] = true
-	}
-	if !have["controlplane"] {
-		c.Spec.Pools = append([]Pool{{Name: "controlplane", Role: RoleControlPlane}}, c.Spec.Pools...)
-	}
-	if !have["worker"] {
-		c.Spec.Pools = append(c.Spec.Pools, Pool{Name: "worker", Role: RoleWorker})
-	}
 	for i := range c.Spec.Pools {
 		if c.Spec.Pools[i].Role == "" {
 			c.Spec.Pools[i].Role = RoleWorker
 		}
+		have[c.Spec.Pools[i].Name] = true
 	}
+	if c.ControlPlanePool() == nil && !have[string(RoleControlPlane)] {
+		c.Spec.Pools = append([]Pool{{Name: string(RoleControlPlane), Role: RoleControlPlane}}, c.Spec.Pools...)
+	}
+	if !have[string(RoleWorker)] {
+		c.Spec.Pools = append(c.Spec.Pools, Pool{Name: string(RoleWorker), Role: RoleWorker})
+	}
+}
+
+func (c *Cluster) ControlPlanePool() *Pool {
+	for i := range c.Spec.Pools {
+		if c.Spec.Pools[i].Role == RoleControlPlane {
+			return &c.Spec.Pools[i]
+		}
+	}
+	return nil
+}
+
+func (c *Cluster) defaultPoolFor(r Role) string {
+	if p := c.ControlPlanePool(); r == RoleControlPlane && p != nil {
+		return p.Name
+	}
+	return string(r)
 }
 
 func (c *Cluster) poolByName(name string) *Pool {
@@ -399,6 +414,28 @@ func merge(base, over map[string]string) map[string]string {
 		out[k] = v
 	}
 	return out
+}
+
+func (c *Cluster) NodeIndex(host string) int {
+	for i := range c.Spec.Nodes {
+		if c.Spec.Nodes[i].Hostname == host {
+			return i
+		}
+	}
+	return -1
+}
+
+func (c *Cluster) EndpointNode() (Node, bool) {
+	u, err := url.Parse(c.Spec.ControlPlane.Endpoint)
+	if err != nil || u.Hostname() == "" || u.Hostname() == c.Spec.ControlPlane.VIP {
+		return Node{}, false
+	}
+	for _, n := range c.ControlPlanes() {
+		if n.IP == u.Hostname() {
+			return n, true
+		}
+	}
+	return Node{}, false
 }
 
 func (c *Cluster) ControlPlanes() []Node { return c.nodesWithRole(RoleControlPlane) }

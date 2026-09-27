@@ -2,7 +2,7 @@
 set -euo pipefail
 
 subnet=${1:?subnet to scan}; shift
-name=e2e; url=${KUBIT_URL:-http://127.0.0.1:8080}; with_restore=; teardown=; vm_ids=
+name=e2e; url=${KUBIT_URL:-http://127.0.0.1:8090}; with_restore=; teardown=; vm_ids=
 while [ $# -gt 0 ]; do
   case $1 in
     --name) name=$2; shift 2;;

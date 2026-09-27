@@ -41,11 +41,12 @@ func (w *Watcher) labTick(ctx context.Context, host *store.Machine) {
 		return
 	}
 	defer lc.Close()
-	vms, err := lc.List(tctx)
-	if err != nil {
-		w.labFailed(tctx, host, err)
+	o := labhost.Observe(tctx, lc)
+	if o.ListErr != nil {
+		w.labFailed(tctx, host, o.ListErr)
 		return
 	}
+	vms := o.VMs
 	if host.LabHost.Failures >= labUnreachableAfter {
 		w.emit(tctx, key, []store.EventRow{{Cluster: key, Severity: "info", Kind: "labhost.back", Message: labName(host) + ": reachable again"}})
 	}
@@ -60,7 +61,7 @@ func (w *Watcher) labTick(ctx context.Context, host *store.Machine) {
 	}
 	host.LabHost.VMs = vms
 	now := time.Now()
-	if m, err := lc.Metrics(tctx); err == nil {
+	if m := o.Metrics; o.MetricsErr == nil {
 		host.LabHost.Metrics = &m
 		sm := store.Sample{CPUMilli: int64(m.CPUPct * 10), CPUCap: 1000, MemBytes: m.MemUsed, MemCap: m.MemTotal, Pods: m.VMsRunning, Ready: true, Reachable: true, Disk: m.DiskUsed, DiskCap: m.DiskTotal}
 		_ = w.Store.AddSamples(tctx, key, now, []store.Sample{sm})

@@ -7,6 +7,7 @@ import (
 
 	"github.com/mikael/kubit/internal/config"
 	"github.com/mikael/kubit/internal/factory"
+	"github.com/mikael/kubit/internal/fsx"
 	"github.com/spf13/cobra"
 	"go.yaml.in/yaml/v4"
 )
@@ -70,14 +71,14 @@ func configRenderCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			if err := os.WriteFile(filepath.Join(out, "secrets.yaml"), secretsYAML, 0o600); err != nil {
+			if err := fsx.WriteOut(filepath.Join(out, "secrets.yaml"), 0o600, fsx.Bytes(secretsYAML)); err != nil {
 				return err
 			}
 			if err := g.Talosconfig.Save(filepath.Join(out, "talosconfig")); err != nil {
 				return err
 			}
 			for host, b := range g.Nodes {
-				if err := os.WriteFile(filepath.Join(out, host+".yaml"), b, 0o600); err != nil {
+				if err := fsx.WriteOut(filepath.Join(out, host+".yaml"), 0o600, fsx.Bytes(b)); err != nil {
 					return err
 				}
 			}

@@ -11,20 +11,20 @@ import (
 )
 
 func (c *Client) EtcdSnapshot(ctx context.Context) (io.ReadCloser, error) {
-	return c.Client.EtcdSnapshot(c.Context(ctx), &machine.EtcdSnapshotRequest{})
+	return c.Client.EtcdSnapshot(c.nodeContext(ctx), &machine.EtcdSnapshotRequest{})
 }
 
 func (c *Client) EtcdRecoverUpload(ctx context.Context, snapshot io.Reader) error {
-	_, err := c.Client.EtcdRecover(c.Context(ctx), snapshot)
+	_, err := c.Client.EtcdRecover(c.nodeContext(ctx), snapshot)
 	return err
 }
 
 func (c *Client) BootstrapRecover(ctx context.Context) error {
-	return c.Bootstrap(c.Context(ctx), &machine.BootstrapRequest{RecoverEtcd: true})
+	return c.Bootstrap(c.nodeContext(ctx), &machine.BootstrapRequest{RecoverEtcd: true})
 }
 
 func (c *Client) ResetEphemeral(ctx context.Context) error {
-	return c.ResetGeneric(c.Context(ctx), &machine.ResetRequest{
+	return c.ResetGeneric(c.nodeContext(ctx), &machine.ResetRequest{
 		Graceful:               false,
 		Reboot:                 true,
 		SystemPartitionsToWipe: []*machine.ResetPartitionSpec{{Label: "EPHEMERAL", Wipe: true}},

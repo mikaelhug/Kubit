@@ -33,7 +33,7 @@ func generateSample(t *testing.T) (*config.Cluster, *config.Generated) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	g, err := config.Generate(c, nil, config.FixedInstaller(installer))
+	g, err := config.Generate(c, sharedSecrets(t), config.FixedInstaller(installer))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -203,7 +203,7 @@ func TestGenerateSchedulingOnControlPlanes(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	g, err := config.Generate(c, nil, config.FixedInstaller(installer))
+	g, err := config.Generate(c, sharedSecrets(t), config.FixedInstaller(installer))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -216,7 +216,7 @@ func TestGenerateSchedulingOnControlPlanes(t *testing.T) {
 	}
 	f := false
 	c.Spec.ControlPlane.AllowScheduling = &f
-	g, err = config.Generate(c, nil, config.FixedInstaller(installer))
+	g, err = config.Generate(c, sharedSecrets(t), config.FixedInstaller(installer))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -238,8 +238,8 @@ func TestGenerateReusesSecrets(t *testing.T) {
 	if g1.Secrets.Cluster.ID != g2.Secrets.Cluster.ID || g1.Secrets.Cluster.Secret != g2.Secrets.Cluster.Secret {
 		t.Error("passing a bundle must keep the cluster identity")
 	}
-	if _, g3 := generateSample(t); g3.Secrets.Cluster.ID == g1.Secrets.Cluster.ID {
-		t.Error("nil bundle must mint fresh secrets")
+	if g3, err := config.Generate(c, nil, config.FixedInstaller(installer)); err != nil || g3.Secrets.Cluster.ID == g1.Secrets.Cluster.ID {
+		t.Errorf("nil bundle must mint fresh secrets: %v", err)
 	}
 	raw, err := yaml.Marshal(g1.Secrets)
 	if err != nil {
@@ -305,7 +305,7 @@ func TestPoolsResolveRoleDiskAndLabels(t *testing.T) {
 		t.Error("pool schematic resolution")
 	}
 	installer := func(p config.Pool) string { return "img:" + p.Name }
-	g, err := config.Generate(c, nil, installer)
+	g, err := config.Generate(c, sharedSecrets(t), installer)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -381,7 +381,7 @@ func TestGenerateClusterOIDC(t *testing.T) {
 		t.Fatal(err)
 	}
 	c.Spec.Auth.OIDC = &config.ClusterOIDC{Issuer: "https://sso.example/realms/ops", ClientID: "kubernetes", GroupsClaim: "groups", AdminGroup: "k8s-admins"}
-	g, err := config.Generate(c, nil, func(config.Pool) string { return installer })
+	g, err := config.Generate(c, sharedSecrets(t), func(config.Pool) string { return installer })
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -433,7 +433,7 @@ func TestGenerateLonghorn(t *testing.T) {
 	if c.LonghornReplicas() != 1 {
 		t.Errorf("one node with data disks → 1 replica, got %d", c.LonghornReplicas())
 	}
-	g, err := config.Generate(c, nil, func(config.Pool) string { return installer })
+	g, err := config.Generate(c, sharedSecrets(t), func(config.Pool) string { return installer })
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -465,7 +465,7 @@ func TestGenerateSystemDiskStorage(t *testing.T) {
 	if c.Spec.Storage.EphemeralSize != config.DefaultEphemeralSize || len(c.LonghornNodes()) != len(c.Spec.Nodes) {
 		t.Fatalf("storage %+v, longhorn nodes %d of %d", c.Spec.Storage, len(c.LonghornNodes()), len(c.Spec.Nodes))
 	}
-	g, err := config.Generate(c, nil, func(config.Pool) string { return installer })
+	g, err := config.Generate(c, sharedSecrets(t), func(config.Pool) string { return installer })
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -532,7 +532,7 @@ func TestGenerateBuildsRegistryMirror(t *testing.T) {
 	if ip := c.RegistryIP(); ip != "10.96.0.50" {
 		t.Errorf("registry IP %s, want a fixed address in the service CIDR", ip)
 	}
-	g, err := config.Generate(c, nil, func(config.Pool) string { return installer })
+	g, err := config.Generate(c, sharedSecrets(t), func(config.Pool) string { return installer })
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -556,7 +556,7 @@ func TestSystemDiskUntouchedWithoutLonghorn(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	g, err := config.Generate(c, nil, func(config.Pool) string { return installer })
+	g, err := config.Generate(c, sharedSecrets(t), func(config.Pool) string { return installer })
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -3,6 +3,8 @@ package store_test
 import (
 	"bytes"
 	"context"
+	"database/sql"
+	"path/filepath"
 	"slices"
 	"testing"
 	"time"
@@ -83,6 +85,78 @@ func TestWatchExternalSeesOtherProcessWrites(t *testing.T) {
 	case ch := <-seen:
 		t.Fatalf("local write reported as external: %+v", ch)
 	case <-time.After(200 * time.Millisecond):
+	}
+}
+
+func TestOnlyOtherConnectionsCountAsExternal(t *testing.T) {
+	c, _ := store.NewCrypto(bytes.Repeat([]byte{8}, 32))
+	dir := t.TempDir()
+	s, err := store.Open(dir, c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	external := make(chan store.Change, 16)
+	s.OnChange(func(ch store.Change) {
+		if ch.Table == "*" {
+			external <- ch
+		}
+	})
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	go s.WatchExternal(ctx, 10*time.Millisecond)
+	time.Sleep(30 * time.Millisecond)
+	must := func(err error) {
+		t.Helper()
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	must(s.PutCluster(ctx, store.ClusterRow{Name: "c", Spec: []byte("x"), State: "ready"}))
+	must(s.PutClusterSecrets(ctx, "c", store.ClusterSecrets{SecretsBundle: []byte("b"), Talosconfig: []byte("t")}))
+	must(s.UpsertNode(ctx, store.NodeRow{MAC: "aa:aa:aa:aa:aa:09", IP: "10.0.0.9", State: "maintenance"}))
+	_, err = s.CreateUser(ctx, "ann", "correct horse battery", store.RoleAdmin, "local")
+	must(err)
+	id, err := s.CreateOperation(ctx, "c", "test", nil)
+	must(err)
+	tok, err := s.IssueToken(ctx, "ann", "session", "", time.Hour)
+	must(err)
+	for _, write := range []func() error{
+		func() error { return s.SetTalosconfig(ctx, "c", []byte("t2")) },
+		func() error { return s.AddSamples(ctx, "c", time.Now(), []store.Sample{{CPUMilli: 1}}) },
+		func() error {
+			_, err := s.AddEvent(ctx, store.EventRow{Cluster: "c", Severity: "info", Kind: "k", Message: "m"})
+			return err
+		},
+		func() error { return s.AppendOperationLog(ctx, id, "line") },
+		func() error { return s.SetOperationSteps(ctx, id, []byte("[]")) },
+		func() error { return s.FinishOperation(ctx, id, "done") },
+		func() error { return s.PutNodeMachineConfig(ctx, "10.0.0.9", []byte("cfg"), false) },
+		func() error {
+			_, _, err := s.ResolveToken(ctx, tok)
+			return err
+		},
+		func() error { return s.Prune(ctx) },
+		func() error { return s.MarkStaleOperations(ctx) },
+		func() error { return s.Checkpoint(ctx) },
+	} {
+		must(write())
+		time.Sleep(30 * time.Millisecond)
+	}
+	select {
+	case ch := <-external:
+		t.Fatalf("a local write was reported as external: %+v", ch)
+	case <-time.After(100 * time.Millisecond):
+	}
+	db, err := sql.Open("sqlite", filepath.Join(dir, "kubit.db"))
+	must(err)
+	defer db.Close()
+	_, err = db.ExecContext(ctx, `INSERT INTO settings (key, value) VALUES ('from', 'elsewhere')`)
+	must(err)
+	select {
+	case <-external:
+	case <-time.After(2 * time.Second):
+		t.Fatal("a write from another connection was not detected")
 	}
 }
 

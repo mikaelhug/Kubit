@@ -45,7 +45,7 @@ func (s *Server) handleSOPSImport(w http.ResponseWriter, r *http.Request) {
 		Keys string `json:"keys"`
 	}
 	if err := json.NewDecoder(io.LimitReader(r.Body, 64<<10)).Decode(&req); err != nil {
-		writeErr(w, &statusError{http.StatusBadRequest, err.Error()})
+		writeErr(w, badRequest(err.Error()))
 		return
 	}
 	k, err := s.manager.ImportSOPSKey(r.Context(), name, []byte(req.Keys))

@@ -12,6 +12,7 @@ import (
 
 	"github.com/mikael/kubit/internal/labhost"
 	"github.com/mikael/kubit/internal/labhost/libvirt"
+	"github.com/mikael/kubit/internal/netx"
 	"github.com/mikael/kubit/internal/oob"
 )
 
@@ -87,14 +88,14 @@ func ipArgs(ip string, set ...any) []any {
 
 func MachineKey(mac, ip string) string {
 	if mac != "" {
-		return strings.ToLower(mac)
+		return netx.MACKey(mac)
 	}
 	return "ip:" + ip
 }
 
 const machineCols = `mac, uuid, serial, COALESCE(ip,''), ips_seen, COALESCE(cluster,''), hostname, pool, role, arch, source, state, hardware, talos_version, wol, first_seen, COALESCE(last_seen,''), updated_at, oob, provision, labhost, host, provision_kind`
 
-func scanMachine(sc interface{ Scan(...any) error }) (*Machine, error) {
+func scanMachine(sc scanner) (*Machine, error) {
 	var m Machine
 	var hw, seen, oobRaw, lab string
 	var wol, prov int
@@ -136,24 +137,28 @@ func (s *Store) UpsertNode(ctx context.Context, n Machine) error {
 			key = existing.MAC
 		}
 	}
+	var moved int64
 	if n.IP != "" {
-		if _, err := tx.ExecContext(ctx, `UPDATE machines SET ip = NULL WHERE ip = ? AND mac != ?`, n.IP, key); err != nil {
+		res, err := tx.ExecContext(ctx, `UPDATE machines SET ip = NULL WHERE ip = ? AND mac != ?`, n.IP, key)
+		if err != nil {
 			return err
 		}
+		moved, _ = res.RowsAffected()
 	}
+	before, seen := machineFingerprint(ctx, tx, key)
 	hw := string(n.Hardware)
 	if hw == "" {
 		hw = "{}"
 	}
 	prev, _ := machineByMAC(ctx, tx, key)
-	seen := []string{}
+	ips := []string{}
 	if prev != nil {
-		seen = prev.IPsSeen
-		if prev.IP != "" && prev.IP != n.IP && !slices.Contains(seen, prev.IP) {
-			seen = append(seen, prev.IP)
+		ips = prev.IPsSeen
+		if prev.IP != "" && prev.IP != n.IP && !slices.Contains(ips, prev.IP) {
+			ips = append(ips, prev.IP)
 		}
 	}
-	seenJSON, _ := json.Marshal(seen)
+	ipsJSON, _ := json.Marshal(ips)
 	var cluster any
 	if n.Cluster != "" {
 		cluster = n.Cluster
@@ -179,10 +184,25 @@ func (s *Store) UpsertNode(ctx context.Context, n Machine) error {
 			provision     = CASE WHEN excluded.state = 'maintenance' THEN 0 ELSE machines.provision END,
 			system_split  = CASE WHEN excluded.state = 'maintenance' AND excluded.cluster IS NULL THEN 0 ELSE machines.system_split END,
 			updated_at    = `+sqlNow,
-		key, n.UUID, n.Serial, n.IP, string(seenJSON), cluster, n.Hostname, n.Pool, n.Role, n.Arch, n.Source, n.State, hw, n.TalosVersion); err != nil {
+		key, n.UUID, n.Serial, n.IP, string(ipsJSON), cluster, n.Hostname, n.Pool, n.Role, n.Arch, n.Source, n.State, hw, n.TalosVersion); err != nil {
 		return err
 	}
+	if after, _ := machineFingerprint(ctx, tx, key); moved == 0 && before != "" && before == after && seenWithin(seen, lastSeenEvery) {
+		return nil
+	}
 	return s.done(tx.Commit(), Change{Table: "machines", Cluster: n.Cluster, Key: key, Op: "put"})
+}
+
+const lastSeenEvery = 30 * time.Second
+
+func machineFingerprint(ctx context.Context, q rowQuerier, mac string) (fingerprint, lastSeen string) {
+	_ = q.QueryRowContext(ctx, `SELECT json_array(uuid, serial, ip, ips_seen, cluster, hostname, pool, role, arch, source, state, hardware, talos_version, provision, system_split), COALESCE(last_seen, '') FROM machines WHERE mac = ?`, mac).Scan(&fingerprint, &lastSeen)
+	return fingerprint, lastSeen
+}
+
+func seenWithin(ts string, d time.Duration) bool {
+	t, err := time.Parse(time.RFC3339Nano, ts)
+	return err == nil && time.Since(t) < d
 }
 
 type rowQuerier interface {
@@ -204,7 +224,7 @@ func (s *Store) MachineIPs(ctx context.Context, macs []string) (map[string]strin
 	}
 	args := make([]any, len(macs))
 	for i, mac := range macs {
-		args[i] = strings.ToLower(mac)
+		args[i] = netx.MACKey(mac)
 	}
 	rows, err := s.db.QueryContext(ctx, `SELECT mac, COALESCE(ip,'') FROM machines WHERE mac IN (?`+strings.Repeat(`, ?`, len(macs)-1)+`)`, args...)
 	if err != nil {
@@ -222,7 +242,7 @@ func (s *Store) MachineIPs(ctx context.Context, macs []string) (map[string]strin
 }
 
 func machineByMAC(ctx context.Context, q rowQuerier, mac string) (*Machine, error) {
-	m, err := scanMachine(q.QueryRowContext(ctx, `SELECT `+machineCols+` FROM machines WHERE mac = ?`, strings.ToLower(mac)))
+	m, err := scanMachine(q.QueryRowContext(ctx, `SELECT `+machineCols+` FROM machines WHERE mac = ?`, netx.MACKey(mac)))
 	return m, notFound(err, "machine %s", mac)
 }
 
@@ -242,35 +262,33 @@ func (s *Store) ListNodes(ctx context.Context, cluster string) ([]Machine, error
 		q += ` WHERE cluster = ?`
 		args = append(args, cluster)
 	}
-	rows, err := s.db.QueryContext(ctx, q+` ORDER BY cluster, role, hostname, ip`, args...)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var out []Machine
-	for rows.Next() {
-		m, err := scanMachine(rows)
-		if err != nil {
-			return nil, err
-		}
-		out = append(out, *m)
-	}
-	return out, rows.Err()
+	return queryAll(ctx, s.db, scanMachine, q+` ORDER BY cluster, role, hostname, ip`, args...)
 }
 
 func (s *Store) SetNodeState(ctx context.Context, ip, state string) error {
-	_, err := s.db.ExecContext(ctx, `UPDATE machines SET state = ?, updated_at = `+sqlNow+byIPOrMAC, ipArgs(ip, state)...)
-	return s.done(err, Change{Table: "machines", Key: ip, Op: "put"})
+	return s.updateAt(ctx, ip, "", `state = ?`, state)
 }
 
 func (s *Store) AssignNode(ctx context.Context, ip, cluster, hostname, role string) error {
-	_, err := s.db.ExecContext(ctx, `UPDATE machines SET cluster = ?, hostname = ?, role = ?, updated_at = `+sqlNow+byIPOrMAC, ipArgs(ip, cluster, hostname, role)...)
-	return s.done(err, Change{Table: "machines", Cluster: cluster, Key: ip, Op: "put"})
+	return s.updateAt(ctx, ip, cluster, `cluster = ?, hostname = ?, role = ?`, cluster, hostname, role)
 }
 
 func (s *Store) UnassignNode(ctx context.Context, ip, state string) error {
-	_, err := s.db.ExecContext(ctx, `UPDATE machines SET cluster = NULL, hostname = '', pool = '', role = '', state = ?, machine_config = NULL, system_split = 0, updated_at = `+sqlNow+byIPOrMAC, ipArgs(ip, state)...)
-	return s.done(err, Change{Table: "machines", Key: ip, Op: "put"})
+	return s.updateAt(ctx, ip, "", `cluster = NULL, hostname = '', pool = '', role = '', state = ?, machine_config = NULL, system_split = 0`, state)
+}
+
+func (s *Store) updateAt(ctx context.Context, ip, cluster, set string, args ...any) error {
+	macs, err := queryAll(ctx, s.db, func(sc scanner) (*string, error) {
+		var mac string
+		return &mac, sc.Scan(&mac)
+	}, `UPDATE machines SET `+set+`, updated_at = `+sqlNow+byIPOrMAC+` RETURNING mac`, ipArgs(ip, args...)...)
+	if err != nil {
+		return err
+	}
+	for _, mac := range macs {
+		s.notify(Change{Table: "machines", Cluster: cluster, Key: mac, Op: "put"})
+	}
+	return nil
 }
 
 func (s *Store) PutNodeMachineConfig(ctx context.Context, ip string, cfg []byte, systemSplit bool) error {
@@ -322,8 +340,8 @@ func (s *Store) SetMachineOOB(ctx context.Context, mac string, c *oob.Config) er
 		}
 		raw = string(b)
 	}
-	_, err := s.db.ExecContext(ctx, `UPDATE machines SET oob = ?, updated_at = `+sqlNow+` WHERE mac = ?`, raw, strings.ToLower(mac))
-	return s.done(err, Change{Table: "machines", Key: strings.ToLower(mac), Op: "put"})
+	_, err := s.db.ExecContext(ctx, `UPDATE machines SET oob = ?, updated_at = `+sqlNow+` WHERE mac = ?`, raw, netx.MACKey(mac))
+	return s.done(err, Change{Table: "machines", Key: netx.MACKey(mac), Op: "put"})
 }
 
 func (s *Store) MachineOOB(ctx context.Context, mac string) (*oob.Config, error) {
@@ -346,8 +364,8 @@ func (s *Store) SetMachineProvision(ctx context.Context, mac string, on bool, ki
 	} else if on {
 		k = "talos"
 	}
-	_, err := s.db.ExecContext(ctx, `UPDATE machines SET provision = ?, provision_kind = ? WHERE mac = ?`, b2i(on), k, strings.ToLower(mac))
-	return s.done(err, Change{Table: "machines", Key: strings.ToLower(mac), Op: "put"})
+	_, err := s.db.ExecContext(ctx, `UPDATE machines SET provision = ?, provision_kind = ? WHERE mac = ?`, b2i(on), k, netx.MACKey(mac))
+	return s.done(err, Change{Table: "machines", Key: netx.MACKey(mac), Op: "put"})
 }
 
 type LabHost struct {
@@ -384,14 +402,14 @@ type InstallProgress struct {
 }
 
 func (s *Store) SetLabHost(ctx context.Context, mac string, l *LabHost) error {
-	lk := s.labLock(strings.ToLower(mac))
+	lk := s.labLock(netx.MACKey(mac))
 	lk.Lock()
 	defer lk.Unlock()
 	return s.setLabHostLocked(ctx, mac, l)
 }
 
 func (s *Store) UpdateLabHost(ctx context.Context, mac string, mutate func(*LabHost)) error {
-	mac = strings.ToLower(mac)
+	mac = netx.MACKey(mac)
 	lk := s.labLock(mac)
 	lk.Lock()
 	defer lk.Unlock()
@@ -407,7 +425,7 @@ func (s *Store) UpdateLabHost(ctx context.Context, mac string, mutate func(*LabH
 }
 
 func (s *Store) setLabHostLocked(ctx context.Context, mac string, l *LabHost) error {
-	mac = strings.ToLower(mac)
+	mac = netx.MACKey(mac)
 	if l == nil {
 		_, err := s.db.ExecContext(ctx, `UPDATE machines SET labhost = '', updated_at = `+sqlNow+` WHERE mac = ?`, mac)
 		return s.done(err, Change{Table: "machines", Key: mac, Op: "put"})
@@ -438,8 +456,8 @@ func (s *Store) setLabHostLocked(ctx context.Context, mac string, l *LabHost) er
 const nextLabIndex = `SELECT COALESCE(MAX(CAST(json_extract(labhost, '$.index') AS INTEGER)), 0) + 1 FROM machines WHERE labhost != '' AND mac != ?`
 
 func (s *Store) SetMachineHost(ctx context.Context, mac, host string) error {
-	_, err := s.db.ExecContext(ctx, `UPDATE machines SET host = ? WHERE mac = ?`, strings.ToLower(host), strings.ToLower(mac))
-	return s.done(err, Change{Table: "machines", Key: strings.ToLower(mac), Op: "put"})
+	_, err := s.db.ExecContext(ctx, `UPDATE machines SET host = ? WHERE mac = ?`, netx.MACKey(host), netx.MACKey(mac))
+	return s.done(err, Change{Table: "machines", Key: netx.MACKey(mac), Op: "put"})
 }
 
 func (s *Store) SSHKey(ctx context.Context) (priv []byte, pub string, err error) {
@@ -480,8 +498,8 @@ func (s *Store) SSHKey(ctx context.Context) (priv []byte, pub string, err error)
 }
 
 func (s *Store) SetMachineWOL(ctx context.Context, mac string, on bool) error {
-	_, err := s.db.ExecContext(ctx, `UPDATE machines SET wol = ? WHERE mac = ?`, b2i(on), strings.ToLower(mac))
-	return s.done(err, Change{Table: "machines", Key: strings.ToLower(mac), Op: "put"})
+	_, err := s.db.ExecContext(ctx, `UPDATE machines SET wol = ? WHERE mac = ?`, b2i(on), netx.MACKey(mac))
+	return s.done(err, Change{Table: "machines", Key: netx.MACKey(mac), Op: "put"})
 }
 
 func (s *Store) DeleteMachine(ctx context.Context, mac string) error {
@@ -493,10 +511,10 @@ func (s *Store) DeleteMachine(ctx context.Context, mac string) error {
 	if err := deleteLabHostHistory(ctx, tx, mac); err != nil {
 		return err
 	}
-	if _, err := tx.ExecContext(ctx, `DELETE FROM machines WHERE mac = ?`, strings.ToLower(mac)); err != nil {
+	if _, err := tx.ExecContext(ctx, `DELETE FROM machines WHERE mac = ?`, netx.MACKey(mac)); err != nil {
 		return err
 	}
-	return s.done(tx.Commit(), Change{Table: "machines", Key: strings.ToLower(mac), Op: "delete"})
+	return s.done(tx.Commit(), Change{Table: "machines", Key: netx.MACKey(mac), Op: "delete"})
 }
 
 func (s *Store) DeleteLabHostHistory(ctx context.Context, mac string) error {

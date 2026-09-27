@@ -47,7 +47,7 @@ func (s *Server) handleLabLocal(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer d.Close()
-	capa, err := d.Capacity(r.Context())
+	capa, err := d.Capacity(labhost.FreshCapacity(r.Context()))
 	if err != nil {
 		writeErr(w, err)
 		return
@@ -65,50 +65,50 @@ func (s *Server) handleLabLocalCreate(w http.ResponseWriter, r *http.Request) {
 		labPlan
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeErr(w, &statusError{http.StatusBadRequest, `body: {"driver":"vfkit","vms":{…},"cluster":{…}}`})
+		writeErr(w, badRequest(`body: {"driver":"vfkit","vms":{…},"cluster":{…}}`))
 		return
 	}
 	plan := req.labPlan
 	if req.Driver != labhost.DriverVFKit {
-		writeErr(w, &statusError{http.StatusBadRequest, "driver must be vfkit"})
+		writeErr(w, badRequest("driver must be vfkit"))
 		return
 	}
 	if plan.Manual || plan.Network != "" || plan.Disk != "" {
-		writeErr(w, &statusError{http.StatusBadRequest, "manual, network and disk do not apply to VMs on this Mac"})
+		writeErr(w, badRequest("manual, network and disk do not apply to VMs on this Mac"))
 		return
 	}
 	if code, err := s.checkLabPlan(r.Context(), &plan); err != nil {
-		writeErr(w, &statusError{code, err.Error()})
+		writeErr(w, &statusError{Status: code, Msg: err.Error()})
 		return
 	}
 	if h := s.localHost(r.Context()); h != nil {
-		writeErr(w, &statusError{http.StatusConflict, "This Mac is already a lab host."})
+		writeErr(w, conflict("This Mac is already a lab host."))
 		return
 	}
 	d, err := s.localDriver()
 	if err != nil {
-		writeErr(w, &statusError{http.StatusConflict, err.Error()})
+		writeErr(w, conflict(err.Error()))
 		return
 	}
 	defer d.Close()
-	capa, err := d.Capacity(r.Context())
+	capa, err := d.Capacity(labhost.FreshCapacity(r.Context()))
 	if err != nil {
 		writeErr(w, err)
 		return
 	}
 	if capa.Problem != "" {
-		writeJSON(w, http.StatusConflict, map[string]string{"error": capa.Problem, "code": "vfkit-missing", "command": capa.Command})
+		writeErr(w, &statusError{Status: http.StatusConflict, Msg: capa.Problem, Code: "vfkit-missing", Command: capa.Command})
 		return
 	}
 	if plan.VMs != nil {
 		if need, free := plan.VMs.totalMem(), freeMiB(capa, nil); need > free {
-			writeErr(w, &statusError{http.StatusUnprocessableEntity, fmt.Sprintf("%d MiB requested, %d MiB free (this Mac keeps %s)", need, free, mib(capa.Reserve()))})
+			writeErr(w, &statusError{Status: http.StatusUnprocessableEntity, Msg: fmt.Sprintf("%d MiB requested, %d MiB free (this Mac keeps %s)", need, free, mib(capa.Reserve()))})
 			return
 		}
 	}
 	id, ok := d.(labhost.Identity)
 	if !ok {
-		writeErr(w, &statusError{http.StatusInternalServerError, "this driver cannot name its host"})
+		writeErr(w, &statusError{Status: http.StatusInternalServerError, Msg: "this driver cannot name its host"})
 		return
 	}
 	mac, err := id.HostMAC(r.Context())
@@ -117,7 +117,7 @@ func (s *Server) handleLabLocalCreate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if m, err := s.store.GetMachine(r.Context(), mac); err == nil && (m.Cluster != "" || m.LabHost != nil) {
-		writeErr(w, &statusError{http.StatusConflict, "This Mac's machine record is in use; retire it first."})
+		writeErr(w, conflict("This Mac's machine record is in use; retire it first."))
 		return
 	}
 	hw := placeholderHardware(talos.Inventory{Manufacturer: "Apple", Product: capa.Model, CPUs: capa.CPUs, MemoryBytes: uint64(capa.MemMiB) << 20})
@@ -129,51 +129,8 @@ func (s *Server) handleLabLocalCreate(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, err)
 		return
 	}
-	opID, err := s.runOperation("labhost:"+mac, "labhost.local", map[string]any{"mac": mac, "plan": plan}, func(ctx context.Context, sink cluster.Sink) (result any, err error) {
-		defer func() {
-			if err == nil {
-				return
-			}
-			sink.Emit(cluster.Warn, "", "", "setup failed, removing the lab host: %v", err)
-			rctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-			defer cancel()
-			if host, e := s.store.GetMachine(rctx, mac); e == nil {
-				if rerr := s.releaseLabHost(rctx, host); rerr != nil {
-					sink.Emit(cluster.Warn, "", "", "release: %v", rerr)
-				}
-			}
-		}()
-		stop := keepAwake(ctx)
-		defer stop()
-		steps := cluster.Steps("setup", "Check vfkit and vmnet-helper, fetch the Talos ISO")
-		if plan.VMs != nil {
-			steps = append(steps, cluster.Steps("define", "Create the VMs", "vmboot", "Wait for Talos maintenance mode")...)
-		}
-		if plan.Cluster != nil {
-			steps = append(steps, cluster.Steps("cluster", "Design and create the cluster")...)
-		}
-		sink.Plan(steps...)
-		sink.Begin("setup")
-		host, err := s.store.GetMachine(ctx, mac)
-		if err != nil {
-			return nil, err
-		}
-		lc, err := s.manager.LabDial(ctx, host)
-		if err != nil {
-			return nil, err
-		}
-		defer lc.Close()
-		lh, err := s.labSetup(ctx, lc, host, sink)
-		if err != nil {
-			return nil, err
-		}
-		_ = s.store.Audit(ctx, "", "labhost.local", mac)
-		sink.Emit(cluster.Done, "setup", "", "lab host ready: %d CPUs, %d MiB RAM (%s kept for macOS), %d GiB free for VMs", lh.Capacity.CPUs, lh.Capacity.MemMiB, mib(lh.Capacity.Reserve()), lh.Capacity.DiskGiB)
-		sink.End("setup")
-		if plan.VMs == nil {
-			return lh, nil
-		}
-		return s.labRunPlan(ctx, mac, plan, sink)
+	opID, err := s.runOperation("labhost:"+mac, "labhost.local", map[string]any{"mac": mac, "plan": plan}, func(ctx context.Context, sink cluster.Sink) (any, error) {
+		return s.labLocalOp(ctx, sink, mac, plan)
 	})
 	if err != nil {
 		if host, e := s.store.GetMachine(context.WithoutCancel(r.Context()), mac); e == nil {
@@ -185,6 +142,53 @@ func (s *Server) handleLabLocalCreate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusAccepted, map[string]any{"operationId": opID, "mac": mac})
+}
+
+func (s *Server) labLocalOp(ctx context.Context, sink cluster.Sink, mac string, plan labPlan) (result any, err error) {
+	defer func() {
+		if err == nil {
+			return
+		}
+		sink.Emit(cluster.Warn, "", "", "setup failed, removing the lab host: %v", err)
+		rctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		if host, e := s.store.GetMachine(rctx, mac); e == nil {
+			if rerr := s.releaseLabHost(rctx, host); rerr != nil {
+				sink.Emit(cluster.Warn, "", "", "release: %v", rerr)
+			}
+		}
+	}()
+	stop := keepAwake(ctx)
+	defer stop()
+	steps := cluster.Steps("setup", "Check vfkit and vmnet-helper, fetch the Talos ISO")
+	if plan.VMs != nil {
+		steps = append(steps, cluster.Steps("define", "Create the VMs", "vmboot", "Wait for Talos maintenance mode")...)
+	}
+	if plan.Cluster != nil {
+		steps = append(steps, cluster.Steps("cluster", "Design and create the cluster")...)
+	}
+	sink.Plan(steps...)
+	sink.Begin("setup")
+	host, err := s.store.GetMachine(ctx, mac)
+	if err != nil {
+		return nil, err
+	}
+	lc, err := s.manager.LabDial(ctx, host)
+	if err != nil {
+		return nil, err
+	}
+	defer lc.Close()
+	lh, err := s.labSetup(ctx, lc, host, sink)
+	if err != nil {
+		return nil, err
+	}
+	_ = s.store.Audit(ctx, "", "labhost.local", mac)
+	sink.Emit(cluster.Done, "setup", "", "lab host ready: %d CPUs, %d MiB RAM (%s kept for macOS), %d GiB free for VMs", lh.Capacity.CPUs, lh.Capacity.MemMiB, mib(lh.Capacity.Reserve()), lh.Capacity.DiskGiB)
+	sink.End("setup")
+	if plan.VMs == nil {
+		return lh, nil
+	}
+	return s.labRunPlan(ctx, mac, plan, sink)
 }
 
 func keepAwake(ctx context.Context) func() {

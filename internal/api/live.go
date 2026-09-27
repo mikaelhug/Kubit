@@ -62,7 +62,10 @@ func (s *Server) refresh(cluster string, scopes ...string) {
 	}
 }
 
-const scopeCertificates = "certificates"
+const (
+	scopeCertificates = "certificates"
+	scopeMachines     = "machines"
+)
 
 func scopesForKind(kind string) []string {
 	switch {
@@ -78,66 +81,92 @@ func scopesForKind(kind string) []string {
 	return nil
 }
 
+type frame struct {
+	seq  int64
+	data []byte
+}
+
 type hub struct {
 	mu   sync.Mutex
-	subs map[chan Message]struct{}
+	subs map[chan frame]struct{}
 	seq  int64
-	ring []Message
+	ring []frame
 	head int
 	n    int
 }
 
-const ringSize = 2000
+const (
+	ringSize         = 2000
+	subscriberBuffer = 256
+)
 
-func newHub() *hub { return &hub{subs: map[chan Message]struct{}{}, ring: make([]Message, ringSize)} }
+func newHub() *hub { return &hub{subs: map[chan frame]struct{}{}, ring: make([]frame, ringSize)} }
 
-func (h *hub) since(seq int64) (out []Message, head int64, ok bool) {
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	head = h.seq
-	if seq == 0 || seq >= head {
-		return nil, head, true
-	}
-	if seq < head-int64(h.n) {
-		return nil, head, false
-	}
-	for i := 0; i < h.n; i++ {
-		m := h.ring[(h.head-h.n+i+ringSize)%ringSize]
-		if m.Seq > seq {
-			out = append(out, m)
-		}
-	}
-	return out, head, true
+type subscription struct {
+	ch     chan frame
+	missed []frame
+	head   int64
+	replay bool
 }
 
-func (h *hub) subscribe() (chan Message, func()) {
-	ch := make(chan Message, 256)
+func (h *hub) subscribe(since int64) *subscription {
+	sub := &subscription{ch: make(chan frame, subscriberBuffer), replay: true}
 	h.mu.Lock()
-	h.subs[ch] = struct{}{}
-	h.mu.Unlock()
-	return ch, func() {
-		h.mu.Lock()
-		delete(h.subs, ch)
-		h.mu.Unlock()
+	defer h.mu.Unlock()
+	h.subs[sub.ch] = struct{}{}
+	sub.head = h.seq
+	if since == 0 || since >= sub.head {
+		return sub
 	}
+	if since < sub.head-int64(h.n) {
+		sub.replay = false
+		return sub
+	}
+	for i := 0; i < h.n; i++ {
+		if f := h.ring[(h.head-h.n+i+ringSize)%ringSize]; f.seq > since {
+			sub.missed = append(sub.missed, f)
+		}
+	}
+	return sub
+}
+
+func (h *hub) unsubscribe(sub *subscription) {
+	h.mu.Lock()
+	delete(h.subs, sub.ch)
+	h.mu.Unlock()
 }
 
 func (h *hub) publish(m Message) {
+	m.Seq = 0
+	b, err := json.Marshal(m)
+	if err != nil {
+		log.Printf("live: %s: %v", m.Kind, err)
+		return
+	}
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	h.seq++
-	m.Seq = h.seq
-	h.ring[h.head] = m
+	f := frame{seq: h.seq, data: withSeq(b, h.seq)}
+	h.ring[h.head] = f
 	h.head = (h.head + 1) % ringSize
 	if h.n < ringSize {
 		h.n++
 	}
 	for ch := range h.subs {
 		select {
-		case ch <- m:
+		case ch <- f:
 		default:
+			delete(h.subs, ch)
+			close(ch)
 		}
 	}
+}
+
+func withSeq(b []byte, seq int64) []byte {
+	out := append(make([]byte, 0, len(b)+24), `{"seq":`...)
+	out = strconv.AppendInt(out, seq, 10)
+	out = append(out, ',')
+	return append(out, b[1:]...)
 }
 
 func (s *Server) attachLive(ctx context.Context) {
@@ -163,19 +192,10 @@ func (s *Server) onChange(ctx context.Context, c store.Change) {
 			return
 		}
 		if c.Key == "" {
-			if rows, err := s.store.ListNodes(ctx, ""); err == nil {
-				for i := range rows {
-					v := machineView(rows[i])
-					s.hub.publish(Message{Kind: "machine", Cluster: rows[i].Cluster, Machine: &v})
-				}
-			}
+			s.refresh("", scopeMachines)
 			return
 		}
-		m, err := s.store.GetMachine(ctx, c.Key)
-		if err != nil {
-			m, err = s.store.GetNode(ctx, c.Key)
-		}
-		if err == nil {
+		if m, err := s.store.GetMachine(ctx, c.Key); err == nil {
 			v := machineView(*m)
 			s.hub.publish(Message{Kind: "machine", Cluster: m.Cluster, Machine: &v})
 		}
@@ -193,8 +213,9 @@ func (s *Server) onChange(ctx context.Context, c store.Change) {
 			}
 		}
 	case "audit":
-		if rows, err := s.store.ListAudit(ctx, "", 1); err == nil && len(rows) == 1 {
-			s.hub.publish(Message{Kind: "audit", Cluster: rows[0].Cluster, Audit: &rows[0]})
+		id, _ := strconv.ParseInt(c.Key, 10, 64)
+		if e, err := s.store.GetAudit(ctx, id); err == nil {
+			s.hub.publish(Message{Kind: "audit", Cluster: e.Cluster, Audit: e})
 		}
 	case "users":
 		s.hub.publish(Message{Kind: "refresh", Scope: "users"})
@@ -205,6 +226,9 @@ func (s *Server) onChange(ctx context.Context, c store.Change) {
 	case "settings":
 		if offsiteKeys[c.Key] {
 			s.refresh("", k8s.ScopeOffsite)
+		}
+		if c.Key != settingsKey {
+			return
 		}
 		if v, err := s.store.GetSettings(ctx); err == nil {
 			v = redactSettings(v)
@@ -224,7 +248,9 @@ func (s *Server) onChange(ctx context.Context, c store.Change) {
 	}
 }
 
-var offsiteKeys = map[string]bool{"kubit": true, "offsite.lastBackup": true}
+const settingsKey = "kubit"
+
+var offsiteKeys = map[string]bool{settingsKey: true, "offsite.lastBackup": true}
 
 var devOrigins = []string{"localhost:5173", "127.0.0.1:5173"}
 
@@ -237,28 +263,30 @@ func (s *Server) handleLive(w http.ResponseWriter, r *http.Request) {
 	ctx, stop := context.WithCancel(r.Context())
 	defer stop()
 	conn.SetReadLimit(1 << 16)
-	send := func(m Message) error {
+	write := func(b []byte) error {
 		wctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 		defer cancel()
-		b, _ := json.Marshal(m)
 		return conn.Write(wctx, websocket.MessageText, b)
 	}
-	ch, cancel := s.hub.subscribe()
-	defer cancel()
+	send := func(m Message) error {
+		b, _ := json.Marshal(m)
+		return write(b)
+	}
 	since, _ := strconv.ParseInt(r.URL.Query().Get("since"), 10, 64)
-	missed, head, ok := s.hub.since(since)
+	sub := s.hub.subscribe(since)
+	defer s.hub.unsubscribe(sub)
 	hello := s.hello()
-	hello.Seq = head
+	hello.Seq = sub.head
 	if err := send(Message{Kind: "hello", Hello: &hello}); err != nil {
 		return
 	}
-	if !ok {
+	if !sub.replay {
 		if err := send(Message{Kind: "resync"}); err != nil {
 			return
 		}
 	}
-	for _, m := range missed {
-		if err := send(m); err != nil {
+	for _, f := range sub.missed {
+		if err := write(f.data); err != nil {
 			return
 		}
 	}
@@ -283,8 +311,11 @@ func (s *Server) handleLive(w http.ResponseWriter, r *http.Request) {
 			if err != nil {
 				return
 			}
-		case m := <-ch:
-			if err := send(m); err != nil {
+		case f, ok := <-sub.ch:
+			if !ok {
+				return
+			}
+			if err := write(f.data); err != nil {
 				log.Printf("live: %v", err)
 				return
 			}

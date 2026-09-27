@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
+	"slices"
 
 	"github.com/mikael/kubit/internal/fsx"
 	"github.com/mikael/kubit/internal/store"
@@ -24,10 +26,7 @@ machine needs that key: run 'kubit key export' here and set KUBIT_MASTER_KEY the
 				return err
 			}
 			defer m.Store.Close()
-			if err := m.Store.Checkpoint(cmd.Context()); err != nil {
-				return err
-			}
-			if err := writeBackup(out, func(w io.Writer) error { return store.Backup(m.Home, crypto, w) }); err != nil {
+			if err := fsx.WriteOut(out, 0o600, func(w io.Writer) error { return store.Backup(m.Home, crypto, w) }); err != nil {
 				return err
 			}
 			_ = m.Store.Audit(cmd.Context(), "", "backup", out)
@@ -37,21 +36,6 @@ machine needs that key: run 'kubit key export' here and set KUBIT_MASTER_KEY the
 	}
 	cmd.Flags().StringVarP(&out, "out", "o", "kubit-backup.kubitbak", "output file")
 	return cmd
-}
-
-func writeBackup(path string, write func(io.Writer) error) error {
-	if fi, err := os.Stat(path); err != nil || fi.Mode().IsRegular() {
-		return fsx.WriteStream(path, 0o600, write)
-	}
-	f, err := os.OpenFile(path, os.O_WRONLY, 0)
-	if err != nil {
-		return err
-	}
-	if err := write(f); err != nil {
-		f.Close()
-		return err
-	}
-	return f.Close()
 }
 
 func restoreCmd() *cobra.Command {
@@ -77,7 +61,18 @@ func restoreCmd() *cobra.Command {
 			if err := os.MkdirAll(home, 0o700); err != nil {
 				return err
 			}
-			if err := store.Restore(home, crypto, f, force); err != nil {
+			lock, err := store.LockHome(home)
+			if err != nil {
+				return err
+			}
+			defer lock.Release()
+			done, err := setWALAside(home)
+			if err != nil {
+				return err
+			}
+			written, err := store.Restore(home, crypto, f, force)
+			done(slices.Contains(written, dbFile), err == nil)
+			if err != nil {
 				return err
 			}
 			fmt.Fprintf(cmd.OutOrStdout(), "restored into %s\n", home)
@@ -86,6 +81,34 @@ func restoreCmd() *cobra.Command {
 	}
 	cmd.Flags().BoolVar(&force, "force", false, "overwrite an existing Kubit home")
 	return cmd
+}
+
+const dbFile = "kubit.db"
+
+func setWALAside(home string) (func(dbWritten, ok bool), error) {
+	db := filepath.Join(home, dbFile)
+	var moved []string
+	for _, suffix := range []string{"-wal", "-shm"} {
+		p := db + suffix
+		if err := os.Rename(p, p+".pre-restore"); err == nil {
+			moved = append(moved, p)
+		} else if !os.IsNotExist(err) {
+			for _, m := range moved {
+				_ = os.Rename(m+".pre-restore", m)
+			}
+			return nil, err
+		}
+	}
+	return func(dbWritten, ok bool) {
+		for _, m := range moved {
+			switch {
+			case !dbWritten:
+				_ = os.Rename(m+".pre-restore", m)
+			case ok:
+				_ = os.Remove(m + ".pre-restore")
+			}
+		}
+	}, nil
 }
 
 func keyCmd() *cobra.Command {

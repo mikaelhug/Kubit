@@ -2,11 +2,11 @@ package main
 
 import (
 	"fmt"
-	"os"
 	"text/tabwriter"
 
 	"github.com/mikael/kubit/internal/cluster"
 	"github.com/mikael/kubit/internal/config"
+	"github.com/mikael/kubit/internal/fsx"
 	"github.com/mikael/kubit/internal/store"
 	"github.com/spf13/cobra"
 )
@@ -107,7 +107,7 @@ func clusterCredsCmd(kind string) *cobra.Command {
 			if out == "" {
 				out = kind
 			}
-			return os.WriteFile(out, data, 0o600)
+			return fsx.WriteOut(out, 0o600, fsx.Bytes(data))
 		}),
 	}
 	cmd.Flags().StringVarP(&out, "out", "o", "", "output file (default ./"+kind+"; - for stdout)")

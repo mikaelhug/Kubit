@@ -1,9 +1,6 @@
 package store
 
-import (
-	"sync"
-	"sync/atomic"
-)
+import "sync"
 
 type Change struct {
 	Table   string
@@ -14,9 +11,8 @@ type Change struct {
 }
 
 type notifier struct {
-	mu     sync.RWMutex
-	fns    []func(Change)
-	writes atomic.Int64
+	mu  sync.RWMutex
+	fns []func(Change)
 }
 
 func (s *Store) OnChange(fn func(Change)) {
@@ -29,7 +25,6 @@ func (s *Store) notify(c Change) {
 	if c.Table == "settings" || c.Table == "*" {
 		s.settings.invalidate()
 	}
-	s.n.writes.Add(1)
 	s.n.mu.RLock()
 	fns := s.n.fns
 	s.n.mu.RUnlock()

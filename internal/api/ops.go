@@ -15,7 +15,6 @@ import (
 
 	"github.com/mikael/kubit/internal/cluster"
 	"github.com/mikael/kubit/internal/config"
-	"github.com/mikael/kubit/internal/store"
 )
 
 func (s *Server) opRoutes() {
@@ -177,10 +176,15 @@ func (s *Server) runOperationLocking(clusterName string, locks []string, kind st
 		s.hub.publish(Message{Kind: "event", OperationID: id, Event: &e})
 	}
 	go func() {
+		defer cancel()
 		defer s.cancels.Delete(id)
-		defer s.locks.lockAll(locks)()
 		status := "done"
-		artifact, err := callOperation(ctx, fn, sink)
+		var artifact any
+		unlock, err := s.locks.lockAllContext(ctx, locks)
+		if err == nil {
+			defer unlock()
+			artifact, err = callOperation(ctx, fn, sink)
+		}
 		bg := context.Background()
 		switch {
 		case err != nil && errors.Is(err, context.Canceled):
@@ -276,7 +280,6 @@ func (l *clusterLocks) get(name string) chan struct{} {
 	return m
 }
 
-func (l *clusterLocks) lock(name string)   { l.get(name) <- struct{}{} }
 func (l *clusterLocks) unlock(name string) { <-l.get(name) }
 func (l *clusterLocks) busy(name string) bool {
 	return len(l.get(name)) > 0
@@ -289,11 +292,6 @@ func (l *clusterLocks) lockContext(ctx context.Context, name string) error {
 	case <-ctx.Done():
 		return ctx.Err()
 	}
-}
-
-func (l *clusterLocks) lockAll(names []string) (unlock func()) {
-	unlock, _ = l.lockAllContext(context.Background(), names)
-	return unlock
 }
 
 func (l *clusterLocks) lockAllContext(ctx context.Context, names []string) (unlock func(), err error) {
@@ -318,9 +316,6 @@ func (s *Server) handleOperations(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, err)
 		return
 	}
-	if ops == nil {
-		ops = []store.OperationRow{}
-	}
 	writeJSON(w, http.StatusOK, ops)
 }
 
@@ -337,7 +332,7 @@ func (s *Server) handleOperation(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleOperationCancel(w http.ResponseWriter, r *http.Request) {
 	id, _ := strconv.ParseInt(r.PathValue("id"), 10, 64)
 	if !s.cancelOperation(id) {
-		writeErr(w, &statusError{http.StatusConflict, "operation is not running"})
+		writeErr(w, conflict("operation is not running"))
 		return
 	}
 	w.WriteHeader(http.StatusAccepted)
@@ -351,7 +346,7 @@ func (s *Server) handleOperationRetry(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if op.Status == "running" {
-		writeErr(w, &statusError{http.StatusConflict, "operation is still running"})
+		writeErr(w, conflict("operation is still running"))
 		return
 	}
 	var newID int64
@@ -360,7 +355,9 @@ func (s *Server) handleOperationRetry(w http.ResponseWriter, r *http.Request) {
 		var req createRequest
 		_ = json.Unmarshal(op.Request, &req)
 		var c *config.Cluster
-		if c, err = config.Parse([]byte(req.YAML)); err == nil {
+		if c, err = config.Parse([]byte(req.YAML)); err != nil {
+			err = invalid(err)
+		} else {
 			newID, err = s.startCreate(c, req.SkipPlatform, req)
 		}
 	case "node.add":
@@ -379,7 +376,7 @@ func (s *Server) handleOperationRetry(w http.ResponseWriter, r *http.Request) {
 		_ = json.Unmarshal(op.Request, &req)
 		newID, err = s.startDiscover(req.Targets)
 	default:
-		writeErr(w, &statusError{http.StatusBadRequest, "this kind of operation cannot be retried; start it again from its page"})
+		writeErr(w, badRequest("this kind of operation cannot be retried; start it again from its page"))
 		return
 	}
 	accepted(w, newID, err)

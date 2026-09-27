@@ -86,7 +86,10 @@ func TestOperationPanicFailsTheOperation(t *testing.T) {
 
 func TestLockAllOrdersAndReleases(t *testing.T) {
 	var l clusterLocks
-	unlock := l.lockAll([]string{"b", "labhost:x", "a", "b"})
+	unlock, err := l.lockAllContext(t.Context(), []string{"b", "labhost:x", "a", "b"})
+	if err != nil {
+		t.Fatal(err)
+	}
 	for _, n := range []string{"a", "b", "labhost:x"} {
 		if !l.busy(n) {
 			t.Errorf("%s not held", n)
@@ -97,6 +100,50 @@ func TestLockAllOrdersAndReleases(t *testing.T) {
 		if l.busy(n) {
 			t.Errorf("%s still held", n)
 		}
+	}
+}
+
+func TestCancellingAQueuedOperationFinishesItAsCancelled(t *testing.T) {
+	s, st, _ := localServer(t)
+	if err := s.locks.lockContext(t.Context(), "c"); err != nil {
+		t.Fatal(err)
+	}
+	defer s.locks.unlock("c")
+	ran := make(chan struct{}, 1)
+	id, err := s.runOperation("c", "test.queued", nil, func(context.Context, cluster.Sink) (any, error) {
+		ran <- struct{}{}
+		return nil, nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(50 * time.Millisecond)
+	if !s.cancelOperation(id) {
+		t.Fatal("a queued operation must be cancellable")
+	}
+	done := make(chan *store.OperationRow, 1)
+	go func() {
+		deadline := time.Now().Add(2 * time.Second)
+		for time.Now().Before(deadline) {
+			if op, err := st.GetOperation(context.Background(), id); err == nil && op.Status != "running" {
+				done <- op
+				return
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+		done <- nil
+	}()
+	op := <-done
+	if op == nil || op.Status != "cancelled" {
+		t.Fatalf("queued operation after cancel: %+v", op)
+	}
+	select {
+	case <-ran:
+		t.Error("a cancelled queued operation must not run")
+	default:
+	}
+	if !s.locks.busy("c") {
+		t.Error("the holder keeps its lock")
 	}
 }
 

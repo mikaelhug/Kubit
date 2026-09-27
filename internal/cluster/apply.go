@@ -30,15 +30,25 @@ func (m *Manager) ApplyConfigs(ctx context.Context, c *config.Cluster, wantKubel
 	for _, n := range nodes {
 		step := nodeStep(n)
 		err := sink.Run(step, func() error {
-			if err := m.applyNodeConfig(ctx, n, gen.Nodes[n.Hostname], sec.Talosconfig, step, sink); err != nil {
+			before := kubeBootID(ctx, kc, n.Hostname)
+			rebooted, err := m.applyNodeConfig(ctx, n, gen.Nodes[n.Hostname], sec.Talosconfig, step, sink)
+			if err != nil {
 				return err
+			}
+			switch {
+			case rebooted:
+				if err := m.waitBack(ctx, c, kc, n, before, sec.Talosconfig); err != nil {
+					return err
+				}
+			case wantKubelet == "":
+				if err := kc.WaitReady(ctx, []string{n.Hostname}, m.Timeouts.Ready, nil); err != nil {
+					return err
+				}
 			}
 			if wantKubelet != "" {
 				if err := waitKubeletVersion(ctx, kc, n.Hostname, wantKubelet, m.Timeouts.Ready); err != nil {
 					return err
 				}
-			} else if err := kc.WaitReady(ctx, []string{n.Hostname}, m.Timeouts.Ready, nil); err != nil {
-				return err
 			}
 			sink.Emit(Info, step, n.Hostname, "Ready")
 			return nil
@@ -50,30 +60,34 @@ func (m *Manager) ApplyConfigs(ctx context.Context, c *config.Cluster, wantKubel
 	return nil
 }
 
-func (m *Manager) applyNodeConfig(ctx context.Context, n config.Node, cfg []byte, talosconfig []byte, step string, sink Sink) error {
+func (m *Manager) applyNodeConfig(ctx context.Context, n config.Node, cfg []byte, talosconfig []byte, step string, sink Sink) (rebooted bool, err error) {
 	tc, err := talos.Dial(ctx, n.IP, talosconfig)
 	if err != nil {
-		return err
+		return false, err
 	}
 	details, err := applyDryRun(ctx, tc, cfg)
 	if err != nil {
 		tc.Close()
-		return fmt.Errorf("dry run: %w", err)
+		return false, fmt.Errorf("dry run: %w", err)
 	}
-	bootID, _ := readBootID(ctx, tc)
-	err = applyConfig(ctx, tc, cfg)
+	bootID, err := readBootID(ctx, tc)
+	if err != nil {
+		tc.Close()
+		return false, fmt.Errorf("boot id: %w", err)
+	}
+	err = applyConfig(ctx, tc, cfg, applyTimeout)
 	tc.Close()
 	if err != nil {
-		return fmt.Errorf("apply: %w", err)
+		return false, fmt.Errorf("apply: %w", err)
 	}
 	if err := m.Store.PutNodeMachineConfig(ctx, n.IP, cfg, config.HasSystemVolume(cfg)); err != nil {
-		return err
+		return false, err
 	}
 	sink.Emit(Info, step, n.Hostname, "applied: %s", summarizeDryRun(details))
-	if wantReboot(details) {
-		return talos.WaitForReboot(ctx, n.IP, talosconfig, bootID, m.Timeouts.Install)
+	if !wantReboot(details) {
+		return false, nil
 	}
-	return nil
+	return true, talos.WaitForReboot(ctx, n.IP, talosconfig, bootID, m.Timeouts.Install)
 }
 
 func summarizeDryRun(details string) string {

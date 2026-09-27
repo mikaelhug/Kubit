@@ -1,8 +1,11 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"os"
+	"os/signal"
+	"syscall"
 
 	"github.com/siderolabs/talos/pkg/machinery/constants"
 	"github.com/siderolabs/talos/pkg/machinery/gendata"
@@ -12,7 +15,12 @@ import (
 var version = "dev"
 
 func main() {
-	if err := rootCmd().Execute(); err != nil {
+	adoptInvokingUserHome()
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	context.AfterFunc(ctx, stop)
+	err := rootCmd().ExecuteContext(ctx)
+	stop()
+	if err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)
 		os.Exit(1)
 	}

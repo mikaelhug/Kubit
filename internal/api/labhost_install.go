@@ -11,6 +11,7 @@ import (
 
 	"github.com/mikael/kubit/internal/cluster"
 	"github.com/mikael/kubit/internal/labhost/libvirt"
+	"github.com/mikael/kubit/internal/netx"
 	"github.com/mikael/kubit/internal/pxe"
 	"github.com/mikael/kubit/internal/store"
 	"github.com/mikael/kubit/internal/talos"
@@ -23,9 +24,9 @@ func (s *Server) handleMachineAdd(w http.ResponseWriter, r *http.Request) {
 	if !decodeJSON(w, r, &req) {
 		return
 	}
-	mac := strings.ToLower(strings.TrimSpace(req.MAC))
-	if _, err := net.ParseMAC(mac); err != nil {
-		writeErr(w, &statusError{http.StatusBadRequest, "mac: a MAC address is required"})
+	mac := netx.Normalize(req.MAC)
+	if mac == "" {
+		writeErr(w, badRequest("mac: a MAC address is required"))
 		return
 	}
 	row := store.NodeRow{MAC: mac, IP: req.IP, Hostname: req.Hostname, Arch: req.Arch, Source: "manual", State: "unknown"}

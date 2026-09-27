@@ -27,7 +27,7 @@ type discoverRequest struct {
 func (s *Server) handleDiscover(w http.ResponseWriter, r *http.Request) {
 	var req discoverRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || len(req.Targets) == 0 {
-		writeErr(w, &statusError{http.StatusBadRequest, `body must be {"targets": ["cidr or ip", ...]}`})
+		writeErr(w, badRequest(`body must be {"targets": ["cidr or ip", ...]}`))
 		return
 	}
 	id, err := s.startDiscover(req.Targets)
@@ -37,7 +37,7 @@ func (s *Server) handleDiscover(w http.ResponseWriter, r *http.Request) {
 func (s *Server) startDiscover(targets []string) (int64, error) {
 	addrs, err := talos.ExpandTargets(targets)
 	if err != nil {
-		return 0, err
+		return 0, invalid(err)
 	}
 	return s.runOperation("", "discover", discoverRequest{Targets: targets}, func(ctx context.Context, sink cluster.Sink) (any, error) {
 		sink.Plan(cluster.Steps("scan", fmt.Sprintf("Probe %d addresses on port 50000", len(addrs)), "record", "Record inventory", "amt", "Probe the rest for Intel AMT or a Redfish BMC")...)

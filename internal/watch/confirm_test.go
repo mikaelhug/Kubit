@@ -135,3 +135,24 @@ func TestOfflineNeedsConfirmation(t *testing.T) {
 		t.Fatalf("one good tick flips back online: %v", flips)
 	}
 }
+
+func TestOneSuspensionIsOneGap(t *testing.T) {
+	w := &Watcher{observer: ObserverState{Online: true}}
+	w.interval.Store(int64(15 * time.Second))
+	var seen []ObserverState
+	w.OnObserver = func(o ObserverState) { seen = append(seen, o) }
+	wake := time.Now()
+	for i := range 4 {
+		w.noteGap(wake.Add(time.Duration(i) * time.Second))
+	}
+	if o := w.Observer(); o.Gaps24h != 1 {
+		t.Errorf("one sleep seen by 4 cluster loops counted %d gaps", o.Gaps24h)
+	}
+	if len(seen) != 1 || seen[0].Gaps24h != 1 || seen[0].LastGapAt == "" || !seen[0].Online {
+		t.Fatalf("a gap must publish the observer state: %+v", seen)
+	}
+	w.noteGap(wake.Add(10 * time.Minute))
+	if len(seen) != 2 || seen[1].Gaps24h != 2 {
+		t.Errorf("a later sleep is a second gap: %+v", seen)
+	}
+}

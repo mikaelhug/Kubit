@@ -25,25 +25,23 @@ func nodeServicesCmd() *cobra.Command {
 				return err
 			}
 			defer tc.Close()
-			resp, err := tc.ServiceList(tc.Context(cmd.Context()))
+			services, err := tc.Services(cmd.Context())
 			if err != nil {
 				return err
 			}
 			tw := tabwriter.NewWriter(cmd.OutOrStdout(), 0, 0, 2, ' ', 0)
 			fmt.Fprintln(tw, "SERVICE\tSTATE\tHEALTHY\tLAST")
-			for _, m := range resp.Messages {
-				for _, svc := range m.Services {
-					healthy := "?"
-					last := ""
-					if svc.Health != nil {
-						healthy = fmt.Sprint(svc.Health.Healthy)
-						last = svc.Health.LastMessage
-					}
-					if len(svc.Events.Events) > 0 {
-						last = svc.Events.Events[len(svc.Events.Events)-1].Msg
-					}
-					fmt.Fprintf(tw, "%s\t%s\t%s\t%s\n", svc.Id, svc.State, healthy, last)
+			for _, svc := range services {
+				healthy := "?"
+				last := ""
+				if svc.Health != nil {
+					healthy = fmt.Sprint(svc.Health.Healthy)
+					last = svc.Health.LastMessage
 				}
+				if len(svc.Events.Events) > 0 {
+					last = svc.Events.Events[len(svc.Events.Events)-1].Msg
+				}
+				fmt.Fprintf(tw, "%s\t%s\t%s\t%s\n", svc.Id, svc.State, healthy, last)
 			}
 			return tw.Flush()
 		}),
@@ -68,9 +66,9 @@ func nodeLogsCmd() *cobra.Command {
 			defer tc.Close()
 			var st dataStream
 			if service == "" {
-				st, err = tc.Dmesg(tc.Context(cmd.Context()), false, false)
+				st, err = tc.KernelLog(cmd.Context(), false)
 			} else {
-				st, err = tc.Logs(tc.Context(cmd.Context()), "system", 0, service, false, tail)
+				st, err = tc.ServiceLog(cmd.Context(), service, false, tail)
 			}
 			if err != nil {
 				return err
@@ -106,6 +104,8 @@ func drain(w io.Writer, st dataStream) error {
 		if err != nil {
 			return err
 		}
-		w.Write(m.Bytes)
+		if _, err := w.Write(m.Bytes); err != nil {
+			return err
+		}
 	}
 }

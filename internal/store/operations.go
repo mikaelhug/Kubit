@@ -73,7 +73,7 @@ func (s *Store) FinishOperation(ctx context.Context, id int64, status string) er
 
 const operationCols = `id, cluster, kind, status, started_at, finished_at, steps`
 
-func scanOperation(sc interface{ Scan(...any) error }, more ...any) (*OperationRow, error) {
+func scanOperation(sc scanner, more ...any) (*OperationRow, error) {
 	var o OperationRow
 	var finished sql.NullString
 	var steps string
@@ -148,20 +148,7 @@ func (s *Store) LatestOperation(ctx context.Context, cluster, kind, status strin
 }
 
 func (s *Store) ListOperations(ctx context.Context, limit int) ([]OperationRow, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT `+operationCols+` FROM operations ORDER BY id DESC LIMIT ?`, limit)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var out []OperationRow
-	for rows.Next() {
-		o, err := scanOperation(rows)
-		if err != nil {
-			return nil, err
-		}
-		out = append(out, *o)
-	}
-	return out, rows.Err()
+	return queryAll(ctx, s.db, func(sc scanner) (*OperationRow, error) { return scanOperation(sc) }, `SELECT `+operationCols+` FROM operations ORDER BY id DESC LIMIT ?`, limit)
 }
 
 func rawOrNull(v, fallback string) json.RawMessage {

@@ -25,7 +25,7 @@ type Server struct {
 	cancels         sync.Map
 	started         time.Time
 	watcher         *watch.Watcher
-	certCheck       throttle
+	periodic        throttle
 	versionsMu      sync.Mutex
 	versionsAt      time.Time
 	latestTalos     string
@@ -54,7 +54,7 @@ func (s *Server) Start() {
 	if err := s.store.MarkStaleOperations(s.ctx); err != nil {
 		log.Printf("mark interrupted operations: %v", err)
 	}
-	s.reconcileLabHosts(s.ctx)
+	go s.reconcileLabHosts(s.ctx)
 }
 
 func (s *Server) routes() {

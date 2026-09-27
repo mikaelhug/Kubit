@@ -2,6 +2,7 @@ package talos
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -42,6 +43,18 @@ type Inventory struct {
 	Etcd         *EtcdMember `json:"etcd,omitempty"`
 }
 
+func (inv Inventory) MarshalJSON() ([]byte, error) {
+	type plain Inventory
+	p := plain(inv)
+	if p.Disks == nil {
+		p.Disks = []Disk{}
+	}
+	if p.Links == nil {
+		p.Links = []Link{}
+	}
+	return json.Marshal(p)
+}
+
 type Extension struct {
 	Name    string `json:"name"`
 	Version string `json:"version"`
@@ -77,7 +90,7 @@ type Link struct {
 }
 
 func (c *Client) Inspect(ctx context.Context) (*Inventory, error) {
-	ctx = c.Context(ctx)
+	ctx = c.nodeContext(ctx)
 	inv := &Inventory{IP: c.IP}
 
 	v, err := c.Version(ctx)
@@ -162,7 +175,7 @@ func (c *Client) Inspect(ctx context.Context) (*Inventory, error) {
 }
 
 func (c *Client) EtcdMemberInfo(ctx context.Context) (*EtcdMember, error) {
-	st, err := c.EtcdStatus(c.Context(ctx))
+	st, err := c.EtcdStatus(c.nodeContext(ctx))
 	if err != nil {
 		return nil, err
 	}

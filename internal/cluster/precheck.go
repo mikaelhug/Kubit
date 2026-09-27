@@ -5,19 +5,27 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/mikael/kubit/internal/config"
 	"github.com/mikael/kubit/internal/k8s"
-	"github.com/mikael/kubit/internal/talos"
+	machineapi "github.com/siderolabs/talos/pkg/machinery/api/machine"
+	"github.com/siderolabs/talos/pkg/machinery/compatibility"
+	"github.com/siderolabs/talos/pkg/machinery/gendata"
+	utilversion "k8s.io/apimachinery/pkg/util/version"
 )
 
 const minVarFree = 1 << 30
 
 var upgradePrechecks = Steps("precheck", "Pre-flight: etcd, node health, disk headroom", "snapshot", "Take a pre-upgrade etcd snapshot")
 
-func (m *Manager) precheckUpgrade(ctx context.Context, c *config.Cluster, kc *k8s.Client, talosconfig []byte, kind, target string, sink Sink) error {
+func (m *Manager) precheckUpgrade(ctx context.Context, c *config.Cluster, kc *k8s.Client, talosconfig []byte, kind, kubeFrom, target string, sink Sink) error {
+	if err := checkUpgradeVersions(c, kind, kubeFrom, target, sink); err != nil {
+		return err
+	}
 	name := c.Metadata.Name
 	var problems []string
 	st, err := m.Status(ctx, name)
@@ -45,27 +53,7 @@ func (m *Manager) precheckUpgrade(ctx context.Context, c *config.Cluster, kc *k8
 	}
 	sink.Emit(Info, "precheck", "", "etcd healthy, %d/%d nodes Ready and reachable", st.Totals.NodesReady, st.Totals.Nodes)
 
-	for _, n := range c.Spec.Nodes {
-		tc, err := talos.Dial(ctx, n.IP, talosconfig)
-		if err != nil {
-			problems = append(problems, fmt.Sprintf("%s: %v", n.Hostname, err))
-			continue
-		}
-		call, cancel := context.WithTimeout(ctx, 15*time.Second)
-		avail, size, err := tc.VarAvailable(call)
-		cancel()
-		tc.Close()
-		if err != nil {
-			sink.Emit(Warn, "precheck", n.Hostname, "could not read /var usage: %v", err)
-			continue
-		}
-		if avail < minVarFree {
-			problems = append(problems, fmt.Sprintf("%s: only %s free of %s on /var (need %s)", n.Hostname, HumanBytes(avail), HumanBytes(size), HumanBytes(minVarFree)))
-		} else {
-			sink.Emit(Info, "precheck", n.Hostname, "/var: %s free of %s", HumanBytes(avail), HumanBytes(size))
-		}
-	}
-	if len(problems) > 0 {
+	if problems := m.checkVarHeadroom(ctx, c, talosconfig, sink); len(problems) > 0 {
 		return errors.New(strings.Join(problems, "; "))
 	}
 
@@ -103,6 +91,105 @@ func (m *Manager) precheckUpgrade(ctx context.Context, c *config.Cluster, kc *k8
 		}
 	}
 	return nil
+}
+
+func (m *Manager) checkVarHeadroom(ctx context.Context, c *config.Cluster, talosconfig []byte, sink Sink) []string {
+	var (
+		wg       sync.WaitGroup
+		mu       sync.Mutex
+		problems []string
+	)
+	for _, n := range c.Spec.Nodes {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			problem := m.varHeadroom(ctx, c.Metadata.Name, n, talosconfig, sink)
+			if problem != "" {
+				mu.Lock()
+				problems = append(problems, problem)
+				mu.Unlock()
+			}
+		}()
+	}
+	wg.Wait()
+	sort.Strings(problems)
+	return problems
+}
+
+func (m *Manager) varHeadroom(ctx context.Context, name string, n config.Node, talosconfig []byte, sink Sink) string {
+	tc, err := m.talosClientFor(name, n.IP, talosconfig)
+	if err != nil {
+		return fmt.Sprintf("%s: %v", n.Hostname, err)
+	}
+	call, cancel := context.WithTimeout(ctx, 15*time.Second)
+	avail, size, err := tc.VarAvailable(call)
+	cancel()
+	if err != nil {
+		m.noteTalosErr(name, n.IP, tc, err)
+		sink.Emit(Warn, "precheck", n.Hostname, "could not read /var usage: %v", err)
+		return ""
+	}
+	if avail < minVarFree {
+		return fmt.Sprintf("%s: only %s free of %s on /var (need %s)", n.Hostname, HumanBytes(avail), HumanBytes(size), HumanBytes(minVarFree))
+	}
+	sink.Emit(Info, "precheck", n.Hostname, "/var: %s free of %s", HumanBytes(avail), HumanBytes(size))
+	return ""
+}
+
+func checkUpgradeVersions(c *config.Cluster, kind, kubeFrom, target string, sink Sink) error {
+	talosVersion, kubeVersion := c.Spec.TalosVersion, target
+	if kind == "talos" {
+		talosVersion, kubeVersion = target, kubeFrom
+	} else if err := checkKubernetesStep(kubeFrom, target); err != nil {
+		return err
+	}
+	known, err := kubernetesSupported(talosVersion, kubeVersion)
+	switch {
+	case err != nil:
+		return err
+	case !known:
+		sink.Emit(Warn, "precheck", "", "Talos %s is newer than Kubit knows; Kubernetes %s compatibility unchecked", talosVersion, kubeVersion)
+	default:
+		sink.Emit(Info, "precheck", "", "Talos %s supports Kubernetes %s", talosVersion, kubeVersion)
+	}
+	return nil
+}
+
+func checkKubernetesStep(from, to string) error {
+	target, err := utilversion.ParseSemantic(to)
+	if err != nil {
+		return fmt.Errorf("%s is not a Kubernetes version (want vMAJOR.MINOR.PATCH)", to)
+	}
+	current, err := utilversion.ParseGeneric(from)
+	if err != nil {
+		return fmt.Errorf("current Kubernetes version %q unreadable: %w", from, err)
+	}
+	switch {
+	case target.LessThan(current):
+		return fmt.Errorf("Kubernetes %s is older than the running %s; downgrades are not supported", to, from)
+	case target.Major() != current.Major() || target.Minor() > current.Minor()+1:
+		return fmt.Errorf("Kubernetes %s skips a minor version from %s; upgrade one minor at a time (v%d.%d first)", to, from, current.Major(), current.Minor()+1)
+	}
+	return nil
+}
+
+func kubernetesSupported(talosVersion, kubeVersion string) (known bool, err error) {
+	tv, err := utilversion.ParseGeneric(talosVersion)
+	if err != nil {
+		return false, fmt.Errorf("Talos version %q unreadable: %w", talosVersion, err)
+	}
+	if tv.GreaterThan(utilversion.MustParseGeneric(gendata.VersionTag)) {
+		return false, nil
+	}
+	t, err := compatibility.ParseTalosVersion(&machineapi.VersionInfo{Tag: talosVersion})
+	if err != nil {
+		return false, fmt.Errorf("Talos version %q unreadable: %w", talosVersion, err)
+	}
+	k, err := compatibility.ParseKubernetesVersion(kubeVersion)
+	if err != nil {
+		return false, fmt.Errorf("Kubernetes version %q unreadable: %w", kubeVersion, err)
+	}
+	return true, k.SupportedWith(t)
 }
 
 func (m *Manager) preUpgradeSnapshot(ctx context.Context, name string, sink Sink) error {

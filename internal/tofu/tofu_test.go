@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -64,6 +65,7 @@ func TestRenderWritesModuleAndVars(t *testing.T) {
 		"metrics_server": `{"enabled":false,"values":{"resources":{"requests":{"cpu":"20m","memory":"48Mi"}}}}`,
 		"cert_manager":   `{"enabled":true,"values":{"prometheus":{"enabled":false},"replicaCount":2}}`,
 		"flux":           `{"enabled":true,"values":{},"repository":{"url":"https://github.com/mikaelhug/kubit-apps.git","branch":"main","path":"./apps","interval":"5m"}}`,
+		"chart_versions": `{"cert_manager":"v1.21.2","flux":"2.19.1","ingress_nginx":"4.15.1","longhorn":"1.10.1","metallb":"0.16.1","metrics_server":"3.14.0"}`,
 	}
 	for k, w := range want {
 		var got, exp any
@@ -125,5 +127,45 @@ func TestUserValuesOverrideAddonDefaults(t *testing.T) {
 	plain := tofu.Vars(&config.Cluster{}, "/x/kubeconfig")["metallb"].(tofu.MetallbVars).Values
 	if plain["frrk8s"].(map[string]any)["enabled"] != false {
 		t.Error("defaults were mutated by the merge")
+	}
+}
+
+func TestEveryChartVersionTheTemplatesReadIsRendered(t *testing.T) {
+	c, err := config.Parse([]byte(decl))
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	if err := tofu.Render(dir, c, "/x/kubeconfig"); err != nil {
+		t.Fatal(err)
+	}
+	raw, _ := os.ReadFile(filepath.Join(dir, "terraform.tfvars.json"))
+	var vars struct {
+		Charts map[string]string `json:"chart_versions"`
+	}
+	if err := json.Unmarshal(raw, &vars); err != nil {
+		t.Fatal(err)
+	}
+	ref := regexp.MustCompile(`var\.chart_versions\.([a-z_]+)`)
+	chartVar := regexp.MustCompile(`variable "chart_versions" \{[^}]*\}`)
+	entries, _ := os.ReadDir(dir)
+	seen := 0
+	for _, e := range entries {
+		if filepath.Ext(e.Name()) != ".tf" {
+			continue
+		}
+		tf, _ := os.ReadFile(filepath.Join(dir, e.Name()))
+		if block := chartVar.FindString(string(tf)); strings.Contains(block, "default") {
+			t.Errorf("%s: chart versions come from terraform.tfvars.json, not a variable default", e.Name())
+		}
+		for _, m := range ref.FindAllStringSubmatch(string(tf), -1) {
+			seen++
+			if vars.Charts[m[1]] == "" {
+				t.Errorf("%s reads chart_versions.%s, which is not rendered", e.Name(), m[1])
+			}
+		}
+	}
+	if seen != len(tofu.ChartVersions) {
+		t.Errorf("templates read %d chart versions, Go pins %d", seen, len(tofu.ChartVersions))
 	}
 }

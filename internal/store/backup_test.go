@@ -5,6 +5,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"slices"
 	"testing"
 
 	"github.com/mikael/kubit/internal/store"
@@ -24,6 +25,9 @@ func TestBackupRestoreRoundTrip(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer s.Close()
+	if err := s.PutCluster(context.Background(), store.ClusterRow{Name: "b", Spec: []byte("y")}); err != nil {
+		t.Fatal(err)
+	}
 	os.MkdirAll(filepath.Join(home, "clusters", "a"), 0o700)
 	os.WriteFile(filepath.Join(home, "clusters", "a", "kubeconfig"), []byte("kc"), 0o600)
 	os.MkdirAll(filepath.Join(home, "bin"), 0o700)
@@ -40,8 +44,12 @@ func TestBackupRestoreRoundTrip(t *testing.T) {
 	}
 
 	other := t.TempDir()
-	if err := store.Restore(other, c, bytes.NewReader(buf.Bytes()), false); err != nil {
+	written, err := store.Restore(other, c, bytes.NewReader(buf.Bytes()), false)
+	if err != nil {
 		t.Fatal(err)
+	}
+	if !slices.Contains(written, "kubit.db") || !slices.Contains(written, filepath.Join("clusters", "a", "kubeconfig")) {
+		t.Errorf("written: %v", written)
 	}
 	if b, err := os.ReadFile(filepath.Join(other, "clusters", "a", "kubeconfig")); err != nil || string(b) != "kc" {
 		t.Errorf("kubeconfig: %q %v", b, err)
@@ -57,14 +65,43 @@ func TestBackupRestoreRoundTrip(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer s2.Close()
-	if rows, _ := s2.ListClusters(context.Background()); len(rows) != 1 || rows[0].Name != "a" {
+	if rows, _ := s2.ListClusters(context.Background()); len(rows) != 2 || rows[0].Name != "a" || rows[1].Name != "b" {
 		t.Errorf("restored db: %v", rows)
 	}
-	if err := store.Restore(other, c, bytes.NewReader(buf.Bytes()), false); err == nil {
+	if _, err := store.Restore(other, c, bytes.NewReader(buf.Bytes()), false); err == nil {
 		t.Error("restore into a non-empty home must require --force")
 	}
 	wrong, _ := store.NewCrypto(bytes.Repeat([]byte{1}, 32))
-	if err := store.Restore(t.TempDir(), wrong, bytes.NewReader(buf.Bytes()), false); err == nil {
+	if _, err := store.Restore(t.TempDir(), wrong, bytes.NewReader(buf.Bytes()), false); err == nil {
 		t.Error("wrong key must fail")
+	}
+}
+
+func TestRestoreIgnoresHeldLock(t *testing.T) {
+	c, _ := store.NewCrypto(bytes.Repeat([]byte{9}, 32))
+	src := t.TempDir()
+	os.MkdirAll(filepath.Join(src, "clusters", "a"), 0o700)
+	os.WriteFile(filepath.Join(src, "clusters", "a", "kubeconfig"), []byte("kc"), 0o600)
+	os.WriteFile(filepath.Join(src, "serve.lock"), []byte("stale"), 0o600)
+	var buf bytes.Buffer
+	if err := store.Backup(src, c, &buf); err != nil {
+		t.Fatal(err)
+	}
+
+	home := t.TempDir()
+	lock, err := store.LockHome(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer lock.Release()
+	before, _ := os.ReadFile(filepath.Join(home, "serve.lock"))
+	if _, err := store.Restore(home, c, bytes.NewReader(buf.Bytes()), false); err != nil {
+		t.Fatalf("a home holding only the restore lock counts as empty: %v", err)
+	}
+	if b, err := os.ReadFile(filepath.Join(home, "clusters", "a", "kubeconfig")); err != nil || string(b) != "kc" {
+		t.Errorf("kubeconfig: %q %v", b, err)
+	}
+	if after, _ := os.ReadFile(filepath.Join(home, "serve.lock")); string(after) != string(before) {
+		t.Errorf("the lock file is not restored over: %q became %q", before, after)
 	}
 }

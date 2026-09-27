@@ -127,7 +127,7 @@ func (s *Server) handleClusterKubeconfig(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	if sec.Kubeconfig == nil {
-		writeErr(w, &statusError{http.StatusNotFound, "no kubeconfig yet"})
+		writeErr(w, &statusError{Status: http.StatusNotFound, Msg: "no kubeconfig yet"})
 		return
 	}
 	w.Header().Set("Content-Type", "application/yaml")
@@ -147,7 +147,7 @@ func (s *Server) handleClusterCreate(w http.ResponseWriter, r *http.Request) {
 	}
 	c, err := config.Parse([]byte(req.YAML))
 	if err != nil {
-		writeErr(w, err)
+		writeErr(w, invalid(err))
 		return
 	}
 	id, err := s.startCreate(c, req.SkipPlatform, req)
@@ -247,20 +247,20 @@ func (s *Server) handlePlatformApplyPlan(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	if planOp.Cluster != name || planOp.Kind != "platform.plan" || planOp.Status != "done" || planOp.Artifact == nil {
-		writeErr(w, &statusError{http.StatusBadRequest, "not a completed plan for this cluster"})
+		writeErr(w, badRequest("not a completed plan for this cluster"))
 		return
 	}
 	var diff tofu.PlanDiff
 	if err := json.Unmarshal(planOp.Artifact, &diff); err != nil {
-		writeErr(w, &statusError{http.StatusConflict, fmt.Sprintf("plan #%d cannot be read; plan again", planID)})
+		writeErr(w, conflict(fmt.Sprintf("plan #%d cannot be read; plan again", planID)))
 		return
 	}
 	if latest := s.latestPlan(r.Context(), name); latest != planID {
-		writeErr(w, &statusError{http.StatusConflict, fmt.Sprintf("plan #%d has been superseded by plan #%d; review the newer plan", planID, latest)})
+		writeErr(w, conflict(fmt.Sprintf("plan #%d has been superseded by plan #%d; review the newer plan", planID, latest)))
 		return
 	}
 	s.startOp(w, name, "platform.apply", map[string]any{"planId": planID}, func(ctx context.Context, sink cluster.Sink) (any, error) {
-		return nil, s.manager.ApplyPlan(ctx, name, diff.Timestamp, sink)
+		return nil, s.manager.ApplyPlan(ctx, name, diff.SpecHash, sink)
 	})
 }
 
@@ -291,7 +291,7 @@ func (s *Server) upgrade(w http.ResponseWriter, r *http.Request, kind string, fn
 		To string `json:"to"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.To == "" {
-		writeErr(w, &statusError{http.StatusBadRequest, `body must be {"to": "<version>"}`})
+		writeErr(w, badRequest(`body must be {"to": "<version>"}`))
 		return
 	}
 	s.startOp(w, name, kind, req, func(ctx context.Context, sink cluster.Sink) (any, error) {
@@ -407,5 +407,9 @@ func (s *Server) draft(r *http.Request, name string, ips []string) (*config.Clus
 	if len(ips) > 0 {
 		c.Spec.Platform.MetalLB.Range = config.DefaultMetalLBRange(ips[0])
 	}
-	return reparse(c)
+	out, err := reparse(c)
+	if err != nil {
+		return nil, invalid(err)
+	}
+	return out, nil
 }

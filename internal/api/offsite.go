@@ -105,7 +105,7 @@ func (s *Server) snapshotOffsiteResult(ctx context.Context, name string, sn *sto
 }
 
 func (s *Server) maybeOffsiteBackup(ctx context.Context) {
-	s.certCheck.every("offsite.backup", 10*time.Minute, func() {
+	s.periodic.every("offsite.backup", 10*time.Minute, func() {
 		v, err := s.store.GetSettings(ctx)
 		if err != nil || !v.Offsite.Enabled() {
 			return
@@ -121,7 +121,7 @@ func (s *Server) maybeOffsiteBackup(ctx context.Context) {
 }
 
 func (s *Server) maybeHeartbeat(ctx context.Context) {
-	s.certCheck.every("heartbeat", 5*time.Minute, func() {
+	s.periodic.every("heartbeat", 5*time.Minute, func() {
 		v, err := s.store.GetSettings(ctx)
 		if err != nil || v.Alerts.HeartbeatHours <= 0 || (v.Alerts.WebhookURL == "" && v.Alerts.SMTP.Host == "") {
 			return

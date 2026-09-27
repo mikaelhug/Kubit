@@ -1,8 +1,10 @@
 package talos
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"testing"
 
 	"google.golang.org/grpc/codes"
@@ -27,5 +29,33 @@ func TestShortGRPCAndHTTPStatus(t *testing.T) {
 	plain := errors.New("plain")
 	if ShortGRPC(plain) != plain {
 		t.Error("non-gRPC errors pass through")
+	}
+}
+
+func TestTLSRejectionIsOnlyACertificateRefusal(t *testing.T) {
+	for msg, want := range map[string]bool{
+		`connection error: desc = "error reading server preface: remote error: tls: certificate required"`:          true,
+		`connection error: desc = "transport: authentication handshake failed: remote error: tls: bad certificate"`: true,
+		`connection error: desc = "transport: authentication handshake failed: context deadline exceeded"`:          false,
+		`connection error: desc = "transport: authentication handshake failed: EOF"`:                                false,
+		`connection error: desc = "transport: Error while dialing: dial tcp 10.0.0.1:50000: i/o timeout"`:           false,
+	} {
+		if got := isTLSRejection(status.Error(codes.Unavailable, msg)); got != want {
+			t.Errorf("%s: %v, want %v", msg, got, want)
+		}
+	}
+}
+
+func TestInventoryMarshalsEmptyLists(t *testing.T) {
+	b, err := json.Marshal(Inventory{IP: "10.0.0.1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(b), `"disks":[]`) || !strings.Contains(string(b), `"links":[]`) {
+		t.Errorf("%s", b)
+	}
+	b, _ = json.Marshal(&Inventory{Disks: []Disk{{DevPath: "/dev/sda"}}})
+	if !strings.Contains(string(b), `"devPath":"/dev/sda"`) {
+		t.Errorf("pointer marshal: %s", b)
 	}
 }

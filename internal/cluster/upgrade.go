@@ -9,6 +9,7 @@ import (
 	"github.com/mikael/kubit/internal/config"
 	"github.com/mikael/kubit/internal/k8s"
 	"github.com/mikael/kubit/internal/talos"
+	utilversion "k8s.io/apimachinery/pkg/util/version"
 )
 
 func nodeStep(n config.Node) string { return "node:" + n.Hostname }
@@ -57,11 +58,11 @@ func (m *Manager) UpgradeTalos(ctx context.Context, name, version string, sink S
 	if err != nil {
 		return err
 	}
-	imageFor := func(n config.Node) string {
+	wantFor := func(n config.Node) nodeImage {
 		if id, ok := pools[c.PoolOf(n).Name]; ok {
-			return m.Factory.InstallerImage(id, version)
+			return nodeImage{version: version, schematic: id}
 		}
-		return m.Factory.InstallerImage(schematic, version)
+		return nodeImage{version: version, schematic: schematic}
 	}
 	var gen *config.Generated
 	if reimage {
@@ -81,6 +82,7 @@ func (m *Manager) UpgradeTalos(ctx context.Context, name, version string, sink S
 			return err
 		}
 	}
+	kubeFrom, _ := liveKubelets(ctx, kc, c, c.Spec.KubernetesVersion)
 	nodes := orderedNodes(c)
 	sink.Plan(append(upgradePrechecks, nodeSteps(nodes, "Upgrade")...)...)
 	if reimage {
@@ -88,7 +90,9 @@ func (m *Manager) UpgradeTalos(ctx context.Context, name, version string, sink S
 	} else {
 		sink.Emit(Info, "precheck", "", "Talos %s → %s", c.Spec.TalosVersion, version)
 	}
-	if err := sink.Run("precheck", func() error { return m.precheckUpgrade(ctx, c, kc, sec.Talosconfig, "talos", version, sink) }); err != nil {
+	if err := sink.Run("precheck", func() error {
+		return m.precheckUpgrade(ctx, c, kc, sec.Talosconfig, "talos", kubeFrom, version, sink)
+	}); err != nil {
 		return err
 	}
 	if err := sink.Run("snapshot", func() error { return m.preUpgradeSnapshot(ctx, name, sink) }); err != nil {
@@ -100,11 +104,12 @@ func (m *Manager) UpgradeTalos(ctx context.Context, name, version string, sink S
 		step := nodeStep(n)
 		err := sink.Run(step, func() error {
 			if gen != nil {
-				if err := m.applyNodeConfig(ctx, n, gen.Nodes[n.Hostname], sec.Talosconfig, step, sink); err != nil {
+				if _, err := m.applyNodeConfig(ctx, n, gen.Nodes[n.Hostname], sec.Talosconfig, step, sink); err != nil {
 					return fmt.Errorf("machine config for the new extensions: %w", err)
 				}
 			}
-			already, err := m.upgradeInPlace(ctx, kc, n, sec.Talosconfig, imageFor(n), version, reimage, step, sink)
+			want := wantFor(n)
+			already, err := m.upgradeInPlace(ctx, c, kc, n, sec.Talosconfig, m.Factory.InstallerImage(want.schematic, version), want, c.SchematicFor(c.PoolOf(n)) != want.schematic, step, sink)
 			if err != nil {
 				return err
 			}
@@ -138,37 +143,81 @@ func (m *Manager) UpgradeKubernetes(ctx context.Context, name, version string, s
 	if err != nil {
 		return err
 	}
-	if version == c.Spec.KubernetesVersion {
-		sink.Emit(Info, "upgrade", "", "cluster already on Kubernetes %s", version)
-		return nil
-	}
-	prev := c.Spec.KubernetesVersion
-	nodes := orderedNodes(c)
-	sink.Plan(append(append(upgradePrechecks, nodeSteps(nodes, "Apply")...), Step{ID: "manifests", Title: "Sync bootstrap manifests (kube-proxy, CoreDNS, CNI)"})...)
-	sink.Emit(Info, "precheck", "", "Kubernetes %s → %s", prev, version)
 	sec, kc, err := m.clusterClients(ctx, name)
 	if err != nil {
 		return err
 	}
-	if err := sink.Run("precheck", func() error { return m.precheckUpgrade(ctx, c, kc, sec.Talosconfig, "kubernetes", version, sink) }); err != nil {
+	prev, rolled := liveKubelets(ctx, kc, c, version)
+	if rolled {
+		sink.Plan(manifestsStep)
+		if err := m.saveKubernetesVersion(ctx, c, version); err != nil {
+			return err
+		}
+		if err := sink.Run("manifests", func() error { return m.SyncManifests(ctx, c, sink) }); err != nil {
+			return err
+		}
+		sink.Emit(Done, "manifests", "", "cluster already on Kubernetes %s", version)
+		return nil
+	}
+	nodes := orderedNodes(c)
+	sink.Plan(append(append(upgradePrechecks, nodeSteps(nodes, "Apply")...), manifestsStep)...)
+	sink.Emit(Info, "precheck", "", "Kubernetes %s → %s", prev, version)
+	if err := sink.Run("precheck", func() error {
+		return m.precheckUpgrade(ctx, c, kc, sec.Talosconfig, "kubernetes", prev, version, sink)
+	}); err != nil {
 		return err
 	}
 	if err := sink.Run("snapshot", func() error { return m.preUpgradeSnapshot(ctx, name, sink) }); err != nil {
 		return err
 	}
-	c.Spec.KubernetesVersion = version
 	_ = m.Store.Audit(ctx, name, "upgrade.kubernetes", version)
-	if err := m.ApplyConfigs(ctx, c, version, sink); err != nil {
+	next := *c
+	next.Spec.KubernetesVersion = version
+	if err := m.ApplyConfigs(ctx, &next, version, sink); err != nil {
+		return err
+	}
+	if err := m.saveKubernetesVersion(ctx, c, version); err != nil {
 		return err
 	}
 	if err := sink.Run("manifests", func() error { return m.SyncManifests(ctx, c, sink) }); err != nil {
 		return err
 	}
-	if err := m.saveExisting(ctx, c); err != nil {
-		return err
-	}
 	sink.Emit(Done, "manifests", "", "all nodes on Kubernetes %s", version)
 	return nil
+}
+
+func (m *Manager) saveKubernetesVersion(ctx context.Context, c *config.Cluster, version string) error {
+	if c.Spec.KubernetesVersion == version {
+		return nil
+	}
+	c.Spec.KubernetesVersion = version
+	return m.saveExisting(ctx, c)
+}
+
+var manifestsStep = Step{ID: "manifests", Title: "Sync bootstrap manifests (kube-proxy, CoreDNS, CNI)"}
+
+func liveKubelets(ctx context.Context, kc *k8s.Client, c *config.Cluster, target string) (lowest string, rolled bool) {
+	lowest = c.Spec.KubernetesVersion
+	nodes, err := kc.Nodes(ctx)
+	if err != nil {
+		return lowest, false
+	}
+	kubelet := map[string]string{}
+	for _, n := range nodes {
+		kubelet[n.Name] = n.KubeletVersion
+	}
+	rolled = true
+	var oldest *utilversion.Version
+	for _, n := range c.Spec.Nodes {
+		v := kubelet[n.Hostname]
+		if v != target {
+			rolled = false
+		}
+		if pv, err := utilversion.ParseGeneric(v); err == nil && (oldest == nil || pv.LessThan(oldest)) {
+			oldest, lowest = pv, v
+		}
+	}
+	return lowest, rolled
 }
 
 func (m *Manager) SyncManifests(ctx context.Context, c *config.Cluster, sink Sink) error {
@@ -176,16 +225,17 @@ func (m *Manager) SyncManifests(ctx context.Context, c *config.Cluster, sink Sin
 	if err != nil {
 		return err
 	}
-	cp := c.ControlPlanes()[0]
-	tc, err := talos.Dial(ctx, cp.IP, sec.Talosconfig)
-	if err != nil {
+	kc.ResetDiscovery()
+	var objects []map[string]any
+	cp, tc, err := firstControlPlane(ctx, c.ControlPlanes(), sec.Talosconfig, func(_ config.Node, tc *talos.Client) error {
+		var err error
+		objects, err = bootstrapManifests(ctx, tc)
 		return err
-	}
-	objects, err := tc.BootstrapManifests(ctx)
-	tc.Close()
+	})
 	if err != nil {
 		return fmt.Errorf("bootstrap manifests: %w", err)
 	}
+	tc.Close()
 	if err := kc.ServerSideApply(ctx, objects); err != nil {
 		return err
 	}
@@ -194,23 +244,9 @@ func (m *Manager) SyncManifests(ctx context.Context, c *config.Cluster, sink Sin
 }
 
 func waitKubeletVersion(ctx context.Context, kc *k8s.Client, hostname, version string, timeout time.Duration) error {
-	deadline := time.Now().Add(timeout)
-	for {
-		nodes, err := kc.Nodes(ctx)
-		if err == nil {
-			for _, n := range nodes {
-				if n.Name == hostname && n.Ready && n.KubeletVersion == version {
-					return nil
-				}
-			}
-		}
-		if time.Now().After(deadline) {
-			return fmt.Errorf("kubelet did not reach %s and Ready within %s", version, timeout)
-		}
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-time.After(5 * time.Second):
-		}
+	err := kc.WaitNodes(ctx, []string{hostname}, timeout, func(n k8s.NodeStatus) bool { return n.Ready && n.KubeletVersion == version }, nil)
+	if err != nil {
+		return fmt.Errorf("kubelet did not reach %s and Ready within %s: %w", version, timeout, err)
 	}
+	return nil
 }

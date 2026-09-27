@@ -200,3 +200,46 @@ func TestCheckChange(t *testing.T) {
 		t.Error("storage must stay once nodes hold a volume")
 	}
 }
+
+func TestEndpointNodeAndNodeIndex(t *testing.T) {
+	c, err := config.Parse([]byte(strings.Replace(sampleCluster, "    vip: 192.168.64.9\n", "", 1)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n, ok := c.EndpointNode(); !ok || n.Hostname != "cp-01" {
+		t.Errorf("without a VIP the first control plane hosts the endpoint: %v %v", n.Hostname, ok)
+	}
+	if i := c.NodeIndex("cp-02"); i != 1 || c.NodeIndex("nope") != -1 {
+		t.Errorf("NodeIndex: %d", i)
+	}
+	vip, err := config.Parse([]byte(sampleCluster))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n, ok := vip.EndpointNode(); ok {
+		t.Errorf("a VIP endpoint has no host node, got %s", n.Hostname)
+	}
+}
+
+func TestControlPlanePoolFoundByRole(t *testing.T) {
+	c, err := config.Parse([]byte(`
+apiVersion: kubit.dev/v1
+kind: Cluster
+metadata: { name: cp }
+spec:
+  pools:
+    - { name: cp, role: controlplane, labels: { tier: control } }
+  nodes:
+    - { hostname: cp-01, ip: 10.0.0.1, role: controlplane, installDisk: { path: /dev/sda } }
+    - { hostname: w-01, ip: 10.0.0.2, installDisk: { path: /dev/sda } }
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(c.Spec.Pools) != 2 || c.Spec.Nodes[0].Pool != "cp" || c.Spec.Nodes[1].Pool != "worker" {
+		t.Errorf("pools %+v, nodes in %s and %s", c.Spec.Pools, c.Spec.Nodes[0].Pool, c.Spec.Nodes[1].Pool)
+	}
+	if p := c.ControlPlanePool(); p == nil || p.Name != "cp" {
+		t.Errorf("control plane pool: %+v", p)
+	}
+}

@@ -115,6 +115,5 @@ func isTLSRejection(err error) bool {
 	s := err.Error()
 	return strings.Contains(s, "certificate required") ||
 		strings.Contains(s, "bad certificate") ||
-		strings.Contains(s, "tls:") ||
-		strings.Contains(s, "authentication handshake failed")
+		strings.Contains(s, "remote error: tls:")
 }

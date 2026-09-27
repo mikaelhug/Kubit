@@ -9,6 +9,7 @@ import (
 
 	"github.com/cosi-project/runtime/pkg/safe"
 	machineapi "github.com/siderolabs/talos/pkg/machinery/api/machine"
+	"github.com/siderolabs/talos/pkg/machinery/constants"
 	"github.com/siderolabs/talos/pkg/machinery/resources/k8s"
 	"github.com/siderolabs/talos/pkg/machinery/resources/runtime"
 	"google.golang.org/grpc/codes"
@@ -18,7 +19,7 @@ import (
 )
 
 func (c *Client) Apply(ctx context.Context, cfg []byte) error {
-	_, err := c.ApplyConfiguration(c.Context(ctx), &machineapi.ApplyConfigurationRequest{
+	_, err := c.ApplyConfiguration(c.nodeContext(ctx), &machineapi.ApplyConfigurationRequest{
 		Data: cfg,
 		Mode: machineapi.ApplyConfigurationRequest_AUTO,
 	})
@@ -26,7 +27,7 @@ func (c *Client) Apply(ctx context.Context, cfg []byte) error {
 }
 
 func (c *Client) ApplyDryRun(ctx context.Context, cfg []byte) (string, error) {
-	resp, err := c.ApplyConfiguration(c.Context(ctx), &machineapi.ApplyConfigurationRequest{
+	resp, err := c.ApplyConfiguration(c.nodeContext(ctx), &machineapi.ApplyConfigurationRequest{
 		Data: cfg, Mode: machineapi.ApplyConfigurationRequest_AUTO, DryRun: true,
 	})
 	if err != nil {
@@ -38,17 +39,81 @@ func (c *Client) ApplyDryRun(ctx context.Context, cfg []byte) (string, error) {
 	return resp.Messages[0].ModeDetails, nil
 }
 
-func (c *Client) BootstrapEtcd(ctx context.Context) error {
-	return c.Bootstrap(c.Context(ctx), &machineapi.BootstrapRequest{})
+func (c *Client) VersionTag(ctx context.Context) (string, error) {
+	v, err := c.Version(c.nodeContext(ctx))
+	if err != nil {
+		return "", err
+	}
+	if len(v.Messages) == 0 || v.Messages[0].Version == nil {
+		return "", errors.New("empty Version response")
+	}
+	return v.Messages[0].Version.Tag, nil
 }
 
-func (c *Client) RestartService(ctx context.Context, id string) error {
-	_, err := c.ServiceRestart(c.Context(ctx), id)
+func (c *Client) InstalledSchematic(ctx context.Context) (string, error) {
+	if s, err := safe.StateGetByID[*runtime.ImageFactorySchematic](c.nodeContext(ctx), c.COSI, runtime.ImageFactorySchematicID); err == nil && s.TypedSpec().SchematicID != "" {
+		return s.TypedSpec().SchematicID, nil
+	}
+	exts, err := safe.StateListAll[*runtime.ExtensionStatus](c.nodeContext(ctx), c.COSI)
+	if err != nil {
+		return "", err
+	}
+	for e := range exts.All() {
+		if m := e.TypedSpec().Metadata; m.Name == constants.ImageFactorySchematicExtensionName {
+			return m.Version, nil
+		}
+	}
+	return "", nil
+}
+
+func (c *Client) RebootMachine(ctx context.Context) error {
+	return c.Reboot(c.nodeContext(ctx))
+}
+
+func (c *Client) UpgradeTo(ctx context.Context, image string) error {
+	_, err := c.Upgrade(c.nodeContext(ctx), image, false, false)
 	return err
 }
 
+func (c *Client) ResetToMaintenance(ctx context.Context) error {
+	return c.Reset(c.nodeContext(ctx), true, true)
+}
+
+func (c *Client) AdminKubeconfig(ctx context.Context) ([]byte, error) {
+	return c.Kubeconfig(c.nodeContext(ctx))
+}
+
+func (c *Client) BootstrapEtcd(ctx context.Context) error {
+	return c.Bootstrap(c.nodeContext(ctx), &machineapi.BootstrapRequest{})
+}
+
+func (c *Client) RestartService(ctx context.Context, id string) error {
+	_, err := c.ServiceRestart(c.nodeContext(ctx), id)
+	return err
+}
+
+func (c *Client) Services(ctx context.Context) ([]*machineapi.ServiceInfo, error) {
+	resp, err := c.ServiceList(c.nodeContext(ctx))
+	if err != nil {
+		return nil, err
+	}
+	var out []*machineapi.ServiceInfo
+	for _, m := range resp.Messages {
+		out = append(out, m.Services...)
+	}
+	return out, nil
+}
+
+func (c *Client) KernelLog(ctx context.Context, follow bool) (machineapi.MachineService_DmesgClient, error) {
+	return c.Dmesg(c.nodeContext(ctx), follow, false)
+}
+
+func (c *Client) ServiceLog(ctx context.Context, id string, follow bool, tail int32) (machineapi.MachineService_LogsClient, error) {
+	return c.Logs(c.nodeContext(ctx), "system", 0, id, follow, tail)
+}
+
 func (c *Client) ServiceHealthy(ctx context.Context, id string) (bool, error) {
-	infos, err := c.ServiceInfo(c.Context(ctx), id)
+	infos, err := c.ServiceInfo(c.nodeContext(ctx), id)
 	if err != nil {
 		return false, err
 	}
@@ -64,7 +129,7 @@ func (c *Client) ServiceHealthy(ctx context.Context, id string) (bool, error) {
 }
 
 func (c *Client) EtcdMemberCount(ctx context.Context) (int, error) {
-	resp, err := c.EtcdMemberList(c.Context(ctx), &machineapi.EtcdMemberListRequest{})
+	resp, err := c.EtcdMemberList(c.nodeContext(ctx), &machineapi.EtcdMemberListRequest{})
 	if err != nil {
 		return 0, err
 	}
@@ -75,8 +140,22 @@ func (c *Client) EtcdMemberCount(ctx context.Context) (int, error) {
 	return n, nil
 }
 
+func (c *Client) EtcdAlarms(ctx context.Context) ([]string, error) {
+	resp, err := c.EtcdAlarmList(c.nodeContext(ctx))
+	if err != nil {
+		return nil, err
+	}
+	var out []string
+	for _, msg := range resp.Messages {
+		for _, a := range msg.MemberAlarms {
+			out = append(out, a.Alarm.String())
+		}
+	}
+	return out, nil
+}
+
 func (c *Client) BootID(ctx context.Context) (string, error) {
-	resp, err := c.MachineClient.SystemStat(c.Context(ctx), &emptypb.Empty{})
+	resp, err := c.MachineClient.SystemStat(c.nodeContext(ctx), &emptypb.Empty{})
 	if err != nil {
 		return "", err
 	}
@@ -141,7 +220,7 @@ func Stage(ctx context.Context, ip string, talosconfig []byte) (string, error) {
 }
 
 func (c *Client) Stage(ctx context.Context) (string, error) {
-	st, err := safe.StateGetByID[*runtime.MachineStatus](c.Context(ctx), c.COSI, runtime.MachineStatusID)
+	st, err := safe.StateGetByID[*runtime.MachineStatus](c.nodeContext(ctx), c.COSI, runtime.MachineStatusID)
 	if err != nil {
 		return "", err
 	}
@@ -186,7 +265,7 @@ func retryable(err error) bool {
 }
 
 func (c *Client) BootstrapManifests(ctx context.Context) ([]map[string]any, error) {
-	list, err := safe.StateListAll[*k8s.Manifest](c.Context(ctx), c.COSI)
+	list, err := safe.StateListAll[*k8s.Manifest](c.nodeContext(ctx), c.COSI)
 	if err != nil {
 		return nil, err
 	}
@@ -200,7 +279,7 @@ func (c *Client) BootstrapManifests(ctx context.Context) ([]map[string]any, erro
 }
 
 func (c *Client) GenerateTalosconfig(ctx context.Context, ttl time.Duration) ([]byte, error) {
-	resp, err := c.GenerateClientConfiguration(c.Context(ctx), &machineapi.GenerateClientConfigurationRequest{Roles: []string{"os:admin"}, CrtTtl: durationpb.New(ttl)})
+	resp, err := c.GenerateClientConfiguration(c.nodeContext(ctx), &machineapi.GenerateClientConfigurationRequest{Roles: []string{"os:admin"}, CrtTtl: durationpb.New(ttl)})
 	if err != nil {
 		return nil, err
 	}
@@ -211,7 +290,7 @@ func (c *Client) GenerateTalosconfig(ctx context.Context, ttl time.Duration) ([]
 }
 
 func (c *Client) VarAvailable(ctx context.Context) (avail, size uint64, err error) {
-	resp, err := c.Mounts(c.Context(ctx))
+	resp, err := c.Mounts(c.nodeContext(ctx))
 	if err != nil {
 		return 0, 0, err
 	}

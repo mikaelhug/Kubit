@@ -13,6 +13,7 @@ import (
 	"github.com/siderolabs/talos/pkg/machinery/client"
 	clientconfig "github.com/siderolabs/talos/pkg/machinery/client/config"
 	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/connectivity"
 	"google.golang.org/grpc/status"
 )
 
@@ -46,7 +47,11 @@ func Dial(ctx context.Context, ip string, talosconfig []byte) (*Client, error) {
 	return &Client{Client: c, IP: ip}, nil
 }
 
-func (c *Client) Context(ctx context.Context) context.Context {
+func (c *Client) TransientFailure() bool {
+	return c.Conn().GetState() == connectivity.TransientFailure
+}
+
+func (c *Client) nodeContext(ctx context.Context) context.Context {
 	return client.WithNode(ctx, c.IP)
 }
 

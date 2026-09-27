@@ -39,7 +39,7 @@ func (s *Server) handleLabProvision(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if code, err := s.checkLabPlan(r.Context(), &plan); err != nil {
-		writeErr(w, &statusError{code, err.Error()})
+		writeErr(w, &statusError{Status: code, Msg: err.Error()})
 		return
 	}
 	m, err := s.store.GetMachine(r.Context(), mac)
@@ -48,38 +48,37 @@ func (s *Server) handleLabProvision(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if m.Cluster != "" {
-		writeErr(w, &statusError{http.StatusConflict, "this machine is a cluster member; remove it from the cluster first"})
+		writeErr(w, conflict("this machine is a cluster member; remove it from the cluster first"))
 		return
 	}
 	if m.IsLabVM() {
-		writeErr(w, &statusError{http.StatusConflict, "A lab VM cannot host VMs."})
+		writeErr(w, conflict("A lab VM cannot host VMs."))
 		return
 	}
 	if m.LabHost != nil && (m.LabHost.State != "error" || m.LabHost.Driver != "") {
-		writeErr(w, &statusError{http.StatusConflict, "Already a lab host; release it first."})
+		writeErr(w, conflict("Already a lab host; release it first."))
 		return
 	}
 	c, err := s.store.MachineOOB(r.Context(), mac)
 	if err != nil && !plan.Manual {
-		writeErr(w, &statusError{http.StatusConflict, "a lab host is installed through its remote management: configure Intel AMT or a BMC on this machine, or choose to boot it yourself"})
+		writeErr(w, conflict("a lab host is installed through its remote management: configure Intel AMT or a BMC on this machine, or choose to boot it yourself"))
 		return
 	}
-	if !s.pxeRunning(r.Context()) {
-		pxeDown(w, pxeCommand(r.Host, plan.Manual))
+	st, ok := s.pxeServing(w, r, plan.Manual)
+	if !ok {
 		return
 	}
 	if !plan.Manual {
-		if st, err := s.pxeStatus(r.Context()); err == nil && st.IP != "" && differentSubnet(st.IP, c.Host) {
-			writeJSON(w, http.StatusConflict, map[string]string{"error": fmt.Sprintf("The PXE server is on %s, not on %s's segment — the machine's network boot request cannot reach it. Run kubit pxe on the interface facing the machine.", st.IP, c.Host), "code": "pxe-segment"})
+		if differentSubnet(st.IP, c.Host) {
+			writeErr(w, &statusError{Status: http.StatusConflict, Msg: fmt.Sprintf("The PXE server is on %s, not on %s's segment — the machine's network boot request cannot reach it. Run kubit pxe on the interface facing the machine.", st.IP, c.Host), Code: "pxe-segment"})
 			return
 		}
-		mgr, err := oob.Open(*c)
-		if err != nil {
-			writeErr(w, err)
+		if _, err := oob.Open(*c); err != nil {
+			writeErr(w, unprocessable(err))
 			return
 		}
-		if err := probeOOB(r.Context(), mgr); err != nil {
-			writeJSON(w, http.StatusConflict, map[string]string{"error": fmt.Sprintf("%s at %s is not answering (%v). Check the machine has standby power and the credentials are right, then try again.", oob.Label(c.Type), c.Host, err), "code": "amt-down"})
+		if err := oobAlive(r.Context(), *c); err != nil {
+			writeErr(w, &statusError{Status: http.StatusConflict, Msg: fmt.Sprintf("%s at %s is not answering (%v). Check the machine has standby power and the credentials are right, then try again.", oob.Label(c.Type), c.Host, err), Code: "amt-down"})
 			return
 		}
 	}
@@ -87,103 +86,107 @@ func (s *Server) handleLabProvision(w http.ResponseWriter, r *http.Request) {
 	if plan.Cluster != nil {
 		kind = "labhost.cluster"
 	}
-	s.startOp(w, "labhost:"+mac, kind, map[string]any{"mac": mac, "plan": plan}, func(ctx context.Context, sink cluster.Sink) (result any, err error) {
-		defer func() {
-			if err == nil {
-				return
-			}
-			sink.Emit(cluster.Warn, "", "", "provision failed, releasing the host: %v", err)
-			rctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-			defer cancel()
-			if host, e := s.store.GetMachine(rctx, mac); e == nil {
-				if rerr := s.releaseLabHost(rctx, host); rerr != nil {
-					sink.Emit(cluster.Warn, "", "", "release: %v", rerr)
-				}
-			} else if perr := s.store.SetMachineProvision(rctx, mac, false); perr != nil {
-				sink.Emit(cluster.Warn, "", "", "clear the network-boot arm: %v", perr)
-			}
-		}()
-		armWhat := "Arm the Debian install; you boot the machine"
-		if !plan.Manual {
-			armWhat = "Arm a Debian network boot and reset via " + oob.Label(c.Type)
-		}
-		steps := cluster.Steps("arm", armWhat)
-		if !plan.Manual {
-			steps = append(steps, cluster.Steps("boot", "Network boot request seen", "ipxe", "Installer kernel fetched")...)
-		}
-		steps = append(steps, cluster.Steps("installer", "Installer running", "install", "Unattended Debian install", "ssh", "Reboot into Debian, SSH", "setup", "Verify KVM, record capacity, fetch Talos boot assets")...)
-		if plan.VMs != nil {
-			steps = append(steps, cluster.Steps("define", "Create the VMs", "vmboot", "Wait for Talos maintenance mode")...)
-		}
-		if plan.Cluster != nil {
-			steps = append(steps, cluster.Steps("cluster", "Design and create the cluster")...)
-		}
-		sink.Plan(steps...)
-		sink.Begin("arm")
-		if _, _, err := s.store.SSHKey(ctx); err != nil {
-			return nil, err
-		}
-		if err := s.store.SetMachineProvision(ctx, mac, true, "labhost"); err != nil {
-			return nil, err
-		}
-		if err := s.store.SetLabHost(ctx, mac, &store.LabHost{State: "installing", Network: plan.Network, Disk: plan.Disk}); err != nil {
-			return nil, err
-		}
-		_ = s.store.SetNodeState(ctx, m.IP, "labhost")
-		if plan.Manual {
-			if st, err := s.pxeStatus(ctx); err == nil {
-				base := st.BaseURL()
-				arch := m.Arch
-				if arch == "" {
-					arch = "amd64"
-				}
-				boot := store.BootLine{Kernel: fmt.Sprintf("%s/assets/debian/%s/linux", base, arch), Initrd: fmt.Sprintf("%s/assets/debian/%s/initrd.gz", base, arch), Cmdline: libvirt.KernelArgs(fmt.Sprintf("%s/labhost/%s/preseed?arch=%s", base, mac, arch), labHostname(m))}
-				if err := s.store.UpdateLabHost(ctx, mac, func(l *store.LabHost) { l.Boot = &boot }); err != nil {
-					return nil, err
-				}
-				sink.Emit(cluster.Info, "arm", "", "boot the machine now with kernel %s, initrd %s, cmdline: %s", boot.Kernel, boot.Initrd, boot.Cmdline)
-			}
-		} else {
-			mgr, err := oob.Open(*c, oob.WithTrace(func(line string) {
-				sink.Emit(cluster.Info, "arm", "", "%s: %s", c.Type, line)
-			}))
-			if err != nil {
-				return nil, err
-			}
-			if err := mgr.Power(ctx, oob.BootPXE); err != nil {
-				return nil, err
-			}
-			sink.Emit(cluster.Info, "arm", "", "reset via %s; kubit pxe will hand it the Debian installer (hostname %s)", oob.Label(c.Type), labHostname(m))
-		}
-		sink.End("arm")
-
-		lc, err := s.labWaitInstall(ctx, m, plan.Manual, sink)
-		if err != nil {
-			if errors.Is(err, context.Canceled) {
-				err = fmt.Errorf("install cancelled: %w", err)
-			}
-			return nil, err
-		}
-		defer lc.Close()
-		sink.Begin("setup")
-		if fresh, err := s.store.GetMachine(ctx, mac); err == nil {
-			fresh.IP = m.IP
-			m = fresh
-		}
-		lh, err := s.labSetup(ctx, lc, m, sink)
-		if err != nil {
-			return nil, err
-		}
-		_ = s.store.UpsertNode(ctx, store.NodeRow{MAC: mac, IP: m.IP, Source: "labhost", State: "labhost", Hostname: lh.Capacity.Hostname, Arch: lh.Capacity.Arch})
-		_ = s.store.SetMachineProvision(ctx, mac, false)
-		_ = s.store.Audit(ctx, "", "labhost.provision", mac)
-		sink.Emit(cluster.Done, "setup", "", "lab host ready: %d CPUs, %d MiB RAM, %d GiB free for VMs", lh.Capacity.CPUs, lh.Capacity.MemMiB, lh.Capacity.DiskGiB)
-		sink.End("setup")
-		if plan.VMs == nil {
-			return lh, nil
-		}
-		return s.labRunPlan(ctx, mac, plan, sink)
+	s.startOp(w, "labhost:"+mac, kind, map[string]any{"mac": mac, "plan": plan}, func(ctx context.Context, sink cluster.Sink) (any, error) {
+		return s.labProvisionOp(ctx, sink, mac, m, c, plan)
 	})
+}
+
+func (s *Server) labProvisionOp(ctx context.Context, sink cluster.Sink, mac string, m *store.Machine, c *oob.Config, plan labPlan) (result any, err error) {
+	defer func() {
+		if err == nil {
+			return
+		}
+		sink.Emit(cluster.Warn, "", "", "provision failed, releasing the host: %v", err)
+		rctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		if host, e := s.store.GetMachine(rctx, mac); e == nil {
+			if rerr := s.releaseLabHost(rctx, host); rerr != nil {
+				sink.Emit(cluster.Warn, "", "", "release: %v", rerr)
+			}
+		} else if perr := s.store.SetMachineProvision(rctx, mac, false); perr != nil {
+			sink.Emit(cluster.Warn, "", "", "clear the network-boot arm: %v", perr)
+		}
+	}()
+	armWhat := "Arm the Debian install; you boot the machine"
+	if !plan.Manual {
+		armWhat = "Arm a Debian network boot and reset via " + oob.Label(c.Type)
+	}
+	steps := cluster.Steps("arm", armWhat)
+	if !plan.Manual {
+		steps = append(steps, cluster.Steps("boot", "Network boot request seen", "ipxe", "Installer kernel fetched")...)
+	}
+	steps = append(steps, cluster.Steps("installer", "Installer running", "install", "Unattended Debian install", "ssh", "Reboot into Debian, SSH", "setup", "Verify KVM, record capacity, fetch Talos boot assets")...)
+	if plan.VMs != nil {
+		steps = append(steps, cluster.Steps("define", "Create the VMs", "vmboot", "Wait for Talos maintenance mode")...)
+	}
+	if plan.Cluster != nil {
+		steps = append(steps, cluster.Steps("cluster", "Design and create the cluster")...)
+	}
+	sink.Plan(steps...)
+	sink.Begin("arm")
+	if _, _, err := s.store.SSHKey(ctx); err != nil {
+		return nil, err
+	}
+	if err := s.store.SetMachineProvision(ctx, mac, true, "labhost"); err != nil {
+		return nil, err
+	}
+	if err := s.store.SetLabHost(ctx, mac, &store.LabHost{State: "installing", Network: plan.Network, Disk: plan.Disk}); err != nil {
+		return nil, err
+	}
+	_ = s.store.SetNodeState(ctx, m.IP, "labhost")
+	if plan.Manual {
+		if st, err := s.pxeStatus(ctx); err == nil && st.IP != "" {
+			base := st.BaseURL()
+			arch := m.Arch
+			if arch == "" {
+				arch = "amd64"
+			}
+			boot := store.BootLine{Kernel: fmt.Sprintf("%s/assets/debian/%s/linux", base, arch), Initrd: fmt.Sprintf("%s/assets/debian/%s/initrd.gz", base, arch), Cmdline: libvirt.KernelArgs(fmt.Sprintf("%s/labhost/%s/preseed?arch=%s", base, mac, arch), labHostname(m))}
+			if err := s.store.UpdateLabHost(ctx, mac, func(l *store.LabHost) { l.Boot = &boot }); err != nil {
+				return nil, err
+			}
+			sink.Emit(cluster.Info, "arm", "", "boot the machine now with kernel %s, initrd %s, cmdline: %s", boot.Kernel, boot.Initrd, boot.Cmdline)
+		}
+	} else {
+		mgr, err := oob.Open(*c, oob.WithTrace(func(line string) {
+			sink.Emit(cluster.Info, "arm", "", "%s: %s", c.Type, line)
+		}))
+		if err != nil {
+			return nil, err
+		}
+		if err := mgr.Power(ctx, oob.BootPXE); err != nil {
+			return nil, err
+		}
+		sink.Emit(cluster.Info, "arm", "", "reset via %s; kubit pxe will hand it the Debian installer (hostname %s)", oob.Label(c.Type), labHostname(m))
+	}
+	sink.End("arm")
+
+	lc, err := s.labWaitInstall(ctx, m, plan.Manual, sink)
+	if err != nil {
+		if errors.Is(err, context.Canceled) {
+			err = fmt.Errorf("install cancelled: %w", err)
+		}
+		return nil, err
+	}
+	defer lc.Close()
+	sink.Begin("setup")
+	if fresh, err := s.store.GetMachine(ctx, mac); err == nil {
+		fresh.IP = m.IP
+		m = fresh
+	}
+	lh, err := s.labSetup(ctx, lc, m, sink)
+	if err != nil {
+		return nil, err
+	}
+	_ = s.store.UpsertNode(ctx, store.NodeRow{MAC: mac, IP: m.IP, Source: "labhost", State: "labhost", Hostname: lh.Capacity.Hostname, Arch: lh.Capacity.Arch})
+	_ = s.store.SetMachineProvision(ctx, mac, false)
+	_ = s.store.Audit(ctx, "", "labhost.provision", mac)
+	sink.Emit(cluster.Done, "setup", "", "lab host ready: %d CPUs, %d MiB RAM, %d GiB free for VMs", lh.Capacity.CPUs, lh.Capacity.MemMiB, lh.Capacity.DiskGiB)
+	sink.End("setup")
+	if plan.VMs == nil {
+		return lh, nil
+	}
+	return s.labRunPlan(ctx, mac, plan, sink)
 }
 
 func (s *Server) checkLabPlan(ctx context.Context, plan *labPlan) (int, error) {
@@ -282,7 +285,7 @@ func (s *Server) labSetup(ctx context.Context, lc labhost.Driver, m *store.Machi
 		}
 		sink.Emit(cluster.Info, "setup", "", "VMs will live on %s behind the host; this machine needs a route to that subnet via %s", libvirt.RoutedSubnet, m.IP)
 	}
-	capa, err := lc.Capacity(ctx)
+	capa, err := lc.Capacity(labhost.FreshCapacity(ctx))
 	if err != nil {
 		return lh, err
 	}
@@ -331,12 +334,12 @@ func (s *Server) handleLabRelease(w http.ResponseWriter, r *http.Request) {
 	}
 	switch host.LabHost.State {
 	case "installing", "setup", "updating":
-		writeErr(w, &statusError{http.StatusConflict, fmt.Sprintf("The host is %s; cancel or wait for that operation first.", host.LabHost.State)})
+		writeErr(w, conflict(fmt.Sprintf("The host is %s; cancel or wait for that operation first.", host.LabHost.State)))
 		return
 	}
 	for _, v := range host.LabHost.VMs {
 		if vm, err := s.store.GetMachine(r.Context(), v.MAC); err == nil && vm.Cluster != "" {
-			writeErr(w, &statusError{http.StatusConflict, fmt.Sprintf("%s is a member of %s; remove it first", v.Name, vm.Cluster)})
+			writeErr(w, conflict(fmt.Sprintf("%s is a member of %s; remove it first", v.Name, vm.Cluster)))
 			return
 		}
 	}
@@ -398,11 +401,11 @@ func (s *Server) releaseLabHost(ctx context.Context, host *store.Machine) error 
 	return errors.Join(errs...)
 }
 
-func probeOOB(ctx context.Context, mgr oob.Manager) error {
+func oobAlive(ctx context.Context, c oob.Config) error {
 	var err error
 	for attempt := 0; attempt < 2; attempt++ {
 		pctx, cancel := context.WithTimeout(ctx, 8*time.Second)
-		_, err = mgr.Probe(pctx)
+		err = oob.Alive(pctx, c)
 		cancel()
 		if err == nil {
 			return nil

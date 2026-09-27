@@ -58,11 +58,11 @@ func (s *Server) handlePutSettings(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if u, err := url.Parse(v.FactoryURL); err != nil || u.Scheme == "" || u.Host == "" {
-		writeErr(w, &statusError{http.StatusUnprocessableEntity, "factoryUrl must be an absolute URL"})
+		writeErr(w, &statusError{Status: http.StatusUnprocessableEntity, Msg: "factoryUrl must be an absolute URL"})
 		return
 	}
 	if v.WatchIntervalSec < 5 {
-		writeErr(w, &statusError{http.StatusUnprocessableEntity, "watchIntervalSec must be at least 5"})
+		writeErr(w, &statusError{Status: http.StatusUnprocessableEntity, Msg: "watchIntervalSec must be at least 5"})
 		return
 	}
 	s.unmaskSettings(r.Context(), &v)
@@ -83,10 +83,6 @@ func (s *Server) applySettings(v store.Settings) {
 }
 
 func (s *Server) handleBackup(w http.ResponseWriter, r *http.Request) {
-	if err := s.store.Checkpoint(r.Context()); err != nil {
-		writeErr(w, err)
-		return
-	}
 	w.Header().Set("Content-Type", "application/octet-stream")
 	w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="kubit-%s.kubitbak"`, time.Now().Format("20060102-150405")))
 	if err := store.Backup(s.manager.Home, s.crypto, w); err != nil {

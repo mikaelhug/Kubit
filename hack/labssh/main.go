@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"path/filepath"
 
 	"github.com/mikael/kubit/internal/labhost/libvirt"
 	"github.com/mikael/kubit/internal/store"
@@ -15,10 +14,10 @@ func main() {
 		fmt.Fprintln(os.Stderr, "usage: labssh <host> <command>")
 		os.Exit(2)
 	}
-	dir := os.Getenv("KUBIT_HOME")
-	if dir == "" {
-		home, _ := os.UserHomeDir()
-		dir = filepath.Join(home, ".kubit")
+	dir, err := store.HomeDir()
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
 	}
 	crypto, err := store.LoadCrypto()
 	if err != nil {

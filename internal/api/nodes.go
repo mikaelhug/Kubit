@@ -44,7 +44,7 @@ func (s *Server) handleNodeKubernetes(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if row.Kind() != store.KindMember || row.Hostname == "" {
-		writeErr(w, &statusError{http.StatusNotFound, "node is not a cluster member"})
+		writeErr(w, &statusError{Status: http.StatusNotFound, Msg: "node is not a cluster member"})
 		return
 	}
 	kc, err := s.manager.KubeClient(r.Context(), row.Cluster)

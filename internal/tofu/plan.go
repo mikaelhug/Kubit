@@ -14,6 +14,7 @@ type PlanDiff struct {
 	Groups    []Group  `json:"groups"`
 	Warnings  []string `json:"warnings,omitempty"`
 	Timestamp string   `json:"timestamp"`
+	SpecHash  string   `json:"specHash,omitempty"`
 }
 
 type Group struct {

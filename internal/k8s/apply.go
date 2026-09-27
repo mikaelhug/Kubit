@@ -20,29 +20,35 @@ func (c *Client) ServerSideApply(ctx context.Context, objects []map[string]any) 
 	if err != nil {
 		return err
 	}
-	force := true
 	for _, obj := range objects {
-		u := &unstructured.Unstructured{Object: obj}
-		gvk := u.GroupVersionKind()
-		mapping, err := c.restMapping(gvk)
-		if err != nil {
-			return fmt.Errorf("%s %s: %w", gvk.Kind, u.GetName(), err)
-		}
-		var res dynamic.ResourceInterface = dyn.Resource(mapping.Resource)
-		if mapping.Scope.Name() == meta.RESTScopeNameNamespace {
-			ns := u.GetNamespace()
-			if ns == "" {
-				ns = "default"
-			}
-			res = dyn.Resource(mapping.Resource).Namespace(ns)
-		}
-		body, err := json.Marshal(u.Object)
-		if err != nil {
+		if err := c.applyOne(ctx, dyn, &unstructured.Unstructured{Object: obj}); err != nil {
 			return err
 		}
-		if _, err := res.Patch(ctx, u.GetName(), types.ApplyPatchType, body, metav1.PatchOptions{FieldManager: FieldManager, Force: &force}); err != nil {
-			return fmt.Errorf("apply %s %s: %w", gvk.Kind, u.GetName(), err)
+	}
+	return nil
+}
+
+func (c *Client) applyOne(ctx context.Context, dyn dynamic.Interface, u *unstructured.Unstructured) error {
+	gvk := u.GroupVersionKind()
+	mapping, err := c.restMapping(gvk)
+	if err != nil {
+		return fmt.Errorf("%s %s: %w", gvk.Kind, u.GetName(), err)
+	}
+	var res dynamic.ResourceInterface = dyn.Resource(mapping.Resource)
+	if mapping.Scope.Name() == meta.RESTScopeNameNamespace {
+		ns := u.GetNamespace()
+		if ns == "" {
+			ns = "default"
 		}
+		res = dyn.Resource(mapping.Resource).Namespace(ns)
+	}
+	body, err := json.Marshal(u.Object)
+	if err != nil {
+		return err
+	}
+	force := true
+	if _, err := res.Patch(ctx, u.GetName(), types.ApplyPatchType, body, metav1.PatchOptions{FieldManager: FieldManager, Force: &force}); err != nil {
+		return fmt.Errorf("apply %s %s: %w", gvk.Kind, u.GetName(), err)
 	}
 	return nil
 }

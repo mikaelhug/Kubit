@@ -17,12 +17,11 @@ func (m *Manager) findNode(ctx context.Context, name, hostname string) (*config.
 	if err != nil {
 		return nil, config.Node{}, err
 	}
-	for _, n := range c.Spec.Nodes {
-		if n.Hostname == hostname {
-			return c, n, nil
-		}
+	i := c.NodeIndex(hostname)
+	if i < 0 {
+		return nil, config.Node{}, fmt.Errorf("node %s is not part of cluster %s", hostname, name)
 	}
-	return nil, config.Node{}, fmt.Errorf("node %s is not part of cluster %s", hostname, name)
+	return c, c.Spec.Nodes[i], nil
 }
 
 func (m *Manager) CordonNode(ctx context.Context, name, hostname string, sink Sink) error {
@@ -89,7 +88,7 @@ func (m *Manager) RebootNode(ctx context.Context, name, hostname string, drainFi
 		steps = append(steps, Step{ID: "uncordon", Title: "Mark schedulable again"})
 	}
 	sink.Plan(steps...)
-	_, n, err := m.findNode(ctx, name, hostname)
+	c, n, err := m.findNode(ctx, name, hostname)
 	if err != nil {
 		return err
 	}
@@ -102,6 +101,7 @@ func (m *Manager) RebootNode(ctx context.Context, name, hostname string, drainFi
 			return err
 		}
 	}
+	before := kubeBootID(ctx, kc, hostname)
 	err = sink.Run("reboot", func() error {
 		err := m.rebootAndWait(ctx, n.IP, sec.Talosconfig, func() {
 			_ = m.Store.Audit(ctx, name, "node.reboot", hostname)
@@ -116,7 +116,7 @@ func (m *Manager) RebootNode(ctx context.Context, name, hostname string, drainFi
 	if err != nil {
 		return err
 	}
-	if err := sink.Run("ready", func() error { return kc.WaitReady(ctx, []string{hostname}, m.Timeouts.Ready, nil) }); err != nil {
+	if err := sink.Run("ready", func() error { return m.waitBack(ctx, c, kc, n, before, sec.Talosconfig) }); err != nil {
 		return err
 	}
 	if drainFirst {
@@ -145,10 +145,11 @@ func (m *Manager) UpgradeNode(ctx context.Context, name, hostname, version strin
 	if err := m.EnsureSchematic(ctx, c); err != nil {
 		return err
 	}
-	image := m.Factory.InstallerImage(c.SchematicFor(c.PoolOf(n)), version)
+	want := nodeImage{version: version, schematic: c.SchematicFor(c.PoolOf(n))}
+	image := m.Factory.InstallerImage(want.schematic, version)
 	_ = m.Store.Audit(ctx, name, "node.upgrade", hostname+" "+version)
 	return sink.Run(step, func() error {
-		already, err := m.upgradeInPlace(ctx, kc, n, sec.Talosconfig, image, version, false, step, sink)
+		already, err := m.upgradeInPlace(ctx, c, kc, n, sec.Talosconfig, image, want, false, step, sink)
 		if err != nil {
 			return err
 		}
@@ -161,54 +162,105 @@ func (m *Manager) UpgradeNode(ctx context.Context, name, hostname, version strin
 	})
 }
 
-func (m *Manager) upgradeInPlace(ctx context.Context, kc *k8s.Client, n config.Node, talosconfig []byte, image, version string, force bool, step string, sink Sink) (already bool, err error) {
-	tc, err := talos.Dial(ctx, n.IP, talosconfig)
-	if err != nil {
-		return false, err
+type nodeImage struct {
+	version   string
+	schematic string
+}
+
+func (cur nodeImage) satisfies(want nodeImage, reimage bool) bool {
+	if cur.version != want.version {
+		return false
 	}
-	v, err := tc.Version(tc.Context(ctx))
-	if err == nil && !force && len(v.Messages) > 0 && v.Messages[0].Version.Tag == version {
-		tc.Close()
+	if cur.schematic == "" {
+		return !reimage
+	}
+	return cur.schematic == want.schematic
+}
+
+func (cur nodeImage) schematicDiffers(desired, declared string) bool {
+	if cur.schematic == "" {
+		return desired != declared
+	}
+	return cur.schematic != desired
+}
+
+func readNodeImage(ctx context.Context, ip string, talosconfig []byte) (nodeImage, error) {
+	tc, err := talos.Dial(ctx, ip, talosconfig)
+	if err != nil {
+		return nodeImage{}, err
+	}
+	defer tc.Close()
+	v, err := versionTag(ctx, tc)
+	if err != nil {
+		return nodeImage{}, err
+	}
+	s, err := installedSchematic(ctx, tc)
+	if err != nil {
+		return nodeImage{version: v}, nil
+	}
+	return nodeImage{version: v, schematic: s}, nil
+}
+
+func (m *Manager) upgradeInPlace(ctx context.Context, c *config.Cluster, kc *k8s.Client, n config.Node, talosconfig []byte, image string, want nodeImage, reimage bool, step string, sink Sink) (already bool, err error) {
+	if cur, err := readNodeImage(ctx, n.IP, talosconfig); err == nil && cur.satisfies(want, reimage) {
 		return true, nil
 	}
-	bootID, err := readBootID(ctx, tc)
+	return false, m.reinstall(ctx, c, kc, n, talosconfig, image, want.version, step, sink)
+}
+
+func (m *Manager) reinstall(ctx context.Context, c *config.Cluster, kc *k8s.Client, n config.Node, talosconfig []byte, image, version, step string, sink Sink) error {
+	before := kubeBootID(ctx, kc, n.Hostname)
+	err := m.rebootingAction(ctx, n.IP, talosconfig, func(tc *talos.Client) error {
+		sink.Emit(Info, step, n.Hostname, "upgrading to %s from %s (A/B slot install, then reboot)", version, image)
+		if err := upgradeNode(ctx, tc, image, m.Timeouts.Install); err != nil {
+			return fmt.Errorf("upgrade: %w", err)
+		}
+		return nil
+	})
 	if err != nil {
-		tc.Close()
-		return false, err
-	}
-	sink.Emit(Info, step, n.Hostname, "upgrading to %s from %s (A/B slot install, then reboot)", version, image)
-	err = upgradeNode(ctx, tc, image, m.Timeouts.Install)
-	tc.Close()
-	if err != nil {
-		return false, fmt.Errorf("upgrade: %w", err)
-	}
-	if err := talos.WaitForReboot(ctx, n.IP, talosconfig, bootID, m.Timeouts.Install); err != nil {
-		return false, err
+		return err
 	}
 	sink.Emit(Info, step, n.Hostname, "rebooted; waiting for Ready")
-	if err := kc.WaitReady(ctx, []string{n.Hostname}, m.Timeouts.Ready, nil); err != nil {
-		return false, fmt.Errorf("after upgrade: %w", err)
+	if err := m.waitBack(ctx, c, kc, n, before, talosconfig); err != nil {
+		return fmt.Errorf("after upgrade: %w", err)
 	}
-	return false, nil
+	return nil
 }
 
 func (m *Manager) rebootAndWait(ctx context.Context, ip string, talosconfig []byte, requested func()) error {
-	tc, err := talos.Dial(ctx, ip, talosconfig)
+	return m.rebootingAction(ctx, ip, talosconfig, func(tc *talos.Client) error {
+		if err := rebootNode(ctx, tc); err != nil {
+			return err
+		}
+		requested()
+		return nil
+	})
+}
+
+func kubeBootID(ctx context.Context, kc *k8s.Client, hostname string) string {
+	ids, err := kc.NodeBootIDs(ctx, hostname)
+	if err != nil {
+		return ""
+	}
+	return ids[hostname]
+}
+
+func (m *Manager) waitBack(ctx context.Context, c *config.Cluster, kc *k8s.Client, n config.Node, kubeBoot string, talosconfig []byte) error {
+	if err := kc.WaitRebooted(ctx, map[string]string{n.Hostname: kubeBoot}, m.Timeouts.Ready); err != nil {
+		return err
+	}
+	if n.Role != config.RoleControlPlane {
+		return nil
+	}
+	tc, err := talos.Dial(ctx, n.IP, talosconfig)
 	if err != nil {
 		return err
 	}
-	bootID, err := readBootID(ctx, tc)
-	if err != nil {
-		tc.Close()
-		return err
+	defer tc.Close()
+	if err := m.waitEtcdMembers(ctx, tc, len(c.ControlPlanes())); err != nil {
+		return fmt.Errorf("etcd on %s: %w", n.Hostname, err)
 	}
-	err = rebootNode(ctx, tc)
-	tc.Close()
-	if err != nil {
-		return err
-	}
-	requested()
-	return talos.WaitForReboot(ctx, ip, talosconfig, bootID, m.Timeouts.Install)
+	return nil
 }
 
 type sinkWriter struct {

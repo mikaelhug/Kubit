@@ -21,6 +21,7 @@ type Service struct {
 	Selector    string   `json:"selector,omitempty"`
 	Age         string   `json:"age"`
 	AgeSec      int64    `json:"ageSec"`
+	CreatedAt   string   `json:"createdAt,omitempty"`
 }
 
 type Ingress struct {
@@ -32,6 +33,7 @@ type Ingress struct {
 	TLSHosts  []string      `json:"tlsHosts,omitempty"`
 	Age       string        `json:"age"`
 	AgeSec    int64         `json:"ageSec"`
+	CreatedAt string        `json:"createdAt,omitempty"`
 }
 
 type IngressRule struct {
@@ -72,7 +74,7 @@ func (c *Client) Services(ctx context.Context) ([]Service, error) {
 	}
 	out := make([]Service, 0, len(list))
 	for _, s := range list {
-		sv := Service{Namespace: s.Namespace, Name: s.Name, Type: string(s.Spec.Type), ClusterIP: s.Spec.ClusterIP, Endpoints: ready[s.Namespace+"/"+s.Name]}
+		sv := Service{Namespace: s.Namespace, Name: s.Name, Type: string(s.Spec.Type), ClusterIP: s.Spec.ClusterIP, Ports: []string{}, Endpoints: ready[s.Namespace+"/"+s.Name], CreatedAt: createdAt(s.CreationTimestamp)}
 		sv.Age, sv.AgeSec = age(s.CreationTimestamp)
 		for _, ing := range s.Status.LoadBalancer.Ingress {
 			if ing.IP != "" {
@@ -106,7 +108,7 @@ func (c *Client) Ingresses(ctx context.Context) ([]Ingress, error) {
 	}
 	out := make([]Ingress, 0, len(list))
 	for _, ing := range list {
-		i := Ingress{Namespace: ing.Namespace, Name: ing.Name, Rules: []IngressRule{}}
+		i := Ingress{Namespace: ing.Namespace, Name: ing.Name, Rules: []IngressRule{}, CreatedAt: createdAt(ing.CreationTimestamp)}
 		i.Age, i.AgeSec = age(ing.CreationTimestamp)
 		if ing.Spec.IngressClassName != nil {
 			i.Class = *ing.Spec.IngressClassName

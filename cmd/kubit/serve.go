@@ -5,10 +5,9 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
+	"net"
 	"net/http"
 	"os"
-	"os/signal"
-	"syscall"
 	"time"
 
 	"github.com/mikael/kubit/internal/api"
@@ -24,16 +23,28 @@ func serveCmd() *cobra.Command {
 		Use:   "serve",
 		Short: "Run the Kubit daemon and web UI",
 		RunE: func(cmd *cobra.Command, _ []string) error {
+			home, err := homeDir()
+			if err != nil {
+				return err
+			}
+			if err := os.MkdirAll(home, 0o700); err != nil {
+				return err
+			}
+			lock, err := store.LockHome(home)
+			if err != nil {
+				return err
+			}
+			defer lock.Release()
 			m, crypto, err := openManagerCrypto()
 			if err != nil {
 				return err
 			}
 			defer m.Store.Close()
-			lock, err := store.LockHome(m.Home)
+			ln, err := net.Listen("tcp", addr)
 			if err != nil {
 				return err
 			}
-			defer lock.Release()
+			defer ln.Close()
 			if !api.Loopback(addr) && token == "" {
 				token = os.Getenv("KUBIT_TOKEN")
 				if token == "" {
@@ -47,19 +58,18 @@ func serveCmd() *cobra.Command {
 			if os.Getenv("KUBIT_SERVICE") != "" {
 				mode = "service"
 			}
-			fmt.Fprintf(cmd.OutOrStdout(), "kubit %s listening on http://%s (%s, master key from %s)\n", version, addr, mode, store.MasterKeySource())
 			srv := api.New(version, m, token, crypto)
 			srv.Start()
-			ctx, stop := signal.NotifyContext(cmd.Context(), syscall.SIGINT, syscall.SIGTERM)
-			defer stop()
+			ctx := cmd.Context()
 			w := watch.New(m, interval)
 			if serviceInterval > 0 {
 				w.ServiceInterval = serviceInterval
 			}
 			srv.AttachWatcher(ctx, w)
-			hs := &http.Server{Addr: addr, Handler: srv}
+			hs := &http.Server{Handler: srv}
 			errc := make(chan error, 1)
-			go func() { errc <- hs.ListenAndServe() }()
+			go func() { errc <- hs.Serve(ln) }()
+			fmt.Fprintf(cmd.OutOrStdout(), "kubit %s listening on http://%s (%s, master key from %s)\n", version, ln.Addr(), mode, store.MasterKeySource())
 			select {
 			case err := <-errc:
 				return err
@@ -73,7 +83,7 @@ func serveCmd() *cobra.Command {
 			return m.Store.Checkpoint(context.Background())
 		},
 	}
-	cmd.Flags().StringVar(&addr, "addr", "127.0.0.1:8080", "listen address")
+	cmd.Flags().StringVar(&addr, "addr", "127.0.0.1:8090", "listen address")
 	cmd.Flags().StringVar(&token, "token", "", "API bearer token (generated when binding beyond loopback)")
 	cmd.Flags().DurationVar(&interval, "watch-interval", 15*time.Second, "how often every cluster is polled for health samples and events")
 	cmd.Flags().DurationVar(&serviceInterval, "service-interval", 0, "how often workloads, pods, claims and services are inspected for alerts (default 4× watch-interval)")

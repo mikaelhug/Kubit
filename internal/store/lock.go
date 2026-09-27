@@ -8,10 +8,12 @@ import (
 	"syscall"
 )
 
+const lockFile = "serve.lock"
+
 type Lock struct{ f *os.File }
 
 func LockHome(dir string) (*Lock, error) {
-	path := filepath.Join(dir, "serve.lock")
+	path := filepath.Join(dir, lockFile)
 	f, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0o600)
 	if err != nil {
 		return nil, err
