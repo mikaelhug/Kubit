@@ -180,7 +180,7 @@ func (t *tracker) drop(mac string, b *Boot) {
 func (t *tracker) status(s *Server) Status {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	st := Status{StartedAt: t.started, Interface: s.Interface, HTTPOnly: s.HTTPOnly, IP: s.IP.String(), HTTPPort: s.HTTPPort, TalosVersion: s.Profile.TalosVersion, SchematicID: s.Profile.SchematicID, Log: append([]string{}, t.log...), Boots: []Boot{}}
+	st := Status{StartedAt: t.started, Interface: s.Interface, HTTPOnly: s.HTTPOnly, IP: s.address(), HTTPPort: s.HTTPPort, TalosVersion: s.Profile.TalosVersion, SchematicID: s.Profile.SchematicID, Log: append([]string{}, t.log...), Boots: []Boot{}}
 	for _, b := range t.boots {
 		st.Boots = append(st.Boots, *b)
 	}

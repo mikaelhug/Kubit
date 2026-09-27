@@ -3,7 +3,6 @@ package vfkit
 import (
 	"bufio"
 	"context"
-	"fmt"
 	"io"
 	"net/netip"
 	"os"
@@ -11,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/mikael/kubit/internal/labhost"
+	"github.com/mikael/kubit/internal/netx"
 )
 
 type job struct {
@@ -89,7 +89,7 @@ func parseLeases(r io.Reader) map[string]string {
 		case strings.HasPrefix(line, "ip_address="):
 			ip = strings.TrimPrefix(line, "ip_address=")
 		case strings.HasPrefix(line, "hw_address=1,"):
-			mac = normalMAC(strings.TrimPrefix(line, "hw_address=1,"))
+			mac = netx.Normalize(strings.TrimPrefix(line, "hw_address=1,"))
 		case strings.HasPrefix(line, "lease="):
 			at, _ = strconv.ParseUint(strings.TrimPrefix(strings.TrimPrefix(line, "lease="), "0x"), 16, 64)
 		case line == "}":
@@ -107,19 +107,4 @@ func parseLeases(r io.Reader) map[string]string {
 		out[m] = l.ip
 	}
 	return out
-}
-
-func normalMAC(s string) string {
-	parts := strings.Split(strings.ToLower(s), ":")
-	if len(parts) != 6 {
-		return ""
-	}
-	for i, p := range parts {
-		n, err := strconv.ParseUint(p, 16, 8)
-		if err != nil {
-			return ""
-		}
-		parts[i] = fmt.Sprintf("%02x", n)
-	}
-	return strings.Join(parts, ":")
 }

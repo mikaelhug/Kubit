@@ -9,9 +9,11 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/mikael/kubit/internal/labhost"
+	"github.com/mikael/kubit/internal/netx"
 )
 
 const (
@@ -20,7 +22,13 @@ const (
 	minMacOS     = 26
 )
 
+func (h *Host) capacityKey() string { return labhost.DriverVFKit + ":" + h.Dir }
+
 func (h *Host) Capacity(ctx context.Context) (labhost.Capacity, error) {
+	return labhost.CachedCapacity(ctx, h.capacityKey(), h.readCapacity)
+}
+
+func (h *Host) readCapacity(ctx context.Context) (labhost.Capacity, error) {
 	c := labhost.Capacity{Arch: runtime.GOARCH, CheckedAt: time.Now().UTC().Format(time.RFC3339)}
 	out, err := h.Run(ctx, "sysctl", "-n", "hw.ncpu", "hw.memsize", "hw.model")
 	if err != nil {
@@ -110,7 +118,7 @@ var macPattern = regexp.MustCompile(`(?i)Ethernet Address: ([0-9a-f]{1,2}(:[0-9a
 
 func firstMAC(out string) string {
 	for _, m := range macPattern.FindAllStringSubmatch(out, -1) {
-		if n := normalMAC(m[1]); n != "" && n != "00:00:00:00:00:00" {
+		if n := netx.Normalize(m[1]); n != "" && n != "00:00:00:00:00:00" {
 			return n
 		}
 	}
@@ -120,29 +128,41 @@ func firstMAC(out string) string {
 func (h *Host) Metrics(ctx context.Context) (labhost.Metrics, error) {
 	now := time.Now()
 	m := labhost.Metrics{At: now.UTC().Format(time.RFC3339)}
-	out, err := h.Run(ctx, "sysctl", "-n", "vm.loadavg", "kern.boottime", "hw.memsize")
-	if err != nil {
-		return m, err
-	}
-	m.Load1, m.UptimeSec, m.MemTotal = parseSysctl(out, now)
-	if out, err := h.Run(ctx, "vm_stat"); err == nil {
-		m.MemUsed = parseVMStat(out)
-	}
-	if out, err := h.Run(ctx, "top", "-l", "2", "-n", "0", "-s", "1"); err == nil {
-		m.CPUPct = parseTopCPU(out)
-	}
-	if out, err := h.Run(ctx, "df", "-k", h.Dir); err == nil {
-		var avail int64
-		m.DiskTotal, avail = parseDF(out)
-		m.DiskUsed = m.DiskTotal - avail
-	}
-	if jobs, err := h.jobs(ctx); err == nil {
-		for _, j := range jobs {
-			if j.PID > 0 {
-				m.VMsRunning++
+	var sysctl string
+	var sysErr error
+	var wg sync.WaitGroup
+	wg.Go(func() { sysctl, sysErr = h.Run(ctx, "sysctl", "-n", "vm.loadavg", "kern.boottime", "hw.memsize") })
+	wg.Go(func() {
+		if out, err := h.Run(ctx, "vm_stat"); err == nil {
+			m.MemUsed = parseVMStat(out)
+		}
+	})
+	wg.Go(func() {
+		if out, err := h.Run(ctx, "top", "-l", "2", "-n", "0", "-s", "1"); err == nil {
+			m.CPUPct = parseTopCPU(out)
+		}
+	})
+	wg.Go(func() {
+		if out, err := h.Run(ctx, "df", "-k", h.Dir); err == nil {
+			var avail int64
+			m.DiskTotal, avail = parseDF(out)
+			m.DiskUsed = m.DiskTotal - avail
+		}
+	})
+	wg.Go(func() {
+		if jobs, err := h.jobs(ctx); err == nil {
+			for _, j := range jobs {
+				if j.PID > 0 {
+					m.VMsRunning++
+				}
 			}
 		}
+	})
+	wg.Wait()
+	if sysErr != nil {
+		return labhost.Metrics{At: m.At}, sysErr
 	}
+	m.Load1, m.UptimeSec, m.MemTotal = parseSysctl(sysctl, now)
 	return m, nil
 }
 

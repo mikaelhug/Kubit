@@ -47,8 +47,8 @@ func TestDomainXMLAndMAC(t *testing.T) {
 	if !strings.Contains(armk, "console=ttyAMA0") || strings.Contains(armk, "console=ttyS0") {
 		t.Errorf("arm64 serial console must be ttyAMA0, not ttyS0")
 	}
-	if serialConsole("arm64") != "console=ttyAMA0" || serialConsole("amd64") != "console=ttyS0" {
-		t.Error("serialConsole arch mapping wrong")
+	if labhost.SerialConsole("arm64") != "console=ttyAMA0" || labhost.SerialConsole("amd64") != "console=ttyS0" {
+		t.Error("SerialConsole arch mapping wrong")
 	}
 	disk, _ := DomainXML(labhost.VMSpec{Name: "v", MAC: labhost.MAC(1, 2), CPUs: 1, MemMiB: 1024, DiskGiB: 10, Arch: "arm64"})
 	if !strings.Contains(disk, "<boot dev='hd'/>") || strings.Contains(disk, "<kernel>") || !strings.Contains(disk, "aarch64") {

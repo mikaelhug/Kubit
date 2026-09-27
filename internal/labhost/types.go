@@ -35,6 +35,13 @@ type VM struct {
 
 func MAC(host, n int) string { return fmt.Sprintf("52:54:00:6b:%02x:%02x", host&0xff, n&0xff) }
 
+func SerialConsole(arch string) string {
+	if arch == "arm64" {
+		return "console=ttyAMA0"
+	}
+	return "console=ttyS0"
+}
+
 func TalosKernelArgs(consoles ...string) []string {
 	return slices.Concat([]string{"talos.platform=metal"}, consoles, []string{"init_on_alloc=1", "slab_nomerge", "pti=on"})
 }

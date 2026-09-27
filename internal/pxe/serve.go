@@ -8,10 +8,13 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"regexp"
+	"slices"
 	"strings"
 	"time"
 
 	"github.com/mikael/kubit/internal/factory"
+	"github.com/mikael/kubit/internal/httpx"
 	"github.com/mikael/kubit/internal/labhost"
 	"github.com/mikael/kubit/internal/labhost/libvirt"
 	"github.com/pin/tftp/v3"
@@ -23,6 +26,17 @@ type Profile struct {
 	ExtraArgs    []string
 }
 
+func (p Profile) serves(schematic, version string) bool {
+	return schematic != "" && schematic == p.SchematicID && version == p.TalosVersion && talosVersion.MatchString(version)
+}
+
+var (
+	talosVersion = regexp.MustCompile(`^v\d+\.\d+\.\d+(-[0-9A-Za-z.]+)?$`)
+	talosAsset   = regexp.MustCompile(`^(kernel-(amd64|arm64)|initramfs-(amd64|arm64)\.xz)$`)
+	debianArches = []string{"amd64", "arm64"}
+	debianFiles  = []string{"linux", "initrd.gz"}
+)
+
 type Server struct {
 	Config
 	Profile Profile
@@ -31,29 +45,41 @@ type Server struct {
 	track   *tracker
 }
 
-func (s *Server) Track() {
+func (s *Server) prepare() {
 	if s.track == nil {
 		s.track = newTracker()
 		s.Config.onDHCP = s.track.dhcp
 		s.Config.onLog = s.track.logf
 		s.Config.onPlainDHCP = s.track.plain
+		s.Config.follow()
 	}
 }
 
+const (
+	keepVersions = 3
+	partAge      = time.Hour
+)
+
 func (s *Server) Run(ctx context.Context) error {
-	s.Track()
+	if !talosVersion.MatchString(s.Profile.TalosVersion) {
+		return fmt.Errorf("Talos version %q is not a release like v1.10.3", s.Profile.TalosVersion)
+	}
+	s.prepare()
+	if err := s.Cache.Tidy(keepVersions, s.Profile.TalosVersion, partAge); err != nil {
+		s.Log.Printf("pxe: tidy cache: %v", err)
+	}
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	errc := make(chan error, 3)
 	if s.HTTPOnly {
 		go func() { errc <- s.serveHTTP(ctx) }()
-		s.Log.Printf("pxe: HTTP only on %s (%s) :%d — no DHCP/TFTP; boot machines by hand from %s/", s.Interface, s.IP, s.HTTPPort, s.BaseURL())
+		s.Log.Printf("pxe: HTTP only on %s (%s) :%d — no DHCP/TFTP; boot machines by hand from %s/", s.Interface, s.address(), s.HTTPPort, s.BaseURL())
 	} else {
 		go func() { errc <- s.ServeDHCP(ctx) }()
 		go func() { errc <- s.serveTFTP(ctx) }()
 		go func() { errc <- s.serveHTTP(ctx) }()
 		s.Log.Printf("pxe: proxyDHCP on %s (%s), TFTP :69, HTTP :%d, Talos %s schematic %s",
-			s.Interface, s.IP, s.HTTPPort, s.Profile.TalosVersion, s.Profile.SchematicID)
+			s.Interface, s.address(), s.HTTPPort, s.Profile.TalosVersion, s.Profile.SchematicID)
 	}
 	select {
 	case <-ctx.Done():
@@ -102,7 +128,7 @@ func archFromIPXE(a string) string {
 }
 
 func (s *Server) Handler() http.Handler {
-	s.Track()
+	s.prepare()
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /status.json", s.statusHandler)
 	mux.HandleFunc("GET /boot.ipxe", func(w http.ResponseWriter, r *http.Request) {
@@ -130,7 +156,7 @@ func (s *Server) Handler() http.Handler {
 			return
 		}
 		base := fmt.Sprintf("%s/assets/%s/%s", s.BaseURL(), s.Profile.SchematicID, s.Profile.TalosVersion)
-		args := append(labhost.TalosKernelArgs("console=tty0", "console=ttyS0"), s.Profile.ExtraArgs...)
+		args := append(labhost.TalosKernelArgs("console=tty0", labhost.SerialConsole(arch)), s.Profile.ExtraArgs...)
 		fmt.Fprintf(w, "#!ipxe\nkernel %s/kernel-%s initrd=initramfs-%s.xz %s\ninitrd %s/initramfs-%s.xz\nboot\n",
 			base, arch, arch, strings.Join(args, " "), base, arch)
 		s.Log.Printf("http: boot script for %s (%s)", r.RemoteAddr, arch)
@@ -139,11 +165,16 @@ func (s *Server) Handler() http.Handler {
 	})
 	mux.HandleFunc("GET /assets/debian/{arch}/{file}", func(w http.ResponseWriter, r *http.Request) {
 		arch, file := r.PathValue("arch"), r.PathValue("file")
-		if file != "linux" && file != "initrd.gz" {
+		i := slices.Index(debianFiles, file)
+		if i < 0 || !slices.Contains(debianArches, arch) {
 			http.NotFound(w, r)
 			return
 		}
-		path, err := s.Cache.Path(r.Context(), libvirt.NetbootURL(arch, file))
+		urls := make([]string, len(debianFiles))
+		for j, f := range debianFiles {
+			urls[j] = libvirt.NetbootURL(arch, f)
+		}
+		paths, err := s.Cache.Current(r.Context(), urls, file == "linux")
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusBadGateway)
 			return
@@ -152,7 +183,7 @@ func (s *Server) Handler() http.Handler {
 			s.track.http(hostOf(r.RemoteAddr), arch, "kernel")
 		}
 		s.track.logf(fmt.Sprintf("%s downloading Debian %s %s", hostOf(r.RemoteAddr), arch, file))
-		http.ServeFile(w, r, path)
+		http.ServeFile(w, r, paths[i])
 	})
 	mux.HandleFunc("GET /labhost/{mac}/{file}", func(w http.ResponseWriter, r *http.Request) {
 		mac, file := r.PathValue("mac"), r.PathValue("file")
@@ -168,11 +199,15 @@ func (s *Server) Handler() http.Handler {
 			}
 		}
 		u := fmt.Sprintf("%s/api/v1/labhost/%s?%s", strings.TrimRight(s.KubitURL, "/"), file, q.Encode())
-		req, _ := http.NewRequestWithContext(r.Context(), "GET", u, nil)
+		req, err := http.NewRequestWithContext(r.Context(), http.MethodGet, u, nil)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadGateway)
+			return
+		}
 		if s.KubitToken != "" {
 			req.Header.Set("Authorization", "Bearer "+s.KubitToken)
 		}
-		resp, err := http.DefaultClient.Do(req)
+		resp, err := httpx.Client.Do(req)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusBadGateway)
 			return
@@ -189,7 +224,7 @@ func (s *Server) Handler() http.Handler {
 	})
 	mux.HandleFunc("GET /assets/{schematic}/{version}/{file}", func(w http.ResponseWriter, r *http.Request) {
 		schematic, version, file := r.PathValue("schematic"), r.PathValue("version"), r.PathValue("file")
-		if !strings.HasPrefix(file, "kernel-") && !strings.HasPrefix(file, "initramfs-") {
+		if !talosAsset.MatchString(file) || !s.Profile.serves(schematic, version) {
 			http.NotFound(w, r)
 			return
 		}
@@ -210,7 +245,7 @@ func (s *Server) Handler() http.Handler {
 }
 
 func (s *Server) serveHTTP(ctx context.Context) error {
-	srv := &http.Server{Addr: fmt.Sprintf(":%d", s.HTTPPort), Handler: s.Handler()}
+	srv := &http.Server{Addr: fmt.Sprintf(":%d", s.HTTPPort), Handler: s.Handler(), ReadHeaderTimeout: 10 * time.Second}
 	go func() {
 		<-ctx.Done()
 		shutdown, cancel := context.WithTimeout(context.Background(), 2*time.Second)
@@ -228,21 +263,4 @@ func hostOf(remote string) string {
 		return h
 	}
 	return remote
-}
-
-func InterfaceIPv4(name string) (net.IP, error) {
-	ifc, err := net.InterfaceByName(name)
-	if err != nil {
-		return nil, err
-	}
-	addrs, err := ifc.Addrs()
-	if err != nil {
-		return nil, err
-	}
-	for _, a := range addrs {
-		if ipn, ok := a.(*net.IPNet); ok && ipn.IP.To4() != nil {
-			return ipn.IP.To4(), nil
-		}
-	}
-	return nil, fmt.Errorf("%s has no IPv4 address", name)
 }

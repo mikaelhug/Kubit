@@ -176,3 +176,27 @@ func TestRedfishClientsShareOneTransport(t *testing.T) {
 		t.Error("each BMC client must reuse the package transport, not open its own pool")
 	}
 }
+
+func TestAliveChecksLoginWithOneRequest(t *testing.T) {
+	bmc := &fakeBMC{power: "On", user: "root", pass: "calvin"}
+	var requests int
+	h := bmc.handler()
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		h.ServeHTTP(w, r)
+	}))
+	defer srv.Close()
+	ctx := context.Background()
+	if err := Alive(ctx, Config{Type: "redfish", Host: srv.URL, User: "root", Password: "calvin"}); err != nil || requests != 1 {
+		t.Errorf("alive: %v after %d requests", err, requests)
+	}
+	if err := Alive(ctx, Config{Type: "redfish", Host: srv.URL, User: "root", Password: "wrong"}); err == nil || !strings.Contains(err.Error(), "authentication failed") {
+		t.Errorf("a wrong password is not alive: %v", err)
+	}
+	if err := Alive(ctx, Config{Type: "amt", Host: "x"}); err == nil {
+		t.Error("missing credentials are refused before any request")
+	}
+	if redfishTransport.Proxy != nil {
+		t.Error("a LAN BMC is never reached through a proxy")
+	}
+}

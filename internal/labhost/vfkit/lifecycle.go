@@ -20,6 +20,7 @@ func (h *Host) Define(ctx context.Context, s labhost.VMSpec) error {
 	if err := checkName(s.Name); err != nil {
 		return err
 	}
+	defer labhost.ForgetCapacity(h.capacityKey())
 	if strings.Contains(h.Dir, ",") {
 		return errors.New("Kubit's home path contains a comma, which vfkit cannot take")
 	}
@@ -203,6 +204,7 @@ func (h *Host) Delete(ctx context.Context, name string) error {
 	if err := checkName(name); err != nil {
 		return err
 	}
+	defer labhost.ForgetCapacity(h.capacityKey())
 	if _, err := os.Stat(h.file(name, "spec.json")); err == nil {
 		if err := h.Stop(ctx, name, true); err != nil {
 			return err
@@ -245,12 +247,14 @@ func (h *Host) Autostart(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	var errs []error
-	for _, sp := range specs {
+	errs := make([]error, len(specs))
+	var wg sync.WaitGroup
+	for i, sp := range specs {
 		if _, loaded := jobs[h.label(sp.Name)]; sp.Run && !loaded {
-			errs = append(errs, h.Start(ctx, sp.Name))
+			wg.Go(func() { errs[i] = h.Start(ctx, sp.Name) })
 		}
 	}
+	wg.Wait()
 	return errors.Join(errs...)
 }
 

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/http"
 	"strings"
 	"time"
 
@@ -12,6 +13,7 @@ import (
 	"github.com/device-management-toolkit/go-wsman-messages/v2/pkg/wsman/cim/boot"
 	"github.com/device-management-toolkit/go-wsman-messages/v2/pkg/wsman/cim/power"
 	"github.com/device-management-toolkit/go-wsman-messages/v2/pkg/wsman/client"
+	"github.com/mikael/kubit/internal/netx"
 )
 
 type Config struct {
@@ -84,6 +86,21 @@ func Open(c Config, opts ...Option) (Manager, error) {
 	return nil, errors.New("no out-of-band management configured")
 }
 
+func Alive(ctx context.Context, c Config) error {
+	m, err := Open(c)
+	if err != nil {
+		return err
+	}
+	switch m := m.(type) {
+	case *amt:
+		return m.alive(ctx)
+	case *redfish:
+		return m.alive(ctx)
+	}
+	_, err = m.Probe(ctx)
+	return err
+}
+
 func Label(typ string) string {
 	switch typ {
 	case "amt":
@@ -105,58 +122,108 @@ func (t tracer) tracef(format string, args ...any) {
 type amt struct {
 	c Config
 	tracer
+	transport http.RoundTripper
 }
 
-func (a *amt) msgs(ctx context.Context) wsman.Messages {
-	timeout := 15 * time.Second
-	if d, ok := ctx.Deadline(); ok {
-		if rem := time.Until(d); rem > 0 && rem < timeout {
-			timeout = rem
-		}
-	}
-	return wsman.NewMessages(client.Parameters{
+const wsmanCallTimeout = 30 * time.Second
+
+type wsmanSession struct {
+	wsman.Messages
+	ctx    context.Context
+	target *client.Target
+	budget time.Duration
+}
+
+func (a *amt) session(ctx context.Context) *wsmanSession {
+	m := wsman.NewMessages(client.Parameters{
 		Target: a.c.Host, Username: a.c.User, Password: a.c.Password,
-		UseDigest: true, UseTLS: a.c.TLS, SelfSignedAllowed: true, Timeout: timeout,
+		UseDigest: true, UseTLS: a.c.TLS, SelfSignedAllowed: true, Timeout: wsmanCallTimeout, Transport: a.transport,
 	})
+	s := &wsmanSession{Messages: m, ctx: ctx}
+	if t, ok := m.Client.(*client.Target); ok {
+		s.target, s.budget = t, t.Timeout
+	}
+	return s
+}
+
+func (s *wsmanSession) next() error {
+	if err := s.ctx.Err(); err != nil {
+		return err
+	}
+	if s.target == nil {
+		return nil
+	}
+	s.target.Timeout = s.budget
+	if d, ok := s.ctx.Deadline(); ok {
+		rem := time.Until(d)
+		if rem <= 0 {
+			return context.DeadlineExceeded
+		}
+		s.target.Timeout = min(s.budget, rem)
+	}
+	return nil
+}
+
+func (a *amt) alive(ctx context.Context) error {
+	s := a.session(ctx)
+	if err := s.next(); err != nil {
+		return fmt.Errorf("AMT at %s: %w", a.c.Host, describe(err))
+	}
+	if _, err := s.CIM.SoftwareIdentity.Enumerate(); err != nil {
+		return fmt.Errorf("AMT at %s: %w", a.c.Host, describe(err))
+	}
+	return nil
 }
 
 func (a *amt) Probe(ctx context.Context) (Info, error) {
-	m := a.msgs(ctx)
+	m := a.session(ctx)
 	var info Info
+	if err := m.next(); err != nil {
+		return info, fmt.Errorf("AMT at %s: %w", a.c.Host, describe(err))
+	}
 	sw, err := m.CIM.SoftwareIdentity.Enumerate()
 	if err != nil {
 		return info, fmt.Errorf("AMT at %s: %w", a.c.Host, describe(err))
 	}
-	if p, err := m.CIM.SoftwareIdentity.Pull(sw.Body.EnumerateResponse.EnumerationContext); err == nil {
-		for _, s := range p.Body.PullResponse.SoftwareIdentityItems {
-			if s.InstanceID == "AMT" {
-				info.Version = s.VersionString
-			}
-		}
-	}
-	if e, err := m.AMT.EthernetPortSettings.Enumerate(); err == nil {
-		if p, err := m.AMT.EthernetPortSettings.Pull(e.Body.EnumerateResponse.EnumerationContext); err == nil {
-			for _, port := range p.Body.PullResponse.EthernetPortItems {
-				if port.MACAddress != "" && !strings.Contains(strings.ToLower(port.InstanceID), "wireless") {
-					info.MAC = strings.ToLower(strings.ReplaceAll(port.MACAddress, "-", ":"))
-					break
+	if m.next() == nil {
+		if p, err := m.CIM.SoftwareIdentity.Pull(sw.Body.EnumerateResponse.EnumerationContext); err == nil {
+			for _, s := range p.Body.PullResponse.SoftwareIdentityItems {
+				if s.InstanceID == "AMT" {
+					info.Version = s.VersionString
 				}
 			}
 		}
 	}
-	if e, err := m.CIM.Chassis.Enumerate(); err == nil {
-		if p, err := m.CIM.Chassis.Pull(e.Body.EnumerateResponse.EnumerationContext); err == nil && len(p.Body.PullResponse.PackageItems) > 0 {
-			ch := p.Body.PullResponse.PackageItems[0]
-			info.Manufacturer, info.Model, info.Serial = ch.Manufacturer, ch.Model, ch.SerialNumber
+	if m.next() == nil {
+		if e, err := m.AMT.EthernetPortSettings.Enumerate(); err == nil && m.next() == nil {
+			if p, err := m.AMT.EthernetPortSettings.Pull(e.Body.EnumerateResponse.EnumerationContext); err == nil {
+				for _, port := range p.Body.PullResponse.EthernetPortItems {
+					if mac := netx.Normalize(port.MACAddress); mac != "" && !strings.Contains(strings.ToLower(port.InstanceID), "wireless") {
+						info.MAC = mac
+						break
+					}
+				}
+			}
+		}
+	}
+	if m.next() == nil {
+		if e, err := m.CIM.Chassis.Enumerate(); err == nil && m.next() == nil {
+			if p, err := m.CIM.Chassis.Pull(e.Body.EnumerateResponse.EnumerationContext); err == nil && len(p.Body.PullResponse.PackageItems) > 0 {
+				ch := p.Body.PullResponse.PackageItems[0]
+				info.Manufacturer, info.Model, info.Serial = ch.Manufacturer, ch.Model, ch.SerialNumber
+			}
 		}
 	}
 	info.Power = a.powerState(m)
 	return info, nil
 }
 
-func (a *amt) powerState(m wsman.Messages) string {
+func (a *amt) powerState(m *wsmanSession) string {
+	if m.next() != nil {
+		return "unknown"
+	}
 	e, err := m.CIM.AssociatedPowerManagementService.Enumerate()
-	if err != nil {
+	if err != nil || m.next() != nil {
 		return "unknown"
 	}
 	p, err := m.CIM.AssociatedPowerManagementService.Pull(e.Body.EnumerateResponse.EnumerationContext)
@@ -177,7 +244,7 @@ func (a *amt) powerState(m wsman.Messages) string {
 }
 
 func (a *amt) Power(ctx context.Context, act Action) error {
-	m := a.msgs(ctx)
+	m := a.session(ctx)
 	var state power.PowerState
 	switch act {
 	case PowerOn:
@@ -199,6 +266,9 @@ func (a *amt) Power(ctx context.Context, act Action) error {
 		}
 	default:
 		return fmt.Errorf("unknown power action %q", act)
+	}
+	if err := m.next(); err != nil {
+		return fmt.Errorf("AMT at %s: %w", a.c.Host, describe(err))
 	}
 	resp, err := m.CIM.PowerManagementService.RequestPowerStateChange(state)
 	if err != nil {
@@ -229,12 +299,21 @@ func powerReturn(rv int) string {
 	}
 }
 
-func (a *amt) forcePXE(m wsman.Messages) error {
+func (a *amt) forcePXE(m *wsmanSession) error {
+	if err := m.next(); err != nil {
+		return err
+	}
 	if _, err := m.CIM.BootConfigSetting.ChangeBootOrder(""); err != nil {
 		a.tracef("boot source clear: %v", describe(err))
 	}
 	if err := a.putBootSettings(m); err != nil {
+		if m.ctx.Err() != nil {
+			return m.ctx.Err()
+		}
 		a.tracef("%v; continuing with the source and role alone", err)
+	}
+	if err := m.next(); err != nil {
+		return err
 	}
 	role, err := m.CIM.BootService.SetBootConfigRole(bootConfigInstance, 1)
 	if err != nil {
@@ -244,6 +323,9 @@ func (a *amt) forcePXE(m wsman.Messages) error {
 		return fmt.Errorf("boot role IsNextSingleUse refused (return value %d)", rv)
 	}
 	a.tracef("boot role IsNextSingleUse: return 0")
+	if err := m.next(); err != nil {
+		return err
+	}
 	order, err := m.CIM.BootConfigSetting.ChangeBootOrder(boot.PXE)
 	if err != nil {
 		return fmt.Errorf("boot source: %w", describe(err))
@@ -257,7 +339,10 @@ func (a *amt) forcePXE(m wsman.Messages) error {
 
 const bootConfigInstance = "Intel(r) AMT: Boot Configuration 0"
 
-func (a *amt) putBootSettings(m wsman.Messages) error {
+func (a *amt) putBootSettings(m *wsmanSession) error {
+	if err := m.next(); err != nil {
+		return err
+	}
 	cur, err := m.AMT.BootSettingData.Get()
 	if err != nil {
 		return fmt.Errorf("boot settings: %w", describe(err))
@@ -274,7 +359,10 @@ func (a *amt) putBootSettings(m wsman.Messages) error {
 	return err
 }
 
-func (a *amt) put(m wsman.Messages, attempt, body string) error {
+func (a *amt) put(m *wsmanSession, attempt, body string) error {
+	if err := m.next(); err != nil {
+		return err
+	}
 	creator := m.AMT.BootSettingData.Base.WSManMessageCreator
 	header := creator.CreateHeader("http://schemas.xmlsoap.org/ws/2004/09/transfer/Put", amtboot.AMTBootSettingData, nil, "", "")
 	msg := &client.Message{XMLInput: creator.CreateXML(header, body)}

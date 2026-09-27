@@ -266,6 +266,47 @@ func TestAutostart(t *testing.T) {
 	}
 }
 
+func TestAutostartStartsVMsTogether(t *testing.T) {
+	h, f := newFake(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	for i, n := range []string{"vm-01", "vm-02"} {
+		if err := h.Define(ctx, labhost.VMSpec{Name: n, MAC: labhost.MAC(9, 0xe0+i), CPUs: 1, MemMiB: 2048, DiskGiB: 8}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	f.mu.Lock()
+	f.jobs = map[string]job{}
+	f.mu.Unlock()
+	var mu sync.Mutex
+	waiting := map[string]bool{}
+	both := make(chan struct{})
+	h.REST = func(name string) (string, *http.Client) {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			mu.Lock()
+			waiting[name] = true
+			if len(waiting) == 2 {
+				select {
+				case <-both:
+				default:
+					close(both)
+				}
+			}
+			mu.Unlock()
+			select {
+			case <-both:
+				fmt.Fprint(w, `{"state":"VirtualMachineStateRunning"}`)
+			case <-r.Context().Done():
+			}
+		}))
+		t.Cleanup(srv.Close)
+		return srv.URL, srv.Client()
+	}
+	if err := h.Autostart(ctx); err != nil {
+		t.Fatalf("each VM waited for the other: they were started one after another (%v)", err)
+	}
+}
+
 func TestParseLeases(t *testing.T) {
 	in := `{
 	name=talos
@@ -325,6 +366,18 @@ func TestCapacityAndProblems(t *testing.T) {
 	if c.Arch == "" || c.Reserve() != 6144 {
 		t.Errorf("arch/reserve: %+v", c)
 	}
+	f.out["sysctl -n hw.ncpu hw.memsize hw.model"] = "10\n25769803776\nMac16,8\n"
+	if c, _ := h.Capacity(ctx); c.CPUs != 12 {
+		t.Errorf("a ready Mac's capacity is cached, got %d CPUs", c.CPUs)
+	}
+	if err := h.Define(ctx, labhost.VMSpec{Name: "vm-01", MAC: labhost.MAC(9, 1), CPUs: 1, MemMiB: 2048, DiskGiB: 8}); err != nil {
+		t.Fatal(err)
+	}
+	if c, _ := h.Capacity(ctx); c.CPUs != 10 {
+		t.Errorf("defining a VM must drop the cached capacity, got %d CPUs", c.CPUs)
+	}
+	f.out["sysctl -n hw.ncpu hw.memsize hw.model"] = "12\n25769803776\nMac16,8\n"
+	ctx = labhost.FreshCapacity(ctx)
 	f.out["sw_vers -productVersion"] = "15.6\n"
 	if c, _ := h.Capacity(ctx); c.Ready || !strings.Contains(c.Problem, "macOS 26") {
 		t.Errorf("old macOS: %+v", c)

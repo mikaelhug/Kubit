@@ -58,13 +58,33 @@ func (c *Client) dial(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	conn, chans, reqs, err := ssh.NewClientConn(raw, c.Host, c.cfg)
+	conn, err := handshake(ctx, raw, c.Host, c.cfg)
 	if err != nil {
-		raw.Close()
 		return err
 	}
-	c.conn = ssh.NewClient(conn, chans, reqs)
+	c.conn = conn
 	return nil
+}
+
+var handshakeTimeout = 10 * time.Second
+
+func handshake(ctx context.Context, raw net.Conn, host string, cfg *ssh.ClientConfig) (*ssh.Client, error) {
+	_ = raw.SetDeadline(time.Now().Add(handshakeTimeout))
+	stop := context.AfterFunc(ctx, func() { raw.Close() })
+	conn, chans, reqs, err := ssh.NewClientConn(raw, host, cfg)
+	if !stop() {
+		if err == nil {
+			conn.Close()
+		}
+		raw.Close()
+		return nil, ctx.Err()
+	}
+	if err != nil {
+		raw.Close()
+		return nil, err
+	}
+	_ = raw.SetDeadline(time.Time{})
+	return ssh.NewClient(conn, chans, reqs), nil
 }
 
 func (c *Client) reconnect(ctx context.Context, within time.Duration) error {
@@ -120,11 +140,22 @@ func (c *Client) Run(ctx context.Context, cmd string) (string, error) {
 const runDrain = 5 * time.Second
 
 func (c *Client) Put(ctx context.Context, path string, content []byte, mode string) error {
-	_, err := c.Run(ctx, fmt.Sprintf("mkdir -p $(dirname %s) && cat > %s <<'KUBIT_EOF'\n%s\nKUBIT_EOF\nchmod %s %s", shellQuote(path), shellQuote(path), content, mode, shellQuote(path)))
+	_, err := c.Run(ctx, putScript(path, content, mode))
 	return err
 }
 
+func putScript(path string, content []byte, mode string) string {
+	p, tmp := shellQuote(path), shellQuote(path+".kubit-tmp")
+	return fmt.Sprintf("mkdir -p \"$(dirname %[1]s)\" && cat > %[2]s <<'KUBIT_EOF' && chmod %[3]s %[2]s && mv -f %[2]s %[1]s || { rm -f %[2]s; exit 1; }\n%[4]s\nKUBIT_EOF", p, tmp, mode, content)
+}
+
+func (c *Client) capacityKey() string { return labhost.DriverLibvirt + ":" + c.Host }
+
 func (c *Client) Capacity(ctx context.Context) (labhost.Capacity, error) {
+	return labhost.CachedCapacity(ctx, c.capacityKey(), c.readCapacity)
+}
+
+func (c *Client) readCapacity(ctx context.Context) (labhost.Capacity, error) {
 	out, err := c.Run(ctx, `echo "cpus=$(nproc)"; echo "mem=$(awk '/MemTotal/{print int($2/1024)}' /proc/meminfo)"; mkdir -p `+vmDir+`; echo "diskbytes=$(df -B1 --output=avail `+vmDir+` | tail -1 | tr -dc 0-9)"; echo "kvm=$( [ -c /dev/kvm ] && echo yes || echo no)"; echo "kernel=$(uname -r)"; echo "arch=$(uname -m)"; echo "host=$(hostname)"; echo "libvirt=$(virsh version --daemon 2>/dev/null | awk '/Using library/{print $NF}')"; echo "bridge=$(ip -o link show type bridge | awk -F': ' '{print $2}' | grep -xF br0 || ip -o link show type bridge | awk -F': ' '{print $2}' | head -1)"; echo "ready=$( [ -f /var/lib/kubit/READY ] && echo yes || echo no)"`)
 	if err != nil {
 		return labhost.Capacity{}, err

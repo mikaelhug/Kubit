@@ -11,6 +11,8 @@ import (
 	"slices"
 	"strings"
 	"time"
+
+	"github.com/mikael/kubit/internal/netx"
 )
 
 type redfish struct {
@@ -23,7 +25,6 @@ type redfish struct {
 const redfishRoot = "/redfish/v1"
 
 var redfishTransport = &http.Transport{
-	Proxy:               http.ProxyFromEnvironment,
 	TLSClientConfig:     &tls.Config{InsecureSkipVerify: true},
 	TLSHandshakeTimeout: 10 * time.Second,
 	MaxIdleConnsPerHost: 2,
@@ -238,8 +239,8 @@ func (r *redfish) firstMAC(ctx context.Context, path string) string {
 		if mac == "" {
 			mac = nic.MAC
 		}
-		if mac != "" {
-			return strings.ToLower(strings.ReplaceAll(mac, "-", ":"))
+		if mac = netx.Normalize(mac); mac != "" {
+			return mac
 		}
 	}
 	return ""
@@ -357,6 +358,13 @@ func (r *redfish) forcePXE(ctx context.Context, path string, sys *redfishSystem)
 	}
 	r.tracef("boot override Once/Pxe accepted")
 	return nil
+}
+
+func (r *redfish) alive(ctx context.Context) error {
+	var col struct {
+		Members []redfishRef `json:"Members"`
+	}
+	return r.do(ctx, http.MethodGet, redfishRoot+"/Systems", nil, &col)
 }
 
 func ProbeRedfish(ctx context.Context, host string, timeout time.Duration) bool {

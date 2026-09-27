@@ -6,10 +6,10 @@ import (
 	"os/exec"
 	"regexp"
 	"runtime"
-	"strings"
 	"sync"
 	"time"
 
+	"github.com/mikael/kubit/internal/netx"
 	"github.com/mikael/kubit/internal/talos"
 )
 
@@ -91,15 +91,5 @@ func macFromARP(ctx context.Context, ip string) string {
 	if err != nil {
 		return ""
 	}
-	m := macRe.FindString(string(out))
-	if m == "" {
-		return ""
-	}
-	parts := strings.Split(strings.ReplaceAll(m, "-", ":"), ":")
-	for i, p := range parts {
-		if len(p) == 1 {
-			parts[i] = "0" + p
-		}
-	}
-	return strings.ToLower(strings.Join(parts, ":"))
+	return netx.Normalize(macRe.FindString(string(out)))
 }

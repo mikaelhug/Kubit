@@ -15,7 +15,11 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"sync"
+	"time"
 
+	"github.com/mikael/kubit/internal/fsx"
+	"github.com/mikael/kubit/internal/httpx"
 	"github.com/mikael/kubit/internal/labhost"
 )
 
@@ -55,10 +59,23 @@ func New(home string) (*Host, error) {
 		VFKit:    findTool("vfkit", "/opt/homebrew/bin/vfkit", "/usr/local/bin/vfkit"),
 		VMNetRun: findTool("", "/opt/homebrew/opt/vmnet-helper/libexec/vmnet-run", "/usr/local/opt/vmnet-helper/libexec/vmnet-run"),
 		Run:      run,
-		HTTP:     http.DefaultClient,
+		HTTP:     httpx.Download,
 	}
 	h.REST = h.unixREST
+	h.sweep()
 	return h, nil
+}
+
+const partAge = time.Hour
+
+var swept sync.Map
+
+func (h *Host) sweep() {
+	dir := filepath.Join(h.Dir, bootDir)
+	if _, done := swept.LoadOrStore(dir, true); done {
+		return
+	}
+	_ = fsx.SweepParts(dir, partAge)
 }
 
 func (h *Host) sock(name string) string { return h.file(name, "rest.sock") }

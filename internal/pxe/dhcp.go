@@ -8,10 +8,12 @@ import (
 	"net"
 	"strings"
 	"syscall"
+	"time"
 
 	"github.com/insomniacslk/dhcp/dhcpv4"
 	"github.com/insomniacslk/dhcp/dhcpv4/server4"
 	"github.com/insomniacslk/dhcp/iana"
+	"github.com/mikael/kubit/internal/netx"
 )
 
 const (
@@ -31,6 +33,27 @@ type Config struct {
 	IP                   net.IP
 	HTTPPort             int
 	Log                  *log.Logger
+	addr                 *ifaceAddr
+}
+
+func (c *Config) follow() {
+	if c.IP == nil && c.addr == nil && c.Interface != "" {
+		c.addr = &ifaceAddr{name: c.Interface, lookup: InterfaceIPv4, logf: c.Log.Printf}
+	}
+}
+
+func (c Config) ip() net.IP {
+	if c.IP != nil || c.addr == nil {
+		return c.IP
+	}
+	return c.addr.get(time.Now())
+}
+
+func (c Config) address() string {
+	if ip := c.ip(); ip != nil {
+		return ip.String()
+	}
+	return ""
 }
 
 func bootFile(m *dhcpv4.DHCPv4) (string, bool) {
@@ -61,14 +84,14 @@ func BaseURL(ip string, port int) string {
 }
 
 func (c Config) BaseURL() string {
-	return BaseURL(c.IP.String(), c.HTTPPort)
+	return BaseURL(c.address(), c.HTTPPort)
 }
 
 func (c Config) ScriptURL() string {
 	return c.BaseURL() + "/boot.ipxe"
 }
 
-func (c Config) handle(conn net.PacketConn, peer net.Addr, m *dhcpv4.DHCPv4) {
+func (c Config) handle(conn net.PacketConn, peer net.Addr, m *dhcpv4.DHCPv4, proxy bool) {
 	if m.OpCode != dhcpv4.OpcodeBootRequest {
 		return
 	}
@@ -88,6 +111,13 @@ func (c Config) handle(conn net.PacketConn, peer net.Addr, m *dhcpv4.DHCPv4) {
 	default:
 		return
 	}
+	ip := c.ip()
+	if ip == nil {
+		return
+	}
+	if proxy && mt == dhcpv4.MessageTypeAck && !ip.Equal(m.ServerIdentifier()) {
+		return
+	}
 	if c.decide(mac) == "local" {
 		c.Log.Printf("pxe: %s: no offer, boots from its own disk", mac)
 		c.logf("%s: no offer, boots from its own disk (Kubit's decision)", mac)
@@ -104,11 +134,11 @@ func (c Config) handle(conn net.PacketConn, peer net.Addr, m *dhcpv4.DHCPv4) {
 	}
 	mods := []dhcpv4.Modifier{
 		dhcpv4.WithMessageType(mt),
-		dhcpv4.WithServerIP(c.IP),
+		dhcpv4.WithServerIP(ip),
 		dhcpv4.WithClientIP(m.ClientIPAddr),
-		dhcpv4.WithOption(dhcpv4.OptServerIdentifier(c.IP)),
+		dhcpv4.WithOption(dhcpv4.OptServerIdentifier(ip)),
 		dhcpv4.WithOption(dhcpv4.OptClassIdentifier("PXEClient")),
-		dhcpv4.WithOption(dhcpv4.OptTFTPServerName(c.IP.String())),
+		dhcpv4.WithOption(dhcpv4.OptTFTPServerName(ip.String())),
 		dhcpv4.WithOption(dhcpv4.OptBootFileName(file)),
 		dhcpv4.WithOptionCopied(m, dhcpv4.OptionClientMachineIdentifier),
 	}
@@ -121,12 +151,10 @@ func (c Config) handle(conn net.PacketConn, peer net.Addr, m *dhcpv4.DHCPv4) {
 		return
 	}
 	reply.BootFileName = file
-	reply.ServerHostName = c.IP.String()
+	reply.ServerHostName = ip.String()
 	dest := peer
 	if m.GatewayIPAddr != nil && !m.GatewayIPAddr.IsUnspecified() {
 		dest = &net.UDPAddr{IP: m.GatewayIPAddr, Port: dhcpv4.ServerPort}
-	} else if udp, ok := peer.(*net.UDPAddr); ok && (udp.IP == nil || udp.IP.IsUnspecified()) {
-		dest = &net.UDPAddr{IP: net.IPv4bcast, Port: dhcpv4.ClientPort}
 	}
 	if _, err := conn.WriteTo(reply.ToBytes(), dest); err != nil {
 		c.Log.Printf("pxe: reply to %s: %v", mac, err)
@@ -156,17 +184,19 @@ func (c Config) decide(mac string) string {
 	if c.Decide == nil {
 		return "talos"
 	}
-	if d := c.Decide(strings.ToLower(mac)); d != "" {
+	if d := c.Decide(netx.Normalize(mac)); d != "" {
 		return d
 	}
 	return "local"
 }
 
-func listenShared(ctx context.Context, port int) (net.PacketConn, error) {
+func listenShared(ctx context.Context, port int, iface string) (net.PacketConn, error) {
 	lc := net.ListenConfig{Control: func(_, _ string, c syscall.RawConn) error {
 		var serr error
 		err := c.Control(func(fd uintptr) {
-			serr = setReuse(int(fd))
+			if serr = setReuse(int(fd)); serr == nil && iface != "" {
+				serr = bindDevice(int(fd), iface)
+			}
 		})
 		if err != nil {
 			return err
@@ -183,11 +213,13 @@ func listenShared(ctx context.Context, port int) (net.PacketConn, error) {
 func (c Config) ServeDHCP(ctx context.Context) error {
 	var servers []*server4.Server
 	for _, port := range []int{dhcpv4.ServerPort, 4011} {
-		conn, err := listenShared(ctx, port)
+		conn, err := listenShared(ctx, port, c.Interface)
 		if err != nil {
-			return fmt.Errorf("listen udp :%d (needs root): %w", port, err)
+			return fmt.Errorf("listen udp :%d on %s (needs root): %w", port, c.Interface, err)
 		}
-		s, err := server4.NewServer(c.Interface, nil, c.handle, server4.WithConn(conn))
+		proxy := port == dhcpv4.ServerPort
+		handle := func(conn net.PacketConn, peer net.Addr, m *dhcpv4.DHCPv4) { c.handle(conn, peer, m, proxy) }
+		s, err := server4.NewServer(c.Interface, nil, handle, server4.WithConn(conn))
 		if err != nil {
 			conn.Close()
 			return err

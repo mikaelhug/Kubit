@@ -23,6 +23,7 @@ func (h *Host) EnsureTalosBoot(ctx context.Context, f *factory.Client, schematic
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return labhost.Boot{}, err
 	}
+	defer labhost.ForgetCapacity(h.capacityKey())
 	if err := httpx.FetchFile(ctx, h.HTTP, f.ISOURL(schematic, version, arch), iso, 0o644); err != nil {
 		return labhost.Boot{}, err
 	}

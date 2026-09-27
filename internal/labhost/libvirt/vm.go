@@ -20,15 +20,8 @@ func firmware(arch string) (code, vars string) {
 	return "/usr/share/OVMF/OVMF_CODE_4M.fd", "/usr/share/OVMF/OVMF_VARS_4M.fd"
 }
 
-func serialConsole(arch string) string {
-	if arch == "arm64" {
-		return "console=ttyAMA0"
-	}
-	return "console=ttyS0"
-}
-
 func vmCmdline(arch string) string {
-	return strings.Join(labhost.TalosKernelArgs(serialConsole(arch), "console=tty0"), " ")
+	return strings.Join(labhost.TalosKernelArgs(labhost.SerialConsole(arch), "console=tty0"), " ")
 }
 
 var domainTmpl = template.Must(template.New("domain").Parse(`<domain type='{{.Type}}'>
@@ -110,6 +103,7 @@ func (c *Client) Define(ctx context.Context, s labhost.VMSpec) error {
 	if err != nil {
 		return err
 	}
+	defer labhost.ForgetCapacity(c.capacityKey())
 	if err := c.qcow2(ctx, diskPath(s.Name), s.DiskGiB); err != nil {
 		return err
 	}
@@ -263,6 +257,7 @@ func (c *Client) Stop(ctx context.Context, name string, force bool) error {
 }
 
 func (c *Client) Delete(ctx context.Context, name string) error {
+	defer labhost.ForgetCapacity(c.capacityKey())
 	_, err := c.Run(ctx, fmt.Sprintf("virsh destroy %s >/dev/null 2>&1; virsh undefine %s --nvram >/dev/null 2>&1 || virsh undefine %s >/dev/null 2>&1; rm -f %s %s %s/%s.xml %s/%s.nvram; if virsh dominfo %s >/dev/null 2>&1; then echo 'domain still defined after undefine' >&2; exit 1; fi", name, name, name, diskPath(name), dataPath(name), vmDir, name, vmDir, name, name))
 	return err
 }

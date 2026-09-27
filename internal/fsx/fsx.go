@@ -2,16 +2,53 @@ package fsx
 
 import (
 	"bytes"
+	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
+	"strings"
+	"time"
 )
 
 func WriteFile(path string, data []byte, perm os.FileMode) error {
-	return WriteStream(path, perm, func(w io.Writer) error {
+	return WriteStream(path, perm, Bytes(data))
+}
+
+func Bytes(data []byte) func(io.Writer) error {
+	return func(w io.Writer) error {
 		_, err := io.Copy(w, bytes.NewReader(data))
 		return err
-	})
+	}
+}
+
+func WriteOut(path string, perm os.FileMode, write func(io.Writer) error) error {
+	if fi, err := os.Stat(path); err == nil && !fi.Mode().IsRegular() {
+		if fi.IsDir() {
+			return fmt.Errorf("%s is a directory", path)
+		}
+		return writeInPlace(path, write)
+	}
+	if fi, err := os.Lstat(path); err == nil && fi.Mode()&os.ModeSymlink != 0 {
+		target, err := filepath.EvalSymlinks(path)
+		if err != nil {
+			return err
+		}
+		path = target
+	}
+	return WriteStream(path, perm, write)
+}
+
+func writeInPlace(path string, write func(io.Writer) error) error {
+	f, err := os.OpenFile(path, os.O_WRONLY, 0)
+	if err != nil {
+		return err
+	}
+	if err := write(f); err != nil {
+		f.Close()
+		return err
+	}
+	return f.Close()
 }
 
 func WriteStream(path string, perm os.FileMode, write func(io.Writer) error) error {
@@ -48,4 +85,30 @@ func WriteStream(path string, perm os.FileMode, write func(io.Writer) error) err
 		d.Close()
 	}
 	return nil
+}
+
+func SweepParts(dir string, age time.Duration) error {
+	cutoff := time.Now().Add(-age)
+	err := filepath.WalkDir(dir, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() || !isPart(d.Name()) {
+			return nil
+		}
+		if fi, err := d.Info(); err == nil && fi.ModTime().Before(cutoff) {
+			if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+				return err
+			}
+		}
+		return nil
+	})
+	if os.IsNotExist(err) {
+		return nil
+	}
+	return err
+}
+
+func isPart(name string) bool {
+	return strings.HasPrefix(name, ".") && strings.HasSuffix(name, ".part")
 }
