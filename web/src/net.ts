@@ -48,3 +48,11 @@ export const isDnsLabel = (s: string) => /^[a-z0-9]([-a-z0-9]*[a-z0-9])?$/.test(
 export const subnet24 = (ip: string) => ip.replace(/\.\d+$/, '.0/24')
 
 export const staticNetwork = (ip: string) => ({ addresses: [`${ip}/24`], gateway: guessGateway(ip, 24) })
+
+export const nodeHostname = (cluster: string, pool: string, n: number) => `${cluster}-${pool === 'controlplane' ? 'cp' : pool}-${String(n).padStart(2, '0')}`
+
+export function nextHostname(cluster: string, pool: string, inPool: number, taken: string[]) {
+  let n = inPool + 1
+  while (taken.includes(nodeHostname(cluster, pool, n))) n++
+  return nodeHostname(cluster, pool, n)
+}

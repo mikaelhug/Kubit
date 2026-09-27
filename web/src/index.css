@@ -71,7 +71,6 @@ body { background: var(--bg); color: var(--text); font-family: var(--font-sans);
   .label { font-size: 10.5px; letter-spacing: 0.06em; text-transform: uppercase; color: var(--muted); }
   .btn { @apply inline-flex items-center gap-1.5 rounded-[var(--r)] border border-border bg-panel px-2.5 py-1 text-[12.5px] font-medium text-text hover:border-muted disabled:opacity-50 disabled:cursor-not-allowed; }
   .btn-sm { @apply px-2 py-0.5 text-[12px]; }
-  .btn-xs { @apply px-2 py-0.5 text-[11px]; }
   .btn-primary { @apply border-accent bg-accent text-accent-ink hover:brightness-110; }
   .btn-danger { @apply border-bad/60 text-bad hover:bg-bad/10; }
   .input { @apply w-full rounded-[var(--r)] border border-border bg-bg px-2 py-1 text-[12.5px] text-text outline-none focus:border-accent; }

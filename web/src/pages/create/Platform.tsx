@@ -1,6 +1,7 @@
 import type { ClusterSpec, FluxRepository } from '../../api'
 import { Field } from '../../components/ui'
-import { hasData, platformAddons, registryCIDROK, type Draft, type PatchDraft, type SetCluster } from './draft'
+import { addonCatalog } from '../../addons'
+import { hasData, registryCIDROK, type Draft, type PatchDraft, type SetCluster } from './draft'
 
 export function PlatformStep({ draft, setCluster, patch }: { draft: Draft; setCluster: SetCluster; patch: PatchDraft }) {
   const c = draft.cluster!
@@ -15,14 +16,14 @@ export function PlatformStep({ draft, setCluster, patch }: { draft: Draft; setCl
     <>
       <div class="panel p-3"><p class="text-[13px] text-muted">Applied once the nodes are Ready; ingress-nginx needs MetalLB.</p></div>
       <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
-        {platformAddons.map((a) => {
+        {addonCatalog.map((a) => {
           const on = c.spec.platform[a.key].enabled
           const blocked = a.key === 'longhorn' && !hasData(c) ? 'No node has storage.' : a.key === 'builds' && !c.spec.platform.longhorn?.enabled ? 'Needs Longhorn.' : a.key === 'builds' && !registryCIDROK(c.spec.network.serviceCIDR) ? 'Needs an IPv4 service CIDR of /22 or larger.' : ''
           return (
             <label key={a.key} class={`panel p-4 flex gap-3 cursor-pointer ${on ? 'border-accent/60' : ''} ${draft.skipPlatform || blocked ? 'opacity-50' : ''}`}>
               <input type="checkbox" class="mt-1" checked={on && !blocked} disabled={draft.skipPlatform || !!blocked} onChange={(e) => toggle(a.key, (e.target as HTMLInputElement).checked)} />
               <div class="flex-1 min-w-0">
-                <div class="font-medium">{a.title}</div>
+                <div class="font-medium">{a.name}</div>
                 <p class="text-[12.5px] text-muted">{a.what}</p>
                 <p class="text-[11px] text-muted mt-1">{blocked || a.size}</p>
               </div>

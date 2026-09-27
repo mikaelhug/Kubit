@@ -24,7 +24,8 @@ const linkColumns: Column<Link>[] = [
 
 export function HardwareTab({ inv: live, invErr, node }: { inv: Inventory | null; invErr: string | null; node: NodeRow | null }) {
   if (!node) return <div class="text-muted">Loading</div>
-  const inv: Inventory | null = live ?? node.inventory ?? null
+  const found: Inventory | null = live ?? node.inventory ?? null
+  const inv = found && { ...found, disks: found.disks ?? [], links: found.links ?? [] }
   const stored = !live && !!node.inventory
   if (node.talos && !inv && !invErr) return <div class="text-muted">Loading</div>
   const note = invErr ? `${invErr}; showing the record from ${fmt.when(node.lastSeen)}.`

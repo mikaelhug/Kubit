@@ -1,7 +1,9 @@
-import { splitList, type ClusterSpec } from '../../api'
+import type { ClusterSpec } from '../../api'
 import { DataTable, type Column } from '../../components/DataTable'
+import { ListInput } from '../../components/ListInput'
+import { StaticNetworkFields } from '../../components/StaticNetworkFields'
 import { Field, Notice } from '../../components/ui'
-import { addrOf, guessGateway, inRange, ip4, parseRange, prefixOf, sameSubnet, staticNetwork } from '../../net'
+import { addrOf, inRange, ip4, parseRange, sameSubnet, staticNetwork } from '../../net'
 import type { Tone } from '../../tone'
 import { registryCIDROK, updateNode, type Draft, type SetCluster } from './draft'
 
@@ -49,10 +51,7 @@ export function NetworkStep({ draft, setCluster }: { draft: Draft; setCluster: S
         <option value="static">Static</option>
       </select>
     ) } },
-    { id: 'addr', header: 'Address (CIDR)', cell: (i) => { const n = c.spec.nodes[i]; return <input class="input !py-1 mono w-52" disabled={!n.network} value={n.network?.addresses?.[0] ?? ''} placeholder={`${n.ip}/24`} onInput={(e) => setNode(i, { network: { ...n.network!, addresses: [(e.target as HTMLInputElement).value.trim()] } })} /> } },
-    { id: 'gw', header: 'Gateway', cell: (i) => { const n = c.spec.nodes[i]; return <input class="input !py-1 mono w-36" disabled={!n.network} value={n.network?.gateway ?? ''} placeholder={guessGateway(n.ip, prefixOf(n.network?.addresses?.[0] ?? '', 24))} onInput={(e) => setNode(i, { network: { ...n.network!, gateway: (e.target as HTMLInputElement).value.trim() || undefined } })} /> } },
-    { id: 'dns', header: 'DNS', cell: (i) => { const n = c.spec.nodes[i]; return <input class="input !py-1 mono w-44" disabled={!n.network} value={(n.network?.nameservers ?? []).join(', ')} placeholder="cluster default" onInput={(e) => { const v = splitList((e.target as HTMLInputElement).value); setNode(i, { network: { ...n.network!, nameservers: v.length ? v : undefined } }) }} /> } },
-    { id: 'vlan', header: 'VLAN', cell: (i) => { const n = c.spec.nodes[i]; return <input class="input !py-1 mono w-20" type="number" min={0} max={4094} disabled={!n.network} value={n.network?.vlan ?? ''} placeholder="none" onInput={(e) => { const v = Number((e.target as HTMLInputElement).value); setNode(i, { network: { ...n.network!, vlan: v > 0 ? v : undefined } }) }} /> } },
+    { id: 'static', header: 'Address · gateway · DNS · VLAN', cell: (i) => { const n = c.spec.nodes[i]; return n.network ? <StaticNetworkFields compact value={n.network} lease={n.ip} onChange={(network) => setNode(i, { network })} /> : <span class="text-muted">—</span> } },
   ]
 
   return (
@@ -74,10 +73,10 @@ export function NetworkStep({ draft, setCluster }: { draft: Draft; setCluster: S
           <input class="input mono" value={range} disabled={!c.spec.platform.metallb.enabled} onInput={(e) => setRange((e.target as HTMLInputElement).value.trim())} />
         </Field>
         <Field label="Nameservers" hint="Comma-separated; empty keeps DHCP's">
-          <input class="input mono" value={(c.spec.network.nameservers ?? []).join(', ')} placeholder="from DHCP" onInput={(e) => { const v = splitList((e.target as HTMLInputElement).value); setNet({ nameservers: v.length ? v : undefined }) }} />
+          <ListInput value={c.spec.network.nameservers} placeholder="from DHCP" onChange={(v) => setNet({ nameservers: v.length ? v : undefined })} />
         </Field>
         <Field label="NTP servers" hint="Empty uses Talos' default">
-          <input class="input mono" value={(c.spec.network.ntp ?? []).join(', ')} placeholder="time.cloudflare.com" onInput={(e) => { const v = splitList((e.target as HTMLInputElement).value); setNet({ ntp: v.length ? v : undefined }) }} />
+          <ListInput value={c.spec.network.ntp} placeholder="time.cloudflare.com" onChange={(v) => setNet({ ntp: v.length ? v : undefined })} />
         </Field>
         <div class="md:col-span-2 grid grid-cols-2 gap-4">
           <Field label="Pod CIDR" hint="Fixed for the cluster's lifetime"><input class="input mono" value={c.spec.network.podCIDR} onInput={(e) => setNet({ podCIDR: (e.target as HTMLInputElement).value.trim() })} /></Field>

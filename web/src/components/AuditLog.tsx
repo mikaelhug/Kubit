@@ -1,5 +1,6 @@
 import { useEffect, useMemo } from 'preact/hooks'
 import { fmt, type AuditEntry } from '../api'
+import { csvLine } from '../list'
 import { audit, loadAudit, refreshKey } from '../store'
 import { DataTable, type Column } from './DataTable'
 
@@ -15,7 +16,7 @@ export function AuditLog({ cluster }: { cluster?: string }) {
     { id: 'detail', header: 'Detail', text: (a) => a.detail, cell: (a) => <span class="mono text-[11px] text-muted block max-w-[640px] truncate" title={a.detail}>{a.detail}</span> },
   ], [cluster])
   const csv = () => {
-    const lines = [['at', 'actor', 'cluster', 'action', 'detail'].join(','), ...rows.map((a) => [a.at, a.actor ?? '', a.cluster, a.action, JSON.stringify(a.detail)].join(','))]
+    const lines = [csvLine(['at', 'actor', 'cluster', 'action', 'detail']), ...rows.map((a) => csvLine([a.at, a.actor ?? '', a.cluster, a.action, a.detail]))]
     const url = URL.createObjectURL(new Blob([lines.join('\n')], { type: 'text/csv' }))
     const el = document.createElement('a'); el.href = url; el.download = `kubit-audit${cluster ? '-' + cluster : ''}.csv`; el.click(); URL.revokeObjectURL(url)
   }

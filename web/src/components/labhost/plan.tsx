@@ -37,12 +37,12 @@ export function VMTable({ rows, onChange, roles }: { rows: VMRow[]; onChange: (r
     { id: 'mem', header: 'RAM (MiB)', width: '7rem', cell: (i) => num(i, 'memMiB', MIN_VM_MIB, 256) },
     { id: 'disk', header: 'Disk (GiB)', width: '6rem', cell: (i) => num(i, 'diskGiB', 8) },
     { id: 'data', header: <span title="0 = none; mounted at /var/mnt/data-1">Data (GiB)</span>, width: '6rem', cell: (i) => num(i, 'dataGiB', 0, 10) },
-    { id: 'remove', header: '', width: '2rem', align: 'right', cell: (i) => <button class="btn !px-2 !py-1" title="Remove" disabled={rows.length <= 1} onClick={() => onChange(rows.filter((_, j) => j !== i))}>✕</button> },
+    { id: 'remove', header: '', width: '2rem', align: 'right', cell: (i) => <button class="btn btn-sm" title="Remove" disabled={rows.length <= 1} onClick={() => onChange(rows.filter((_, j) => j !== i))}>✕</button> },
   ]
   return (
     <div class="flex flex-col gap-2">
       <DataTable search={false} columns={columns} rows={rows.map((_, i) => i)} rowKey={(i) => String(rows[i].key)} />
-      <div><button class="btn !py-1" onClick={() => onChange([...rows, defaultVM('worker', rows[rows.length - 1]?.memMiB)])}>+ Add VM</button></div>
+      <div><button class="btn btn-sm" onClick={() => onChange([...rows, defaultVM('worker', rows[rows.length - 1]?.memMiB)])}>+ Add VM</button></div>
     </div>
   )
 }

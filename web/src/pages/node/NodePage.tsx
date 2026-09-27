@@ -3,15 +3,18 @@ import { useLocation } from 'preact-iso'
 import { api, fmt, type Inventory, type NodeRow, type NodeSpec } from '../../api'
 import { Tabs } from '../../components/Tabs'
 import { Breadcrumbs, ErrorBox, Pill, SeenAgo } from '../../components/ui'
-import { hostName, hostOf, KindPill, TypePill } from '../../machine'
-import { clusters, connected, machineList, machines, resyncing, running, statuses } from '../../store'
+import { KindPill, TypePill } from '../../components/Machine'
+import { hostName, hostOf } from '../../machine'
+import { running } from '../../ops'
+import { clusters, live, machineList, machines, statuses } from '../../store'
 import { useLive } from '../../useLive'
 import { ActionsTab } from './Actions'
 import { HardwareTab } from './Hardware'
 import { KubernetesTab } from './Kubernetes'
 import { LogsTab } from './Logs'
 import { OverviewTab } from './Overview'
-import { ServicesTab, talosLive } from './Services'
+import { ServicesTab } from './Services'
+import { talosLive } from './talos'
 
 type TabId = 'overview' | 'hardware' | 'kubernetes' | 'services' | 'logs' | 'actions'
 
@@ -20,7 +23,6 @@ export function NodePage({ ip: ipParam, mac }: { ip?: string; mac?: string }) {
   const { route } = useLocation()
   const node = mac ? machines.value.get(mac.toLowerCase()) ?? null : machineList.value.find((n) => n.ip === ipParam) ?? null
   const ip = node?.ip ?? ipParam ?? ''
-  const loaded = connected.value && !resyncing.value
   useEffect(() => {
     if (node?.kind === 'labhost') route(`/labhosts/${node.mac}/overview`, true)
     else if (node && !mac) history.replaceState(null, '', `/machines/${node.mac}`)
@@ -59,7 +61,7 @@ export function NodePage({ ip: ipParam, mac }: { ip?: string; mac?: string }) {
         <Tabs active={shown} onSelect={(t) => setTab(t as TabId)} tabs={tabs} />
       </header>
       <div class="p-5 flex flex-col gap-4 max-w-[1300px]">
-        <ErrorBox error={!node && loaded ? `No machine ${mac ?? ipParam} is known.` : null} />
+        <ErrorBox error={!node && live.value ? `No machine ${mac ?? ipParam} is known.` : null} />
         {shown === 'overview' && <OverviewTab inv={inv} invErr={invErr} k8s={k8s} k8sErr={k8sErr} node={node} spec={spec} storage={cluster?.spec.spec.platform.longhorn?.enabled ? cluster.spec.spec.storage : undefined} />}
         {shown === 'hardware' && <HardwareTab inv={inv} invErr={invErr} node={node} />}
         {shown === 'kubernetes' && <KubernetesTab k8s={k8s} err={k8sErr} />}

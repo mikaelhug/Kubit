@@ -1,7 +1,8 @@
 import { useState } from 'preact/hooks'
 import { api, fmt, type NodeRow, type OOBConfig, type OOBInfo } from '../api'
 import { bootTalosBlocked, oobLabel } from '../machine'
-import { settings, toast, watch } from '../store'
+import { runOp, watch } from '../ops'
+import { settings, toast } from '../store'
 import { usePxeGated } from './PxeGate'
 import { ConfirmDialog, Dialog, ErrorBox, Field, Pill } from './ui'
 
@@ -14,7 +15,7 @@ export function RemoteManagement({ node }: { node: NodeRow }) {
   const cfg = node.oob
   const seed: OOBConfig = cfg ?? { ...empty, host: node.ip, user: settings.value?.amt?.user || 'admin' }
   const gated = usePxeGated(() => api.power(node.mac, 'pxe'), (r) => { setConfirm(null); watch(r) }, (m) => toast(m, 'error'))
-  const run = (action: 'on' | 'off' | 'reset' | 'cycle' | 'pxe') => action === 'pxe' ? gated.attempt('Boot into Talos') : api.power(node.mac, action).then((r) => { setConfirm(null); watch(r) }).catch((e) => toast(e.message, 'error'))
+  const run = (action: 'on' | 'off' | 'reset' | 'cycle' | 'pxe') => action === 'pxe' ? gated.attempt('Boot into Talos') : runOp(api.power(node.mac, action)).then((ok) => { if (ok) setConfirm(null) })
   const member = !!node.cluster
   const blocked = bootTalosBlocked(node)
   return (

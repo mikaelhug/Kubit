@@ -42,14 +42,3 @@ export const registryCIDROK = (cidr: string) => { const [ip, bits] = cidr.split(
 export const hasData = (c: ClusterSpec) => !!c.spec.storage?.systemDisk || c.spec.nodes.some((n) => n.dataDisks?.length)
 
 export const updateNode = (setCluster: SetCluster, i: number, patch: Partial<NodeSpec>) => setCluster((c) => ({ ...c, spec: { ...c.spec, nodes: c.spec.nodes.map((n, j) => j === i ? { ...n, ...patch } : n) } }))
-
-export const platformAddons: { key: keyof ClusterSpec['spec']['platform']; title: string; what: string; size: string }[] = [
-  { key: 'metallb', title: 'MetalLB', what: 'LoadBalancer addresses from the range, announced over ARP.', size: '~120 MiB, 1 controller + 1 speaker per node' },
-  { key: 'ingressNginx', title: 'ingress-nginx', what: 'HTTP(S) ingress controller; the default IngressClass.', size: '~250 MiB, 1 pod' },
-  { key: 'metricsServer', title: 'metrics-server', what: 'Resource metrics for kubectl top, HPA and capacity views.', size: '~100 MiB, 1 pod' },
-  { key: 'certManager', title: 'cert-manager', what: 'X.509 certificates from ACME or internal CAs.', size: '~300 MiB, 3 pods' },
-  { key: 'builds', title: 'Builds', what: 'Builds images from the apps repository into a private registry.', size: '~200 MiB idle, more while building' },
-  { key: 'flux', title: 'Flux', what: 'GitOps sync from the Git repository below.', size: '~150 MiB, 4 pods' },
-  { key: 'longhorn', title: 'Longhorn', what: 'Replicated block storage; the default StorageClass.', size: '~1 GiB, 1 manager + engine per node' },
-  { key: 'gvisor', title: 'gVisor runtime class', what: 'RuntimeClass "gvisor" for sandboxed pods.', size: 'no running pods' },
-]

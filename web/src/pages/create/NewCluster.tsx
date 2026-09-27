@@ -1,9 +1,10 @@
 import { useState } from 'preact/hooks'
 import { api, type ClusterSpec } from '../../api'
-import { OperationView } from '../../components/ActivityDrawer'
+import { OperationView } from '../../components/OperationView'
 import { ErrorBox } from '../../components/ui'
 import { isDnsLabel } from '../../net'
-import { settings, watch } from '../../store'
+import { watch } from '../../ops'
+import { settings } from '../../store'
 import { DesignStep } from './Design'
 import type { Draft } from './draft'
 import { MachinesStep } from './Machines'
@@ -52,7 +53,7 @@ export function NewCluster() {
     return (
       <div class="p-6 max-w-[1100px] flex flex-col gap-3">
         <h1 class="text-xl font-semibold">Creating {draft.cluster.metadata.name}</h1>
-        <div class="panel h-[65vh] flex flex-col overflow-hidden"><OperationView id={createOp} /></div>
+        <div class="panel h-[65vh] flex flex-col overflow-hidden"><OperationView key={createOp} id={createOp} /></div>
         <div class="flex gap-2 items-center">
           <a href={`/clusters/${draft.cluster.metadata.name}/overview`} class="btn btn-primary">Open cluster</a>
           <span class="text-[12px] text-muted">Keeps running if you leave; it stays in the Activity drawer.</span>

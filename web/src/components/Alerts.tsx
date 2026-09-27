@@ -16,7 +16,7 @@ function objectLink(e: HealthEvent): string | null {
 function RunbookPanel({ rb }: { rb: Runbook }) {
   return (
     <div class="mx-4 mb-3 rounded-[var(--r)] border border-border bg-panel-2/60 px-4 py-3 text-[13px] flex flex-col gap-2">
-      <div><span class="font-medium">{rb.title}</span> <span class="text-muted">— {rb.why}</span></div>
+      <span class="font-medium">{rb.title}</span>
       <ol class="list-decimal pl-5 flex flex-col gap-1">
         {rb.steps.map((s) => <li key={s.text}>{s.text} {s.link && <a href={s.link.href} class="text-accent hover:underline whitespace-nowrap">{s.link.label} →</a>}</li>)}
       </ol>
@@ -37,8 +37,8 @@ export function EventRow({ e, onAck }: { e: HealthEvent; onAck?: () => void }) {
         <span class={`min-w-0 truncate ${e.acked ? 'text-muted' : ''}`} title={e.message}>{e.message}</span>
         {link && <a href={link} class="text-[11px] text-accent hover:underline shrink-0">open</a>}
         <span class="ml-auto mono text-[11px] text-muted">{e.kind}</span>
-        {rb && <button class={`btn btn-xs ${open ? 'border-accent' : ''}`} onClick={() => setOpen(!open)}>{open ? 'Hide' : 'What to do'}</button>}
-        {onAck && <button class="btn btn-xs" onClick={onAck}>Ack</button>}
+        {rb && <button class={`btn btn-sm ${open ? 'border-accent' : ''}`} onClick={() => setOpen(!open)}>{open ? 'Hide' : 'What to do'}</button>}
+        {onAck && <button class="btn btn-sm" onClick={onAck}>Ack</button>}
       </div>
       {open && rb && <RunbookPanel rb={rb} />}
     </div>

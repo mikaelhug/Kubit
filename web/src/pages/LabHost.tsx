@@ -4,10 +4,12 @@ import { fmt, type NodeRow } from '../api'
 import { AddVMsDialog, HostAlerts, HostMetrics, HostStateNotice, HostSystem, HostVMs, MacSystem, ReleaseHostDialog } from '../components/labhost'
 import { RemoteManagement } from '../components/RemoteManagement'
 import { Tabs } from '../components/Tabs'
+import { identityRows } from '../components/Machine'
 import { Action, AlertPill, Breadcrumbs, KeyValue, Pill, Section, SeenAgo } from '../components/ui'
-import { hostName, labHostKey, labOffline, labState, lastSeenOf, modelOf, onMac, vmsOf } from '../machine'
+import { hostName, labHostKey, labOffline, labState, modelOf, onMac, vmsOf } from '../machine'
 import { subnet24 } from '../net'
-import { connected, machines, openAlerts, resyncing, running } from '../store'
+import { running } from '../ops'
+import { live, machines, openAlerts } from '../store'
 import { stateTone } from '../tone'
 
 type TabId = 'overview' | 'vms' | 'actions'
@@ -16,9 +18,8 @@ const tabs: { id: TabId; label: string }[] = [{ id: 'overview', label: 'Overview
 export function LabHostPage({ mac, tab = 'overview' }: { mac: string; tab?: string }) {
   const { route } = useLocation()
   const host = machines.value.get(mac.toLowerCase()) ?? null
-  const loaded = connected.value && !resyncing.value
   useEffect(() => { if (host && !host.labhost) route(`/machines/${host.mac}`, true) }, [host?.mac, !!host?.labhost])
-  if (!host || !host.labhost) return <div class="p-8 text-muted">{!host && loaded ? `No lab host ${mac} is known.` : 'Loading'}</div>
+  if (!host || !host.labhost) return <div class="p-8 text-muted">{!host && live.value ? `No lab host ${mac} is known.` : 'Loading'}</div>
   const lh = host.labhost
   const shown = (tabs.some((t) => t.id === tab) ? tab : 'overview') as TabId
   const key = labHostKey(host.mac)
@@ -63,9 +64,7 @@ function OverviewTab({ host, busy }: { host: NodeRow; busy: boolean }) {
           <div class="panel p-3">
             <KeyValue rows={[
               ['Model', modelOf(host)],
-              ['Identity', <span class="mono text-[12px]">{host.mac}{host.uuid ? ` · ${host.uuid}` : ''}{host.serial ? ` · ${host.serial}` : ''}</span>],
-              ['Addresses seen', <span class="mono text-[12px]">{[...new Set([...(host.ipsSeen ?? []), host.ip])].filter(Boolean).join(' → ') || '—'}</span>],
-              ['Last seen', fmt.datetime(lastSeenOf(host))],
+              ...identityRows(host),
               ['Network', onMac(lh) ? `vmnet ${subnet24(host.ip)}` : lh.network === 'routed' ? 'routed (192.168.123.0/24)' : `bridged on ${lh.capacity.bridge || 'br0'}`],
             ]} />
           </div>

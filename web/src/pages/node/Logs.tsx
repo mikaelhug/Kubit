@@ -2,7 +2,7 @@ import { useState } from 'preact/hooks'
 import { logsUrl, type NodeRow } from '../../api'
 import { LogStream } from '../../components/LogStream'
 import { Section } from '../../components/ui'
-import { useServices } from './Services'
+import { useServices } from './talos'
 
 export function LogsTab({ ip, node }: { ip: string; node: NodeRow | null }) {
   const { data: services } = useServices(ip, node)

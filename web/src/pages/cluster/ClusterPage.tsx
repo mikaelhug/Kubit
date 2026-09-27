@@ -5,7 +5,8 @@ import { Tabs } from '../../components/Tabs'
 import { ClusterPill, ErrorBox, Pill, SeenAgo } from '../../components/ui'
 import { setIn } from '../../maps'
 import { sectionList, type Section } from '../../routes'
-import { clusters, loadHealth, runningFor, statuses } from '../../store'
+import { runningFor } from '../../ops'
+import { clusters, loadHealth, statuses } from '../../store'
 import { useLive } from '../../useLive'
 import { Addons } from './Addons'
 import { Backups } from './Backups'
@@ -24,8 +25,10 @@ export function ClusterPage({ name, section = 'overview', sub }: { name: string;
   const { data: fetched, error } = useLive(() => api.status(name), [name])
   useEffect(() => { loadHealth(name) }, [name])
   const cluster = clusters.value.find((c) => c.name === name)
-  const status: Status | null = statuses.value.get(name) ?? fetched
-  if (!cluster) return <div class="p-8 text-muted">{error ?? `Cluster ${name} is not known.`}</div>
+  const pushed = statuses.value.get(name)
+  const status: Status | null = pushed ?? fetched
+  const statusError = pushed ? null : error
+  if (!cluster) return <div class="p-8 text-muted">{statusError ?? `Cluster ${name} is not known.`}</div>
   const ctx: ClusterCtx = { name, cluster, status }
   const runningHere = runningFor(name).length
 
@@ -42,7 +45,7 @@ export function ClusterPage({ name, section = 'overview', sub }: { name: string;
         <Tabs active={section} tabs={sectionList.map(([id, label]) => ({ id, label, href: `/clusters/${name}/${id}`, badge: id === 'overview' && runningHere ? runningHere : undefined }))} />
       </header>
       <div class="p-5 flex flex-col gap-4 max-w-[1300px]">
-        <ErrorBox error={error} />
+        <ErrorBox error={statusError} />
         {renderSection(section as Section | 'operations', sub, ctx)}
       </div>
     </div>
@@ -75,7 +78,7 @@ function CheckNow({ name }: { name: string }) {
       setIn(statuses, name, { ...(prev ?? st), ...st, health: prev?.health, openAlerts: prev?.openAlerts, lastContactAt: contact })
     }).catch(() => {}).finally(() => setBusy(false))
   }
-  return <button class="btn btn-xs" disabled={busy} title="Probe the Talos and Kubernetes APIs now" onClick={check}>{busy ? 'Checking' : 'Check now'}</button>
+  return <button class="btn btn-sm" disabled={busy} title="Probe the Talos and Kubernetes APIs now" onClick={check}>{busy ? 'Checking' : 'Check now'}</button>
 }
 
 function Redirect({ to }: { to: string }) {

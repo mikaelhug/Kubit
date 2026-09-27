@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { ipAt, isDnsLabel, staticNetwork, subnet24 } from './net'
+import { ipAt, isDnsLabel, nextHostname, nodeHostname, staticNetwork, subnet24 } from './net'
 
 describe('isDnsLabel', () => {
   it('accepts lowercase labels', () => {
@@ -23,5 +23,17 @@ describe('address helpers', () => {
   it('walk a range across an octet', () => {
     expect(ipAt('192.168.1.254-192.168.2.4', 3)).toBe('192.168.2.1')
     expect(ipAt('bogus', 0)).toBe('')
+  })
+})
+
+describe('hostnames', () => {
+  it('name nodes after cluster and pool', () => {
+    expect(nodeHostname('lab', 'controlplane', 1)).toBe('lab-cp-01')
+    expect(nodeHostname('lab', 'gpu', 12)).toBe('lab-gpu-12')
+  })
+
+  it('skip names already taken', () => {
+    expect(nextHostname('lab', 'worker', 1, ['lab-worker-01'])).toBe('lab-worker-02')
+    expect(nextHostname('lab', 'worker', 1, ['lab-worker-02', 'lab-worker-03'])).toBe('lab-worker-04')
   })
 })

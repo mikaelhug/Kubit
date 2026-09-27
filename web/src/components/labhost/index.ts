@@ -1,2 +1,5 @@
 export * from './dialogs'
-export * from './panels'
+export * from './metrics'
+export * from './state'
+export * from './system'
+export * from './vms'

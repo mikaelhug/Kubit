@@ -1,8 +1,9 @@
 import type { ComponentChildren } from 'preact'
 import { fmt, type ClusterSpec, type Inventory, type NodeDetail, type NodeRow, type NodeSpec } from '../../api'
 import { Elapsed } from '../../components/Time'
+import { identityRows } from '../../components/Machine'
 import { KeyValue, Meter, Notice, Pill, Section } from '../../components/ui'
-import { hostName, hostOf, kindDetail, kindLabel, lastSeenOf, modelOf } from '../../machine'
+import { hostName, hostOf, kindDetail, kindLabel, modelOf } from '../../machine'
 
 type Row = [string, ComponentChildren]
 
@@ -13,9 +14,7 @@ export function OverviewTab({ inv, invErr, k8s, k8sErr, node, spec, storage }: {
     ['Kind', `${kindLabel[node.kind]}${kindDetail(node) ? ` · ${kindDetail(node)}` : ''}`],
     ['Model', [modelOf(node), inv?.platform].filter(Boolean).join(' · ')],
     ...(host ? [['Lab host', <a class="text-accent hover:underline" href={`/labhosts/${host.mac}/overview`}>{hostName(host)}</a>] as Row] : []),
-    ['Identity', <span class="mono text-[12px]">{node.mac}{node.uuid ? ` · ${node.uuid}` : ''}{node.serial ? ` · ${node.serial}` : ''}</span>],
-    ['Addresses seen', <span class="mono text-[12px]">{[...new Set([...(node.ipsSeen ?? []), node.ip])].filter(Boolean).join(' → ') || '—'}</span>],
-    ['Last seen', fmt.datetime(lastSeenOf(node))],
+    ...identityRows(node),
     ...(spec ? [['Install disk', <span class="mono">{spec.installDisk?.path ?? (spec.installDisk?.selector ? JSON.stringify(spec.installDisk.selector) : 'pool policy')}</span>] as Row] : []),
     ...(spec?.dataDisks?.length ? [['Data disks', <span class="mono">{spec.dataDisks.map((d, i) => `${d} → /var/mnt/data-${i + 1}`).join(' · ')}</span>] as Row] : []),
     ...(spec && !spec.dataDisks?.length && storage?.systemDisk ? [['System disk', <span class="mono">/var {storage.ephemeralSize ?? '40GiB'} · rest → /var/mnt/data-system</span>] as Row] : []),

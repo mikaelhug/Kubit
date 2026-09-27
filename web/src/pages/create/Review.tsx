@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'preact/hooks'
+import { useEffect, useMemo, useRef, useState } from 'preact/hooks'
 import { api, type NodeSpec } from '../../api'
 import { DataTable, type Column } from '../../components/DataTable'
 import { Tabs } from '../../components/Tabs'
@@ -17,10 +17,13 @@ export function ReviewStep({ draft, setCluster, patch, onCreate, busy }: { draft
   const [lintErr, setLintErr] = useState<string | null>(null)
   const [linting, setLinting] = useState(false)
   const key = useMemo(() => JSON.stringify(c), [c])
+  const lintSeq = useRef(0)
   useEffect(() => {
+    const seq = ++lintSeq.current
+    const current = () => seq === lintSeq.current
     setLinting(true)
-    api.lint(key).then((r) => { patch({ warnings: r.warnings ?? [] }); setYaml(r.yaml); setDirty(false); setLintErr(null) })
-      .catch((e) => setLintErr(e.message)).finally(() => setLinting(false))
+    api.lint(key).then((r) => { if (current()) { patch({ warnings: r.warnings ?? [] }); setYaml(r.yaml); setDirty(false); setLintErr(null) } })
+      .catch((e) => { if (current()) setLintErr(e.message) }).finally(() => { if (current()) setLinting(false) })
   }, [key])
   const applyYaml = () => api.validate(yaml).then((v) => { setCluster(() => v.cluster); toast('Declaration updated from YAML', 'good') }).catch((e) => setLintErr(e.message))
   const errors = draft.warnings.filter((w) => w.level !== 'info')

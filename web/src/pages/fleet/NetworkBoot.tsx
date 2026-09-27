@@ -28,7 +28,7 @@ export function NetworkBoot() {
         {st && !st.running && (
           <Notice tone="muted">
             <div class="flex flex-col gap-2">
-              <span>Not running; start it in a terminal (ports 67/69 need root):</span>
+              <span>Not running; start it with:</span>
               <Code text={st.command ?? ''} />
               <span class="text-muted">As a service: <span class="mono select-all">{st.serviceCommand}</span></span>
             </div>
@@ -38,9 +38,9 @@ export function NetworkBoot() {
           <div class="grid grid-cols-1 lg:grid-cols-2 gap-4">
             <div class="panel p-3">
               <KeyValue rows={[
-                ['State', <span class="flex items-center gap-2"><Pill tone="good">running since {fmt.when(st.startedAt ?? '')}</Pill>{st.httpOnly && <Pill tone="warn" title="No DHCP or TFTP; boot machines by hand from the boot assets">HTTP only</Pill>}</span>],
-                ['Interface', <span class="flex flex-col"><span class="mono">{st.interface} ({st.ip})</span><span class="text-[11px] text-muted">Clients must share this segment.</span></span>],
-                ['Boot script', <span class="mono">http://{st.ip}:{st.httpPort}/boot.ipxe</span>],
+                ['State', <span class="flex items-center gap-2"><Pill tone="good">running since {fmt.when(st.startedAt ?? '')}</Pill>{st.httpOnly && <Pill tone="warn" title="No DHCP or TFTP; boot machines by hand from the boot assets">HTTP only</Pill>}{!st.ip && <Pill tone="bad">no address</Pill>}</span>],
+                ['Interface', <span class="flex flex-col"><span class="mono">{st.ip ? `${st.interface} (${st.ip})` : st.interface}</span><span class="text-[11px] text-muted">Clients must share this segment.</span></span>],
+                ['Boot script', st.ip ? <span class="mono">http://{st.ip}:{st.httpPort}/boot.ipxe</span> : <span class="text-muted">No address on {st.interface}</span>],
                 ['Talos', <span class="mono">{st.talosVersion}</span>],
                 ['Schematic', <span class="mono text-[12px] break-all">{st.schematicId}</span>],
               ]} />
@@ -53,7 +53,7 @@ export function NetworkBoot() {
         )}
       </Section>
       {st?.running && (
-        <Section title={`Machines seen (${st.boots?.length ?? 0})`} help="After the kernel stage a machine appears in Inventory within a minute.">
+        <Section title={`Machines seen (${st.boots?.length ?? 0})`}>
           <DataTable id="pxe" columns={cols} rows={st.boots ?? []} rowKey={(b) => b.mac} defaultSort={{ id: 'last', dir: 'desc' }} empty="No PXE requests yet." />
         </Section>
       )}

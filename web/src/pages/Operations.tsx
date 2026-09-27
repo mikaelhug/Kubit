@@ -1,13 +1,14 @@
 import { useEffect, useMemo, useState } from 'preact/hooks'
-import { useLocation } from 'preact-iso'
 import { fmt, type Operation } from '../api'
-import { OperationView } from '../components/ActivityDrawer'
 import { AuditLog } from '../components/AuditLog'
 import { DataTable, type Column } from '../components/DataTable'
+import { OperationView } from '../components/OperationView'
 import { Tabs } from '../components/Tabs'
 import { Elapsed } from '../components/Time'
 import { Breadcrumbs, Pill, Section } from '../components/ui'
-import { clusters, loadOperationLog, operations, opList, reloadOperations } from '../store'
+import { ensureLog, operations, opList, reloadOperations } from '../ops'
+import { useQueryParams } from '../query'
+import { clusters, connected } from '../store'
 import { stateTone } from '../tone'
 
 const columns: Column<Operation>[] = [
@@ -22,14 +23,13 @@ const columns: Column<Operation>[] = [
 
 export function Operations({ id }: { id?: string }) {
   useEffect(() => { reloadOperations() }, [])
-  const { query } = useLocation()
-  const [cluster, setCluster] = useState(query.cluster ?? '')
-  const [view, setView] = useState<'operations' | 'audit'>(query.view === 'audit' ? 'audit' : 'operations')
-  useEffect(() => { setCluster(query.cluster ?? '') }, [query.cluster])
-  useEffect(() => { if (id) loadOperationLog(Number(id)).catch(() => {}) }, [id])
+  const [query, setQuery] = useQueryParams()
+  const cluster = query.cluster ?? ''
+  const view = query.view === 'audit' ? 'audit' : 'operations'
+  const [failed, setFailed] = useState<string | null>(null)
+  useEffect(() => { setFailed(null); if (id) ensureLog(Number(id)).catch((e) => setFailed(e.status === 404 ? `Operation #${id} not found.` : e.message)) }, [id, connected.value])
   const all = opList.value
   const rows = useMemo(() => all.filter((o) => !cluster || o.cluster === cluster), [all, cluster])
-  const url = (c: string, v: string) => { const p = new URLSearchParams(); if (c) p.set('cluster', c); if (v === 'audit') p.set('view', v); const q = p.toString(); return q ? `/operations?${q}` : '/operations' }
 
   if (id) {
     const selected = operations.value.get(Number(id))
@@ -43,11 +43,11 @@ export function Operations({ id }: { id?: string }) {
               <Pill tone={stateTone(selected.status)}>{selected.status}</Pill>
               {selected.cluster && <a href={`/clusters/${selected.cluster}/overview`} class="text-accent hover:underline">{selected.cluster}</a>}
               <span class="text-[13px] text-muted">{fmt.datetime(selected.startedAt)} · <Elapsed from={selected.startedAt} to={selected.finishedAt} /></span>
-              {selected.kind === 'platform.plan' && selected.status === 'done' && <a href={`/clusters/${selected.cluster}/addons/${selected.id}`} class="btn !py-1">Review plan</a>}
+              {selected.kind === 'platform.plan' && selected.status === 'done' && <a href={`/clusters/${selected.cluster}/addons/${selected.id}`} class="btn btn-sm">Review plan</a>}
             </div>
-            <div class="panel h-[70vh] flex flex-col overflow-hidden"><OperationView id={selected.id} /></div>
+            <div class="panel h-[70vh] flex flex-col overflow-hidden"><OperationView key={selected.id} id={selected.id} /></div>
           </>
-        ) : <div class="text-muted">Operation #{id} not found.</div>}
+        ) : <div class="text-muted">{failed ?? 'Loading'}</div>}
       </div>
     )
   }
@@ -56,12 +56,12 @@ export function Operations({ id }: { id?: string }) {
     <div class="p-6 flex flex-col gap-4">
       <Section title="Activity" help="What Kubit ran, and who did what."
         actions={
-          <select class="input !py-1 w-auto" value={cluster} onChange={(e) => { const v = (e.target as HTMLSelectElement).value; setCluster(v); history.replaceState(null, '', url(v, view)) }} aria-label="Filter by cluster">
+          <select class="input !py-1 w-auto" value={cluster} onChange={(e) => setQuery({ cluster: (e.target as HTMLSelectElement).value })} aria-label="Filter by cluster">
             <option value="">All clusters</option>
             {clusters.value.map((c) => <option key={c.name} value={c.name}>{c.name}</option>)}
           </select>
         }>
-        <Tabs active={view} onSelect={(v) => { setView(v as 'operations' | 'audit'); history.replaceState(null, '', url(cluster, v)) }} tabs={[{ id: 'operations', label: 'Operations', badge: rows.length }, { id: 'audit', label: 'Audit' }]} />
+        <Tabs active={view} onSelect={(v) => setQuery({ view: v === 'audit' ? v : undefined })} tabs={[{ id: 'operations', label: 'Operations', badge: rows.length }, { id: 'audit', label: 'Audit' }]} />
         {view === 'operations' && <DataTable id="ops" columns={columns} rows={rows} rowKey={(o) => String(o.id)} defaultSort={{ id: 'id', dir: 'desc' }} />}
         {view === 'audit' && <AuditLog cluster={cluster || undefined} />}
       </Section>

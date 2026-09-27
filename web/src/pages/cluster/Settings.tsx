@@ -1,12 +1,14 @@
 import type { ComponentChildren } from 'preact'
-import { useEffect, useState } from 'preact/hooks'
-import { api, fmt, type Pool } from '../../api'
+import { useState } from 'preact/hooks'
+import { api, fmt } from '../../api'
 import { editableForm, submittedForm } from '../../cluster'
 import { PoolsEditor } from '../../components/PoolsEditor'
 import { Tabs } from '../../components/Tabs'
-import { ErrorBox, Field, Section } from '../../components/ui'
+import { ErrorBox, Field, MovedNotice, Section } from '../../components/ui'
 import { WarningLine } from '../../components/WarningLine'
-import { toast, watch } from '../../store'
+import { runOp } from '../../ops'
+import { toast } from '../../store'
+import { useDraft } from '../../useDraft'
 import { useLive } from '../../useLive'
 import type { ClusterCtx } from './ClusterPage'
 
@@ -14,26 +16,25 @@ export function Settings({ ctx }: { ctx: ClusterCtx }) {
   const { name, cluster } = ctx
   const spec = cluster.spec.spec
   const [tab, setTab] = useState<'form' | 'yaml'>('form')
-  const [yaml, setYaml] = useState('')
-  const [dirty, setDirty] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  const [form, setForm] = useState(() => editableForm(spec))
+  const f = useDraft(editableForm(spec), `cluster:${name}:form`)
   const { data: saved, error: loadError } = useLive(() => api.clusterYaml(name), [name], [], { refresh: [cluster.updatedAt] })
-  useEffect(() => { if (saved !== null) { setYaml(saved); setDirty(false) } }, [saved])
-  useEffect(() => { setForm(editableForm(spec)) }, [name, cluster.updatedAt])
-  const formDirty = JSON.stringify(form) !== JSON.stringify(editableForm(spec))
+  const y = useDraft(saved, `cluster:${name}:yaml`)
+  const form = f.draft ?? editableForm(spec)
+  const yaml = y.draft ?? ''
   const cps = spec.nodes.filter((n) => n.role === 'controlplane').length
-  const set = (patch: Partial<typeof form>) => setForm({ ...form, ...patch })
+  const set = (patch: Partial<typeof form>) => f.set({ ...form, ...patch })
   const text = (key: keyof typeof form) => (e: Event) => set({ [key]: (e.target as HTMLInputElement).value } as Partial<typeof form>)
   const oidc = (patch: Partial<typeof form.oidc>) => set({ oidc: { ...form.oidc, ...patch } })
   const saveForm = () => api.saveClusterForm(name, submittedForm(form))
-    .then(() => { setError(null); toast('Saved; apply node configs to push it', 'good') }).catch((e) => setError(e.message))
-  const apply = () => api.applyCluster(name).then((r) => watch(r)).catch((e) => setError(e.message))
+    .then(() => { f.commit(); setError(null); toast('Saved; apply node configs to push it', 'good') }).catch((e) => setError(e.message))
+  const apply = () => runOp(api.applyCluster(name))
 
   return (
     <div class="flex flex-col gap-5">
       <Section title="Declaration" actions={<span class="text-[12px] text-muted">created {fmt.date(cluster.createdAt)} · changed {fmt.when(cluster.updatedAt)}</span>} help="Save stores cluster.yaml; Apply node configs pushes it to the nodes.">
         <ErrorBox error={error ?? loadError} />
+        <MovedNotice show={tab === 'form' ? f.moved : y.moved} onDiscard={tab === 'form' ? f.discard : y.discard} />
         <Tabs active={tab} onSelect={(t) => setTab(t as 'form' | 'yaml')} tabs={[{ id: 'form', label: 'Form' }, { id: 'yaml', label: 'YAML' }]} />
         {tab === 'form' && (
           <div class="flex flex-col gap-4">
@@ -65,21 +66,21 @@ export function Settings({ ctx }: { ctx: ClusterCtx }) {
               <Field label="Admin group" hint="Bound to cluster-admin"><input class="input mono" value={form.oidc.adminGroup ?? ''} onInput={(e) => oidc({ adminGroup: (e.target as HTMLInputElement).value.trim() })} /></Field>
             </Group>
             <div class="flex items-center gap-2">
-              <button class="btn btn-primary" disabled={!formDirty} onClick={saveForm}>Save</button>
-              <button class="btn" disabled={formDirty} title={formDirty ? 'Save first' : 'Regenerate and apply every machine config from the saved declaration'} onClick={apply}>Apply node configs</button>
-              {formDirty && <span class="text-[12px] text-warn">unsaved changes</span>}
+              <button class="btn btn-primary" disabled={!f.dirty} onClick={saveForm}>Save</button>
+              <button class="btn" disabled={f.dirty} title={f.dirty ? 'Save first' : 'Regenerate and apply every machine config from the saved declaration'} onClick={apply}>Apply node configs</button>
+              {f.dirty && <span class="text-[12px] text-warn">unsaved changes</span>}
             </div>
           </div>
         )}
         {tab === 'yaml' && (
           <>
-            <textarea class="input mono !text-[12px] h-[420px]" value={yaml} spellcheck={false} onInput={(e) => { setYaml((e.target as HTMLTextAreaElement).value); setDirty(true) }} />
+            <textarea class="input mono !text-[12px] h-[420px]" value={yaml} spellcheck={false} onInput={(e) => y.set((e.target as HTMLTextAreaElement).value)} />
             <div class="flex gap-2 items-center">
-              <button class="btn" onClick={() => api.validate(yaml).then((v) => { setYaml(v.yaml); setError(null); toast('Valid') }).catch((e) => setError(e.message))}>Validate</button>
-              <button class="btn btn-primary" disabled={!dirty} onClick={() => api.saveClusterYaml(name, yaml).then((v) => { setYaml(v.yaml); setDirty(false); setError(null); toast('Saved', 'good') }).catch((e) => setError(e.message))}>Save</button>
-              <button class="btn" disabled={dirty} onClick={apply}>Apply node configs</button>
+              <button class="btn" onClick={() => api.validate(yaml).then((v) => { y.set(v.yaml); setError(null); toast('Valid') }).catch((e) => setError(e.message))}>Validate</button>
+              <button class="btn btn-primary" disabled={!y.dirty} onClick={() => api.saveClusterYaml(name, yaml).then((v) => { y.commit(v.yaml); setError(null); toast('Saved', 'good') }).catch((e) => setError(e.message))}>Save</button>
+              <button class="btn" disabled={y.dirty} onClick={apply}>Apply node configs</button>
               <a href={`/clusters/${name}/addons`} class="btn">Plan add-ons</a>
-              {dirty && <span class="text-[12px] text-warn">unsaved changes</span>}
+              {y.dirty && <span class="text-[12px] text-warn">unsaved changes</span>}
             </div>
           </>
         )}
@@ -101,17 +102,18 @@ function Group({ title, help, children }: { title: string; help?: string; childr
 function PoolsSection({ ctx }: { ctx: ClusterCtx }) {
   const { name, cluster } = ctx
   const spec = cluster.spec.spec
-  const [pools, setPools] = useState<Pool[]>(spec.pools ?? [])
+  const p = useDraft(spec.pools ?? [], `cluster:${name}:pools`)
+  const pools = p.draft ?? []
   const [error, setError] = useState<string | null>(null)
-  useEffect(() => { setPools(spec.pools ?? []) }, [cluster.updatedAt])
   const { data: warnings } = useLive(() => api.lint(JSON.stringify(cluster.spec)).then((r) => r.warnings), [name], [], { onError: 'silent', refresh: [cluster.updatedAt] })
-  const dirty = JSON.stringify(pools) !== JSON.stringify(spec.pools ?? [])
-  const save = () => api.savePools(name, pools).then(() => { setError(null); toast('Pools saved; apply node configs to push labels and taints', 'good') }).catch((e) => setError(e.message))
+  const dirty = p.dirty
+  const save = () => api.savePools(name, pools).then((saved) => { p.commit(saved); setError(null); toast('Pools saved; apply node configs to push labels and taints', 'good') }).catch((e) => setError(e.message))
   return (
     <Section title="Pools" help="A pool is a class of nodes: role, labels, taints, extensions, disk policy." actions={<button class="btn btn-primary" disabled={!dirty} onClick={save}>Save pools</button>}>
       <ErrorBox error={error} />
+      <MovedNotice show={p.moved} onDiscard={p.discard} />
       {warnings && warnings.length > 0 && <div class="flex flex-col gap-1">{warnings.map((w, i) => <WarningLine key={`${w.code}:${w.node ?? ''}:${i}`} w={w} />)}</div>}
-      <PoolsEditor pools={pools} onChange={setPools} inUse={(p) => spec.nodes.filter((n) => n.pool === p).length} defaultExtensions={spec.extensions} />
+      <PoolsEditor pools={pools} onChange={p.set} inUse={(p) => spec.nodes.filter((n) => n.pool === p).length} defaultExtensions={spec.extensions} />
       {dirty && <span class="text-[12px] text-warn">unsaved changes</span>}
     </Section>
   )

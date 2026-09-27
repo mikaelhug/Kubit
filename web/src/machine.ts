@@ -1,6 +1,6 @@
 import { api, fmt, type Inventory, type LabHost, type LabUpdates, type LabVM, type MachineKind, type NodeRow } from './api'
 import { clusters, machines, statuses, toast } from './store'
-import { ConfirmDialog, Pill } from './components/ui'
+import { later } from './time'
 import { stateTone, type Tone } from './tone'
 
 export const kindLabel: Record<MachineKind, string> = {
@@ -12,7 +12,7 @@ export const kindLabel: Record<MachineKind, string> = {
   unbooted: 'not running Talos',
 }
 
-function kindTone(m: NodeRow): Tone {
+export function kindTone(m: NodeRow): Tone {
   switch (m.kind) {
     case 'member': case 'maintenance': return 'good'
     case 'labhost': return stateTone(labState(m.labhost) || 'labhost')
@@ -32,7 +32,7 @@ export function lastSeenOf(m: NodeRow) {
   if (m.labhost?.metrics?.at) return m.labhost.metrics.at
   const st = m.cluster ? statuses.value.get(m.cluster) : undefined
   const contact = st?.nodes.find((n) => n.hostname === m.hostname)?.talosReachable ? st.lastContactAt : undefined
-  return contact && contact > m.lastSeen ? contact : m.lastSeen
+  return contact && later(contact, m.lastSeen) ? contact : m.lastSeen
 }
 export function onMac(lh?: LabHost | null) { return lh?.driver === 'vfkit' }
 export function hostOf(m?: NodeRow | null) { return m?.host ? machines.value.get(m.host.toLowerCase()) : undefined }
@@ -89,29 +89,8 @@ export function kindDetail(m: NodeRow) { return m.kind === 'labhost' ? labState(
 
 export function readyClusters() { return clusters.value.filter((c) => c.state === 'ready' || c.state === 'bootstrapped') }
 
-export function adopt(m: NodeRow, route: (url: string) => void) {
-  const ready = readyClusters()
-  if (ready.length === 0) { route('/clusters/new'); return }
-  const target = ready.length === 1 ? ready[0].name : prompt(`Adopt ${m.ip} into which cluster? (${ready.map((c) => c.name).join(', ')})`, ready[0].name)
-  if (target && ready.some((c) => c.name === target)) route(`/clusters/${target}/nodes?adopt=${m.ip}`)
-}
+export const adoptHref = (cluster: string, m: NodeRow) => `/clusters/${cluster}/nodes?adopt=${m.ip}`
 
 export function wake(mac: string) {
   return api.wake(mac).then(() => toast('Magic packet sent', 'good')).catch((e) => toast(e.message, 'error'))
-}
-
-export function RetireDialog({ m, onClose, onDone }: { m: NodeRow; onClose: () => void; onDone: () => void }) {
-  return <ConfirmDialog title={`Retire ${m.hostname || m.mac}`} action="Retire" tone="danger" onClose={onClose} onConfirm={() => api.retireMachine(m.mac).then(onDone).catch((e) => toast(e.message, 'error'))}
-    impact={<p>Deletes the record for <span class="mono">{m.mac}</span>; a scan finds it again while it is online.</p>} />
-}
-
-export function KindPill({ m }: { m: NodeRow }) {
-  const detail = kindDetail(m)
-  return <Pill tone={kindTone(m)} title={`state ${m.state}`}>{kindLabel[m.kind]}{detail && detail !== m.kind ? ` · ${detail}` : ''}</Pill>
-}
-
-export function TypePill({ m }: { m?: NodeRow | null }) {
-  const form = typeOf(m)
-  const title = { 'lab host': onMac(m?.labhost) ? 'This Mac, running Talos VMs' : 'KVM host Kubit installed', 'lab VM': `Talos VM on lab host ${hostName(hostOf(m)) || m?.host}`, VM: 'Virtual machine', metal: 'Bare metal' }[form]
-  return <Pill tone={form === 'metal' ? 'muted' : 'info'} title={title}>{form}</Pill>
 }

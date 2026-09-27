@@ -10,3 +10,5 @@ export function nowEvery(ms: number) {
   if (!s) { s = computed(() => Math.floor(now.value / ms) * ms); coarse.set(ms, s) }
   return s.value
 }
+
+export const today = computed(() => new Date(now.value).toDateString())

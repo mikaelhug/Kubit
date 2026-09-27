@@ -1,6 +1,7 @@
 import { Fragment } from 'preact'
 import { fmt } from '../../api'
-import { platformAddons, topologyText, type Draft } from './draft'
+import { addonCatalog } from '../../addons'
+import { topologyText, type Draft } from './draft'
 
 export function Summary({ draft }: { draft: Draft }) {
   const c = draft.cluster
@@ -21,7 +22,7 @@ export function Summary({ draft }: { draft: Draft }) {
     const dataNodes = c.spec.nodes.filter((n) => n.dataDisks?.length).length
     if (data) rows.push(['Data disks', `${data} on ${dataNodes} node${dataNodes === 1 ? '' : 's'}`])
     rows.push(['Talos', `${c.spec.talosVersion} · k8s ${c.spec.kubernetesVersion}`])
-    const on = draft.skipPlatform ? [] : platformAddons.filter((a) => c.spec.platform[a.key].enabled).map((a) => a.title)
+    const on = draft.skipPlatform ? [] : addonCatalog.filter((a) => c.spec.platform[a.key].enabled).map((a) => a.name)
     rows.push(['Add-ons', on.length ? on.join(', ') : draft.skipPlatform ? 'skipped' : 'none'])
     if (c.spec.platform.metallb.enabled && !draft.skipPlatform) rows.push(['MetalLB', c.spec.platform.metallb.range ?? '—'])
   }

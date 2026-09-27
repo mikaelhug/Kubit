@@ -1,13 +1,19 @@
 import { fmt } from '../api'
-import { now } from '../clock'
+import { now, nowEvery } from '../clock'
 
 export function Ago({ iso, fresh, bare }: { iso?: string; fresh?: string; bare?: boolean }) {
   if (!iso) return null
-  const sec = (now.value - Date.parse(iso)) / 1000
+  const at = Date.parse(iso)
+  const minute = nowEvery(60_000)
+  const sec = ((minute - at >= 60_000 ? minute : now.value) - at) / 1000
   if (fresh && sec < 60) return <>{fresh}</>
   return <>{bare ? fmt.age(sec) : `${fmt.age(sec)} ago`}</>
 }
 
 export function Elapsed({ from, to }: { from?: string; to?: string }) {
   return <>{fmt.duration(from, to, to ? undefined : now.value)}</>
+}
+
+export function Age({ at, fallback }: { at?: string; fallback?: string }) {
+  return at ? <Ago iso={at} bare /> : <>{fallback || '—'}</>
 }

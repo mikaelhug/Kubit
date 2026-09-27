@@ -1,9 +1,11 @@
 import { useEffect, useMemo, useState } from 'preact/hooks'
-import { api, fmt, type Snapshot } from '../../api'
+import { api, authedUrl, fmt, type Snapshot } from '../../api'
 import { formOf } from '../../cluster'
 import { DataTable, type Column } from '../../components/DataTable'
-import { ConfirmDialog, ErrorBox, Field, Notice, Pill, Section, Tile } from '../../components/ui'
-import { loadSnapshots, refreshKey, runningFor, snapshots, toast, watch } from '../../store'
+import { ConfirmDialog, ErrorBox, Field, MovedNotice, Notice, Pill, Section, Tile } from '../../components/ui'
+import { runningFor, runOp } from '../../ops'
+import { loadSnapshots, snapshots, toast } from '../../store'
+import { useDraft } from '../../useDraft'
 import type { ClusterCtx } from './ClusterPage'
 
 export function Backups({ ctx }: { ctx: ClusterCtx }) {
@@ -15,15 +17,15 @@ export function Backups({ ctx }: { ctx: ClusterCtx }) {
   const [error, setError] = useState<string | null>(null)
   const [restore, setRestore] = useState<Snapshot | null>(null)
   const [remove, setRemove] = useState<Snapshot | null>(null)
-  const [schedule, setSchedule] = useState(declared)
-  useEffect(() => { loadSnapshots(name) }, [name, refreshKey('*', 'resync')])
-  useEffect(() => { setSchedule(declared) }, [cluster.updatedAt])
+  const d = useDraft(declared, `cluster:${name}:schedule`)
+  const schedule = d.draft ?? declared
+  useEffect(() => { loadSnapshots(name) }, [name])
   const running = runningFor(name).length > 0
   const latest = rows.find((r) => r.status === 'ok')
-  const scheduleDirty = schedule.interval !== declared.interval || Number(schedule.keep) !== Number(declared.keep)
+  const scheduleDirty = d.dirty && (schedule.interval !== declared.interval || Number(schedule.keep) !== Number(declared.keep))
   const saveSchedule = () => {
     api.saveClusterForm(name, { ...formOf(cluster.spec.spec), etcdSnapshotInterval: schedule.interval, etcdSnapshotKeep: Number(schedule.keep) || 0 })
-      .then(() => { toast('Schedule saved', 'good') }).catch((e) => setError(e.message))
+      .then(() => { d.commit(); toast('Schedule saved', 'good') }).catch((e) => setError(e.message))
   }
 
   const columns = useMemo<Column<Snapshot>[]>(() => [
@@ -37,10 +39,10 @@ export function Backups({ ctx }: { ctx: ClusterCtx }) {
     { id: 'offsite', header: 'Off-site', sort: (s) => s.offsite ? 1 : 0, cell: (s) => s.offsite ? <Pill tone="good" title={s.offsite}>copied</Pill> : <span class="text-muted" title="No off-site copy">—</span> },
     { id: 'actions', header: '', align: 'right', cell: (s) => (
       <span class="whitespace-nowrap flex gap-1 justify-end">
-        <button class="btn !py-1" title="Unseal, check the hash and open the database" onClick={() => api.verifySnapshot(name, s.id).then((r) => { toast(r.ok ? `Snapshot #${s.id} verified` : `Snapshot #${s.id}: ${r.error}`, r.ok ? 'good' : 'error') }).catch((e) => toast(e.message, 'error'))}>Verify</button>
-        <a class="btn !py-1" href={`/api/v1/clusters/${name}/snapshots/${s.id}`} download title="Plain etcd snapshot (.db)">Download</a>
-        <button class="btn btn-danger !py-1" disabled={s.status !== 'ok' || running} onClick={() => setRestore(s)}>Restore</button>
-        <button class="btn !py-1" onClick={() => setRemove(s)} aria-label="Delete snapshot">✕</button>
+        <button class="btn btn-sm" title="Unseal, check the hash and open the database" onClick={() => api.verifySnapshot(name, s.id).then((r) => { toast(r.ok ? `Snapshot #${s.id} verified` : `Snapshot #${s.id}: ${r.error}`, r.ok ? 'good' : 'error') }).catch((e) => toast(e.message, 'error'))}>Verify</button>
+        <a class="btn btn-sm" href={authedUrl(`/clusters/${name}/snapshots/${s.id}`)} download title="Plain etcd snapshot (.db)">Download</a>
+        <button class="btn btn-danger btn-sm" disabled={s.status !== 'ok' || running} onClick={() => setRestore(s)}>Restore</button>
+        <button class="btn btn-sm" onClick={() => setRemove(s)} aria-label="Delete snapshot">✕</button>
       </span>
     ) },
   ], [name, running])
@@ -48,7 +50,7 @@ export function Backups({ ctx }: { ctx: ClusterCtx }) {
   return (
     <div class="flex flex-col gap-5">
       <Section title="etcd snapshots" help="Verified, sealed snapshots of the cluster state; manual ones are never pruned."
-        actions={<button class="btn btn-primary" disabled={running || !status?.etcd.healthy} title={!status?.etcd.healthy ? 'etcd must be healthy' : ''} onClick={() => api.takeSnapshot(name).then((r) => watch(r)).catch((e) => toast(e.message, 'error'))}>Take snapshot</button>}>
+        actions={<button class="btn btn-primary" disabled={running || !status?.etcd.healthy} title={!status?.etcd.healthy ? 'etcd must be healthy' : ''} onClick={() => runOp(api.takeSnapshot(name))}>Take snapshot</button>}>
         <ErrorBox error={error} />
         <div class="grid grid-cols-1 md:grid-cols-3 gap-3">
           <Tile size="xl" label="Latest snapshot" value={latest ? fmt.when(latest.ts) : 'none'} sub={latest ? `${fmt.int(latest.keys)} keys · ${fmt.bytes(latest.sizeBytes)}` : 'Take one now or wait for the schedule'} tone={latest ? undefined : 'warn'} />
@@ -59,9 +61,10 @@ export function Backups({ ctx }: { ctx: ClusterCtx }) {
       </Section>
 
       <Section title="Schedule" help="Taken when the cluster is healthy and idle.">
+        <MovedNotice show={d.moved} onDiscard={d.discard} />
         <div class="panel p-3 flex flex-wrap items-end gap-4">
-          <Field label="Interval" hint="Go duration ≥ 5m, 0 disables"><input class="input mono w-32" value={schedule.interval} onInput={(e) => setSchedule({ ...schedule, interval: (e.target as HTMLInputElement).value.trim() })} /></Field>
-          <Field label="Keep" hint="Scheduled snapshots retained"><input class="input mono w-24" type="number" min={1} value={schedule.keep} onInput={(e) => setSchedule({ ...schedule, keep: (e.target as HTMLInputElement).value })} /></Field>
+          <Field label="Interval" hint="Go duration ≥ 5m, 0 disables"><input class="input mono w-32" value={schedule.interval} onInput={(e) => d.set({ ...schedule, interval: (e.target as HTMLInputElement).value.trim() })} /></Field>
+          <Field label="Keep" hint="Scheduled snapshots retained"><input class="input mono w-24" type="number" min={1} value={schedule.keep} onInput={(e) => d.set({ ...schedule, keep: (e.target as HTMLInputElement).value })} /></Field>
           <button class="btn btn-primary" disabled={!scheduleDirty} onClick={saveSchedule}>Save</button>
         </div>
       </Section>
@@ -72,13 +75,11 @@ export function Backups({ ctx }: { ctx: ClusterCtx }) {
 
       {restore && (
         <ConfirmDialog title={`Restore ${name} from snapshot #${restore.id}`} action="Wipe etcd and restore" tone="danger" typed={name} cluster={name} onClose={() => setRestore(null)}
-          onConfirm={() => api.restoreSnapshot(name, restore.id).then((r) => { setRestore(null); watch(r) }).catch((e) => toast(e.message, 'error'))}
-          impact={<ul class="list-disc pl-5 flex flex-col gap-1">
-            <li>Cluster state goes back to <b>{fmt.datetime(restore.ts)}</b> ({fmt.int(restore.keys)} keys, from {restore.node}).</li>
-            <li class="text-bad">Every object created or changed since then is lost.</li>
-            <li>All {cps.length} control plane{cps.length === 1 ? '' : 's'} reboot with etcd wiped; workers keep running.</li>
-            <li>Snapshot taken on {restore.talosVersion} / {restore.k8sVersion}; the cluster runs {cluster.spec.spec.talosVersion} / {cluster.spec.spec.kubernetesVersion}.</li>
-          </ul>} />
+          onConfirm={() => runOp(api.restoreSnapshot(name, restore.id)).then((ok) => { if (ok) setRestore(null) })}
+          impact={<>
+            <p>State returns to <b>{fmt.datetime(restore.ts)}</b>; later changes are lost and the control planes reboot.</p>
+            {(restore.talosVersion !== cluster.spec.spec.talosVersion || restore.k8sVersion !== cluster.spec.spec.kubernetesVersion) && <p class="text-warn">Taken on {restore.talosVersion} / {restore.k8sVersion}; the cluster runs {cluster.spec.spec.talosVersion} / {cluster.spec.spec.kubernetesVersion}.</p>}
+          </>} />
       )}
       {remove && (
         <ConfirmDialog title={`Delete snapshot #${remove.id}`} action="Delete" tone="danger" onClose={() => setRemove(null)}

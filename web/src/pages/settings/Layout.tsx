@@ -3,7 +3,7 @@ import { useEffect, useState } from 'preact/hooks'
 import { api, type Settings } from '../../api'
 import { can, loadSettings, settings, toast } from '../../store'
 import { settingsPages, type SettingsPage } from '../../routes'
-import { Notice } from '../../components/ui'
+import { useDraft } from '../../useDraft'
 
 const adminOnly: SettingsPage[] = ['accounts', 'sso']
 
@@ -20,30 +20,16 @@ export function SettingsLayout({ page, children }: { page: SettingsPage; childre
   )
 }
 
-const kept = new Map<string, { draft: unknown; base: unknown }>()
-
 export function useSettingsSlice<T>(key: string, pick: (s: Settings) => T, put: (s: Settings, v: T) => Settings) {
   const pushed = settings.value
-  const [draft, setDraftRaw] = useState<T | null>(() => (kept.get(key)?.draft as T) ?? null)
-  const [base, setBase] = useState<T | null>(() => (kept.get(key)?.base as T) ?? null)
+  const d = useDraft(pushed ? pick(pushed) : null, `settings:${key}`)
   const [error, setError] = useState<string | null>(null)
-  const setDraft = (v: T | null) => { setDraftRaw(v); if (v === null) kept.delete(key); else kept.set(key, { draft: v, base }) }
-  useEffect(() => {
-    if (!pushed) { loadSettings(); return }
-    const v = pick(pushed)
-    const dirtyNow = draft && base && JSON.stringify(draft) !== JSON.stringify(base)
-    if (!dirtyNow) setDraftRaw(v)
-    setBase(v)
-    if (dirtyNow) kept.set(key, { draft, base: v }); else kept.delete(key)
-  }, [pushed])
-  const dirty = !!draft && !!base && JSON.stringify(draft) !== JSON.stringify(base)
-  const movedUnderneath = dirty && !!pushed && JSON.stringify(pick(pushed)) !== JSON.stringify(base)
+  useEffect(() => { if (!pushed) loadSettings() }, [])
   const save = () => {
-    if (!pushed || !draft) return Promise.resolve()
-    return api.saveSettings(put(pushed, draft)).then((v) => { setDraftRaw(pick(v)); setBase(pick(v)); kept.delete(key); setError(null); toast('Settings saved', 'good') }).catch((e) => setError(e.message))
+    if (!pushed || !d.draft) return Promise.resolve()
+    return api.saveSettings(put(pushed, d.draft)).then((v) => { d.commit(pick(v)); setError(null); toast('Settings saved', 'good') }).catch((e) => setError(e.message))
   }
-  const discard = () => { if (pushed) { setDraftRaw(pick(pushed)); setBase(pick(pushed)); kept.delete(key) } }
-  return { draft, setDraft, dirty, save, error, movedUnderneath, discard, pushed }
+  return { draft: d.draft, setDraft: d.set, dirty: d.dirty, save, error, movedUnderneath: d.moved, discard: d.discard, pushed }
 }
 
 export function SaveBar({ dirty, onSave, children }: { dirty: boolean; onSave: () => void; children?: ComponentChildren }) {
@@ -54,9 +40,4 @@ export function SaveBar({ dirty, onSave, children }: { dirty: boolean; onSave: (
       {dirty && <span class="text-[12px] text-warn">unsaved changes</span>}
     </div>
   )
-}
-
-export function MovedNotice({ show, onDiscard }: { show: boolean; onDiscard: () => void }) {
-  if (!show) return null
-  return <Notice tone="warn">Settings were changed elsewhere while you were editing. Saving overwrites them; <button class="underline" onClick={onDiscard}>discard your edits</button> to see the current values.</Notice>
 }

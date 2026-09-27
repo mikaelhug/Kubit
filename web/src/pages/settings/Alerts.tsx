@@ -1,7 +1,8 @@
-import { api, splitList, type AlertSettings } from '../../api'
+import { api, type AlertSettings } from '../../api'
+import { ListInput } from '../../components/ListInput'
 import { toast } from '../../store'
-import { ErrorBox, Field, Section } from '../../components/ui'
-import { MovedNotice, SaveBar, useSettingsSlice } from './Layout'
+import { ErrorBox, Field, MovedNotice, Section } from '../../components/ui'
+import { SaveBar, useSettingsSlice } from './Layout'
 
 export function Alerts() {
   const f = useSettingsSlice('alerts', (s) => s.alerts, (s, v) => ({ ...s, alerts: v }))
@@ -20,7 +21,7 @@ export function Alerts() {
           </select>
         </Field>
         <Field label="Heartbeat (hours)" hint="A summary this often; 0 turns it off"><input class="input" type="number" min={0} value={a.heartbeatHours ?? 0} onInput={(e) => set({ heartbeatHours: Number((e.target as HTMLInputElement).value) })} /></Field>
-        <Field label="Ignore namespaces" hint="Comma-separated; no workload alerts"><input class="input mono" value={(a.ignoreNamespaces ?? []).join(', ')} placeholder="dev, ci" onInput={(e) => set({ ignoreNamespaces: splitList((e.target as HTMLInputElement).value) })} /></Field>
+        <Field label="Ignore namespaces" hint="Comma-separated; no workload alerts"><ListInput value={a.ignoreNamespaces} placeholder="dev, ci" onChange={(v) => set({ ignoreNamespaces: v })} /></Field>
         <Field label="Webhook URL" hint="Empty turns it off"><input class="input mono" value={a.webhookUrl} placeholder="https://" onInput={(e) => set({ webhookUrl: (e.target as HTMLInputElement).value.trim() })} /></Field>
       </div>
       <div class="panel p-3 grid grid-cols-1 md:grid-cols-2 gap-4">
@@ -34,7 +35,7 @@ export function Alerts() {
           </Field>
         </div>
         <Field label="From"><input class="input mono" value={a.smtp.from} placeholder="kubit@example.com" onInput={(e) => smtp({ from: (e.target as HTMLInputElement).value.trim() })} /></Field>
-        <Field label="To" hint="Comma-separated"><input class="input mono" value={a.smtp.to.join(', ')} onInput={(e) => smtp({ to: splitList((e.target as HTMLInputElement).value) })} /></Field>
+        <Field label="To" hint="Comma-separated"><ListInput value={a.smtp.to} onChange={(v) => smtp({ to: v })} /></Field>
         <Field label="Username" hint="Empty for no authentication"><input class="input mono" value={a.smtp.username} onInput={(e) => smtp({ username: (e.target as HTMLInputElement).value })} /></Field>
         <Field label="Password" hint="Sealed at rest"><input class="input mono" type="password" value={a.smtp.password} onInput={(e) => smtp({ password: (e.target as HTMLInputElement).value })} /></Field>
       </div>

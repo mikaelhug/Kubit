@@ -1,23 +1,26 @@
 import { computed } from '@preact/signals'
-import { useEffect, useMemo, useRef, useState } from 'preact/hooks'
-import { api, fmt, type Event } from '../api'
+import { useEffect, useRef } from 'preact/hooks'
+import { fmt } from '../api'
+import { isTyping, overlayOpen } from '../keys'
 import { persist } from '../local'
-import { drawerHeight, drawerOpen, drawerTab, loadOperationLog, opEvents, operations, running, runningCount, setDrawer, toast } from '../store'
+import { operations, running, runningCount } from '../ops'
+import { drawerHeight, drawerOpen, drawerTab, setDrawer } from '../store'
 import { stateTone } from '../tone'
-import { Stepper } from './Stepper'
-import { Elapsed } from './Time'
-import { CopyButton, EventLine, Pill } from './ui'
+import { OperationView } from './OperationView'
+import { Pill } from './ui'
 
 const heightStyle = computed(() => `height:${drawerHeight.value}px`)
-
-const retryable = new Set(['cluster.create', 'node.add', 'platform.plan', 'platform.apply', 'discover'])
 
 export function ActivityDrawer() {
   const dragging = useRef(false)
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'a' && !e.metaKey && !e.ctrlKey && !(e.target instanceof HTMLInputElement) && !(e.target instanceof HTMLTextAreaElement)) setDrawer(!drawerOpen.value)
+      if (e.defaultPrevented || overlayOpen()) return
+      const typing = isTyping(e.target)
+      if (e.key === 'a' && !e.metaKey && !e.ctrlKey && !e.altKey && !typing) setDrawer(!drawerOpen.value)
+      if (e.key !== 'Escape' || !drawerOpen.value) return
+      if (typing) (e.target as HTMLElement).blur(); else setDrawer(false)
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
@@ -66,50 +69,7 @@ function DrawerTabs() {
           <button class="btn btn-sm" onClick={() => setDrawer(false)} title="Close (a)">✕</button>
         </div>
       </div>
-      {active !== null && <OperationView id={active} />}
+      {active !== null && <OperationView key={active} id={active} />}
     </>
-  )
-}
-
-const logText = (events: Event[]) => events.map((e) => `${e.time ? fmt.when(e.time) + ' ' : e.clock ? e.clock + ' ' : ''}[${e.step}] ${e.node ? e.node + ': ' : ''}${e.message}`).join('\n')
-
-export function OperationView({ id }: { id: number }) {
-  const op = operations.value.get(id)
-  const events = opEvents.value.get(id)
-  const [step, setStep] = useState<string | undefined>()
-  const [q, setQ] = useState('')
-  const logRef = useRef<HTMLDivElement>(null)
-  const [follow, setFollow] = useState(true)
-
-  useEffect(() => { if (op && !events && op.status !== 'running') loadOperationLog(id).catch(() => {}) }, [id, op?.status])
-  const shown = useMemo(() => (events ?? []).filter((e) => (!step || e.step === step) && (!q || (e.message + ' ' + (e.node ?? '')).toLowerCase().includes(q.toLowerCase()))), [events, step, q])
-  useEffect(() => { if (follow && logRef.current) logRef.current.scrollTop = logRef.current.scrollHeight }, [shown, follow])
-
-  if (!op) return <div class="p-3 text-muted text-[13px]">Loading</div>
-  return (
-    <div class="flex-1 min-h-0 grid grid-cols-[280px_1fr]">
-      <div class="border-r border-border overflow-auto p-2 flex flex-col gap-2">
-        <div class="flex items-center gap-2 px-2 pt-1">
-          <span class="text-[12px] text-muted"><Elapsed from={op.startedAt} to={op.finishedAt} /></span>
-          {op.status === 'running' && <button class="btn btn-danger btn-sm ml-auto" onClick={() => api.cancelOperation(id).catch((e) => toast(e.message, 'error'))}>Cancel</button>}
-          {op.status !== 'running' && op.status !== 'done' && retryable.has(op.kind) && (
-            <button class="btn btn-sm ml-auto" onClick={() => api.retryOperation(id).then((r) => { drawerTab.value = r.operationId }).catch((e) => toast(e.message, 'error'))}>Retry</button>
-          )}
-        </div>
-        <Stepper steps={op.steps ?? []} selected={step} onSelect={(s) => setStep(step === s ? undefined : s)} compact />
-      </div>
-      <div class="flex flex-col min-h-0">
-        <div class="flex items-center gap-2 px-2 py-1 border-b border-border">
-          <input class="input !w-56 !py-0.5" placeholder="Search log" value={q} onInput={(e) => setQ((e.target as HTMLInputElement).value)} />
-          {step && <button class="btn btn-sm" onClick={() => setStep(undefined)}>step: {step} ✕</button>}
-          <span class="text-[12px] text-muted">{shown.length} lines</span>
-          <label class="ml-auto text-[12px] text-muted flex items-center gap-1"><input type="checkbox" checked={follow} onChange={(e) => setFollow((e.target as HTMLInputElement).checked)} /> follow</label>
-          <CopyButton text={() => logText(shown)} className="btn btn-sm" />
-        </div>
-        <div ref={logRef} class="flex-1 overflow-auto p-2 mono" onScroll={(e) => { const el = e.currentTarget; setFollow(el.scrollTop + el.clientHeight >= el.scrollHeight - 8) }}>
-          {shown.length === 0 ? <span class="text-muted">{op.status === 'running' ? 'Waiting for output' : 'No output.'}</span> : shown.map((e, i) => <EventLine key={e.seq ?? i} e={e} showStep={!step} />)}
-        </div>
-      </div>
-    </div>
   )
 }

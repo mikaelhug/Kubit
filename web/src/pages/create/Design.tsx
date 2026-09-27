@@ -1,7 +1,9 @@
 import { fmt, type Pool } from '../../api'
 import { DataTable, type Column } from '../../components/DataTable'
 import { PoolsEditor } from '../../components/PoolsEditor'
-import { dataCandidates, diskLabel, installCandidates, modelOf, TypePill } from '../../machine'
+import { TypePill } from '../../components/Machine'
+import { dataCandidates, diskLabel, installCandidates, modelOf } from '../../machine'
+import { nodeHostname } from '../../net'
 import { machineOf, updateNode, type Draft, type SetCluster } from './draft'
 
 export function DesignStep({ draft, setCluster, reset, busy }: { draft: Draft; setCluster: SetCluster; reset: () => Promise<void>; busy: boolean }) {
@@ -15,7 +17,7 @@ export function DesignStep({ draft, setCluster, reset, busy }: { draft: Draft; s
   })
   const autoName = () => setCluster((c) => {
     const counters: Record<string, number> = {}
-    return { ...c, spec: { ...c.spec, nodes: c.spec.nodes.map((n) => { const p = n.pool ?? 'node'; counters[p] = (counters[p] ?? 0) + 1; return { ...n, hostname: `${c.metadata.name}-${p === 'controlplane' ? 'cp' : p}-${String(counters[p]).padStart(2, '0')}` } }) } }
+    return { ...c, spec: { ...c.spec, nodes: c.spec.nodes.map((n) => { const p = n.pool ?? 'node'; counters[p] = (counters[p] ?? 0) + 1; return { ...n, hostname: nodeHostname(c.metadata.name, p, counters[p]) } }) } }
   })
   const cps = c.spec.nodes.filter((n) => n.role === 'controlplane').length
   const spare = c.spec.nodes.reduce((s, n) => s + dataCandidates(machineOf(draft, n), n.installDisk?.path).length, 0)
@@ -41,7 +43,7 @@ export function DesignStep({ draft, setCluster, reset, busy }: { draft: Draft; s
         {disks.length === 0 && <option value="">no disk</option>}
       </select>
     ) } },
-    { id: 'data', header: <>Data disks{spare > 0 && <button class="btn btn-xs ml-2 font-normal" onClick={() => allData(claimed < spare)}>{claimed < spare ? 'Use all' : 'None'}</button>}</>, cell: (i) => {
+    { id: 'data', header: <>Data disks{spare > 0 && <button class="btn btn-sm ml-2 font-normal" onClick={() => allData(claimed < spare)}>{claimed < spare ? 'Use all' : 'None'}</button>}</>, cell: (i) => {
       const n = c.spec.nodes[i]
       const data = dataCandidates(machineOf(draft, n), n.installDisk?.path)
       const toggle = (path: string, on: boolean) => {
@@ -65,8 +67,8 @@ export function DesignStep({ draft, setCluster, reset, busy }: { draft: Draft; s
           <span class="label">Proposal</span>
           <span class="text-[13px]">{cps} control plane{cps === 1 ? '' : 's'}{cps >= 3 ? ' (etcd HA)' : ''}, {c.spec.nodes.length - cps} worker{c.spec.nodes.length - cps === 1 ? '' : 's'}{c.spec.controlPlane.allowScheduling ? ', control planes schedulable' : ', dedicated control planes'}</span>
           <span class="ml-auto flex gap-2">
-            <button class="btn !py-1" onClick={autoName}>Auto-name</button>
-            <button class="btn !py-1" disabled={busy} onClick={() => reset().catch(() => {})}>Reset to proposal</button>
+            <button class="btn btn-sm" onClick={autoName}>Auto-name</button>
+            <button class="btn btn-sm" disabled={busy} onClick={() => reset().catch(() => {})}>Reset to proposal</button>
           </span>
         </div>
         <p class="text-[13px] text-muted">Change any cell; data disks are wiped and mounted at <span class="mono">/var/mnt/data-N</span>.</p>

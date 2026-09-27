@@ -1,6 +1,6 @@
 import { useCallback, useMemo } from 'preact/hooks'
-import { useLocation } from 'preact-iso'
 import { api, type Namespace } from '../api'
+import { useQueryParams } from '../query'
 import { useLive } from '../useLive'
 
 type Scope = 'apps' | 'platform' | 'all'
@@ -13,7 +13,7 @@ export function useNamespaces(cluster: string) {
 }
 
 export function useNamespaceScope(cluster: string) {
-  const { path, query, route } = useLocation()
+  const [query, setQuery] = useQueryParams()
   const namespaces = useNamespaces(cluster)
   const platform = useMemo(() => new Set((namespaces ?? []).filter((n) => n.platform).map((n) => n.name)), [namespaces])
   const ns = query.ns ?? ''
@@ -22,13 +22,7 @@ export function useNamespaceScope(cluster: string) {
     const inScope = (n: string, s: Scope = scope) => s === 'all' || (s === 'platform') === platform.has(n)
     return { inScope, keep: (n: string) => (ns ? n === ns : inScope(n)) }
   }, [platform, scope, ns])
-  const set = useCallback((next: { scope?: Scope; ns?: string }) => {
-    const q = new URLSearchParams(typeof location !== 'undefined' ? location.search : '')
-    if (next.scope !== undefined) { q.set('scope', next.scope); q.delete('ns') }
-    if (next.ns !== undefined) { if (next.ns) q.set('ns', next.ns); else q.delete('ns') }
-    const s = q.toString()
-    route(s ? `${path}?${s}` : path, true)
-  }, [path, route])
+  const set = useCallback((next: { scope?: Scope; ns?: string }) => setQuery(next.scope !== undefined ? { scope: next.scope, ns: undefined } : { ns: next.ns }), [setQuery])
   return { scope, ns, keep, inScope, set, namespaces, loading: namespaces === null }
 }
 
@@ -37,7 +31,7 @@ export function NamespaceScope({ s, rows }: { s: ReturnType<typeof useNamespaceS
   return (
     <span class="flex items-center gap-1">
       {scopes.map((o) => (
-        <button key={o.id} class={`btn !py-1 ${s.scope === o.id ? 'border-accent text-accent' : ''}`} onClick={() => s.set({ scope: o.id })}>
+        <button key={o.id} class={`btn btn-sm ${s.scope === o.id ? 'border-accent text-accent' : ''}`} onClick={() => s.set({ scope: o.id })}>
           {o.label} <span class="text-muted">{s.loading ? '' : rows.filter((n) => s.inScope(n, o.id)).length}</span>
         </button>
       ))}

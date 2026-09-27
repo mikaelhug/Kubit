@@ -1,6 +1,7 @@
 import { Fragment } from 'preact'
 import { useEffect, useMemo, useRef, useState } from 'preact/hooks'
 import { useLocation } from 'preact-iso'
+import { isTyping, useEscape } from '../keys'
 import { readText, writeText } from '../local'
 import { hostName, kindLabel, vmsOf } from '../machine'
 import { sectionList, settingsPages } from '../routes'
@@ -29,7 +30,6 @@ export function Palette() {
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') { e.preventDefault(); setOpen((o) => !o) }
-      if (e.key === 'Escape') setOpen(false)
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
@@ -42,6 +42,7 @@ function PaletteDialog({ onClose }: { onClose: () => void }) {
   const [cursor, setCursor] = useState(0)
   const input = useRef<HTMLInputElement>(null)
   const { route } = useLocation()
+  useEscape(onClose)
   useEffect(() => { input.current?.focus() }, [])
   const items = useMemo(paletteItems, [clusters.value, machineList.value])
   const matches = useMemo(() => {
@@ -83,17 +84,20 @@ export function Shortcuts() {
   const [open, setOpen] = useState(false)
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      const typing = e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement || e.target instanceof HTMLSelectElement
+      const typing = isTyping(e.target)
       if (e.key === '?' && !typing) setOpen((o) => !o)
       if (e.key === '/' && !typing) { const f = document.querySelector<HTMLInputElement>('input[data-table-filter]'); if (f) { e.preventDefault(); f.focus() } }
-      if (e.key === 'Escape') setOpen(false)
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
   }, [])
-  if (!open) return null
+  return open ? <ShortcutSheet onClose={() => setOpen(false)} /> : null
+}
+
+function ShortcutSheet({ onClose }: { onClose: () => void }) {
+  useEscape(onClose)
   return (
-    <div class="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-6" onClick={(e) => { if (e.target === e.currentTarget) setOpen(false) }}>
+    <div class="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-6" onClick={(e) => { if (e.target === e.currentTarget) onClose() }}>
       <div class="panel w-full max-w-sm p-5">
         <h2 class="font-semibold mb-3">Keyboard shortcuts</h2>
         <dl class="grid grid-cols-[auto_1fr] gap-x-4 gap-y-2 text-[13px]">

@@ -2,6 +2,10 @@ import type { ComponentChildren } from 'preact'
 import { useEffect, useState } from 'preact/hooks'
 import { CopyButton, ErrorBox } from './ui'
 
+function errorText(body: string) {
+  try { return JSON.parse(body).error ?? body } catch { return body }
+}
+
 export function LogStream({ url, follow, onFollow, toolbar, className = '', height = '!max-h-[60vh]' }: { url: string; follow: boolean; onFollow: (f: boolean) => void; toolbar?: ComponentChildren; className?: string; height?: string }) {
   const [log, setLog] = useState('')
   const [q, setQ] = useState('')
@@ -11,13 +15,14 @@ export function LogStream({ url, follow, onFollow, toolbar, className = '', heig
     setLog('')
     setError(null)
     fetch(url, { signal: ac.signal }).then(async (res) => {
-      if (!res.ok) throw new Error(await res.text())
+      if (!res.ok) throw new Error(errorText(await res.text()) || res.statusText)
       const reader = res.body!.getReader()
       const dec = new TextDecoder()
       for (;;) {
         const { value, done } = await reader.read()
+        const text = dec.decode(value, { stream: !done })
+        if (text) setLog((prev) => (prev + text).slice(-300000))
         if (done) break
-        setLog((prev) => (prev + dec.decode(value)).slice(-300000))
       }
     }).catch((e) => { if (e.name !== 'AbortError') setError(e.message) })
     return () => ac.abort()

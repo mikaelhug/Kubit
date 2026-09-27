@@ -1,25 +1,8 @@
 import { useState } from 'preact/hooks'
-import { splitList, type Pool } from '../api'
+import type { Pool } from '../api'
+import { KVEditor } from './KVEditor'
+import { ListInput } from './ListInput'
 import { Field, Pill } from './ui'
-
-export function KVEditor({ value, onChange, placeholder, mono = true }: { value?: Record<string, string>; onChange: (v: Record<string, string> | undefined) => void; placeholder?: string; mono?: boolean }) {
-  const [text, setText] = useState(toLines(value))
-  const commit = (t: string) => {
-    setText(t)
-    const out: Record<string, string> = {}
-    for (const line of t.split('\n')) {
-      const s = line.trim()
-      if (!s) continue
-      const i = s.indexOf('=')
-      if (i <= 0) { out[s] = '' ; continue }
-      out[s.slice(0, i).trim()] = s.slice(i + 1).trim()
-    }
-    onChange(Object.keys(out).length ? out : undefined)
-  }
-  return <textarea class={`input !text-[12px] min-h-[56px] ${mono ? 'mono' : ''}`} rows={Math.max(2, text.split('\n').length)} value={text} placeholder={placeholder} spellcheck={false} onInput={(e) => commit((e.target as HTMLTextAreaElement).value)} />
-}
-
-function toLines(m?: Record<string, string>) { return Object.entries(m ?? {}).map(([k, v]) => v === '' ? k : `${k}=${v}`).join('\n') }
 
 const knownExtensions = ['siderolabs/gvisor', 'siderolabs/iscsi-tools', 'siderolabs/util-linux-tools', 'siderolabs/intel-ucode', 'siderolabs/amd-ucode', 'siderolabs/i915', 'siderolabs/nvidia-open-gpu-kernel-modules-lts', 'siderolabs/nvidia-container-toolkit-lts', 'siderolabs/qemu-guest-agent', 'siderolabs/zfs', 'siderolabs/tailscale']
 
@@ -66,7 +49,7 @@ export function PoolsEditor({ pools, onChange, inUse, defaultExtensions }: { poo
                   <KVEditor value={p.taints} onChange={(v) => update(i, { taints: v })} placeholder="key=value:NoSchedule" />
                 </Field>
                 <Field label="System extensions" hint={`Comma-separated; empty inherits ${defaultExtensions?.length ? defaultExtensions.join(', ') : 'the cluster default'}`}>
-                  <input class="input mono" list="known-extensions" value={(p.extensions ?? []).join(', ')} onInput={(e) => { const v = splitList((e.target as HTMLInputElement).value); update(i, { extensions: v.length ? v : undefined }) }} />
+                  <ListInput list="known-extensions" value={p.extensions} onChange={(v) => update(i, { extensions: v.length ? v : undefined })} />
                   <datalist id="known-extensions">{knownExtensions.map((x) => <option key={x} value={x} />)}</datalist>
                 </Field>
                 <Field label="Install disk policy" hint="Minimum size and/or transport; a node's own disk wins">

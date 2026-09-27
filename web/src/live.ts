@@ -1,14 +1,22 @@
 import { fmt, getToken, type Message } from './api'
 import { editMap, setIn } from './maps'
+import { pushEvent, reloadLogs, reloadOfflineLogs, reloadOperations, operations, upsertOp } from './ops'
 import {
-  applyStepEvent, audit, bumpAllRefreshes, bumpRefresh, clusters, connected, daemon, health, hostSamples, loadMachines, loadObserver, loadSettings, loadVersions, machineKey, machines, me, nextEventSeq, observer, opEvents, operations,
-  reconnectAttempt, reloadClusters, reloadOperations, resyncing, settings, snapshots, statuses, toast, upsertCluster, upsertOp,
+  audit, bumpAllRefreshes, bumpRefresh, clusters, connected, daemon, health, hostSamples, loadAllHealth, loadMachines, loadObserver, loadSettings, loadSnapshots, loadVersions, machineKey, machines, me, observer,
+  reconnectAttempt, reloadClusters, resyncing, settings, snapshots, statuses, toast, upsertCluster,
 } from './store'
 
 let ws: WebSocket | null = null
 let lastSeq = 0
+let helloSeq = 0
+let startedAt = ''
 let attempt = 0
 let everConnected = false
+let resyncedAtHello = false
+let replaySkip = new Set<number>()
+let resyncWanted = 0
+let resyncDone = 0
+let resyncRun: Promise<void> | null = null
 
 export function connectLive() {
   if (ws || me.value === null) return
@@ -17,64 +25,94 @@ export function connectLive() {
   const q = new URLSearchParams()
   if (t) q.set('token', t)
   if (lastSeq) q.set('since', String(lastSeq))
-  ws = new WebSocket(`${proto}://${location.host}/api/v1/ws?${q}`)
-  ws.onmessage = (ev) => apply(JSON.parse(ev.data) as Message)
-  ws.onclose = () => {
+  const socket = new WebSocket(`${proto}://${location.host}/api/v1/ws?${q}`)
+  ws = socket
+  socket.onmessage = (ev) => { if (ws === socket) apply(JSON.parse(ev.data) as Message) }
+  socket.onclose = () => {
+    if (ws !== socket) return
     ws = null
     connected.value = false
     attempt++
     reconnectAttempt.value = attempt
     setTimeout(connectLive, Math.min(30000, 1000 * 2 ** Math.min(attempt, 5)))
   }
-  ws.onerror = () => ws?.close()
+  socket.onerror = () => socket.close()
+}
+
+function resume() {
+  const old = ws
+  ws = null
+  old?.close()
+  connectLive()
 }
 
 export function reconnectLive() {
   everConnected = false
   lastSeq = 0
   attempt = 0
-  const old = ws
-  ws = null
-  if (old) { old.onclose = null; old.close() }
-  connectLive()
+  startedAt = ''
+  resume()
 }
 
-async function resync() {
+function resync() {
+  resyncWanted++
+  resyncRun ??= runResync().finally(() => { resyncRun = null })
+}
+
+async function runResync() {
   resyncing.value = true
   try {
-    await Promise.all([reloadClusters(), reloadOperations(), loadMachines(), loadSettings(), loadObserver(), loadVersions()])
-    bumpAllRefreshes()
+    while (resyncDone < resyncWanted) {
+      resyncDone = resyncWanted
+      await Promise.all([
+        reloadClusters(), reloadOperations(), reloadLogs(), loadMachines(), loadSettings(), loadObserver(), loadVersions(),
+        loadAllHealth([...health.value.keys()]), ...[...snapshots.value.keys()].map(loadSnapshots),
+      ])
+      bumpAllRefreshes()
+    }
   } finally {
     resyncing.value = false
   }
 }
 
-let helloSeq = 0
+function hello(m: Message) {
+  connected.value = true
+  attempt = 0
+  reconnectAttempt.value = 0
+  const h = m.hello
+  if (!h) return
+  daemon.value = { version: h.version, startedAt: h.startedAt, service: h.service, os: h.os }
+  const restarted = h.seq < lastSeq || (!!startedAt && h.startedAt !== startedAt)
+  startedAt = h.startedAt
+  helloSeq = h.seq
+  resyncedAtHello = !everConnected || restarted
+  replaySkip = resyncedAtHello ? new Set() : reloadOfflineLogs()
+  if (resyncedAtHello) { everConnected = true; lastSeq = helloSeq; resync() }
+}
 
 function apply(m: Message) {
-  if (m.seq) lastSeq = m.seq
+  if (m.kind === 'hello') return hello(m)
+  if (m.seq) {
+    if (m.seq <= lastSeq) return
+    if (m.seq > lastSeq + 1) return resume()
+    lastSeq = m.seq
+  } else if (m.kind === 'resync') lastSeq = Math.max(lastSeq, helloSeq)
   const replayed = !!m.seq && m.seq <= helloSeq
   switch (m.kind) {
-    case 'hello': {
-      connected.value = true
-      attempt = 0
-      reconnectAttempt.value = 0
-      if (m.hello) daemon.value = { version: m.hello.version, startedAt: m.hello.startedAt, service: m.hello.service, os: m.hello.os }
-      const restarted = m.hello && m.hello.seq < lastSeq
-      helloSeq = m.hello?.seq ?? 0
-      if (!everConnected || restarted) { everConnected = true; lastSeq = helloSeq; resync() }
-      break
-    }
     case 'resync':
-      resync()
+      if (m.seq || !resyncedAtHello) resync()
       break
     case 'cluster':
       if (m.clusterRow) upsertCluster(m.clusterRow)
       break
-    case 'clusterRemoved':
-      clusters.value = clusters.value.filter((c) => c.name !== m.key)
-      editMap(health, (hm) => hm.delete(m.key ?? ''))
+    case 'clusterRemoved': {
+      const key = m.key ?? ''
+      clusters.value = clusters.value.filter((c) => c.name !== key)
+      editMap(health, (hm) => hm.delete(key))
+      editMap(statuses, (sm) => sm.delete(key))
+      editMap(snapshots, (sm) => sm.delete(key))
       break
+    }
     case 'machine':
       if (m.machine) setIn(machines, machineKey(m.machine), m.machine)
       break
@@ -104,23 +142,13 @@ function apply(m: Message) {
       if (m.operation) {
         const prev = operations.value.get(m.operation.id)
         upsertOp(m.operation)
-        if (m.operation.status !== 'running' && prev?.status === 'running') {
-          if (!replayed) toast(`${fmt.kind(m.operation.kind)}${m.operation.cluster ? ' · ' + m.operation.cluster : ''}: ${m.operation.status}`, m.operation.status === 'done' ? 'good' : 'error')
+        if (m.operation.status !== 'running' && prev?.status === 'running' && !replayed) {
+          toast(`${fmt.kind(m.operation.kind)}${m.operation.cluster ? ' · ' + m.operation.cluster : ''}: ${m.operation.status}`, m.operation.status === 'done' ? 'good' : 'error')
         }
       }
       break
     case 'event':
-      if (m.event && m.operationId !== undefined) {
-        const id = m.operationId
-        const e = { ...m.event, seq: nextEventSeq() }
-        if (e.kind === 'log' || !e.kind) {
-          editMap(opEvents, (map) => {
-            const list = map.get(id) ?? []
-            map.set(id, list.length > 2000 ? [...list.slice(-1500), e] : [...list, e])
-          })
-        }
-        applyStepEvent(id, e)
-      }
+      if (m.event && m.operationId !== undefined && !(replayed && replaySkip.has(m.operationId))) pushEvent(m.operationId, m.event)
       break
     case 'status':
       if (m.status && m.cluster) setIn(statuses, m.cluster, m.status)
@@ -149,6 +177,7 @@ function apply(m: Message) {
       break
     }
     case 'refresh':
+      if (m.scope === 'machines') loadMachines()
       bumpRefresh(m.cluster ?? '', m.scope ?? '')
       break
   }

@@ -1,8 +1,8 @@
 import { fmt } from '../../api'
 import { Elapsed } from '../../components/Time'
-import { ErrorBox, Field, KeyValue, Section } from '../../components/ui'
+import { ErrorBox, Field, KeyValue, MovedNotice, Section } from '../../components/ui'
 import { daemon } from '../../store'
-import { MovedNotice, SaveBar, useSettingsSlice } from './Layout'
+import { SaveBar, useSettingsSlice } from './Layout'
 
 export function General() {
   const f = useSettingsSlice('general', (s) => ({ factoryUrl: s.factoryUrl, watchIntervalSec: s.watchIntervalSec, defaultMetalLBRange: s.defaultMetalLBRange }), (s, v) => ({ ...s, ...v }))

@@ -1,6 +1,6 @@
 import { readText } from '../local'
 
-export class ApiError extends Error {
+class ApiError extends Error {
   status: number
   code?: string
   command?: string
@@ -38,5 +38,6 @@ export function reqRaw<T>(method: string, path: string, text: string, contentTyp
 
 export function authedUrl(path: string, params = new URLSearchParams()) {
   if (token) params.set('token', token)
-  return `/api/v1${path}?${params}`
+  const q = params.toString()
+  return q ? `/api/v1${path}?${q}` : `/api/v1${path}`
 }

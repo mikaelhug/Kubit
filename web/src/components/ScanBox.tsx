@@ -1,7 +1,8 @@
 import { useState } from 'preact/hooks'
 import { api, splitList } from '../api'
 import { subnet24 } from '../net'
-import { running, settings, watch } from '../store'
+import { running, watch } from '../ops'
+import { settings } from '../store'
 
 export function ScanBox({ fallbackIp, primary, openDrawer, onError }: { fallbackIp?: string; primary?: boolean; openDrawer?: boolean; onError: (message: string) => void }) {
   const [typed, setTyped] = useState<string | null>(null)

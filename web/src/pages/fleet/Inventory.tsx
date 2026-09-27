@@ -1,14 +1,16 @@
 import { useEffect, useMemo, useState } from 'preact/hooks'
-import { useLocation } from 'preact-iso'
 import { api, fmt, type NodeRow } from '../../api'
 import { DataTable, type Column } from '../../components/DataTable'
 import { MakeLabHostDialog, ThisMacDialog } from '../../components/labhost'
-import { PxeGate } from '../../components/PxeGate'
+import { KindPill, RetireDialog, useAdopt } from '../../components/Machine'
+import { PxeGate, pxeBlocked } from '../../components/PxeGate'
 import { AddAMTDialog } from '../../components/RemoteManagement'
 import { ScanBox } from '../../components/ScanBox'
 import { AlertPill, Pill, Section } from '../../components/ui'
-import { adopt, bootTalosBlocked, canAdopt, canMakeLabHost, canRetire, groupLabel, groupOf, hostName, hostOf, KindPill, labHostKey, lastSeenOf, modelOf, onMac, provisionLabel, RetireDialog, typeOf, vmsOf, wake, type MachineGroup } from '../../machine'
-import { connected, daemon, labHosts, loadHealth, machineList, openAlerts, resyncing, settings, toast, versions, watch } from '../../store'
+import { bootTalosBlocked, canAdopt, canMakeLabHost, canRetire, groupLabel, groupOf, hostName, hostOf, labHostKey, lastSeenOf, modelOf, onMac, provisionLabel, typeOf, vmsOf, wake, type MachineGroup } from '../../machine'
+import { watch } from '../../ops'
+import { useQueryParam } from '../../query'
+import { daemon, labHosts, live, loadHealth, machineList, openAlerts, settings, toast, versions } from '../../store'
 import { defaultTalos, talosIso } from '../../versions'
 
 const groupOrder: Record<MachineGroup, number> = { available: 0, boot: 1, 'in-use': 2 }
@@ -17,11 +19,10 @@ const openHref = (n: NodeRow) => (n.kind === 'labhost' ? `/labhosts/${n.mac}/ove
 const canBoot = (m: NodeRow) => !!m.oobType && groupOf(m) === 'boot' && !bootTalosBlocked(m)
 
 export function Inventory() {
-  const { route, query } = useLocation()
   const all = machineList.value
-  const loaded = connected.value && !resyncing.value
-  const filter = (filters.includes(query.filter as MachineGroup) ? query.filter : 'all') as MachineGroup | 'all'
-  const setFilter = (f: MachineGroup | 'all') => route(f === 'all' ? '/fleet/inventory' : `/fleet/inventory?filter=${f}`, true)
+  const [filterParam, setFilter] = useQueryParam('filter', 'all')
+  const filter = (filters.includes(filterParam as MachineGroup) ? filterParam : 'all') as MachineGroup | 'all'
+  const adopt = useAdopt()
   const [showVMs, setShowVMs] = useState(false)
   const physical = useMemo(() => all.filter((m) => !m.host), [all])
   const counts: Record<MachineGroup, number> = { available: 0, boot: 0, 'in-use': 0 }
@@ -42,7 +43,7 @@ export function Inventory() {
   const boot = (macs: string[]) => {
     setBusy((b) => ({ ...b, ...Object.fromEntries(macs.map((m) => [m, true])) }))
     Promise.all(macs.map((m) => api.power(m, 'pxe').then((r) => watch(r, false))))
-      .catch((e) => { if (e?.code === 'pxe-down') setGate(macs); else toast(e.message, 'error') })
+      .catch((e) => { if (pxeBlocked(e)) setGate(macs); else toast(e.message, 'error') })
       .finally(() => setBusy((b) => ({ ...b, ...Object.fromEntries(macs.map((m) => [m, false])) })))
   }
   const bootable = rows.filter(canBoot)
@@ -68,15 +69,15 @@ export function Inventory() {
     { id: 'seen', header: 'Last seen', sort: (n) => lastSeenOf(n), cell: (n) => <span class="text-muted">{fmt.when(lastSeenOf(n))}</span> },
     { id: 'actions', header: '', align: 'right', cell: (n) => (
       <span class="whitespace-nowrap flex gap-1 justify-end">
-        {canAdopt(n) && <button class="btn btn-primary !py-1" onClick={() => adopt(n, route)}>Adopt</button>}
-        {canBoot(n) && <button class="btn btn-primary !py-1" disabled={busy[n.mac]} title={n.provision ? 'Armed; click to boot again' : 'One network boot into Talos maintenance mode'} onClick={() => boot([n.mac])}>{busy[n.mac] ? 'Starting' : 'Boot into Talos'}</button>}
-        {canMakeLabHost(n) && n.kind !== 'maintenance' && <button class="btn !py-1" onClick={() => setLab(n)}>Make lab host</button>}
-        {n.wol && !n.host && <button class="btn !py-1" title="Send a Wake-on-LAN magic packet" onClick={() => wake(n.mac)}>Wake</button>}
-        {!n.cluster && canRetire(n) && <button class="btn !py-1" title="Forget this machine" onClick={() => setRetire(n)}>Retire</button>}
-        <a href={openHref(n)} class="btn !py-1">Open</a>
+        {canAdopt(n) && <button class="btn btn-primary btn-sm" onClick={() => adopt.start(n)}>Adopt</button>}
+        {canBoot(n) && <button class="btn btn-primary btn-sm" disabled={busy[n.mac]} title={n.provision ? 'Armed; click to boot again' : 'One network boot into Talos maintenance mode'} onClick={() => boot([n.mac])}>{busy[n.mac] ? 'Starting' : 'Boot into Talos'}</button>}
+        {canMakeLabHost(n) && n.kind !== 'maintenance' && <button class="btn btn-sm" onClick={() => setLab(n)}>Make lab host</button>}
+        {n.wol && !n.host && <button class="btn btn-sm" title="Send a Wake-on-LAN magic packet" onClick={() => wake(n.mac)}>Wake</button>}
+        {!n.cluster && canRetire(n) && <button class="btn btn-sm" title="Forget this machine" onClick={() => setRetire(n)}>Retire</button>}
+        <a href={openHref(n)} class="btn btn-sm">Open</a>
       </span>
     ) },
-  ], [busy, route])
+  ], [busy, adopt.start])
 
   return (
     <div class="p-5 flex flex-col gap-4">
@@ -91,12 +92,13 @@ export function Inventory() {
           </div>
         </div>
         <div class="flex items-center gap-1 flex-wrap">
-          {filters.map((f) => <button key={f} class={`btn !py-1 ${filter === f ? 'border-accent text-accent' : ''}`} onClick={() => setFilter(f)}>{f === 'all' ? 'All' : groupLabel[f]} <span class="text-muted">{f === 'all' ? physical.length : counts[f]}</span></button>)}
+          {filters.map((f) => <button key={f} class={`btn btn-sm ${filter === f ? 'border-accent text-accent' : ''}`} onClick={() => setFilter(f)}>{f === 'all' ? 'All' : groupLabel[f]} <span class="text-muted">{f === 'all' ? physical.length : counts[f]}</span></button>)}
           <label class="ml-2 flex items-center gap-1.5 text-[12px] text-muted"><input type="checkbox" checked={showVMs} onChange={(e) => setShowVMs((e.target as HTMLInputElement).checked)} /> Show lab VMs</label>
-          {bootable.length > 1 && <button class="btn btn-primary !py-1 ml-auto" onClick={() => boot(bootable.map((m) => m.mac))}>Boot all {bootable.length} into Talos</button>}
+          {bootable.length > 1 && <button class="btn btn-primary btn-sm ml-auto" onClick={() => boot(bootable.map((m) => m.mac))}>Boot all {bootable.length} into Talos</button>}
         </div>
-        <DataTable loading={!loaded} id="inventory" columns={columns} rows={rows} rowKey={(n) => n.mac || n.ip} defaultSort={{ id: 'machine', dir: 'asc' }} empty={filter === 'all' ? 'No machines known yet. Scan a subnet or add one by remote management.' : `No machines in ${groupLabel[filter].toLowerCase()}.`} />
+        <DataTable loading={!live.value} id="inventory" columns={columns} rows={rows} rowKey={(n) => n.mac || n.ip} defaultSort={{ id: 'machine', dir: 'asc' }} empty={filter === 'all' ? 'No machines known yet. Scan a subnet or add one by remote management.' : `No machines in ${groupLabel[filter].toLowerCase()}.`} />
       </Section>
+      {adopt.element}
       {addAMT && <AddAMTDialog onClose={() => setAddAMT(false)} />}
       {lab && <MakeLabHostDialog m={lab} onClose={() => setLab(null)} />}
       {mac && <ThisMacDialog onClose={() => setMac(false)} />}

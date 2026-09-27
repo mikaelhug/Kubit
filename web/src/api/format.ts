@@ -1,3 +1,5 @@
+import { today } from '../clock'
+
 const kinds: Record<string, string> = {
   'cluster.create': 'Create cluster', 'cluster.apply': 'Apply cluster.yaml', 'platform.plan': 'Plan add-ons', 'platform.apply': 'Apply add-ons',
   'upgrade.talos': 'Upgrade Talos', 'upgrade.kubernetes': 'Upgrade Kubernetes', 'node.add': 'Add node', 'node.remove': 'Remove node', discover: 'Discover nodes',
@@ -25,7 +27,7 @@ export const fmt = {
   when(iso: string) {
     if (!iso) return ''
     const d = new Date(iso)
-    return d.toDateString() === new Date().toDateString() ? d.toLocaleTimeString() : d.toLocaleString()
+    return d.toDateString() === today.value ? d.toLocaleTimeString() : d.toLocaleString()
   },
   weekday(ms: number) { return new Date(ms).toLocaleDateString(undefined, { weekday: 'short' }) },
   hm(ms: number) { return new Date(ms).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) },

@@ -1,6 +1,8 @@
 import { fmt, type NodeDetail, type PodSummary } from '../../api'
 import { DataTable, type Column } from '../../components/DataTable'
+import { Age } from '../../components/Time'
 import { Notice, Pill, Section, StatusDot } from '../../components/ui'
+import { createdSort } from '../../time'
 import { phaseTone } from '../../tone'
 
 const columns: Column<PodSummary>[] = [
@@ -12,7 +14,7 @@ const columns: Column<PodSummary>[] = [
   { id: 'owner', header: 'Owner', sort: (p) => p.owner ?? '', cell: (p) => p.owner || '—' },
   { id: 'cpu', header: 'CPU use / req', align: 'right', sort: (p) => p.usageCpuMilli ?? 0, cell: (p) => <>{fmt.cores(p.usageCpuMilli ?? 0)}<span class="text-muted"> / {p.cpuMilli ? fmt.cores(p.cpuMilli) : '—'}</span></> },
   { id: 'mem', header: 'Mem use / req', align: 'right', sort: (p) => p.usageMemBytes ?? 0, cell: (p) => <>{fmt.bytes(p.usageMemBytes ?? 0)}<span class="text-muted"> / {p.memBytes ? fmt.bytes(p.memBytes) : '—'}</span></> },
-  { id: 'age', header: 'Age', cell: (p) => <span class="text-muted">{p.age}</span> },
+  { id: 'age', header: 'Age', sort: createdSort, cell: (p) => <span class="text-muted"><Age at={p.createdAt} fallback={p.age} /></span> },
 ]
 
 export function KubernetesTab({ k8s, err }: { k8s: NodeDetail | null; err: string | null }) {

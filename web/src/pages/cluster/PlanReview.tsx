@@ -1,7 +1,8 @@
 import { api, fmt, type PlanDiff } from '../../api'
 import { DiffView } from '../../components/DiffView'
 import { Breadcrumbs, ErrorBox, Notice, Pill } from '../../components/ui'
-import { operations, opsFor, toast, watch } from '../../store'
+import { operations, opsFor, runOp } from '../../ops'
+import { later } from '../../time'
 import { stateTone } from '../../tone'
 import { useLive } from '../../useLive'
 import type { ClusterCtx } from './ClusterPage'
@@ -13,10 +14,10 @@ export function PlanReview({ ctx, planId }: { ctx: ClusterCtx; planId: number })
   const ops = opsFor(name)
   const diff = op?.artifact as PlanDiff | undefined
   const newer = ops.filter((o) => o.kind === 'platform.plan' && o.status === 'done' && o.id > planId).sort((a, b) => b.id - a.id)[0]
-  const stale = !!(op && cluster.updatedAt > op.startedAt)
+  const stale = !!op && later(cluster.updatedAt, op.startedAt)
   const applied = ops.find((o) => o.kind === 'platform.apply' && (o.request as { planId?: number } | undefined)?.planId === planId)
   const total = diff ? diff.summary.Add + diff.summary.Change + diff.summary.Remove : 0
-  const apply = () => api.platformApplyPlan(name, planId).then((r) => watch(r)).catch((e) => toast(e.message, 'error'))
+  const apply = () => runOp(api.platformApplyPlan(name, planId))
 
   return (
     <div class="flex flex-col gap-4">
@@ -29,7 +30,7 @@ export function PlanReview({ ctx, planId }: { ctx: ClusterCtx; planId: number })
           <span class="text-[13px] text-muted">{fmt.datetime(op.startedAt)}</span>
           <a href={`/operations/${planId}`} class="text-[13px] text-accent hover:underline">log</a>
           <div class="ml-auto flex gap-2">
-            <button class="btn" onClick={() => api.platformPlan(name).then((r) => { watch(r); toast('Planning again') }).catch((e) => toast(e.message, 'error'))}>Plan again</button>
+            <button class="btn" onClick={() => runOp(api.platformPlan(name), 'Planning again')}>Plan again</button>
             <button class="btn btn-primary" disabled={op.status !== 'done' || !!newer || stale || total === 0 || !!applied} onClick={apply}>
               {applied ? `Applied in #${applied.id}` : total === 0 ? 'Nothing to apply' : `Apply these ${total} change${total === 1 ? '' : 's'}`}
             </button>

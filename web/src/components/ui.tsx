@@ -1,8 +1,9 @@
 import { Fragment, type ComponentChildren } from 'preact'
 import { memo } from 'preact/compat'
-import { useEffect, useState } from 'preact/hooks'
+import { useEffect, useRef, useState } from 'preact/hooks'
 import { api, fmt, type Event, type Level } from '../api'
 import { now } from '../clock'
+import { useEscape } from '../keys'
 import { clusters, toast } from '../store'
 import { severityTone, stateTone, toneBg, toneBorder, tonePill, toneText, type Tone } from '../tone'
 import { useLive } from '../useLive'
@@ -61,12 +62,14 @@ export const EventLine = memo(function EventLine({ e, showStep = true }: { e: Ev
 })
 
 export function Dialog({ title, onClose, children, width = 'max-w-lg', footer }: { title: string; onClose: () => void; children: ComponentChildren; width?: string; footer?: ComponentChildren }) {
+  useEscape(onClose)
+  const pressed = useRef(false)
   return (
-    <div class="fixed inset-0 z-40 flex items-start justify-center bg-black/50 p-6 overflow-auto" onClick={(e) => { if (e.target === e.currentTarget) onClose() }} onKeyDown={(e) => { if (e.key === 'Escape') onClose() }}>
+    <div class="fixed inset-0 z-40 flex items-start justify-center bg-black/50 p-6 overflow-auto" onMouseDown={(e) => { pressed.current = e.target === e.currentTarget }} onClick={(e) => { if (pressed.current && e.target === e.currentTarget) onClose(); pressed.current = false }}>
       <div class={`panel w-full ${width} mt-10 flex flex-col`} role="dialog" aria-modal="true">
         <div class="flex items-center justify-between px-5 py-4 border-b border-border">
           <h2 class="text-base font-semibold">{title}</h2>
-          <button class="btn !px-2 !py-1" onClick={onClose} aria-label="Close">✕</button>
+          <button class="btn btn-sm" onClick={onClose} aria-label="Close">✕</button>
         </div>
         <div class="px-5 py-4 flex flex-col gap-4">{children}</div>
         {footer && <div class="px-5 py-3 border-t border-border flex justify-end gap-2">{footer}</div>}
@@ -148,6 +151,11 @@ export function Field({ label, children, hint }: { label: string; children: Comp
 export function ErrorBox({ error }: { error: string | null | undefined }) {
   if (!error) return null
   return <div class="rounded-[var(--r)] border border-bad/40 bg-bad/10 px-3 py-2 text-[13px] text-bad break-words">{error}</div>
+}
+
+export function MovedNotice({ show, onDiscard }: { show: boolean; onDiscard: () => void }) {
+  if (!show) return null
+  return <Notice tone="warn"><span class="flex items-center gap-3">Changed elsewhere; saving overwrites it.<button class="btn btn-sm ml-auto shrink-0" onClick={onDiscard}>Discard edits</button></span></Notice>
 }
 
 export function Notice({ tone = 'info', children }: { tone?: Tone; children: ComponentChildren }) {

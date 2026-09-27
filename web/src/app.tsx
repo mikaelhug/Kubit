@@ -20,7 +20,8 @@ import { LabHostPage } from './pages/LabHost'
 import { NodePage } from './pages/node/NodePage'
 import { Operations } from './pages/Operations'
 import { SignIn } from './pages/SignIn'
-import { clusters, connected, daemon, drawerHeight, drawerOpen, labHosts, loadMe, me, reconnectAttempt, resyncing, runningCount, statuses, toast } from './store'
+import { runningCount } from './ops'
+import { clusters, connected, daemon, drawerHeight, drawerOpen, labHosts, loadMe, me, reconnectAttempt, resyncing, statuses, toast } from './store'
 import { stateTone } from './tone'
 
 export function App() {

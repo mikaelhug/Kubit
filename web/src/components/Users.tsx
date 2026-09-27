@@ -10,7 +10,7 @@ const roles: Role[] = ['viewer', 'operator', 'admin']
 const roleHelp: Record<Role, string> = { viewer: 'Reads everything except credentials', operator: 'Runs operations', admin: 'Everything, including accounts and settings' }
 
 export function UsersSection() {
-  const { data: users, error, reload } = useLive(() => api.users(), [], [['', 'users']])
+  const { data: users, error } = useLive(() => api.users(), [], [['', 'users']])
   const [add, setAdd] = useState(false)
   const [edit, setEdit] = useState<User | null>(null)
   const [tokensFor, setTokensFor] = useState<User | null>(null)
@@ -28,10 +28,10 @@ export function UsersSection() {
       <ErrorBox error={error} />
       {authState.value.setup && <Notice tone="warn">No accounts: anyone reaching this address is an administrator.</Notice>}
       <DataTable id="users" search={false} columns={columns} rows={users ?? []} rowKey={(u) => u.name} defaultSort={{ id: 'name', dir: 'asc' }} empty="No accounts." />
-      {add && <UserDialog onClose={() => { setAdd(false); loadMe().then(() => { reconnectLive(); reload() }) }} />}
-      {edit && <UserDialog user={edit} onClose={() => { setEdit(null); reload() }} />}
+      {add && <UserDialog onClose={() => setAdd(false)} />}
+      {edit && <UserDialog user={edit} onClose={() => setEdit(null)} />}
       {tokensFor && <TokensDialog user={tokensFor} onClose={() => setTokensFor(null)} />}
-      {remove && <ConfirmDialog title={`Delete ${remove.name}`} action="Delete account" tone="danger" onClose={() => setRemove(null)} onConfirm={() => api.deleteUser(remove.name).then(() => { setRemove(null); reload(); toast('Account deleted', 'good') }).catch((e) => { setRemove(null); toast(e.message, 'error') })} impact={<p>Signs the account out everywhere and revokes its API tokens.</p>} />}
+      {remove && <ConfirmDialog title={`Delete ${remove.name}`} action="Delete account" tone="danger" onClose={() => setRemove(null)} onConfirm={() => api.deleteUser(remove.name).then(() => { setRemove(null); toast('Account deleted', 'good') }).catch((e) => { setRemove(null); toast(e.message, 'error') })} impact={<p>Signs the account out everywhere and revokes its API tokens.</p>} />}
     </Section>
   )
 }
@@ -45,7 +45,11 @@ function UserDialog({ user, onClose }: { user?: User; onClose: () => void }) {
   const [error, setError] = useState<string | null>(null)
   const submit = () => {
     const p = user ? api.updateUser(user.name, { role, disabled, password: password || undefined }) : first ? api.setup(name, password) : api.createUser(name, password, role)
-    p.then(() => { toast(user ? 'Account updated' : first ? 'Account created and signed in' : 'Account created', 'good'); onClose() }).catch((e) => setError(e.message))
+    p.then(() => {
+      toast(user ? 'Account updated' : first ? 'Account created and signed in' : 'Account created', 'good')
+      onClose()
+      if (first) loadMe().then(() => reconnectLive())
+    }).catch((e) => setError(e.message))
   }
   return (
     <Dialog title={user ? `Edit ${user.name}` : 'Add account'} onClose={onClose} footer={<><button class="btn" onClick={onClose}>Cancel</button><button class="btn btn-primary" disabled={!name || (!user && password.length < 8)} onClick={submit}>{user ? 'Save' : 'Create'}</button></>}>
@@ -63,12 +67,12 @@ function UserDialog({ user, onClose }: { user?: User; onClose: () => void }) {
 }
 
 function TokensDialog({ user, onClose }: { user: User; onClose: () => void }) {
-  const { data: tokens, error: loadError, reload } = useLive(() => api.tokens(user.name), [user.name], [['', 'users']])
+  const { data: tokens, error: loadError } = useLive(() => api.tokens(user.name), [user.name], [['', 'users']])
   const [name, setName] = useState('')
   const [days, setDays] = useState(90)
   const [issued, setIssued] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
-  const create = () => api.createToken(user.name, name, days).then((r) => { setIssued(r.token); setName(''); reload() }).catch((e) => setError(e.message))
+  const create = () => api.createToken(user.name, name, days).then((r) => { setIssued(r.token); setName('') }).catch((e) => setError(e.message))
   return (
     <Dialog title={`API tokens for ${user.name}`} onClose={onClose} footer={<button class="btn" onClick={onClose}>Close</button>}>
       <ErrorBox error={error ?? loadError} />
@@ -76,7 +80,7 @@ function TokensDialog({ user, onClose }: { user: User; onClose: () => void }) {
       {issued && <Notice tone="good"><span class="flex flex-col gap-1"><span>Copy it now; it is not shown again.</span><code class="mono text-[12px] break-all select-all">{issued}</code></span></Notice>}
       <div class="flex flex-col gap-1 text-[13px]">
         {tokens?.length === 0 && <span class="text-muted">No tokens.</span>}
-        {(tokens ?? []).map((t) => <span key={t.name} class="flex items-center gap-2"><span class="mono">{t.name}</span><span class="text-muted">{t.expiresAt ? `expires ${fmt.when(t.expiresAt)}` : 'no expiry'}{t.lastUsed ? ` · used ${fmt.when(t.lastUsed)}` : ''}</span><button class="btn btn-sm ml-auto" onClick={() => api.deleteToken(user.name, t.name).then(reload).catch((e) => setError(e.message))}>Revoke</button></span>)}
+        {(tokens ?? []).map((t) => <span key={t.name} class="flex items-center gap-2"><span class="mono">{t.name}</span><span class="text-muted">{t.expiresAt ? `expires ${fmt.when(t.expiresAt)}` : 'no expiry'}{t.lastUsed ? ` · used ${fmt.when(t.lastUsed)}` : ''}</span><button class="btn btn-sm ml-auto" onClick={() => api.deleteToken(user.name, t.name).catch((e) => setError(e.message))}>Revoke</button></span>)}
       </div>
       <div class="grid grid-cols-[1fr_auto_auto] gap-2 items-end">
         <Field label="Name"><input class="input mono" value={name} onInput={(e) => setName((e.target as HTMLInputElement).value)} /></Field>

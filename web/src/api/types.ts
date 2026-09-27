@@ -15,12 +15,12 @@ export interface Build { name: string; image?: string; state: 'running' | 'succe
 export interface FluxRepository { url: string; branch?: string; path?: string; interval?: string }
 export interface FluxObject { kind: string; namespace: string; name: string; ready: 'True' | 'False' | 'Unknown'; reason?: string; message?: string; revision?: string; suspended?: boolean; since?: string }
 export interface ImageStatus { talosVersion: string; installed: string; desired: string; extensions?: string[]; outdated: boolean }
-export interface Namespace { name: string; phase: string; security?: string; ageSec: number; platform: boolean; addon?: string }
-export interface Workload { kind: string; namespace: string; name: string; ready: number; desired: number; available: boolean; images: string; age: string; selector?: string }
-export interface KService { namespace: string; name: string; type: string; clusterIP: string; externalIPs?: string[]; ports: string[]; endpoints: number; selector?: string; age: string }
-export interface KIngress { namespace: string; name: string; class?: string; rules: { host: string; path: string; service: string; port: string }[]; addresses?: string[]; tlsHosts?: string[]; age: string }
+export interface Namespace { name: string; phase: string; security?: string; ageSec: number; createdAt?: string; platform: boolean; addon?: string }
+export interface Workload { kind: string; namespace: string; name: string; ready: number; desired: number; available: boolean; images: string; age: string; ageSec?: number; createdAt?: string; selector?: string }
+export interface KService { namespace: string; name: string; type: string; clusterIP: string; externalIPs?: string[]; ports: string[]; endpoints: number; selector?: string; age: string; ageSec?: number; createdAt?: string }
+export interface KIngress { namespace: string; name: string; class?: string; rules: { host: string; path: string; service: string; port: string }[]; addresses?: string[]; tlsHosts?: string[]; age: string; ageSec?: number; createdAt?: string }
 export interface NetworkView { services: KService[]; ingresses: KIngress[]; pool?: { range: string; total: number; allocated: { ip: string; service: string }[] }; poolError?: string }
-export interface StorageView { classes: { name: string; provisioner: string; default: boolean; reclaim: string; binding: string; expandable: boolean }[]; volumes: { name: string; capacityBytes: number; phase: string; class: string; claim?: string; accessModes: string; reclaim: string; age: string }[]; claims: { namespace: string; name: string; phase: string; requestedBytes: number; capacityBytes: number; class: string; volume?: string; age: string }[] }
+export interface StorageView { classes: { name: string; provisioner: string; default: boolean; reclaim: string; binding: string; expandable: boolean; createdAt?: string }[]; volumes: { name: string; capacityBytes: number; phase: string; class: string; claim?: string; accessModes: string; reclaim: string; age: string; createdAt?: string }[]; claims: { namespace: string; name: string; phase: string; requestedBytes: number; capacityBytes: number; class: string; volume?: string; age: string; ageSec?: number; createdAt?: string }[] }
 export interface PodEvent { type: string; status: string; reason?: string; message?: string; since?: string }
 export interface AddonStatus {
   key: string; enabled: boolean; address?: string; values?: Record<string, unknown>; pinnedVersion?: string
@@ -73,7 +73,7 @@ export interface Inventory {
   etcd?: { memberId: string; leader: boolean; learner: boolean; dbSizeBytes: number; dbInUseBytes: number; raftIndex: number; raftTerm: number; errors?: string[] }
 }
 export interface Resources { cpuMilli: number; memBytes: number; pods: number }
-export interface PodSummary { namespace: string; name: string; node?: string; containers?: string[]; phase: string; ready: string; restarts: number; owner?: string; cpuMilli: number; memBytes: number; age: string; usageCpuMilli?: number; usageMemBytes?: number }
+export interface PodSummary { namespace: string; name: string; node?: string; containers?: string[]; phase: string; ready: string; restarts: number; owner?: string; cpuMilli: number; memBytes: number; age: string; ageSec?: number; createdAt?: string; usageCpuMilli?: number; usageMemBytes?: number }
 export interface NodeDetail {
   name: string; ready: boolean; unschedulable: boolean; kubeletVersion: string; containerRuntime: string; kernel: string; osImage: string; internalIP: string
   conditions: { type: string; status: string; reason?: string; message?: string; since?: string }[] | null

@@ -1,10 +1,28 @@
 import { useEffect, useRef } from 'preact/hooks'
 import { fmt } from '../api'
+import { nowEvery } from '../clock'
 
 interface Point { t: number; v: number | null }
 
 const spans: Record<string, number> = { '1h': 3600e3, '6h': 6 * 3600e3, '24h': 86400e3, '7d': 7 * 86400e3 }
 export const spanOf = (range: string) => spans[range] ?? spans['24h']
+const ranges = Object.keys(spans)
+
+export function RangeButtons({ value, onChange }: { value: string; onChange: (range: string) => void }) {
+  return (
+    <div class="ml-auto flex gap-1">
+      {ranges.map((r) => <button key={r} class={`btn btn-sm ${r === value ? 'border-accent text-accent' : ''}`} onClick={() => onChange(r)}>{r}</button>)}
+    </div>
+  )
+}
+
+function onThemeChange(fn: () => void) {
+  const media = window.matchMedia('(prefers-color-scheme: dark)')
+  const attr = new MutationObserver(fn)
+  attr.observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] })
+  media.addEventListener('change', fn)
+  return () => { attr.disconnect(); media.removeEventListener('change', fn) }
+}
 
 const tickSteps = [5, 10, 15, 30, 60, 120, 180, 360, 720, 1440, 2880].map((m) => m * 60e3)
 const shareSteps = [0.05, 0.1, 0.2, 0.25, 0.5, 1]
@@ -18,7 +36,9 @@ function ceilingFor(v: number, max?: number): number {
 
 export function Sparkline({ points, max, height = 56, format, label, span, tone = 'accent' }: { points: Point[]; max?: number; height?: number; format: (v: number) => string; label: string; span?: number; tone?: 'accent' | 'bad' }) {
   const ref = useRef<HTMLCanvasElement>(null)
-  useEffect(() => {
+  const minute = span ? nowEvery(60_000) : 0
+  const draw = useRef(() => {})
+  draw.current = () => {
     const canvas = ref.current
     if (!canvas) return
     const css = getComputedStyle(document.documentElement)
@@ -35,7 +55,8 @@ export function Sparkline({ points, max, height = 56, format, label, span, tone 
     ctx.font = '10px system-ui'
     const px0 = span ? 34 : 1, px1 = w - 2, py0 = 6, py1 = height - (span ? 15 : 4)
     const known = points.filter((p): p is { t: number; v: number } => p.v !== null)
-    const t1 = points.length ? points[points.length - 1].t : Date.now()
+    const lastT = points.length ? points[points.length - 1].t : minute || Date.now()
+    const t1 = span ? Math.max(minute, lastT) : lastT
     const t0 = span ? t1 - span : points.length ? points[0].t : t1 - 1
     const x = (t: number) => px0 + ((t - t0) / Math.max(1, t1 - t0)) * (px1 - px0)
 
@@ -111,7 +132,17 @@ export function Sparkline({ points, max, height = 56, format, label, span, tone 
       ctx.fillStyle = accent
       ctx.beginPath(); ctx.arc(x(last.t), y(last.v), 2.5, 0, Math.PI * 2); ctx.fill()
     }
-  }, [points, max, height, span, tone])
+  }
+  useEffect(() => draw.current(), [points, max, height, span, tone, minute])
+  useEffect(() => {
+    const canvas = ref.current
+    if (!canvas) return
+    const redraw = () => draw.current()
+    const size = new ResizeObserver(redraw)
+    size.observe(canvas)
+    const theme = onThemeChange(redraw)
+    return () => { size.disconnect(); theme() }
+  }, [])
   const last = points.filter((p) => p.v !== null).pop()
   return (
     <div class="flex flex-col gap-1">

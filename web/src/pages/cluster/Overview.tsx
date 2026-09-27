@@ -3,17 +3,18 @@ import { api, fmt, type Sample, type ServiceHealth, type Status } from '../../ap
 import { nowEvery } from '../../clock'
 import { AlertGroup, EventRow } from '../../components/Alerts'
 import { useNamespaces } from '../../components/NamespaceScope'
-import { Sparkline, spanOf } from '../../components/Sparkline'
+import { RangeButtons, Sparkline, spanOf } from '../../components/Sparkline'
 import { Ago } from '../../components/Time'
 import { Notice, Pill, Section, SeenAgo, StatusDot, Tile } from '../../components/ui'
-import { health, loadSnapshots, openAlerts, opsFor, snapshots, versions } from '../../store'
+import { opsFor } from '../../ops'
+import { health, loadSnapshots, openAlerts, snapshots, versions } from '../../store'
+import { appendWithin } from '../../time'
 import { stateTone, type Tone } from '../../tone'
 import { useLive } from '../../useLive'
 import { updatesFor } from '../../versions'
 import type { ClusterCtx } from './ClusterPage'
 
 const recoveryKinds = new Set(['talos.back', 'node.ready', 'api.back', 'etcd.healthy', 'lb.assigned', 'workload.available', 'pod.recovered', 'pvc.bound', 'service.endpoints', 'ingress.address', 'lb.pool-free'])
-const ranges = ['1h', '6h', '24h', '7d']
 
 export function Overview({ ctx }: { ctx: ClusterCtx }) {
   const { status, cluster, name } = ctx
@@ -67,7 +68,7 @@ function CapacityTrend({ name, status }: { name: string; status: Status | null }
   useEffect(() => {
     if (!status?.observedAt || !t) return
     const point: Sample = { ts: status.observedAt, cpuMilli: t.cpuMilli, cpuCap: t.cpuCapMilli, memBytes: t.memBytes, memCap: t.memCapBytes, pods: t.pods, ready: t.nodesReady === t.nodes, reachable: status.apiReachable }
-    set((prev) => { const last = prev?.[prev.length - 1]; return last && last.ts >= point.ts ? prev : [...(prev ?? []), point] })
+    set((prev) => appendWithin(prev, point, spanOf(range)))
   }, [status?.observedAt])
   const series = useMemo(() => {
     const list = samples ?? []
@@ -80,9 +81,7 @@ function CapacityTrend({ name, status }: { name: string; status: Status | null }
     <div class="panel p-3 flex flex-col gap-4">
       <div class="flex items-center gap-2">
         <span class="label">Capacity trend</span>
-        <div class="ml-auto flex gap-1">
-          {ranges.map((r) => <button key={r} class={`btn btn-xs ${r === range ? 'border-accent text-accent' : ''}`} onClick={() => setRange(r)}>{r}</button>)}
-        </div>
+        <RangeButtons value={range} onChange={setRange} />
       </div>
       <Sparkline label="CPU used" points={series.cpu} max={t?.cpuCapMilli || series.cpuCap} format={fmt.cores} height={84} span={spanOf(range)} tone={graph} />
       <Sparkline label="Memory used" points={series.mem} max={t?.memCapBytes || series.memCap} format={fmt.bytes} height={84} span={spanOf(range)} tone={graph} />

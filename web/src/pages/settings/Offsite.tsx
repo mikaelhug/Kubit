@@ -1,8 +1,9 @@
 import { api, fmt, type OffsiteTarget } from '../../api'
-import { ErrorBox, Field, Section } from '../../components/ui'
-import { toast, watch } from '../../store'
+import { ErrorBox, Field, MovedNotice, Section } from '../../components/ui'
+import { runOp } from '../../ops'
+import { toast } from '../../store'
 import { useLive } from '../../useLive'
-import { MovedNotice, SaveBar, useSettingsSlice } from './Layout'
+import { SaveBar, useSettingsSlice } from './Layout'
 
 export function Offsite() {
   const f = useSettingsSlice('offsite', (s) => s.offsite, (s, v) => ({ ...s, offsite: v }))
@@ -38,7 +39,7 @@ export function Offsite() {
       </div>
       <SaveBar dirty={f.dirty} onSave={f.save}>
         <button class="btn" disabled={!o.type} title="Write, read back and delete a probe object" onClick={() => api.offsiteTest(o).then((r) => toast(r.ok ? `Target reachable (${r.roundTripMs} ms round trip)` : r.error ?? 'failed', r.ok ? 'good' : 'error')).catch((e) => toast(e.message, 'error'))}>Test target</button>
-        <button class="btn" disabled={f.dirty || !o.type} title={f.dirty ? 'Save first' : 'Upload a Kubit backup now'} onClick={() => api.offsiteBackup().then((r) => watch(r)).catch((e) => toast(e.message, 'error'))}>Copy Kubit backup now</button>
+        <button class="btn" disabled={f.dirty || !o.type} title={f.dirty ? 'Save first' : 'Upload a Kubit backup now'} onClick={() => runOp(api.offsiteBackup())}>Copy Kubit backup now</button>
         {off?.enabled && <span class="text-[12px] text-muted">{off.error ? <span class="text-bad">{off.error}</span> : `${off.target}: ${off.backups} backup(s), ${off.snapshots} snapshot(s), ${fmt.bytes(off.bytes)} · last backup ${off.lastBackup ? fmt.when(off.lastBackup) : 'never'}`}</span>}
       </SaveBar>
     </Section>

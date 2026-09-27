@@ -2,8 +2,10 @@ import { useMemo } from 'preact/hooks'
 import { api, fmt, type StorageView } from '../../api'
 import { DataTable, withoutColumn, type Column } from '../../components/DataTable'
 import { NamespaceScope, useNamespaceScope } from '../../components/NamespaceScope'
+import { Age } from '../../components/Time'
 import { AlertPill, ErrorBox, Notice, Pill, Section } from '../../components/ui'
 import { alertIndex, objectKey } from '../../store'
+import { createdSort } from '../../time'
 import { phaseTone } from '../../tone'
 import { useLive } from '../../useLive'
 import type { ClusterCtx } from './ClusterPage'
@@ -28,7 +30,7 @@ const vcols: Column<PV>[] = [
   { id: 'claim', header: 'Claim', mono: true, cell: (v) => v.claim || <span class="text-muted">—</span> },
   { id: 'modes', header: 'Access', cell: (v) => v.accessModes },
   { id: 'reclaim', header: 'Reclaim', cell: (v) => v.reclaim },
-  { id: 'age', header: 'Age', cell: (v) => <span class="text-muted">{v.age}</span> },
+  { id: 'age', header: 'Age', sort: createdSort, cell: (v) => <span class="text-muted"><Age at={v.createdAt} fallback={v.age} /></span> },
 ]
 
 export function Storage({ ctx }: { ctx: ClusterCtx }) {
@@ -45,7 +47,7 @@ export function Storage({ ctx }: { ctx: ClusterCtx }) {
     { id: 'cap', header: 'Capacity', align: 'right', cell: (c) => c.capacityBytes ? fmt.bytes(c.capacityBytes) : '—' },
     { id: 'class', header: 'Class', cell: (c) => c.class || '—' },
     { id: 'vol', header: 'Volume', mono: true, cell: (c) => c.volume || <span class="text-muted">unbound</span> },
-    { id: 'age', header: 'Age', cell: (c) => <span class="text-muted">{c.age}</span> },
+    { id: 'age', header: 'Age', sort: createdSort, cell: (c) => <span class="text-muted"><Age at={c.createdAt} fallback={c.age} /></span> },
   ], 'ns', !!s.ns), [alerts, s.ns])
   const loading = !view && !error
   return (

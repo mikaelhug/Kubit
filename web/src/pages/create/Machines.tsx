@@ -4,8 +4,10 @@ import { nowEvery } from '../../clock'
 import { DataTable, type Column } from '../../components/DataTable'
 import { ScanBox } from '../../components/ScanBox'
 import { Field } from '../../components/ui'
-import { installCandidates, modelOf, TypePill } from '../../machine'
-import { machineList, running } from '../../store'
+import { TypePill } from '../../components/Machine'
+import { installCandidates, modelOf } from '../../machine'
+import { running } from '../../ops'
+import { machineList } from '../../store'
 import { machineWarnings, topologyText, type Draft, type PatchDraft } from './draft'
 
 type Row = { m: NodeRow; stale: boolean }

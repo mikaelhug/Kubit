@@ -62,7 +62,8 @@ export function DataTable<T>({ columns, rows, rowKey, empty = 'Nothing to show.'
   }, [rows, q, sort, columns])
 
   const pages = Math.max(1, Math.ceil(filtered.length / pageSize))
-  const visible = filtered.slice(page * pageSize, (page + 1) * pageSize)
+  const current = Math.min(page, pages - 1)
+  const visible = filtered.slice(current * pageSize, (current + 1) * pageSize)
 
   const toggleSort = (c: Column<T>) => {
     if (!c.sort) return
@@ -105,9 +106,9 @@ export function DataTable<T>({ columns, rows, rowKey, empty = 'Nothing to show.'
       </div>
       {pages > 1 && (
         <div class="flex items-center gap-2 px-3 py-2 border-t border-border text-[12px] text-muted">
-          <button class="btn btn-sm" disabled={page === 0} onClick={() => setPage(page - 1)}>‹</button>
-          <span>page {page + 1} / {pages}</span>
-          <button class="btn btn-sm" disabled={page >= pages - 1} onClick={() => setPage(page + 1)}>›</button>
+          <button class="btn btn-sm" disabled={current === 0} onClick={() => setPage(current - 1)}>‹</button>
+          <span>page {current + 1} / {pages}</span>
+          <button class="btn btn-sm" disabled={current >= pages - 1} onClick={() => setPage(current + 1)}>›</button>
         </div>
       )}
     </div>

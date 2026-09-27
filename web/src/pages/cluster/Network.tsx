@@ -2,9 +2,11 @@ import { useMemo } from 'preact/hooks'
 import { api, type KIngress, type KService } from '../../api'
 import { DataTable, withoutColumn } from '../../components/DataTable'
 import { NamespaceScope, useNamespaceScope } from '../../components/NamespaceScope'
+import { Age } from '../../components/Time'
 import { AlertPill, ErrorBox, KeyValue, Notice, Pill, Section } from '../../components/ui'
 import { ipAt } from '../../net'
 import { alertIndex, objectKey } from '../../store'
+import { createdSort } from '../../time'
 import { useLive } from '../../useLive'
 import type { ClusterCtx } from './ClusterPage'
 
@@ -26,21 +28,21 @@ export function Network({ ctx }: { ctx: ClusterCtx }) {
     { id: 'type', header: 'Type', sort: (x) => x.type, cell: (x) => <Pill tone={x.type === 'LoadBalancer' ? 'info' : 'muted'}>{x.type}</Pill> },
     { id: 'cip', header: 'Cluster IP', mono: true, cell: (x) => x.clusterIP },
     { id: 'ext', header: 'External IP', mono: true, sort: (x) => (x.externalIPs ?? []).join(','), cell: (x) => (x.externalIPs ?? []).join(', ') || <span class="text-muted">—</span> },
-    { id: 'ports', header: 'Ports', mono: true, text: (x) => x.ports.join(' '), cell: (x) => x.ports.join(', ') },
+    { id: 'ports', header: 'Ports', mono: true, text: (x) => (x.ports ?? []).join(' '), cell: (x) => (x.ports ?? []).join(', ') },
     { id: 'eps', header: 'Endpoints', align: 'right', sort: (x) => x.endpoints, cell: (x) => <span class={x.endpoints === 0 && x.selector ? 'text-warn' : ''}>{x.endpoints}</span> },
-    { id: 'age', header: 'Age', cell: (x) => <span class="text-muted">{x.age}</span> },
+    { id: 'age', header: 'Age', sort: createdSort, cell: (x) => <span class="text-muted"><Age at={x.createdAt} fallback={x.age} /></span> },
   ], 'ns', !!s.ns), [alerts, s.ns])
   const icols = useMemo(() => withoutColumn<KIngress>([
     { id: 'ns', header: 'Namespace', sort: (i) => i.namespace, cell: (i) => i.namespace },
     { id: 'name', header: 'Ingress', sort: (i) => i.name, cell: (i) => <span class="flex items-center gap-2"><span class="font-medium">{i.name}</span><AlertPill e={alerts.get(objectKey('Ingress', i.namespace, i.name))} /></span> },
     { id: 'class', header: 'Class', cell: (i) => i.class || <span class="text-muted">default</span> },
-    { id: 'rules', header: 'Host / path → service', text: (i) => i.rules.map((r) => `${r.host}${r.path} ${r.service}`).join(' '), cell: (i) => (
+    { id: 'rules', header: 'Host / path → service', text: (i) => (i.rules ?? []).map((r) => `${r.host}${r.path} ${r.service}`).join(' '), cell: (i) => (
       <div class="flex flex-col gap-0.5">
-        {i.rules.map((r) => <span key={`${r.host}${r.path}`} class="mono text-[12px]">{r.host || '*'}{r.path} <span class="text-muted">→</span> {r.service}:{r.port}{i.tlsHosts?.includes(r.host) && <Pill tone="good">tls</Pill>}</span>)}
+        {(i.rules ?? []).map((r) => <span key={`${r.host}${r.path}`} class="mono text-[12px]">{r.host || '*'}{r.path} <span class="text-muted">→</span> {r.service}:{r.port}{i.tlsHosts?.includes(r.host) && <Pill tone="good">tls</Pill>}</span>)}
       </div>
     ) },
     { id: 'addr', header: 'Address', mono: true, cell: (i) => (i.addresses ?? []).join(', ') || <span class="text-muted">pending</span> },
-    { id: 'age', header: 'Age', cell: (i) => <span class="text-muted">{i.age}</span> },
+    { id: 'age', header: 'Age', sort: createdSort, cell: (i) => <span class="text-muted"><Age at={i.createdAt} fallback={i.age} /></span> },
   ], 'ns', !!s.ns), [alerts, s.ns])
   const ingressIP = pool?.allocated.find((a) => a.service.startsWith('ingress-nginx/'))?.ip
 

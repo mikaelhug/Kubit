@@ -1,20 +1,19 @@
-import { useEffect, useMemo, useState } from 'preact/hooks'
-import { api, fmt, type ClusterRow, type NodeNetwork, type NodeSpec, type NodeStatus } from '../../api'
+import { useMemo, useState } from 'preact/hooks'
+import { api, fmt, type ClusterRow, type NodeStatus } from '../../api'
 import { DataTable, type Column } from '../../components/DataTable'
-import { KVEditor } from '../../components/PoolsEditor'
 import { ReaddressDialog } from '../../components/ReaddressDialog'
-import { ConfirmDialog, Dialog, ErrorBox, Field, Pill, Section } from '../../components/ui'
-import { dataCandidates, diskLabel, installCandidates, modelOf, typeOf } from '../../machine'
-import { staticNetwork } from '../../net'
-import { machineList, toast, watch } from '../../store'
+import { ConfirmDialog, Pill, Section } from '../../components/ui'
+import { runOp } from '../../ops'
+import { useQueryParam } from '../../query'
+import { AddNodeDialog } from './AddNodeDialog'
 import type { ClusterCtx } from './ClusterPage'
 
 const smallAlloc = 768 * 1048576
 
 export function Nodes({ ctx }: { ctx: ClusterCtx }) {
   const { status, cluster, name } = ctx
-  const adoptIP = typeof location !== 'undefined' ? new URLSearchParams(location.search).get('adopt') : null
-  const [add, setAdd] = useState(!!adoptIP)
+  const [adoptIP, setAdoptIP] = useQueryParam('adopt')
+  const [add, setAdd] = useState(false)
   const [remove, setRemove] = useState<NodeStatus | null>(null)
   const [readdress, setReaddress] = useState<NodeStatus | null>(null)
   const [pool, setPool] = useState('')
@@ -49,8 +48,8 @@ export function Nodes({ ctx }: { ctx: ClusterCtx }) {
       { id: 'gvisor', header: 'gVisor', sort: (n) => n.gvisor ? 1 : 0, cell: (n) => n.gvisor ? <Pill tone="good">{n.kvm ? 'kvm' : 'runsc'}</Pill> : <span class="text-muted">—</span> },
       { id: 'actions', header: '', align: 'right', cell: (n) => (
         <span class="whitespace-nowrap flex gap-1 justify-end">
-          <a href={machineHref(n)} class="btn !py-1">Open</a>
-          <button class="btn btn-danger !py-1" disabled={!apiUp} title={!apiUp ? 'Needs the Kubernetes API to drain' : 'Drain, delete and reset'} onClick={() => setRemove(n)}>Remove</button>
+          <a href={machineHref(n)} class="btn btn-sm">Open</a>
+          <button class="btn btn-danger btn-sm" disabled={!apiUp} title={!apiUp ? 'Needs the Kubernetes API to drain' : 'Drain, delete and reset'} onClick={() => setRemove(n)}>Remove</button>
         </span>
       ) },
     ]
@@ -70,11 +69,11 @@ export function Nodes({ ctx }: { ctx: ClusterCtx }) {
         </>}>
         <DataTable id="nodes" columns={columns} rows={rows} rowKey={(n) => n.hostname} defaultSort={{ id: 'pool', dir: 'asc' }} />
       </Section>
-      {add && <AddNodeDialog cluster={cluster} preselect={adoptIP ?? undefined} onClose={() => { setAdd(false); if (adoptIP) history.replaceState(null, '', location.pathname) }} />}
+      {(add || !!adoptIP) && <AddNodeDialog cluster={cluster} preselect={adoptIP || undefined} onClose={() => { setAdd(false); setAdoptIP('') }} />}
       {readdress && <ReaddressDialog cluster={cluster} n={readdress} spec={specs.find((s) => s.hostname === readdress.hostname)} onClose={() => setReaddress(null)} />}
       {remove && (
         <ConfirmDialog title={`Remove ${remove.hostname}`} action="Drain and remove" tone="danger" cluster={name} onClose={() => setRemove(null)}
-          onConfirm={() => api.removeNode(name, remove.hostname).then((r) => { setRemove(null); watch(r) }).catch((e) => toast(e.message, 'error'))}
+          onConfirm={() => runOp(api.removeNode(name, remove.hostname)).then((ok) => { if (ok) setRemove(null) })}
           impact={<RemoveImpact n={remove} cluster={cluster} />} />
       )}
     </>
@@ -108,99 +107,5 @@ function RemoveImpact({ n, cluster }: { n: NodeStatus; cluster: ClusterRow }) {
       {n.role === 'controlplane' && remaining === 2 && <li class="text-warn">Leaves 2 control planes; Kubit refuses unless forced from the CLI.</li>}
       {n.role === 'controlplane' && remaining >= 3 && <li>etcd keeps quorum with {remaining} members.</li>}
     </ul>
-  )
-}
-
-function AddNodeDialog({ cluster, onClose, preselect }: { cluster: ClusterRow; onClose: () => void; preselect?: string }) {
-  const pools = cluster.spec.spec.pools ?? []
-  const [ip, setIp] = useState(preselect ?? '')
-  const [hostname, setHostname] = useState('')
-  const [pool, setPool] = useState(pools.find((p) => p.role === 'worker')?.name ?? pools[0]?.name ?? 'worker')
-  const [disk, setDisk] = useState('')
-  const [labels, setLabels] = useState<Record<string, string> | undefined>()
-  const [taints, setTaints] = useState<Record<string, string> | undefined>()
-  const [network, setNetwork] = useState<NodeNetwork | undefined>()
-  const [more, setMore] = useState(false)
-  const [dataDisks, setDataDisks] = useState<string[]>([])
-  const [error, setError] = useState<string | null>(null)
-  const candidates = machineList.value.filter((n) => n.state === 'maintenance' && !n.cluster)
-  const selected = candidates.find((c) => c.ip === ip)
-  const p = pools.find((x) => x.name === pool)
-  const role = p?.role ?? 'worker'
-  useEffect(() => {
-    if (!selected) return
-    const cand = installCandidates(selected)
-    if (cand[0]) setDisk(cand[0].devPath)
-    setDataDisks([])
-    const n = cluster.spec.spec.nodes.filter((x) => x.pool === pool).length + 1
-    setHostname(`${cluster.name}-${pool === 'controlplane' ? 'cp' : pool}-${String(n).padStart(2, '0')}`)
-  }, [selected, pool, cluster])
-  const submit = () => {
-    if (!selected) return
-    const node: NodeSpec = { hostname, ip, mac: selected.mac, uuid: selected.uuid, pool, arch: selected.arch, kvm: !!selected.inventory?.kvm, installDisk: disk ? { path: disk } : undefined, dataDisks: dataDisks.length ? dataDisks : undefined, labels, taints, network }
-    api.addNode(cluster.name, node).then((r) => { onClose(); watch(r) }).catch((e) => setError(e.message))
-  }
-  const cps = cluster.spec.spec.nodes.filter((x) => x.role === 'controlplane').length
-  const staticOn = !!network
-  const count = (m?: Record<string, string>) => Object.keys(m ?? {}).length
-  const poolHint = role === 'controlplane' ? `etcd goes from ${cps} to ${cps + 1} members${(cps + 1) % 2 === 0 ? '; an even count adds no fault tolerance' : ''}` : p ? [count(p.labels) ? `${count(p.labels)} pool label(s)` : '', count(p.taints) ? `${count(p.taints)} taint(s)` : '', p.extensions?.length ? 'own installer image' : ''].filter(Boolean).join(', ') || 'plain worker' : undefined
-  return (
-    <Dialog title={`Add node to ${cluster.name}`} width="max-w-2xl" onClose={onClose} footer={
-      <>
-        <button class="btn" onClick={onClose}>Cancel</button>
-        <button class="btn btn-primary" disabled={!selected || !hostname || (!disk && !p?.installDisk)} onClick={submit}>Install and join</button>
-      </>
-    }>
-      <ErrorBox error={error} />
-      <Field label="Discovered machine (maintenance mode)" hint={candidates.length === 0 ? 'None unassigned; scan in Inventory first' : undefined}>
-        <select class="input" value={ip} onChange={(e) => setIp((e.target as HTMLSelectElement).value)}>
-          <option value="">Select</option>
-          {candidates.map((c) => <option key={c.mac} value={c.ip}>{modelOf(c)} ({typeOf(c)}) · {c.ip} · {c.arch} · {c.inventory?.cpus ?? '?'} CPU · {fmt.bytes(c.inventory?.memoryBytes ?? 0)}{c.inventory?.kvm ? ' · kvm' : ''} · {c.mac}</option>)}
-        </select>
-      </Field>
-      <div class="grid grid-cols-2 gap-3">
-        <Field label="Pool" hint={poolHint}>
-          <select class="input" value={pool} onChange={(e) => setPool((e.target as HTMLSelectElement).value)}>
-            {pools.map((x) => <option key={x.name} value={x.name}>{x.name}{x.role === 'controlplane' ? ' (control plane)' : ''}</option>)}
-          </select>
-        </Field>
-        <Field label="Hostname"><input class="input mono" value={hostname} onInput={(e) => setHostname((e.target as HTMLInputElement).value)} /></Field>
-      </div>
-      <Field label="Install disk" hint={p?.installDisk ? 'Empty follows the pool policy' : 'Wiped and installed with Talos'}>
-        <select class="input mono" value={disk} onChange={(e) => { const v = (e.target as HTMLSelectElement).value; setDisk(v); setDataDisks(dataDisks.filter((d) => d !== v)) }}>
-          {p?.installDisk && <option value="">pool policy ({Object.values(p.installDisk.selector ?? {}).join(' ')})</option>}
-          {installCandidates(selected).map((d) => <option key={d.devPath} value={d.devPath}>{diskLabel(d)}</option>)}
-          {!selected && <option value="">—</option>}
-        </select>
-      </Field>
-      {selected && dataCandidates(selected, disk).length > 0 && (
-        <Field label="Data disks" hint="Wiped and mounted at /var/mnt/data-N">
-          <div class="flex flex-col gap-1 text-[13px] mono">
-            {dataCandidates(selected, disk).map((d) => <label key={d.devPath} class="flex items-center gap-2"><input type="checkbox" checked={dataDisks.includes(d.devPath)} onChange={(e) => setDataDisks((e.target as HTMLInputElement).checked ? dataCandidates(selected, disk).map((x) => x.devPath).filter((x) => x === d.devPath || dataDisks.includes(x)) : dataDisks.filter((x) => x !== d.devPath))} />{d.devPath} <span class="text-muted">{fmt.bytes(d.sizeBytes)}{d.model ? ` · ${d.model}` : ''}</span></label>)}
-          </div>
-        </Field>
-      )}
-      <button class="text-[12px] text-accent text-left hover:underline" onClick={() => setMore(!more)}>{more ? '▾' : '▸'} Labels, taints and addressing</button>
-      {more && (
-        <div class="grid grid-cols-2 gap-3">
-          <Field label="Extra labels" hint="key=value per line, over the pool's"><KVEditor value={labels} onChange={setLabels} /></Field>
-          <Field label="Extra taints" hint="key=value:Effect per line"><KVEditor value={taints} onChange={setTaints} /></Field>
-          <Field label="Addressing" hint={staticOn ? 'Pinned in the machine config' : 'DHCP; tracked by MAC'}>
-            <select class="input" value={staticOn ? 'static' : 'dhcp'} onChange={(e) => setNetwork((e.target as HTMLSelectElement).value === 'static' && selected ? staticNetwork(selected.ip) : undefined)}>
-              <option value="dhcp">DHCP</option>
-              <option value="static">Static</option>
-            </select>
-          </Field>
-          {staticOn && (
-            <div class="flex flex-col gap-2">
-              <input class="input mono" placeholder="address/prefix" value={network!.addresses[0] ?? ''} onInput={(e) => setNetwork({ ...network!, addresses: [(e.target as HTMLInputElement).value.trim()] })} />
-              <input class="input mono" placeholder="gateway" value={network!.gateway ?? ''} onInput={(e) => setNetwork({ ...network!, gateway: (e.target as HTMLInputElement).value.trim() || undefined })} />
-              <input class="input mono" placeholder="VLAN id (optional)" type="number" min={0} max={4094} value={network!.vlan ?? ''} onInput={(e) => { const v = Number((e.target as HTMLInputElement).value); setNetwork({ ...network!, vlan: v > 0 ? v : undefined }) }} />
-            </div>
-          )}
-        </div>
-      )}
-      <p class="text-[12px] text-muted">Installs Talos and joins the node; progress in Activity.</p>
-    </Dialog>
   )
 }

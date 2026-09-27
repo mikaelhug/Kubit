@@ -6,7 +6,8 @@ import { ThisMacDialog } from '../components/labhost'
 import { Elapsed } from '../components/Time'
 import { ClusterPill, Notice, Pill, Section, StatusDot, Tile } from '../components/ui'
 import { groupOf, hostName, labHostKey, labOffline, labState, vmsOf, type MachineGroup } from '../machine'
-import { authState, clusters, daemon, kubitKey, labHosts, loadAllHealth, machineList, machines, observer, openAlerts, opList, settings, statuses, versions } from '../store'
+import { opList } from '../ops'
+import { authState, clusters, daemon, kubitKey, labHosts, loadAllHealth, machineList, machines, observer, openAlerts, settings, statuses, versions } from '../store'
 import { stateTone, type Tone } from '../tone'
 import { useLive } from '../useLive'
 import { defaultTalos, talosIso, updatesFor } from '../versions'
@@ -35,6 +36,7 @@ export function Home() {
   if (!obs.online) notices.push({ tone: 'bad', text: <>Kubit cannot reach the local network{obs.since ? ` since ${fmt.when(obs.since)}` : ''}{obs.error ? ` (${obs.error})` : ''}; cluster alerts are paused. <a class="underline" href="/settings/general">Details</a></> })
   if (authState.value.setup) notices.push({ tone: 'warn', text: <>No accounts: anyone reaching this address is an administrator. <a class="underline" href="/settings/accounts">Add the first account</a></> })
   if (armed && pxe && !pxe.running) notices.push({ tone: 'bad', text: <>A machine is armed for a network boot but the PXE server is not running. <a class="underline" href="/fleet/network-boot">Network boot</a></> })
+  if (armed && pxe?.running && !pxe.ip) notices.push({ tone: 'bad', text: <>A machine is armed for a network boot but the PXE server has no address on {pxe.interface}. <a class="underline" href="/fleet/network-boot">Network boot</a></> })
   if (off?.error) notices.push({ tone: 'bad', text: <>Off-site copies failing: {off.error} <a class="underline" href="/settings/offsite">Off-site</a></> })
   for (const c of list) {
     const u = updates.get(c.name)!

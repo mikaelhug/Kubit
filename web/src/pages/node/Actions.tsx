@@ -2,12 +2,14 @@ import { useState } from 'preact/hooks'
 import { useLocation } from 'preact-iso'
 import { api, type ClusterRow, type Inventory, type NodeDetail, type NodeRow, type NodeSpec } from '../../api'
 import { LabVMControls, MakeLabHostDialog } from '../../components/labhost'
+import { RetireDialog, useAdopt } from '../../components/Machine'
 import { ReaddressDialog } from '../../components/ReaddressDialog'
 import { RemoteManagement } from '../../components/RemoteManagement'
 import { Action, ConfirmDialog, Dialog, Field, GroupHeading, MaintenanceNotice, Notice } from '../../components/ui'
-import { adopt, canAdopt, canMakeLabHost, canRetire, isLabVM, readyClusters, RetireDialog, wake } from '../../machine'
+import { canAdopt, canMakeLabHost, canRetire, isLabVM, readyClusters, wake } from '../../machine'
 import { isDnsLabel } from '../../net'
-import { statuses, toast, watch } from '../../store'
+import { runOp } from '../../ops'
+import { statuses, toast } from '../../store'
 
 type Confirm = 'drain' | 'reboot' | 'reboot-drain' | 'upgrade' | 'rename' | 'pool' | 'readdress'
 
@@ -33,7 +35,7 @@ export function ActionsTab({ node, k8s, inv, cluster, spec }: { node: NodeRow | 
   const pods = (k8s?.pods ?? []).filter((p) => p.owner !== 'DaemonSet' && p.phase === 'Running').length
   const podText = `${pods} pod${pods === 1 ? '' : 's'}`
   const cp = node.role === 'controlplane'
-  const run = (p: Promise<{ operationId: number }>) => p.then((r) => { setConfirm(null); watch(r) }).catch((e) => toast(e.message, 'error'))
+  const run = (p: Promise<{ operationId: number }>) => runOp(p).then((ok) => { if (ok) setConfirm(null) })
   const needsUpgrade = !!inv && inv.talosVersion !== talosVersion
   const pools = (cluster.spec.spec.pools ?? []).filter((p) => p.role === node.role && p.name !== spec?.pool)
   const target = pools.find((p) => p.name === pool)
@@ -92,6 +94,7 @@ function MachineActions({ node }: { node: NodeRow | null }) {
   const { route } = useLocation()
   const [retire, setRetire] = useState(false)
   const [lab, setLab] = useState(false)
+  const adopt = useAdopt()
   if (!node) return <Notice tone="muted">Loading</Notice>
   const ready = readyClusters()
   const vm = isLabVM(node)
@@ -103,7 +106,8 @@ function MachineActions({ node }: { node: NodeRow | null }) {
     <div class="flex flex-col gap-3 max-w-3xl">
       <Notice tone="muted">{summary}</Notice>
       <GroupHeading title="Machine" help="What can be done with this hardware." />
-      <Action title="Adopt into a cluster" what={(ready.length ? `Join ${ready.map((c) => c.name).join(', ')} as a new node.` : 'No ready cluster yet; create one with this machine.') + (canAdopt(node) ? '' : ' Needs Talos maintenance mode first.')} button={ready.length ? 'Adopt' : 'New cluster'} disabled={!canAdopt(node)} onClick={() => adopt(node, route)} />
+      <Action title="Adopt into a cluster" what={(ready.length ? `Join ${ready.map((c) => c.name).join(', ')} as a new node.` : 'No ready cluster yet; create one with this machine.') + (canAdopt(node) ? '' : ' Needs Talos maintenance mode first.')} button={ready.length ? 'Adopt' : 'New cluster'} disabled={!canAdopt(node)} onClick={() => adopt.start(node)} />
+      {adopt.element}
       {vm ? <LabVMControls vm={node} /> : <RemoteManagement node={node} />}
       {canMakeLabHost(node) && <Action title="Make lab host" what={`Installs Debian with KVM (disk wiped) to run Talos VMs${node.oobType ? '' : '; you boot the installer'}.`} button="Make lab host" onClick={() => setLab(true)} />}
       {lab && <MakeLabHostDialog m={node} onClose={() => setLab(false)} />}

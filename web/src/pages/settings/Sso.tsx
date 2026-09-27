@@ -1,6 +1,7 @@
-import { splitList, type OIDCSettings } from '../../api'
-import { ErrorBox, Field, Section } from '../../components/ui'
-import { MovedNotice, SaveBar, useSettingsSlice } from './Layout'
+import type { OIDCSettings } from '../../api'
+import { ListInput } from '../../components/ListInput'
+import { ErrorBox, Field, MovedNotice, Section } from '../../components/ui'
+import { SaveBar, useSettingsSlice } from './Layout'
 
 const empty: OIDCSettings = { enabled: false, name: 'SSO', issuer: '', clientId: '', clientSecret: '', usernameClaim: 'preferred_username', groupsClaim: 'groups', adminGroups: [], operatorGroups: [], viewerGroups: [], defaultRole: '' }
 
@@ -24,9 +25,9 @@ export function Sso() {
         <Field label="Username claim"><input class="input mono" value={o.usernameClaim} onInput={(e) => set({ usernameClaim: (e.target as HTMLInputElement).value.trim() })} /></Field>
         <Field label="Groups claim"><input class="input mono" value={o.groupsClaim} onInput={(e) => set({ groupsClaim: (e.target as HTMLInputElement).value.trim() })} /></Field>
         <Field label="Default role" hint="For people in none of the groups below"><select class="input" value={o.defaultRole} onChange={(e) => set({ defaultRole: (e.target as HTMLSelectElement).value as OIDCSettings['defaultRole'] })}><option value="">no access</option><option value="viewer">viewer</option><option value="operator">operator</option><option value="admin">admin</option></select></Field>
-        <Field label="Administrator groups" hint="Comma-separated"><input class="input mono" value={o.adminGroups.join(', ')} onInput={(e) => set({ adminGroups: splitList((e.target as HTMLInputElement).value) })} /></Field>
-        <Field label="Operator groups"><input class="input mono" value={o.operatorGroups.join(', ')} onInput={(e) => set({ operatorGroups: splitList((e.target as HTMLInputElement).value) })} /></Field>
-        <Field label="Viewer groups"><input class="input mono" value={o.viewerGroups.join(', ')} onInput={(e) => set({ viewerGroups: splitList((e.target as HTMLInputElement).value) })} /></Field>
+        <Field label="Administrator groups" hint="Comma-separated"><ListInput value={o.adminGroups} onChange={(v) => set({ adminGroups: v })} /></Field>
+        <Field label="Operator groups"><ListInput value={o.operatorGroups} onChange={(v) => set({ operatorGroups: v })} /></Field>
+        <Field label="Viewer groups"><ListInput value={o.viewerGroups} onChange={(v) => set({ viewerGroups: v })} /></Field>
       </div>
       <SaveBar dirty={f.dirty} onSave={f.save} />
     </Section>
