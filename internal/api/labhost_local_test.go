@@ -267,3 +267,74 @@ func TestStartDoesNotWaitForLabHostCleanup(t *testing.T) {
 	}
 	t.Error("the half-made local lab host was not released")
 }
+
+func TestForgetClusterDeletesItsLabVMs(t *testing.T) {
+	s, st, d := localServer(t)
+	ctx := t.Context()
+	if err := st.UpsertNode(ctx, store.NodeRow{MAC: d.mac, IP: "192.168.105.1", Source: "labhost", State: "labhost"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.PutCluster(ctx, store.ClusterRow{Name: "lab", Spec: []byte("x"), State: "ready"}); err != nil {
+		t.Fatal(err)
+	}
+	var macs []string
+	for i := 1; i <= 3; i++ {
+		mac := labhost.MAC(1, i)
+		row := store.NodeRow{IP: fmt.Sprintf("192.168.105.%d", 20+i), MAC: mac, State: "ready", Source: "lab"}
+		if i < 3 {
+			row.Cluster = "lab"
+		}
+		if err := st.UpsertNode(ctx, row); err != nil {
+			t.Fatal(err)
+		}
+		_ = st.SetMachineHost(ctx, mac, d.mac)
+		macs = append(macs, mac)
+		d.vms = append(d.vms, labhost.VM{Name: fmt.Sprintf("vm-%02d", i), MAC: mac})
+	}
+	if err := st.SetLabHost(ctx, d.mac, &store.LabHost{State: "ready", Driver: labhost.DriverVFKit, Index: 1, VMs: d.vms}); err != nil {
+		t.Fatal(err)
+	}
+	if rec := call(t, s, "DELETE", "/api/v1/clusters/lab?vms=delete", ""); rec.Code != http.StatusNoContent {
+		t.Fatalf("forget: %d %s", rec.Code, rec.Body)
+	}
+	if strings.Join(d.deleted, ",") != "vm-01,vm-02" {
+		t.Errorf("only the cluster's VMs are deleted: %v", d.deleted)
+	}
+	for i, mac := range macs {
+		_, err := st.GetMachine(ctx, mac)
+		if gone := err != nil; gone != (i < 2) {
+			t.Errorf("VM row %s gone=%v", mac, gone)
+		}
+	}
+	if _, err := st.GetCluster(ctx, "lab"); err == nil {
+		t.Error("the cluster must be forgotten")
+	}
+}
+
+func TestReleaseOfflineHostForgetsItsVMs(t *testing.T) {
+	s, st, d := localServer(t)
+	ctx := t.Context()
+	s.manager.Local = func() (labhost.Driver, error) { return nil, fmt.Errorf("vfkit gone") }
+	if err := st.UpsertNode(ctx, store.NodeRow{MAC: d.mac, IP: "192.168.105.1", Source: "labhost", State: "labhost"}); err != nil {
+		t.Fatal(err)
+	}
+	listed, stray := labhost.MAC(1, 1), labhost.MAC(1, 2)
+	for _, mac := range []string{listed, stray} {
+		if err := st.UpsertNode(ctx, store.NodeRow{MAC: mac, IP: "192.168.105.30", Source: "lab", State: "off"}); err != nil {
+			t.Fatal(err)
+		}
+		_ = st.SetMachineHost(ctx, mac, d.mac)
+	}
+	if err := st.SetLabHost(ctx, d.mac, &store.LabHost{State: "ready", Driver: labhost.DriverVFKit, Failures: 5, VMs: []labhost.VM{{Name: "vm-01", MAC: listed}}}); err != nil {
+		t.Fatal(err)
+	}
+	rec := call(t, s, "DELETE", "/api/v1/machines/"+d.mac+"/labhost", "")
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "keep running") {
+		t.Fatalf("release offline: %d %s", rec.Code, rec.Body)
+	}
+	for _, mac := range []string{d.mac, listed, stray} {
+		if _, err := st.GetMachine(ctx, mac); err == nil {
+			t.Errorf("row %s must be forgotten", mac)
+		}
+	}
+}

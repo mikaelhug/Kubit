@@ -181,9 +181,26 @@ func (s *Server) handleClusterForget(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, err)
 		return
 	}
+	var vms []store.Machine
+	if r.URL.Query().Get("vms") == "delete" {
+		nodes, err := s.store.ListNodes(r.Context(), name)
+		if err != nil {
+			writeErr(w, err)
+			return
+		}
+		for _, n := range nodes {
+			if n.Host != "" {
+				vms = append(vms, n)
+			}
+		}
+	}
 	_ = s.store.Audit(r.Context(), name, "cluster.forget", "")
 	if err := s.store.DeleteCluster(r.Context(), name); err != nil {
 		writeErr(w, err)
+		return
+	}
+	if err := s.deleteLabVMs(r.Context(), vms); err != nil {
+		writeErr(w, fmt.Errorf("%s is forgotten; %w", name, err))
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)

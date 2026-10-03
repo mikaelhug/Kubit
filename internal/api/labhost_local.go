@@ -134,7 +134,7 @@ func (s *Server) handleLabLocalCreate(w http.ResponseWriter, r *http.Request) {
 	})
 	if err != nil {
 		if host, e := s.store.GetMachine(context.WithoutCancel(r.Context()), mac); e == nil {
-			if rerr := s.releaseLabHost(context.WithoutCancel(r.Context()), host); rerr != nil {
+			if _, rerr := s.releaseLabHost(context.WithoutCancel(r.Context()), host); rerr != nil {
 				log.Printf("lab host %s: release: %v", mac, rerr)
 			}
 		}
@@ -153,7 +153,7 @@ func (s *Server) labLocalOp(ctx context.Context, sink cluster.Sink, mac string, 
 		rctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
 		if host, e := s.store.GetMachine(rctx, mac); e == nil {
-			if rerr := s.releaseLabHost(rctx, host); rerr != nil {
+			if _, rerr := s.releaseLabHost(rctx, host); rerr != nil {
 				sink.Emit(cluster.Warn, "", "", "release: %v", rerr)
 			}
 		}

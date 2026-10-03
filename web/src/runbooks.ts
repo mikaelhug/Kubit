@@ -8,8 +8,8 @@ export function runbookFor(kind: string, c: Ctx): Runbook | null {
   if (kind === 'observer.offline') {
     return { title: "Kubit's own host cannot reach the LAN", steps: [
       { text: 'Check the link and address of the machine running kubit.' },
-      { text: 'macOS: allow the app that started kubit under System Settings → Privacy & Security → Local Network.' },
-      { text: 'Restart kubit serve from a terminal.' },
+      { text: 'macOS: run kubit as a service (kubit service install); a kubit started by an app that has quit loses the local network.' },
+      { text: 'macOS: allow kubit under System Settings → Privacy & Security → Local Network.' },
     ] }
   }
   const nodes = `/clusters/${c.cluster}/nodes`

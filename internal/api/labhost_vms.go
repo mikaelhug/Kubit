@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/netip"
@@ -179,6 +180,57 @@ func (s *Server) refreshLabVMs(ctx context.Context, lc labhost.Driver, mac strin
 	if vms, err := lc.List(ctx); err == nil {
 		_ = s.store.UpdateLabHost(ctx, mac, func(lh *store.LabHost) { lh.VMs = vms })
 	}
+}
+
+func (s *Server) deleteLabVMs(ctx context.Context, vms []store.Machine) error {
+	byHost := map[string][]store.Machine{}
+	for _, vm := range vms {
+		byHost[vm.Host] = append(byHost[vm.Host], vm)
+	}
+	var errs []error
+	for hostMAC, members := range byHost {
+		if err := s.deleteHostVMs(ctx, hostMAC, members); err != nil {
+			errs = append(errs, err)
+		}
+	}
+	return errors.Join(errs...)
+}
+
+func (s *Server) deleteHostVMs(ctx context.Context, hostMAC string, members []store.Machine) error {
+	host, err := s.store.GetMachine(ctx, hostMAC)
+	if err != nil || host.LabHost == nil {
+		return fmt.Errorf("lab host %s is no longer known", hostMAC)
+	}
+	lctx, cancel := context.WithTimeout(ctx, lockWait)
+	unlock, err := s.locks.lockAllContext(lctx, []string{"labhost:" + hostMAC})
+	cancel()
+	if err != nil {
+		return fmt.Errorf("its VMs were kept: %s", strings.ToLower(labBusy))
+	}
+	defer unlock()
+	dctx, cancel := context.WithTimeout(ctx, 60*time.Second)
+	defer cancel()
+	lc, err := s.manager.LabDial(dctx, host)
+	if err != nil {
+		return fmt.Errorf("its VMs were kept: %w", err)
+	}
+	defer lc.Close()
+	var errs []error
+	for _, m := range members {
+		i := slices.IndexFunc(host.LabHost.VMs, func(v labhost.VM) bool { return strings.EqualFold(v.MAC, m.MAC) })
+		if i < 0 {
+			continue
+		}
+		name := host.LabHost.VMs[i].Name
+		if err := lc.Delete(dctx, name); err != nil {
+			errs = append(errs, fmt.Errorf("delete %s: %w", name, err))
+			continue
+		}
+		_ = s.store.DeleteMachine(ctx, m.MAC)
+		_ = s.store.Audit(ctx, "", "labhost.vm.delete", hostMAC+" "+name)
+	}
+	s.refreshLabVMs(dctx, lc, hostMAC)
+	return errors.Join(errs...)
 }
 
 func waitVMOff(ctx context.Context, lc labhost.Driver, name string, within time.Duration) error {

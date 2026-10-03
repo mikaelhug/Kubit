@@ -5,7 +5,7 @@ import { DataTable, type Column } from '../../components/DataTable'
 import { ConfirmDialog, ErrorBox, Field, MaintenanceNotice, Notice, Pill, Section } from '../../components/ui'
 import { useImageStatus } from '../../imageStatus'
 import { runningFor, runOp } from '../../ops'
-import { toast, versions } from '../../store'
+import { machines, toast, versions } from '../../store'
 import type { Tone } from '../../tone'
 import { useLive } from '../../useLive'
 import { minorAtLeast, updatesFor } from '../../versions'
@@ -89,18 +89,25 @@ function ForgetSection({ ctx }: { ctx: ClusterCtx }) {
   const { name, cluster } = ctx
   const [forget, setForget] = useState(false)
   const n = cluster.spec.spec.nodes.length
+  const vms = [...machines.value.values()].filter((m) => m.cluster === name && m.host).length
+  const [deleteVMs, setDeleteVMs] = useState(true)
+  const dropVMs = vms > 0 && deleteVMs
+  const kept = n - (dropVMs ? vms : 0)
   return (
     <Section title="Forget cluster">
       <Notice tone="bad">
         <div class="flex items-center gap-3">
-          <span>Removes Kubit's records and secrets; export first, the nodes keep running unmanaged.</span>
+          <span>{vms > 0 ? "Removes Kubit's records and secrets; its lab VMs can go with it." : "Removes Kubit's records and secrets; export first, the nodes keep running unmanaged."}</span>
           <button class="btn btn-danger ml-auto shrink-0" onClick={() => setForget(true)}>Forget cluster</button>
         </div>
       </Notice>
       {forget && (
-        <ConfirmDialog title={`Forget ${name}`} action="Forget cluster" tone="danger" typed={name} onClose={() => setForget(false)}
-          onConfirm={() => api.forgetCluster(name).then(() => { route('/') }).catch((e) => toast(e.message, 'error'))}
-          impact={<p>Deletes cluster.yaml, secrets, talosconfig, kubeconfig and machine configs; the {n} node{n === 1 ? '' : 's'} keep running.</p>} />
+        <ConfirmDialog title={`Forget ${name}`} action={dropVMs ? 'Forget and delete VMs' : 'Forget cluster'} tone="danger" typed={name} onClose={() => setForget(false)}
+          onConfirm={() => api.forgetCluster(name, dropVMs).then(() => { route('/') }).catch((e) => toast(e.message, 'error'))}
+          impact={<>
+            <p>Deletes cluster.yaml, secrets, talosconfig, kubeconfig and machine configs{kept > 0 ? `; ${kept} node${kept === 1 ? '' : 's'} keep${kept === 1 ? 's' : ''} running` : ''}.</p>
+            {vms > 0 && <label class="flex items-center gap-2"><input type="checkbox" checked={deleteVMs} onChange={(e) => setDeleteVMs((e.target as HTMLInputElement).checked)} /> Also delete its {vms} lab VM{vms === 1 ? '' : 's'} and their disks</label>}
+          </>} />
       )}
     </Section>
   )

@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"slices"
 	"time"
 
 	"github.com/mikael/kubit/internal/config"
@@ -63,6 +64,18 @@ func adoptDeclaration(stored, updated *config.Cluster) error {
 	if updated.Metadata.Name != stored.Metadata.Name {
 		return &statusError{Status: http.StatusUnprocessableEntity, Msg: fmt.Sprintf("declaration names cluster %q", updated.Metadata.Name)}
 	}
+	for _, n := range stored.Spec.Nodes {
+		if !slices.ContainsFunc(updated.Spec.Nodes, func(u config.Node) bool { return sameNode(n, u) }) {
+			return &statusError{Status: http.StatusUnprocessableEntity, Msg: fmt.Sprintf("%s is missing from the declaration; remove nodes with Remove on the Nodes page", n.Hostname)}
+		}
+	}
 	updated.Spec.SchematicID = stored.Spec.SchematicID
 	return nil
+}
+
+func sameNode(a, b config.Node) bool {
+	if a.MAC != "" && b.MAC != "" {
+		return netx.MACKey(a.MAC) == netx.MACKey(b.MAC)
+	}
+	return a.Hostname == b.Hostname
 }

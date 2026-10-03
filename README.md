@@ -297,7 +297,13 @@ warnings for any declaration.
 Other commands: `cluster apply` (regenerate + re-apply every machine config from
 cluster.yaml, then platform), `node add`, `node remove` (drain → delete → graceful
 reset; refuses to drop to 0 or, without `--force`, 2 control planes, and always refuses
-the no-VIP endpoint node), `upgrade talos`,
+the no-VIP endpoint node). `--force` — the console's *Remove anyway*, offered when the
+API or the node does not answer — skips what cannot be reached: a 5 s API probe, no drain
+for a NotReady node, a 2 s Talos port check before the reset; a control plane whose reset
+fails has its etcd member removed through another control plane (matched by peer URL,
+then name), and the machine row is unassigned by MAC as `configured`. A declaration edit
+that drops a node is refused: removal goes through Remove. A restore that finds a dead
+control plane says to remove it first. Further: `upgrade talos`,
 `upgrade kubernetes` (config re-apply with new component images, control planes first),
 `status`, `cluster export`.
 
@@ -475,7 +481,7 @@ of your own in the directory stay.
 ### Endpoints
 
 - `GET clusters`, `GET clusters/{n}`, `GET clusters/{n}/status|yaml|kubeconfig`
-- `POST clusters` `{yaml, skipPlatform}` → operation; `POST clusters/{n}/apply|platform/plan|platform/apply|upgrade/talos|upgrade/kubernetes|export|nodes`, `DELETE clusters/{n}[/nodes/{host}]`
+- `POST clusters` `{yaml, skipPlatform}` → operation; `POST clusters/{n}/apply|platform/plan|platform/apply|upgrade/talos|upgrade/kubernetes|export|nodes`, `DELETE clusters/{n}[/nodes/{host}]` (`?vms=delete` also deletes the cluster's lab VMs)
 - `GET nodes`, `POST discover {targets}`, `GET nodes/{ip}/services|logs?service=&follow=`, `POST nodes/{ip}/reboot`
 - `POST config/validate` (raw YAML → defaulted YAML), `POST config/draft {name, ips}` (topology recommendation → cluster.yaml)
 - `GET operations[/{id}]`, `DELETE operations/{id}` (cancel), `POST operations/{id}/retry`
@@ -1004,7 +1010,11 @@ started. Addresses come from `/var/db/dhcpd_leases` by MAC. The lab cluster's Me
 range and VIP follow the VM subnet (`.200–.220`, `.250`), reachable from the Mac only.
 macOS keeps `max(4 GiB, ¼ of RAM)` (`Capacity.reserveMiB`); the dialog proposes 3 GiB VMs
 and cluster `mac`. Release deletes every VM, its files and the Mac's row. `vms/` is
-left out of Kubit backups.
+left out of Kubit backups. Nothing on a lab host waits for its cluster: Stop and Force
+stop work on cluster members (with a confirm naming the node), and *Forget cluster*
+offers to delete the cluster's lab VMs too, so an unreachable lab cluster can always be
+taken down. An offline lab host can still be released: Kubit forgets its VMs (they keep
+running on the host) and says so. A VM row whose host no longer lists it can be retired.
 
 Verified on an M4 Pro (24 GiB, macOS 27, vfkit 0.6.4, 2026-09-25): 1 control plane +
 1 worker from click to Ready with the platform applied in about 5 minutes (ISO fetch
@@ -1076,7 +1086,13 @@ user unit and starts it at login: `~/Library/LaunchAgents/dev.kubit.serve.plist`
 `~/.config/systemd/user/kubit.service` on Linux (`--system` for
 `/etc/systemd/system`, run as root; `loginctl enable-linger` keeps a user unit alive
 while logged out). `service status` / `service uninstall` manage it; the unit sets
-`KUBIT_SERVICE=1`, shown as "service" in the status bar. `kubit serve` takes the home
+`KUBIT_SERVICE=1`, shown as "service" in the status bar. On macOS this is also what keeps
+the LAN and the VM subnet reachable: Local Network privacy judges a process by the app
+responsible for it, and a `kubit serve` started from an app that has since quit (an
+editor, an agent, a closed terminal) gets `EHOSTUNREACH` for every local address after
+the next network change, while the Internet and other processes still work. Seen twice
+(2026-09-19, 2026-09-28: all nodes `no route to host` from the daemon, reachable from a
+shell); under launchd `kubit` is its own responsible process. `kubit serve` takes the home
 lock, opens the store and binds the address before anything starts, so a second
 daemon or a busy port fails at once; "listening on" is printed after the bind. Every
 command stops cleanly on SIGINT/SIGTERM (a second signal kills it): `serve` records

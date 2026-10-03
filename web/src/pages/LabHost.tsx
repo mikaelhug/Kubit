@@ -97,7 +97,7 @@ function ActionsTab({ host }: { host: NodeRow }) {
       <Action title="Add VMs" what={`${vms.length} VM${vms.length === 1 ? '' : 's'} defined; new VMs boot Talos maintenance mode.`} button="Add VMs" disabled={lh.state !== 'ready' || offline} onClick={() => setAddVMs(true)} />
       {!onMac(lh) && <Action title="Update or reboot the host" what="Under System on the Overview tab." button="Overview" href={`/labhosts/${host.mac}/overview`} />}
       {!onMac(lh) && <RemoteManagement node={host} />}
-      <Action title="Release lab host" what={`Deletes every VM${members ? ` (${members} still in a cluster: remove them first)` : ''}${onMac(lh) ? ' and removes this Mac from Inventory.' : '; Debian stays on the disk.'}`} button="Release" disabled={lh.state === 'installing' || lh.state === 'setup' || lh.state === 'updating' || members > 0 || offline} onClick={() => setRelease(true)} />
+      <Action title="Release lab host" what={`Deletes every VM${members ? ` (${members} still in a cluster: remove them first)` : ''}${onMac(lh) ? ' and removes this Mac from Inventory.' : '; Debian stays on the disk.'}`} button="Release" disabled={lh.state === 'installing' || lh.state === 'setup' || lh.state === 'updating' || members > 0} onClick={() => setRelease(true)} />
       {addVMs && <AddVMsDialog host={host} onClose={() => setAddVMs(false)} />}
       {release && <ReleaseHostDialog host={host} onClose={() => setRelease(false)} />}
     </div>

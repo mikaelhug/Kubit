@@ -140,6 +140,30 @@ func (c *Client) EtcdMemberCount(ctx context.Context) (int, error) {
 	return n, nil
 }
 
+type EtcdPeer struct {
+	ID       uint64
+	Hostname string
+	PeerURLs []string
+}
+
+func (c *Client) EtcdPeers(ctx context.Context) ([]EtcdPeer, error) {
+	resp, err := c.EtcdMemberList(c.nodeContext(ctx), &machineapi.EtcdMemberListRequest{})
+	if err != nil {
+		return nil, err
+	}
+	var out []EtcdPeer
+	for _, m := range resp.Messages {
+		for _, mm := range m.Members {
+			out = append(out, EtcdPeer{ID: mm.Id, Hostname: mm.Hostname, PeerURLs: mm.PeerUrls})
+		}
+	}
+	return out, nil
+}
+
+func (c *Client) EtcdRemoveMember(ctx context.Context, id uint64) error {
+	return c.EtcdRemoveMemberByID(c.nodeContext(ctx), &machineapi.EtcdRemoveMemberByIDRequest{MemberId: id})
+}
+
 func (c *Client) EtcdAlarms(ctx context.Context) ([]string, error) {
 	resp, err := c.EtcdAlarmList(c.nodeContext(ctx))
 	if err != nil {

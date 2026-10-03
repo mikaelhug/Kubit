@@ -15,6 +15,7 @@ import (
 	"github.com/mikael/kubit/internal/config"
 	"github.com/mikael/kubit/internal/labhost"
 	"github.com/mikael/kubit/internal/labhost/libvirt"
+	"github.com/mikael/kubit/internal/netx"
 	"github.com/mikael/kubit/internal/oob"
 	"github.com/mikael/kubit/internal/store"
 )
@@ -100,7 +101,7 @@ func (s *Server) labProvisionOp(ctx context.Context, sink cluster.Sink, mac stri
 		rctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
 		if host, e := s.store.GetMachine(rctx, mac); e == nil {
-			if rerr := s.releaseLabHost(rctx, host); rerr != nil {
+			if _, rerr := s.releaseLabHost(rctx, host); rerr != nil {
 				sink.Emit(cluster.Warn, "", "", "release: %v", rerr)
 			}
 		} else if perr := s.store.SetMachineProvision(rctx, mac, false); perr != nil {
@@ -343,42 +344,56 @@ func (s *Server) handleLabRelease(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	if err := s.releaseLabHost(r.Context(), host); err != nil {
+	warning, err := s.releaseLabHost(r.Context(), host)
+	if err != nil {
 		writeErr(w, err)
 		return
 	}
 	_ = s.store.Audit(r.Context(), "", "labhost.release", mac)
+	if warning != "" {
+		writeJSON(w, http.StatusOK, map[string]string{"warning": warning})
+		return
+	}
 	w.WriteHeader(http.StatusNoContent)
 }
 
-func (s *Server) releaseLabHost(ctx context.Context, host *store.Machine) error {
+func (s *Server) releaseLabHost(ctx context.Context, host *store.Machine) (warning string, err error) {
 	local := host.LabHost != nil && host.LabHost.Driver == labhost.DriverVFKit
 	var errs []error
 	if host.LabHost != nil && (host.LabHost.State == "ready" || len(host.LabHost.VMs) > 0 || local) {
 		dctx, cancel := context.WithTimeout(ctx, 20*time.Second)
-		if lc, err := s.manager.LabDial(dctx, host); err == nil {
-			vms := host.LabHost.VMs
-			if local {
-				if listed, err := lc.List(dctx); err == nil {
-					vms = append(listed, vms...)
-				}
+		lc, derr := s.manager.LabDial(dctx, host)
+		vms := host.LabHost.VMs
+		if derr == nil && local {
+			if listed, err := lc.List(dctx); err == nil {
+				vms = append(listed, vms...)
 			}
-			done := map[string]bool{}
-			for _, v := range vms {
-				if done[v.Name] {
-					continue
-				}
-				done[v.Name] = true
+		}
+		if derr != nil && len(vms) > 0 {
+			warning = fmt.Sprintf("the host did not answer (%v); its VMs keep running there", derr)
+		}
+		done := map[string]bool{}
+		for _, v := range vms {
+			if done[v.Name] {
+				continue
+			}
+			done[v.Name] = true
+			if derr == nil {
 				if err := lc.Delete(dctx, v.Name); err != nil {
 					log.Printf("lab host %s: delete VM %s: %v", host.MAC, v.Name, err)
 				}
-				if err := s.store.DeleteMachine(ctx, v.MAC); err != nil {
-					errs = append(errs, fmt.Errorf("forget VM %s: %w", v.Name, err))
-				}
 			}
+			if err := s.store.DeleteMachine(ctx, v.MAC); err != nil {
+				errs = append(errs, fmt.Errorf("forget VM %s: %w", v.Name, err))
+			}
+		}
+		if derr == nil {
 			lc.Close()
 		}
 		cancel()
+	}
+	if err := s.forgetHostRows(ctx, host.MAC); err != nil {
+		errs = append(errs, err)
 	}
 	if err := s.store.SetMachineProvision(ctx, host.MAC, false); err != nil {
 		errs = append(errs, fmt.Errorf("clear the network-boot arm: %w", err))
@@ -390,13 +405,29 @@ func (s *Server) releaseLabHost(ctx context.Context, host *store.Machine) error 
 		if err := s.store.DeleteMachine(ctx, host.MAC); err != nil {
 			errs = append(errs, fmt.Errorf("forget the host: %w", err))
 		}
-		return errors.Join(errs...)
+		return warning, errors.Join(errs...)
 	}
 	if err := s.store.SetLabHost(ctx, host.MAC, nil); err != nil {
 		errs = append(errs, fmt.Errorf("drop the lab-host record: %w", err))
 	}
 	if err := s.store.SetNodeState(ctx, host.IP, "unknown"); err != nil {
 		errs = append(errs, fmt.Errorf("reset the machine state: %w", err))
+	}
+	return warning, errors.Join(errs...)
+}
+
+func (s *Server) forgetHostRows(ctx context.Context, hostMAC string) error {
+	rows, err := s.store.ListNodes(ctx, "")
+	if err != nil {
+		return err
+	}
+	var errs []error
+	for _, m := range rows {
+		if m.Host != "" && netx.MACKey(m.Host) == netx.MACKey(hostMAC) && m.Cluster == "" {
+			if err := s.store.DeleteMachine(ctx, m.MAC); err != nil {
+				errs = append(errs, fmt.Errorf("forget VM %s: %w", m.MAC, err))
+			}
+		}
 	}
 	return errors.Join(errs...)
 }

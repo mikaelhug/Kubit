@@ -49,7 +49,7 @@ export function Nodes({ ctx }: { ctx: ClusterCtx }) {
       { id: 'actions', header: '', align: 'right', cell: (n) => (
         <span class="whitespace-nowrap flex gap-1 justify-end">
           <a href={machineHref(n)} class="btn btn-sm">Open</a>
-          <button class="btn btn-danger btn-sm" disabled={!apiUp} title={!apiUp ? 'Needs the Kubernetes API to drain' : 'Drain, delete and reset'} onClick={() => setRemove(n)}>Remove</button>
+          <button class="btn btn-danger btn-sm" title={unreachable(n, apiUp) ? 'Remove without drain or reset' : 'Drain, delete and reset'} onClick={() => setRemove(n)}>Remove</button>
         </span>
       ) },
     ]
@@ -72,9 +72,9 @@ export function Nodes({ ctx }: { ctx: ClusterCtx }) {
       {(add || !!adoptIP) && <AddNodeDialog cluster={cluster} preselect={adoptIP || undefined} onClose={() => { setAdd(false); setAdoptIP('') }} />}
       {readdress && <ReaddressDialog cluster={cluster} n={readdress} spec={specs.find((s) => s.hostname === readdress.hostname)} onClose={() => setReaddress(null)} />}
       {remove && (
-        <ConfirmDialog title={`Remove ${remove.hostname}`} action="Drain and remove" tone="danger" cluster={name} onClose={() => setRemove(null)}
-          onConfirm={() => runOp(api.removeNode(name, remove.hostname)).then((ok) => { if (ok) setRemove(null) })}
-          impact={<RemoveImpact n={remove} cluster={cluster} />} />
+        <ConfirmDialog title={`Remove ${remove.hostname}`} action={unreachable(remove, apiUp) ? 'Remove anyway' : 'Drain and remove'} tone="danger" cluster={name} onClose={() => setRemove(null)}
+          onConfirm={() => runOp(api.removeNode(name, remove.hostname, unreachable(remove, apiUp))).then((ok) => { if (ok) setRemove(null) })}
+          impact={<RemoveImpact n={remove} cluster={cluster} force={unreachable(remove, apiUp)} />} />
       )}
     </>
   )
@@ -97,14 +97,18 @@ function NodeHealth({ n, apiReachable }: { n: NodeStatus; apiReachable: boolean 
   )
 }
 
-function RemoveImpact({ n, cluster }: { n: NodeStatus; cluster: ClusterRow }) {
+const unreachable = (n: NodeStatus, apiUp: boolean) => !apiUp || !n.talosReachable
+
+function RemoveImpact({ n, cluster, force }: { n: NodeStatus; cluster: ClusterRow; force: boolean }) {
   const cps = cluster.spec.spec.nodes.filter((x) => x.role === 'controlplane').length
   const remaining = n.role === 'controlplane' ? cps - 1 : cps
   return (
     <ul class="list-disc pl-5 flex flex-col gap-1">
-      <li>Cordons and drains <b>{n.pods}</b> running pod{n.pods === 1 ? '' : 's'}, deletes the Node object and resets Talos to maintenance mode.</li>
+      {force
+        ? <li>Skips drain and reset; the machine keeps its disk.{n.role === 'controlplane' ? ' Its etcd member is removed through another control plane.' : ''}</li>
+        : <li>Cordons and drains <b>{n.pods}</b> running pod{n.pods === 1 ? '' : 's'}, deletes the Node object and resets Talos to maintenance mode.</li>}
       {n.role === 'controlplane' && remaining === 0 && <li class="text-bad">This is the last control plane: Kubit will refuse.</li>}
-      {n.role === 'controlplane' && remaining === 2 && <li class="text-warn">Leaves 2 control planes; Kubit refuses unless forced from the CLI.</li>}
+      {n.role === 'controlplane' && remaining === 2 && <li class="text-warn">{force ? 'Leaves 2 control planes: no fault tolerance.' : 'Leaves 2 control planes; Kubit refuses unless forced from the CLI.'}</li>}
       {n.role === 'controlplane' && remaining >= 3 && <li>etcd keeps quorum with {remaining} members.</li>}
     </ul>
   )

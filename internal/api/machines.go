@@ -6,10 +6,13 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"slices"
 	"strings"
 
 	"github.com/mikael/kubit/internal/cluster"
 	"github.com/mikael/kubit/internal/config"
+	"github.com/mikael/kubit/internal/labhost"
+	"github.com/mikael/kubit/internal/netx"
 	"github.com/mikael/kubit/internal/store"
 	"github.com/mikael/kubit/internal/talos"
 )
@@ -53,7 +56,7 @@ func (s *Server) handleMachineRetire(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if m.IsLabVM() {
-		if _, err := s.store.GetMachine(r.Context(), m.Host); err == nil {
+		if host, err := s.store.GetMachine(r.Context(), m.Host); err == nil && host.LabHost != nil && slices.ContainsFunc(host.LabHost.VMs, func(v labhost.VM) bool { return netx.MACKey(v.MAC) == netx.MACKey(m.MAC) }) {
 			writeErr(w, conflict("Delete the VM from its lab host instead."))
 			return
 		}

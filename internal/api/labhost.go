@@ -54,7 +54,7 @@ func (s *Server) reconcileLabHosts(ctx context.Context) {
 		}
 		switch host.LabHost.State {
 		case "installing", "setup":
-			if err := s.releaseLabHost(ctx, host); err != nil {
+			if _, err := s.releaseLabHost(ctx, host); err != nil {
 				log.Printf("lab host %s: release after restart: %v", host.MAC, err)
 			}
 		case "updating":

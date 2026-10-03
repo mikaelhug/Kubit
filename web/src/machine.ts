@@ -50,7 +50,7 @@ export function groupOf(m: NodeRow): MachineGroup {
 
 export function canAdopt(m: NodeRow) { return m.kind === 'maintenance' }
 export function canMakeLabHost(m: NodeRow) { return !m.host && !m.cluster && (!m.labhost || (m.labhost.state === 'error' && !onMac(m.labhost))) }
-export function canRetire(m: NodeRow) { return m.kind !== 'labhost' && !(m.host && hostOf(m)) }
+export function canRetire(m: NodeRow) { return m.kind !== 'labhost' && !(m.host && vmsOf(hostOf(m)?.labhost).some((v) => v.mac.toLowerCase() === m.mac.toLowerCase())) }
 export function bootTalosBlocked(m: NodeRow): string {
   if (m.cluster) return 'Remove it from the cluster first'
   if (m.kind === 'labhost') return 'Release the lab host first'

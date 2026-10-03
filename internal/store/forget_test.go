@@ -46,3 +46,25 @@ func TestWipedMemberLosesItsSystemVolumeMark(t *testing.T) {
 		t.Error("a node wiped outside Kubit no longer has its system volume")
 	}
 }
+
+func TestUnassignMachineFollowsTheMACNotTheOldIP(t *testing.T) {
+	s := open(t)
+	ctx := context.Background()
+	if err := s.PutCluster(ctx, store.ClusterRow{Name: "lab", Spec: []byte("spec: 1")}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.UpsertNode(ctx, store.NodeRow{IP: "10.0.0.9", MAC: "aa:00:00:00:00:09", Cluster: "lab", Hostname: "w-1", Source: "manual", State: "configured"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.UpsertNode(ctx, store.NodeRow{IP: "10.0.0.8", MAC: "aa:00:00:00:00:08", Cluster: "lab", Hostname: "w-2", Source: "manual", State: "configured"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.UnassignMachine(ctx, "AA:00:00:00:00:09", "10.0.0.8", "configured"); err != nil {
+		t.Fatal(err)
+	}
+	moved, _ := s.GetMachine(ctx, "aa:00:00:00:00:09")
+	other, _ := s.GetMachine(ctx, "aa:00:00:00:00:08")
+	if moved.Cluster != "" || other.Cluster != "lab" {
+		t.Errorf("unassigned by MAC: moved=%q, holder of the old IP=%q", moved.Cluster, other.Cluster)
+	}
+}

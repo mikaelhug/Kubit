@@ -11,11 +11,23 @@ import { mib, reserveOf, totalMem } from './plan'
 
 const vmOp = (p: Promise<{ operationId: number }>) => runOp(p, undefined, false)
 
+type StopRequest = { vm: string; force: boolean; node?: NodeRow }
+
+function StopVMDialog({ host, req, onClose }: { host: NodeRow; req: StopRequest; onClose: () => void }) {
+  const member = req.node?.cluster ? `${req.node.hostname || req.vm} goes offline in ${req.node.cluster}. ` : ''
+  return (
+    <ConfirmDialog title={`${req.force ? 'Force stop' : 'Stop'} ${req.vm}`} action={req.force ? 'Force stop' : 'Stop VM'} tone={req.force ? 'danger' : 'primary'} onClose={onClose}
+      onConfirm={() => { vmOp(api.labVM(host.mac, req.vm, req.force ? 'kill' : 'stop')); onClose() }}
+      impact={<p>{member}{req.force ? 'Cuts power without a guest shutdown.' : 'Shuts the guest down.'}</p>} />
+  )
+}
+
 export function HostVMs({ host }: { host: NodeRow }) {
   const lh = host.labhost
   const [add, setAdd] = useState(false)
   const [del, setDel] = useState<LabVM | null>(null)
   const [resize, setResize] = useState<LabVM | null>(null)
+  const [stop, setStop] = useState<StopRequest | null>(null)
   const byMac = machines.value
   const offline = labOffline(lh)
   const columns = useMemo<Column<LabVM>[]>(() => [
@@ -29,9 +41,12 @@ export function HostVMs({ host }: { host: NodeRow }) {
     { id: 'size', header: 'Size', cell: (vm) => <span>{vm.cpus} vCPU · {fmt.bytes(mib(vm.memMiB))} · {vm.diskGiB} GiB{vm.dataGiB ? ` + ${vm.dataGiB} GiB data` : ''}</span> },
     { id: 'boot', header: 'Boot', cell: (vm) => <Pill tone={vm.boot === 'disk' ? 'info' : 'muted'}>{vm.boot === 'disk' ? 'disk' : onMac(lh) ? 'Talos ISO' : 'Talos (RAM)'}</Pill> },
     { id: 'kubit', header: 'Kubit', cell: (vm) => { const row = byMac.get(vm.mac); return row ? (row.cluster ? <a class="text-accent hover:underline" href={`/clusters/${row.cluster}/nodes`}>{row.cluster} · {row.hostname}</a> : <KindPill m={row} />) : <span class="text-muted">—</span> } },
-    { id: 'actions', header: '', align: 'right', cell: (vm) => { const member = !!byMac.get(vm.mac)?.cluster; return (
+    { id: 'actions', header: '', align: 'right', cell: (vm) => { const row = byMac.get(vm.mac); const member = !!row?.cluster; return (
       <span class="flex gap-1 justify-end">
-        {vm.state === 'running' ? <button class="btn btn-sm" disabled={member || offline} title={member ? 'Drain and remove it from the cluster first' : ''} onClick={() => vmOp(api.labVM(host.mac, vm.name, 'stop'))}>Stop</button> : <button class="btn btn-sm" disabled={offline} onClick={() => vmOp(api.labVM(host.mac, vm.name, 'start'))}>Start</button>}
+        {vm.state === 'running' ? <>
+          <button class="btn btn-sm" disabled={offline} onClick={() => member ? setStop({ vm: vm.name, force: false, node: row }) : vmOp(api.labVM(host.mac, vm.name, 'stop'))}>Stop</button>
+          <button class="btn btn-sm" disabled={offline} onClick={() => setStop({ vm: vm.name, force: true, node: row })}>Force stop</button>
+        </> : <button class="btn btn-sm" disabled={offline} onClick={() => vmOp(api.labVM(host.mac, vm.name, 'start'))}>Start</button>}
         <button class="btn btn-sm" disabled={offline} onClick={() => setResize(vm)}>Resize</button>
         <button class="btn btn-sm" disabled={member || offline} title={member ? 'Remove it from the cluster first' : 'Boot back into Talos maintenance mode'} onClick={() => vmOp(api.labVM(host.mac, vm.name, 'reprovision'))}>Re-provision</button>
         <button class="btn btn-danger btn-sm" disabled={member || offline} onClick={() => setDel(vm)}>Delete</button>
@@ -47,6 +62,7 @@ export function HostVMs({ host }: { host: NodeRow }) {
         toolbar={<button class="btn btn-primary btn-sm" disabled={lh.state !== 'ready' || offline} onClick={() => setAdd(true)}>+ Add VMs</button>} />
       {add && <AddVMsDialog host={host} onClose={() => setAdd(false)} />}
       {resize && <ResizeVMDialog host={host} vm={resize} onClose={() => setResize(null)} />}
+      {stop && <StopVMDialog host={host} req={stop} onClose={() => setStop(null)} />}
       {del && <ConfirmDialog title={`Delete ${del.name}`} action="Delete VM" tone="danger" onClose={() => setDel(null)} onConfirm={() => api.labVMDelete(host.mac, del.name).then(() => setDel(null)).catch((e) => toast(e.message, 'error'))} impact={<p>Destroys the VM and its disk.</p>} />}
     </div>
   )
@@ -56,7 +72,8 @@ export function LabVMControls({ vm }: { vm: NodeRow }) {
   const host = hostOf(vm)
   const entry = vmsOf(host?.labhost).find((v) => v.mac === vm.mac)
   const [del, setDel] = useState(false)
-  if (!host || !entry) return <Notice tone="muted">Its lab host is no longer known.</Notice>
+  const [stop, setStop] = useState<StopRequest | null>(null)
+  if (!host || !entry) return <Notice tone="muted">{host ? 'Its lab host no longer lists this VM; retire it.' : 'Its lab host is no longer known; retire it.'}</Notice>
   const member = !!vm.cluster
   return (
     <div class="panel p-3 flex items-center gap-4">
@@ -65,10 +82,14 @@ export function LabVMControls({ vm }: { vm: NodeRow }) {
         <p class="text-[12.5px] text-muted">{entry.cpus} vCPU · {fmt.bytes(mib(entry.memMiB))} · {entry.diskGiB} GiB · {entry.state}{entry.boot === 'disk' ? ' · boots from disk' : onMac(host.labhost) ? ' · boots the Talos ISO' : ' · boots Talos over the network'}</p>
       </div>
       <div class="flex gap-2 shrink-0">
-        {entry.state === 'running' ? <button class="btn" disabled={member} title={member ? 'Drain and remove it from the cluster first' : ''} onClick={() => vmOp(api.labVM(host.mac, entry.name, 'stop'))}>Stop</button> : <button class="btn btn-primary" onClick={() => vmOp(api.labVM(host.mac, entry.name, 'start'))}>Start</button>}
+        {entry.state === 'running' ? <>
+          <button class="btn" onClick={() => member ? setStop({ vm: entry.name, force: false, node: vm }) : vmOp(api.labVM(host.mac, entry.name, 'stop'))}>Stop</button>
+          <button class="btn" onClick={() => setStop({ vm: entry.name, force: true, node: vm })}>Force stop</button>
+        </> : <button class="btn btn-primary" onClick={() => vmOp(api.labVM(host.mac, entry.name, 'start'))}>Start</button>}
         <button class="btn" disabled={member} title={member ? 'Remove it from the cluster first' : 'Boot back into Talos maintenance mode'} onClick={() => vmOp(api.labVM(host.mac, entry.name, 'reprovision'))}>Re-provision</button>
         <button class="btn btn-danger" disabled={member} onClick={() => setDel(true)}>Delete</button>
       </div>
+      {stop && <StopVMDialog host={host} req={stop} onClose={() => setStop(null)} />}
       {del && <ConfirmDialog title={`Delete ${entry.name}`} action="Delete VM" tone="danger" onClose={() => setDel(false)} onConfirm={() => api.labVMDelete(host.mac, entry.name).then(() => setDel(false)).catch((e) => toast(e.message, 'error'))} impact={<p>Destroys the VM and its disk.</p>} />}
     </div>
   )

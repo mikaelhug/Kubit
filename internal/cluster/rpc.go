@@ -16,7 +16,13 @@ const (
 	credentialTimeout = time.Minute
 	manifestsTimeout  = time.Minute
 	snapshotTimeout   = 10 * time.Minute
+	cleanupTimeout    = 15 * time.Second
+	reachTimeout      = 5 * time.Second
 )
+
+func cleanupCtx(ctx context.Context) (context.Context, context.CancelFunc) {
+	return context.WithTimeout(context.WithoutCancel(ctx), cleanupTimeout)
+}
 
 func readBootID(ctx context.Context, tc *talos.Client) (string, error) {
 	call, cancel := context.WithTimeout(ctx, rpcTimeout)

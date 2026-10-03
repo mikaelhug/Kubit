@@ -277,6 +277,22 @@ func (s *Store) UnassignNode(ctx context.Context, ip, state string) error {
 	return s.updateAt(ctx, ip, "", `cluster = NULL, hostname = '', pool = '', role = '', state = ?, machine_config = NULL, system_split = 0`, state)
 }
 
+func (s *Store) UnassignMachine(ctx context.Context, mac, ip, state string) error {
+	if mac == "" {
+		return s.UnassignNode(ctx, ip, state)
+	}
+	key := netx.MACKey(mac)
+	res, err := s.db.ExecContext(ctx, `UPDATE machines SET cluster = NULL, hostname = '', pool = '', role = '', state = ?, machine_config = NULL, system_split = 0, updated_at = `+sqlNow+` WHERE mac = ?`, state, key)
+	if err != nil {
+		return err
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return s.UnassignNode(ctx, ip, state)
+	}
+	s.notify(Change{Table: "machines", Key: key, Op: "put"})
+	return nil
+}
+
 func (s *Store) updateAt(ctx context.Context, ip, cluster, set string, args ...any) error {
 	macs, err := queryAll(ctx, s.db, func(sc scanner) (*string, error) {
 		var mac string

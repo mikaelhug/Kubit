@@ -376,7 +376,7 @@ func (m *Manager) restoreCheck(ctx context.Context, name string, snapshotID int6
 		_, err := talos.Stage(probe, n.IP, talosconfig)
 		cancel()
 		if err != nil {
-			return nil, nil, fmt.Errorf("%s (%s) must answer the Talos API before a restore: %w", n.Hostname, n.IP, err)
+			return nil, nil, fmt.Errorf("%s (%s) must answer the Talos API before a restore (%w); if it is gone, remove it with Remove anyway first", n.Hostname, n.IP, err)
 		}
 	}
 	return sn, plain, nil

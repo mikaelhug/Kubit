@@ -1,5 +1,9 @@
 # Backlog
 
+- Forget cluster leaves `~/.kubit/clusters/<name>/` behind (admin `kubeconfig`,
+  `talosconfig`, `snapshots/`, `infra/`), although the dialog says it deletes the
+  talosconfig and kubeconfig. Seen 2026-09-28 after forgetting `lab`. Decide: delete the
+  directory (keep snapshots only if the user asks), and make the dialog match.
 - vfkit console: arm64 ISO logs to ttyAMA0; direct-kernel boot with `console=hvc0` would
   give a readable `console.log`.
 - vmnet NAT is flaky for ~2 min after VM boot; harness could poll :50000 before returning.

@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/mikael/kubit/internal/labhost"
 	"github.com/mikael/kubit/internal/oob"
 	"github.com/mikael/kubit/internal/store"
 )
@@ -152,8 +153,11 @@ func TestRetireRefusesLabHostAndVM(t *testing.T) {
 	ctx := context.Background()
 	host := "aa:aa:aa:aa:aa:70"
 	_ = s.UpsertNode(ctx, store.NodeRow{MAC: host, IP: "10.0.0.70", Source: "labhost", State: "labhost"})
-	_ = s.SetLabHost(ctx, host, &store.LabHost{State: "ready"})
 	vm := "aa:aa:aa:aa:aa:71"
+	_ = s.SetLabHost(ctx, host, &store.LabHost{State: "ready", VMs: []labhost.VM{{Name: "vm-71", MAC: vm}}})
+	gone := "aa:aa:aa:aa:aa:73"
+	_ = s.UpsertNode(ctx, store.NodeRow{MAC: gone, IP: "10.0.0.73", Source: "lab", State: "off"})
+	_ = s.SetMachineHost(ctx, gone, host)
 	_ = s.UpsertNode(ctx, store.NodeRow{MAC: vm, IP: "10.0.0.71", Source: "lab", State: "off"})
 	_ = s.SetMachineHost(ctx, vm, host)
 	orphan := "aa:aa:aa:aa:aa:72"
@@ -167,5 +171,8 @@ func TestRetireRefusesLabHostAndVM(t *testing.T) {
 	}
 	if rec := do(t, srv, "DELETE", "/api/v1/machines/"+orphan, ""); rec.Code != http.StatusNoContent {
 		t.Errorf("retire orphan vm: %d %s", rec.Code, rec.Body.String())
+	}
+	if rec := do(t, srv, "DELETE", "/api/v1/machines/"+gone, ""); rec.Code != http.StatusNoContent {
+		t.Errorf("retire a VM its host no longer lists: %d %s", rec.Code, rec.Body.String())
 	}
 }

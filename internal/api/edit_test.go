@@ -160,6 +160,10 @@ func TestEditValidationAndNameCheck(t *testing.T) {
 	if rec := call(t, s, "PUT", "/api/v1/clusters/c/yaml", buf.String()); rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "pool.example") {
 		t.Errorf("yaml save: %d %s", rec.Code, rec.Body)
 	}
+	dropped := strings.Replace(buf.String(), "hostname: a, ip: 10.0.0.1", "hostname: b, ip: 10.0.0.2", 1)
+	if rec := call(t, s, "PUT", "/api/v1/clusters/c/yaml", dropped); rec.Code != http.StatusUnprocessableEntity || !strings.Contains(rec.Body.String(), "a is missing") {
+		t.Errorf("a node dropped from the YAML: %d %s", rec.Code, rec.Body)
+	}
 }
 
 func TestUnreadablePlanIsNotApplied(t *testing.T) {

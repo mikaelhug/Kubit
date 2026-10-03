@@ -1,6 +1,6 @@
 import { useState } from 'preact/hooks'
 import { api, fmt, type LabLocal, type LabVM, type NodeRow } from '../../api'
-import { diskLabel, hostName, installCandidates, onMac, vmsOf } from '../../machine'
+import { diskLabel, hostName, installCandidates, labOffline, onMac, vmsOf } from '../../machine'
 import { watch } from '../../ops'
 import { toast } from '../../store'
 import { useLive } from '../../useLive'
@@ -57,7 +57,9 @@ export function ResizeVMDialog({ host, vm, onClose }: { host: NodeRow; vm: LabVM
 }
 
 export function ReleaseHostDialog({ host, onClose }: { host: NodeRow; onClose: () => void }) {
-  return <ConfirmDialog title={`Release ${hostName(host)}`} action="Release host" tone="danger" typed={host.hostname || 'release'} onClose={onClose} onConfirm={() => api.labRelease(host.mac).then(onClose).catch((e) => toast(e.message, 'error'))} impact={<p>{onMac(host.labhost) ? 'Deletes every VM and its disks, and removes this Mac from Inventory.' : 'Deletes every VM and drops the lab-host role; Debian stays on the disk.'}</p>} />
+  const offline = labOffline(host.labhost)
+  const release = () => api.labRelease(host.mac).then((r) => { if (r?.warning) toast(r.warning); onClose() }).catch((e) => toast(e.message, 'error'))
+  return <ConfirmDialog title={`Release ${hostName(host)}`} action="Release host" tone="danger" typed={host.hostname || 'release'} onClose={onClose} onConfirm={release} impact={<p>{offline ? 'The host is offline: Kubit forgets its VMs; they keep running on the host.' : onMac(host.labhost) ? 'Deletes every VM and its disks, and removes this Mac from Inventory.' : 'Deletes every VM and drops the lab-host role; Debian stays on the disk.'}</p>} />
 }
 
 export function MakeLabHostDialog({ m, onClose }: { m: NodeRow; onClose: () => void }) {
