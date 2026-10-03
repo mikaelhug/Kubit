@@ -221,6 +221,11 @@ func (m *Manager) reinstall(ctx context.Context, c *config.Cluster, kc *k8s.Clie
 }
 
 func (m *Manager) reinstallWith(ctx context.Context, c *config.Cluster, kc *k8s.Client, n config.Node, talosconfig []byte, image, version string, cfgs nodeConfigs, step string, sink Sink) error {
+	if n.Role == config.RoleControlPlane {
+		if err := m.etcdTolerates(ctx, c, n, talosconfig); err != nil {
+			return err
+		}
+	}
 	if err := m.installTalos(ctx, n, talosconfig, image, version, step, sink); err != nil {
 		return err
 	}

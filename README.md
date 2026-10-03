@@ -433,9 +433,10 @@ Per node, control planes first, through the Lifecycle and Image APIs (the
 system containerd (`ImageService.Pull`, progress coalesced to one line every 3 s) and
 written to the inactive boot slot (`LifecycleService.Upgrade`, installer output streamed
 into the operation log; a non-zero exit fails the step with its last lines) while
-workloads keep running. Before a control plane goes down Kubit checks through Talos that
-every etcd member is started and healthy and that etcd does not have exactly 2 members
-(Talos's own upgrade rules), refusing with the member at fault. Kubit then drains the node
+workloads keep running. For a control plane Kubit checks through Talos, before the pull
+and again before the drain, that every etcd member is started and healthy and that etcd
+does not have exactly 2 members (Talos's own upgrade rules), refusing with the member at
+fault; the first check keeps an unhealthy cluster from getting a staged image. Kubit then drains the node
 (5 min, PodDisruptionBudgets respected; pods without a controller are deleted and named in
 the log), applies the regenerated machine config when the image changes, reboots,
 waits for the new boot ID, Ready and (control planes) the etcd member count, applies the
