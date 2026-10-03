@@ -3,6 +3,7 @@ package api_test
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -168,6 +169,38 @@ func TestDesignAndLint(t *testing.T) {
 	rec = do(t, srv, "POST", "/api/v1/config/lint", string(body))
 	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "no-vip") {
 		t.Errorf("lint should flag the missing VIP: %d %s", rec.Code, rec.Body)
+	}
+}
+
+func TestDesignAndDraftCarryTPMAndWatchdog(t *testing.T) {
+	srv, s := newServer(t, "")
+	hw := `{"cpus":4,"memoryBytes":8589934592,"kvm":false,"tpm":true,"watchdog":%v,"disks":[{"devPath":"/dev/sda","sizeBytes":250000000000}]}`
+	for i, mac := range []string{"aa:aa:aa:aa:aa:01", "aa:aa:aa:aa:aa:02", "aa:aa:aa:aa:aa:03"} {
+		if err := s.UpsertNode(t.Context(), store.NodeRow{IP: "10.0.0.1" + string(rune('0'+i)), MAC: mac, Arch: "amd64", State: "maintenance", Hardware: []byte(fmt.Sprintf(hw, i == 0))}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var out struct{ YAML string }
+	for path, body := range map[string]string{
+		"/api/v1/config/design": `{"name":"lab","macs":["aa:aa:aa:aa:aa:01","aa:aa:aa:aa:aa:02","aa:aa:aa:aa:aa:03"]}`,
+		"/api/v1/config/draft":  `{"name":"lab","ips":["10.0.0.10","10.0.0.11","10.0.0.12"]}`,
+	} {
+		rec := do(t, srv, "POST", path, body)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("%s: %d %s", path, rec.Code, rec.Body)
+		}
+		_ = json.Unmarshal(rec.Body.Bytes(), &out)
+		if strings.Count(out.YAML, "tpm: true") != 3 || strings.Count(out.YAML, "watchdog: true") != 1 || !strings.Contains(out.YAML, "encryption: nodeID") {
+			t.Errorf("%s: TPM and watchdog must reach the declaration:\n%s", path, out.YAML)
+		}
+	}
+	if err := s.UpsertNode(t.Context(), store.NodeRow{IP: "10.0.0.12", MAC: "aa:aa:aa:aa:aa:03", Arch: "amd64", State: "maintenance", Hardware: []byte(`{"cpus":4,"memoryBytes":8589934592,"disks":[{"devPath":"/dev/sda","sizeBytes":250000000000}]}`)}); err != nil {
+		t.Fatal(err)
+	}
+	rec := do(t, srv, "POST", "/api/v1/config/draft", `{"name":"lab","ips":["10.0.0.10","10.0.0.11","10.0.0.12"]}`)
+	_ = json.Unmarshal(rec.Body.Bytes(), &out)
+	if rec.Code != http.StatusOK || !strings.Contains(out.YAML, "encryption: nodeID") {
+		t.Errorf("a machine without a TPM still encrypts with the node-ID key: %d\n%s", rec.Code, out.YAML)
 	}
 }
 

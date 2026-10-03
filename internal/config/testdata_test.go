@@ -41,7 +41,7 @@ spec:
     - { hostname: worker-01, ip: 192.168.64.5, role: worker, arch: arm64, kvm: true, installDisk: { path: /dev/vda }, dataDisks: [/dev/vdb, /dev/vdc] }
   platform:
     metallb: { enabled: true, range: 192.168.64.200-192.168.64.220 }
-    ingressNginx: { enabled: true }
+    traefik: { enabled: true }
     gvisor: { enabled: true }
     metricsServer: { enabled: true }
 `

@@ -48,10 +48,16 @@ func rebootNode(ctx context.Context, tc *talos.Client) error {
 	return tc.RebootMachine(call)
 }
 
-func upgradeNode(ctx context.Context, tc *talos.Client, image string, timeout time.Duration) error {
+func pullImage(ctx context.Context, tc *talos.Client, ref string, timeout time.Duration, progress func(string)) (string, error) {
 	call, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
-	return tc.UpgradeTo(call, image)
+	return tc.PullImage(call, ref, progress)
+}
+
+func installImage(ctx context.Context, tc *talos.Client, image string, timeout time.Duration, progress func(string)) error {
+	call, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	return tc.LifecycleUpgrade(call, image, progress)
 }
 
 func resetNode(ctx context.Context, tc *talos.Client) error {

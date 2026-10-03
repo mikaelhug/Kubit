@@ -20,7 +20,8 @@ func TestKubeScopesAddsAddonsForAddonNamespaces(t *testing.T) {
 		{"workloads", "kube-public", []string{"workloads"}},
 		{"workloads", "default", []string{"workloads"}},
 		{"workloads", "", []string{"workloads"}},
-		{"network", "ingress-nginx", []string{"network"}},
+		{"workloads", "traefik", []string{"workloads", "addons"}},
+		{"network", "traefik", []string{"network"}},
 		{"nodes", "", []string{"nodes"}},
 	} {
 		if got := kubeScopes(c.scope, c.ns); !slices.Equal(got, c.want) {

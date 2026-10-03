@@ -67,8 +67,8 @@ func (req addonUpdate) apply(p *config.Platform, key string, values map[string]a
 		if req.ValuesYAML != nil {
 			p.MetalLB.Values = values
 		}
-	case "ingressNginx":
-		set(&p.IngressNginx)
+	case "traefik":
+		set(&p.Traefik)
 	case "gvisor":
 		set(&p.GVisor)
 	case "metricsServer":

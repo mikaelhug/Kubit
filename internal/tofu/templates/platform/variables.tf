@@ -11,8 +11,13 @@ variable "metallb" {
   })
 }
 
-variable "ingress_nginx" {
+variable "traefik" {
   type = object({ enabled = bool, values = optional(any, {}) })
+}
+
+variable "ingress_ip_pin" {
+  type    = string
+  default = ""
 }
 
 variable "gvisor" {

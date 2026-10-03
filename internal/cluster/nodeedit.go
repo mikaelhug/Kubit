@@ -3,6 +3,7 @@ package cluster
 import (
 	"context"
 	"fmt"
+	"slices"
 	"time"
 
 	"github.com/mikael/kubit/internal/config"
@@ -191,11 +192,12 @@ func (m *Manager) MoveNodeToPool(ctx context.Context, name, hostname, pool strin
 }
 
 func (m *Manager) ReaddressNode(ctx context.Context, name, hostname string, network *config.NodeNetwork, newIP string, sink Sink) error {
-	sink.Plan(Steps("apply", "Apply the new network configuration", "reach", "Wait for the node on its new address", "kubelet", "Restart the kubelet so the Node advertises the new address", "reboot", "Reboot the control plane so etcd re-advertises", "ready", "Wait for Ready")...)
+	sink.Plan(Steps("firewall", "Allow the new subnet on the other nodes", "apply", "Apply the new network configuration", "reach", "Wait for the node on its new address", "kubelet", "Restart the kubelet so the Node advertises the new address", "reboot", "Reboot the control plane so etcd re-advertises", "ready", "Wait for Ready", "narrow", "Remove the old subnet from the other nodes")...)
 	c, n, err := m.findNode(ctx, name, hostname)
 	if err != nil {
 		return err
 	}
+	oldSubnets := config.ClusterSubnets(c)
 	if ep, ok := c.EndpointNode(); ok && ep.Hostname == hostname && newIP != "" && newIP != n.IP {
 		return fmt.Errorf("%s is the API endpoint (no VIP); re-addressing it would break every kubeconfig — set a VIP first", hostname)
 	}
@@ -213,6 +215,22 @@ func (m *Manager) ReaddressNode(ctx context.Context, name, hostname string, netw
 	}
 	gen, err := config.Generate(c, bundle, m.installer(c))
 	if err != nil {
+		return err
+	}
+	kc, err := m.KubeClientFor(name, sec)
+	if err != nil {
+		return err
+	}
+	widen := c.FirewallOn() && !slices.Equal(oldSubnets, config.ClusterSubnets(c))
+	if !widen {
+		sink.Skip("firewall")
+	} else if err := sink.Run("firewall", func() error {
+		bridged, err := config.Generate(bridgeSubnets(c, i, n), bundle, m.installer(c))
+		if err != nil {
+			return err
+		}
+		return m.applyOthers(ctx, c, kc, hostname, bridged.Nodes, sec.Talosconfig, "firewall", sink)
+	}); err != nil {
 		return err
 	}
 	target := c.Spec.Nodes[i].IP
@@ -259,10 +277,6 @@ func (m *Manager) ReaddressNode(ctx context.Context, name, hostname string, netw
 		_ = m.Store.PutNodeMachineConfig(ctx, target, gen.Nodes[hostname], config.HasSystemVolume(gen.Nodes[hostname]))
 		return nil
 	})
-	if err != nil {
-		return err
-	}
-	kc, err := m.KubeClientFor(name, sec)
 	if err != nil {
 		return err
 	}
@@ -315,6 +329,28 @@ func (m *Manager) ReaddressNode(ctx context.Context, name, hostname string, netw
 		return err
 	}
 	_ = m.Store.Audit(ctx, name, "node.readdress", hostname+" → "+target)
-	sink.Emit(Done, "ready", hostname, "reachable at %s", target)
+	if !widen {
+		sink.Skip("narrow")
+		sink.Emit(Done, "ready", hostname, "reachable at %s", target)
+		return nil
+	}
+	if err := sink.Run("narrow", func() error {
+		return m.applyOthers(ctx, c, kc, hostname, gen.Nodes, sec.Talosconfig, "narrow", sink)
+	}); err != nil {
+		return err
+	}
+	sink.Emit(Done, "narrow", hostname, "reachable at %s", target)
 	return nil
+}
+
+func bridgeSubnets(c *config.Cluster, moved int, old config.Node) *config.Cluster {
+	both := config.ClusterSubnets(&config.Cluster{Spec: config.Spec{Nodes: []config.Node{old, c.Spec.Nodes[moved]}}})
+	addrs := make([]string, 0, len(both))
+	for _, p := range both {
+		addrs = append(addrs, p.String())
+	}
+	bridge := *c
+	bridge.Spec.Nodes = slices.Clone(c.Spec.Nodes)
+	bridge.Spec.Nodes[moved].Network = &config.NodeNetwork{Addresses: addrs}
+	return &bridge
 }

@@ -149,7 +149,7 @@ func TestLintUndersizedWorker(t *testing.T) {
 func TestDesignEnablesOnlyWhatAClusterNeeds(t *testing.T) {
 	c, _ := config.Design("lab", machines(), config.DesignOptions{})
 	p := c.Spec.Platform
-	if !p.MetalLB.Enabled || !p.IngressNginx.Enabled || !p.MetricsServer.Enabled || !p.CertManager.Enabled || !p.Flux.Enabled {
+	if !p.MetalLB.Enabled || !p.Traefik.Enabled || !p.MetricsServer.Enabled || !p.CertManager.Enabled || !p.Flux.Enabled {
 		t.Errorf("a ready cluster needs networking, metrics, certificates and GitOps: %+v", p)
 	}
 	if p.GVisor.Enabled || !p.Longhorn.Enabled || !c.Spec.Storage.SystemDisk || c.Spec.Storage.EphemeralSize != config.DefaultEphemeralSize {
@@ -181,5 +181,48 @@ func TestDesignWarnsWhenTheSystemDiskIsTooSmallToShare(t *testing.T) {
 	}
 	if !found {
 		t.Errorf("a 40 GiB system disk leaves nothing after a 40 GiB /var: %+v", warnings)
+	}
+}
+
+func TestDesignEncryptsWithNodeIDKey(t *testing.T) {
+	ms := machines()
+	for i := range ms {
+		ms[i].TPM, ms[i].Watchdog = true, i == 0
+	}
+	c, warnings := config.Design("lab", ms, config.DesignOptions{})
+	if c.Spec.Storage.Encryption != config.EncryptionNodeID {
+		t.Errorf("TPM sealing needs Secure Boot: encryption %q", c.Spec.Storage.Encryption)
+	}
+	if w := c.Workers()[0]; !w.TPM || !w.Watchdog || c.ControlPlanes()[0].Watchdog {
+		t.Errorf("TPM and watchdog follow the machine: %+v", c.Spec.Nodes)
+	}
+	if slices.ContainsFunc(warnings, func(w config.Warning) bool { return w.Code == "encryption-off" }) {
+		t.Error("encrypted design flagged as unencrypted")
+	}
+	if err := c.Validate(); err != nil {
+		t.Errorf("design must validate: %v", err)
+	}
+	ms[2].TPM = false
+	c, _ = config.Design("lab", ms, config.DesignOptions{})
+	if c.Spec.Storage.Encryption != config.EncryptionNodeID {
+		t.Errorf("one machine without a TPM: encryption %q", c.Spec.Storage.Encryption)
+	}
+	if c, warnings := config.Design("lab", nil, config.DesignOptions{}); c.Spec.Storage.Encryption != "" || !slices.ContainsFunc(warnings, func(w config.Warning) bool { return w.Code == "encryption-off" && w.Level == "info" }) {
+		t.Errorf("no machines, no encryption, and the lint says so: %+v", warnings)
+	}
+}
+
+func TestLintFlagsTPMWithoutSecureBoot(t *testing.T) {
+	ms := machines()
+	for i := range ms {
+		ms[i].TPM = true
+	}
+	c, warnings := config.Design("lab", ms, config.DesignOptions{})
+	if slices.ContainsFunc(warnings, func(w config.Warning) bool { return w.Code == "encryption-tpm-secureboot" }) {
+		t.Errorf("node-ID key flagged: %+v", warnings)
+	}
+	c.Spec.Storage.Encryption = config.EncryptionTPM
+	if !slices.ContainsFunc(config.Lint(c, ms), func(w config.Warning) bool { return w.Code == "encryption-tpm-secureboot" && w.Level == "warn" }) {
+		t.Error("TPM sealing without Secure Boot must warn")
 	}
 }

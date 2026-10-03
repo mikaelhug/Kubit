@@ -237,3 +237,46 @@ func TestEditSaveErrors(t *testing.T) {
 		t.Errorf("a failed write: %d %s", rec.Code, rec.Body)
 	}
 }
+
+func TestEditRejectsBadPatch422(t *testing.T) {
+	s, _ := editServer(t)
+	bad := "apiVersion: kubit.dev/v1\nkind: Cluster\nmetadata: {name: c}\nspec:\n" +
+		"  patches: [ { apiVersion: v1alpha1, kind: KubeAPIServerConfig, extraArgs: { audit-log-maxage: \"7\" } } ]\n" +
+		"  nodes:\n    - {hostname: a, ip: 10.0.0.1, role: controlplane, installDisk: {path: /dev/sda}}\n" +
+		"    - {hostname: b, ip: 10.0.0.2, role: worker, installDisk: {path: /dev/sda}}\n"
+	body, _ := json.Marshal(map[string]string{"yaml": bad})
+	for _, req := range []struct{ method, path, body string }{
+		{"PUT", "/api/v1/clusters/c/yaml", bad},
+		{"POST", "/api/v1/config/validate", bad},
+		{"POST", "/api/v1/clusters/c/apply", string(body)},
+	} {
+		rec := call(t, s, req.method, req.path, req.body)
+		if rec.Code != http.StatusUnprocessableEntity || !strings.Contains(rec.Body.String(), "node b (worker)") {
+			t.Errorf("%s %s: %d %s", req.method, req.path, rec.Code, rec.Body)
+		}
+	}
+	c, _, err := s.manager.LoadCluster(t.Context(), "c")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(c.Spec.Patches) != 0 || len(c.Spec.Nodes) != 1 {
+		t.Errorf("a refused declaration was saved: %+v", c.Spec)
+	}
+}
+
+func TestNodeAddRejectsBadPatch422(t *testing.T) {
+	s, _ := editServer(t)
+	node := `{"hostname": "b", "ip": "10.0.0.2", "role": "worker", "pool": "worker", "arch": "amd64", "installDisk": {"path": "/dev/sda"}, "patches": [{"apiVersion": "v1alpha1", "kind": "KubeAPIServerConfig", "extraArgs": {"audit-log-maxage": "7"}}]}`
+	rec := call(t, s, "POST", "/api/v1/clusters/c/nodes", node)
+	if rec.Code != http.StatusUnprocessableEntity || !strings.Contains(rec.Body.String(), "node b (worker)") {
+		t.Errorf("bad patch: %d %s", rec.Code, rec.Body)
+	}
+	rec = call(t, s, "POST", "/api/v1/clusters/c/nodes", `{"hostname": "a", "ip": "10.0.0.2", "role": "worker", "installDisk": {"path": "/dev/sda"}}`)
+	if rec.Code != http.StatusUnprocessableEntity || !strings.Contains(rec.Body.String(), `\"a\" duplicated`) {
+		t.Errorf("a clash with the declared node must be refused up front: %d %s", rec.Code, rec.Body)
+	}
+	ops, err := s.store.ListOperations(t.Context(), 10)
+	if err == nil && len(ops) != 0 {
+		t.Errorf("no operation may start: %d", len(ops))
+	}
+}

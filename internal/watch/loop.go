@@ -393,6 +393,7 @@ func (w *Watcher) tick(ctx context.Context, name string) {
 	if w.OnStatus != nil {
 		w.OnStatus(name, st)
 	}
+	w.syncStageWatches(ctx, name, st, gap)
 }
 
 type talosFacts struct {

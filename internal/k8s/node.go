@@ -114,5 +114,11 @@ func (c *Client) Cordon(ctx context.Context, name string) error {
 	if err != nil {
 		return err
 	}
-	return drain.RunCordonOrUncordon(&drain.Helper{Ctx: ctx, Client: c.Interface}, node, true)
+	if err := drain.RunCordonOrUncordon(&drain.Helper{Ctx: ctx, Client: c.Interface}, node, true); err != nil {
+		return err
+	}
+	if _, ok := node.Annotations[CordonedBy]; !ok {
+		return nil
+	}
+	return c.annotateCordon(ctx, name, "null")
 }

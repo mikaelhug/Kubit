@@ -2,6 +2,7 @@ import { useMemo, useState } from 'preact/hooks'
 import { api, fmt, type ClusterRow, type NodeStatus } from '../../api'
 import { DataTable, type Column } from '../../components/DataTable'
 import { ReaddressDialog } from '../../components/ReaddressDialog'
+import { useConfigStatus } from '../../configStatus'
 import { ConfirmDialog, Pill, Section } from '../../components/ui'
 import { runOp } from '../../ops'
 import { useQueryParam } from '../../query'
@@ -22,6 +23,7 @@ export function Nodes({ ctx }: { ctx: ClusterCtx }) {
   const rows = pool ? all.filter((n) => n.pool === pool) : all
   const pools = cluster.spec.spec.pools ?? []
   const apiUp = !!status?.apiReachable
+  const behind = useConfigStatus(name)?.behind
 
   const columns = useMemo<Column<NodeStatus>[]>(() => {
     const specOf = (n: NodeStatus) => specs.find((s) => s.hostname === n.hostname)
@@ -39,7 +41,7 @@ export function Nodes({ ctx }: { ctx: ClusterCtx }) {
         )
       } },
       { id: 'pool', header: 'Pool', sort: (n) => `${n.role === 'controlplane' ? 0 : 1} ${n.pool}`, cell: (n) => <span class="flex items-center gap-1.5"><span class="mono">{n.pool || '—'}</span><span class="text-[10px] text-muted">{n.role === 'controlplane' ? 'control plane' : 'worker'}</span></span> },
-      { id: 'status', header: 'Status', sort: (n) => (n.talosReachable ? 1 : 0) + (n.ready ? 2 : 0), text: (n) => `${n.talosReachable ? '' : 'unreachable'} ${n.ready ? 'ready' : 'notready'}`, cell: (n) => <NodeHealth n={n} apiReachable={apiUp} /> },
+      { id: 'status', header: 'Status', sort: (n) => (n.talosReachable ? 1 : 0) + (n.ready ? 2 : 0), text: (n) => `${n.talosReachable ? '' : 'unreachable'} ${n.ready ? 'ready' : 'notready'}${behind?.includes(n.hostname) ? ' config behind' : ''}`, cell: (n) => <NodeHealth n={n} apiReachable={apiUp} behind={!!behind?.includes(n.hostname)} /> },
       { id: 'talos', header: 'Talos', sort: (n) => n.talosVersion, mono: true, cell: (n) => n.talosVersion || '—' },
       { id: 'kubelet', header: 'Kubelet', sort: (n) => n.kubeletVersion, mono: true, cell: (n) => n.kubeletVersion || '—' },
       { id: 'cpu', header: 'CPU', align: 'right', sort: (n) => n.cpuMilli, cell: (n) => <>{fmt.cores(n.cpuMilli)}<span class="text-muted">/{fmt.cores(n.cpuCapMilli)}</span></> },
@@ -53,7 +55,7 @@ export function Nodes({ ctx }: { ctx: ClusterCtx }) {
         </span>
       ) },
     ]
-  }, [specs, apiUp, name])
+  }, [specs, apiUp, name, behind])
 
   return (
     <>
@@ -80,7 +82,7 @@ export function Nodes({ ctx }: { ctx: ClusterCtx }) {
   )
 }
 
-function NodeHealth({ n, apiReachable }: { n: NodeStatus; apiReachable: boolean }) {
+function NodeHealth({ n, apiReachable, behind }: { n: NodeStatus; apiReachable: boolean; behind: boolean }) {
   const pills = []
   if (!n.talosReachable) pills.push(<Pill key="talos" tone="bad" title={n.talosError}>Talos unreachable</Pill>)
   else if (n.stage && n.stage !== 'running') pills.push(<Pill key="talos" tone="warn">{n.stage}</Pill>)
@@ -89,6 +91,7 @@ function NodeHealth({ n, apiReachable }: { n: NodeStatus; apiReachable: boolean 
   else if (!n.ready) pills.push(<Pill key="k8s" tone="warn">NotReady</Pill>)
   else pills.push(<Pill key="k8s" tone="good">Ready</Pill>)
   if (n.unschedulable) pills.push(<Pill key="cordon" tone="warn">cordoned</Pill>)
+  if (behind) pills.push(<Pill key="config" tone="warn" title="Apply node configs in Settings">Config behind</Pill>)
   return (
     <div class="flex flex-col gap-0.5">
       <span class="inline-flex flex-wrap gap-1">{pills}</span>

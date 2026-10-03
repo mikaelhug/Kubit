@@ -16,9 +16,11 @@ export function NetworkStep({ draft, setCluster }: { draft: Draft; setCluster: S
     const platform = registryCIDROK(network.serviceCIDR) ? c.spec.platform : { ...c.spec.platform, builds: { ...c.spec.platform.builds, enabled: false } }
     return { ...c, spec: { ...c.spec, network, platform } }
   })
+  const setEncryption = (encryption?: 'tpm' | 'nodeID') => setCluster((c) => ({ ...c, spec: { ...c.spec, storage: { ...c.spec.storage, encryption } } }))
   const setRange = (range: string) => setCluster((c) => ({ ...c, spec: { ...c.spec, platform: { ...c.spec.platform, metallb: { ...c.spec.platform.metallb, range } } } }))
   const setNode = (i: number, patch: Parameters<typeof updateNode>[2]) => updateNode(setCluster, i, patch)
   const cps = c.spec.nodes.filter((n) => n.role === 'controlplane')
+  const allTPM = c.spec.nodes.length > 0 && c.spec.nodes.every((n) => n.tpm)
   const first = c.spec.nodes[0]?.ip ?? ''
   const range = c.spec.platform.metallb.range ?? ''
 
@@ -78,6 +80,22 @@ export function NetworkStep({ draft, setCluster }: { draft: Draft; setCluster: S
         <Field label="NTP servers" hint="Empty uses Talos' default">
           <ListInput value={c.spec.network.ntp} placeholder="time.cloudflare.com" onChange={(v) => setNet({ ntp: v.length ? v : undefined })} />
         </Field>
+        <Field label="Network policies" hint="NetworkPolicy objects are enforced">
+          <OnOff value={c.spec.network.policies ?? true} onChange={(policies) => setNet({ policies })} />
+        </Field>
+        <Field label="Discovery service" hint="Nodes register with discovery.talos.dev">
+          <OnOff value={c.spec.network.discovery ?? true} onChange={(discovery) => setNet({ discovery })} />
+        </Field>
+        <Field label="Host firewall" hint="Blocks node ports from outside the cluster">
+          <OnOff value={c.spec.network.firewall ?? false} onChange={(firewall) => setNet({ firewall })} />
+        </Field>
+        <Field label="Disk encryption" hint={allTPM ? 'Fixed after install; TPM needs Secure Boot' : 'Fixed after install; TPM needs one on every node'}>
+          <select class="input" value={c.spec.storage?.encryption ?? ''} onChange={(e) => { const v = (e.target as HTMLSelectElement).value; setEncryption(v === 'tpm' || v === 'nodeID' ? v : undefined) }}>
+            <option value="nodeID">Node ID</option>
+            <option value="tpm" disabled={!allTPM}>TPM</option>
+            <option value="">Off</option>
+          </select>
+        </Field>
         <div class="md:col-span-2 grid grid-cols-2 gap-4">
           <Field label="Pod CIDR" hint="Fixed for the cluster's lifetime"><input class="input mono" value={c.spec.network.podCIDR} onInput={(e) => setNet({ podCIDR: (e.target as HTMLInputElement).value.trim() })} /></Field>
           <Field label="Service CIDR" hint="Fixed for the cluster's lifetime"><input class="input mono" value={c.spec.network.serviceCIDR} onInput={(e) => setNet({ serviceCIDR: (e.target as HTMLInputElement).value.trim() })} /></Field>
@@ -89,5 +107,14 @@ export function NetworkStep({ draft, setCluster }: { draft: Draft; setCluster: S
         <DataTable search={false} columns={columns} rows={c.spec.nodes.map((_, i) => i)} rowKey={(i) => c.spec.nodes[i].mac ?? c.spec.nodes[i].ip} />
       </div>
     </>
+  )
+}
+
+function OnOff({ value, onChange }: { value: boolean; onChange: (v: boolean) => void }) {
+  return (
+    <select class="input" value={String(value)} onChange={(e) => onChange((e.target as HTMLSelectElement).value === 'true')}>
+      <option value="true">On</option>
+      <option value="false">Off</option>
+    </select>
   )
 }

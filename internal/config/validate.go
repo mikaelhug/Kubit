@@ -19,7 +19,7 @@ func (c *Cluster) Validate() error {
 	var errs []error
 	for _, section := range []func() []error{
 		c.validateHeader, c.validateBackup, c.validatePlatform, c.validateStorage, c.validateAuth,
-		c.validateTalosVersion, c.validateControlPlane, c.validateNetwork, c.validatePools, c.validateNodes,
+		c.validateTalosVersion, c.validateControlPlane, c.validateNetwork, c.validatePools, c.validateNodes, c.validatePatches,
 	} {
 		errs = append(errs, section()...)
 	}
@@ -82,17 +82,30 @@ func (c *Cluster) validatePlatform() []error {
 
 func (c *Cluster) validateStorage() []error {
 	s := c.Spec.Storage
+	var errs []error
+	switch s.Encryption {
+	case "", EncryptionTPM, EncryptionNodeID:
+	default:
+		errs = append(errs, fmt.Errorf("storage.encryption %q must be tpm or nodeID", s.Encryption))
+	}
+	if s.Encryption == EncryptionTPM {
+		for _, n := range c.Spec.Nodes {
+			if !n.TPM {
+				errs = append(errs, fmt.Errorf("%s: no TPM; storage.encryption is tpm", n.Hostname))
+			}
+		}
+	}
 	if s.EphemeralSize == "" {
-		return nil
+		return errs
 	}
 	b, err := s.EphemeralBytes()
 	if err != nil {
-		return []error{fmt.Errorf("storage.ephemeralSize %q: %w", s.EphemeralSize, err)}
+		return append(errs, fmt.Errorf("storage.ephemeralSize %q: %w", s.EphemeralSize, err))
 	}
 	if b < MinEphemeralBytes {
-		return []error{fmt.Errorf("storage.ephemeralSize %q: at least 10GiB", s.EphemeralSize)}
+		return append(errs, fmt.Errorf("storage.ephemeralSize %q: at least 10GiB", s.EphemeralSize))
 	}
-	return nil
+	return errs
 }
 
 func (c *Cluster) validateAuth() []error {

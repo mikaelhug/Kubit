@@ -37,41 +37,43 @@ export interface Versions { talos: string[]; talosSource: string; kubernetesMino
 
 export interface InstallDisk { path?: string; selector?: { minSize?: string; type?: string; model?: string } }
 export interface NodeNetwork { addresses: string[]; gateway?: string; nameservers?: string[]; vlan?: number; mtu?: number }
-export interface NodeSpec { hostname: string; ip: string; mac?: string; uuid?: string; pool?: string; role?: 'controlplane' | 'worker'; arch: string; kvm?: boolean; installDisk?: InstallDisk; dataDisks?: string[]; network?: NodeNetwork; labels?: Record<string, string>; taints?: Record<string, string>; annotations?: Record<string, string> }
-export interface Pool { name: string; role: 'controlplane' | 'worker'; labels?: Record<string, string>; taints?: Record<string, string>; annotations?: Record<string, string>; extensions?: string[]; schematicID?: string; installDisk?: InstallDisk }
+export interface NodeSpec { hostname: string; ip: string; mac?: string; uuid?: string; pool?: string; role?: 'controlplane' | 'worker'; arch: string; kvm?: boolean; tpm?: boolean; watchdog?: boolean; installDisk?: InstallDisk; dataDisks?: string[]; network?: NodeNetwork; labels?: Record<string, string>; taints?: Record<string, string>; annotations?: Record<string, string>; patches?: Record<string, unknown>[] }
+export interface Pool { name: string; role: 'controlplane' | 'worker'; labels?: Record<string, string>; taints?: Record<string, string>; annotations?: Record<string, string>; extensions?: string[]; schematicID?: string; installDisk?: InstallDisk; patches?: Record<string, unknown>[] }
 export interface Warning { level: 'info' | 'warn'; code: string; message: string; node?: string }
 export interface AddonSpec { enabled: boolean; values?: Record<string, unknown> }
 export interface Snapshot { id: number; cluster: string; ts: string; node: string; sizeBytes: number; sha256: string; keys: number; talosVersion?: string; k8sVersion?: string; source: 'manual' | 'schedule' | 'pre-upgrade'; status: 'ok' | 'corrupt' | 'missing'; offsite?: string }
-export interface PlatformSpec { metallb: AddonSpec & { range?: string }; ingressNginx: AddonSpec; gvisor: AddonSpec; metricsServer: AddonSpec; certManager: AddonSpec; flux: AddonSpec & { repository?: FluxRepository }; longhorn: AddonSpec; builds: AddonSpec }
+export interface PlatformSpec { metallb: AddonSpec & { range?: string }; traefik: AddonSpec; gvisor: AddonSpec; metricsServer: AddonSpec; certManager: AddonSpec; flux: AddonSpec & { repository?: FluxRepository }; longhorn: AddonSpec; builds: AddonSpec }
 export interface ClusterSpec {
   apiVersion: string; kind: string; metadata: { name: string }
   spec: {
     talosVersion: string; kubernetesVersion: string; extensions?: string[]; schematicID?: string
     controlPlane: { endpoint: string; vip?: string; allowScheduling?: boolean }
-    network: { podCIDR: string; serviceCIDR: string; nameservers?: string[]; ntp?: string[] }
+    network: { podCIDR: string; serviceCIDR: string; nameservers?: string[]; ntp?: string[]; policies?: boolean; discovery?: boolean; firewall?: boolean }
     pools?: Pool[]
     nodes: NodeSpec[]
     platform: PlatformSpec
     backup?: { etcd: { interval?: string; keep?: number } }
     maintenance?: { window?: string; timezone?: string }
     auth?: { oidc?: ClusterOIDC }
-    storage?: { systemDisk?: boolean; ephemeralSize?: string }
+    storage?: { systemDisk?: boolean; ephemeralSize?: string; encryption?: 'tpm' | 'nodeID' }
+    patches?: Record<string, unknown>[]
   }
 }
 export interface ClusterOIDC { issuer: string; clientID: string; usernameClaim?: string; usernamePrefix?: string; groupsClaim?: string; groupsPrefix?: string; adminGroup?: string }
-export interface ClusterForm { oidc?: ClusterOIDC | null; talosVersion: string; kubernetesVersion: string; endpoint: string; vip: string; allowScheduling: boolean | null; podCIDR: string; serviceCIDR: string; extensions: string[]; nameservers: string[]; ntp: string[]; etcdSnapshotInterval: string; etcdSnapshotKeep: number; maintenanceWindow: string; maintenanceTimezone: string }
+export interface ClusterForm { oidc?: ClusterOIDC | null; talosVersion: string; kubernetesVersion: string; endpoint: string; vip: string; allowScheduling: boolean | null; podCIDR: string; serviceCIDR: string; extensions: string[]; nameservers: string[]; ntp: string[]; networkPolicies: boolean; discovery: boolean; firewall: boolean; etcdSnapshotInterval: string; etcdSnapshotKeep: number; maintenanceWindow: string; maintenanceTimezone: string }
 export interface CertInfo { name: string; subject: string; issuer?: string; notBefore: string; notAfter: string; daysLeft: number; rotatable: boolean; error?: string }
 export interface AuditEntry { id: number; at: string; cluster: string; action: string; detail: string; actor?: string }
 export interface MaintenanceState { window: string; timezone: string; open: boolean; next?: string; closes?: string }
 export interface ClusterRow { name: string; state: string; schematicId: string; createdAt: string; updatedAt: string; spec: ClusterSpec }
 
 export interface Inventory {
-  ip: string; hostname?: string; uuid?: string; serial?: string; cpus: number; memoryBytes: number; kvm: boolean; virtual?: boolean; arch: string; talosVersion: string; platform: string; stage: string; manufacturer?: string; product?: string
+  ip: string; hostname?: string; uuid?: string; serial?: string; cpus: number; memoryBytes: number; kvm: boolean; tpm?: boolean; watchdog?: boolean; virtual?: boolean; arch: string; talosVersion: string; platform: string; stage: string; manufacturer?: string; product?: string
   disks: { devPath: string; sizeBytes: number; model?: string; transport?: string; rotational: boolean; readonly: boolean; cdrom: boolean }[]
   links: { name: string; mac: string; up: boolean; addresses?: string[] }[]
   bootTime?: string; extensions?: { name: string; version: string; author?: string }[]
   etcd?: { memberId: string; leader: boolean; learner: boolean; dbSizeBytes: number; dbInUseBytes: number; raftIndex: number; raftTerm: number; errors?: string[] }
 }
+export interface ConfigStatus { behind: string[] }
 export interface Resources { cpuMilli: number; memBytes: number; pods: number }
 export interface PodSummary { namespace: string; name: string; node?: string; containers?: string[]; phase: string; ready: string; restarts: number; owner?: string; cpuMilli: number; memBytes: number; age: string; ageSec?: number; createdAt?: string; usageCpuMilli?: number; usageMemBytes?: number }
 export interface NodeDetail {

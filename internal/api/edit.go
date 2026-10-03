@@ -48,6 +48,10 @@ func (s *Server) editCluster(w http.ResponseWriter, r *http.Request, action, det
 		writeErr(w, unprocessable(err))
 		return nil, false
 	}
+	if err := s.manager.CheckCluster(r.Context(), c); err != nil {
+		writeErr(w, unprocessable(err))
+		return nil, false
+	}
 	if err := s.manager.SaveCluster(r.Context(), c, ""); err != nil {
 		writeErr(w, err)
 		return nil, false

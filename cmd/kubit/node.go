@@ -58,9 +58,18 @@ func nodeAddCmd() *cobra.Command {
 			n.Role = config.Role(role)
 			n.Arch = config.Arch(arch)
 			n.InstallDisk = config.InstallDisk{Path: disk}
-			if n.MAC == "" {
-				if row, err := m.Store.GetNode(cmd.Context(), n.IP); err == nil {
+			if row, err := m.Store.GetNode(cmd.Context(), n.IP); err == nil {
+				if n.MAC == "" {
 					n.MAC = row.MAC
+				}
+				var inv talos.Inventory
+				if json.Unmarshal(row.Hardware, &inv) == nil {
+					if !cmd.Flags().Changed("tpm") {
+						n.TPM = inv.TPM
+					}
+					if !cmd.Flags().Changed("watchdog") {
+						n.Watchdog = inv.Watchdog
+					}
 				}
 			}
 			return m.AddNode(cmd.Context(), clusterName, n, printEvents(cmd))
@@ -74,6 +83,8 @@ func nodeAddCmd() *cobra.Command {
 	cmd.Flags().StringVar(&arch, "arch", "amd64", "amd64 | arm64")
 	cmd.Flags().StringVar(&disk, "disk", "", "install disk device path")
 	cmd.Flags().BoolVar(&n.KVM, "kvm", false, "node has /dev/kvm (enables runsc-kvm)")
+	cmd.Flags().BoolVar(&n.TPM, "tpm", false, "node has a TPM 2.0 on UEFI (default: from discovery)")
+	cmd.Flags().BoolVar(&n.Watchdog, "watchdog", false, "node has /dev/watchdog0 (default: from discovery)")
 	for _, f := range []string{"cluster", "ip", "hostname", "disk"} {
 		_ = cmd.MarkFlagRequired(f)
 	}

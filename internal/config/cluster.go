@@ -46,19 +46,20 @@ type Metadata struct {
 }
 
 type Spec struct {
-	TalosVersion      string       `yaml:"talosVersion,omitempty" json:"talosVersion,omitempty"`
-	KubernetesVersion string       `yaml:"kubernetesVersion,omitempty" json:"kubernetesVersion,omitempty"`
-	Extensions        []string     `yaml:"extensions,omitempty" json:"extensions,omitempty"`
-	SchematicID       string       `yaml:"schematicID,omitempty" json:"schematicID,omitempty"`
-	ControlPlane      ControlPlane `yaml:"controlPlane" json:"controlPlane"`
-	Network           Network      `yaml:"network" json:"network"`
-	Pools             []Pool       `yaml:"pools,omitempty" json:"pools,omitempty"`
-	Nodes             []Node       `yaml:"nodes" json:"nodes"`
-	Platform          Platform     `yaml:"platform" json:"platform"`
-	Backup            Backup       `yaml:"backup" json:"backup"`
-	Maintenance       Maintenance  `yaml:"maintenance,omitempty" json:"maintenance,omitempty"`
-	Auth              ClusterAuth  `yaml:"auth,omitempty" json:"auth,omitempty"`
-	Storage           Storage      `yaml:"storage,omitempty" json:"storage,omitempty"`
+	TalosVersion      string           `yaml:"talosVersion,omitempty" json:"talosVersion,omitempty"`
+	KubernetesVersion string           `yaml:"kubernetesVersion,omitempty" json:"kubernetesVersion,omitempty"`
+	Extensions        []string         `yaml:"extensions,omitempty" json:"extensions,omitempty"`
+	SchematicID       string           `yaml:"schematicID,omitempty" json:"schematicID,omitempty"`
+	ControlPlane      ControlPlane     `yaml:"controlPlane" json:"controlPlane"`
+	Network           Network          `yaml:"network" json:"network"`
+	Pools             []Pool           `yaml:"pools,omitempty" json:"pools,omitempty"`
+	Nodes             []Node           `yaml:"nodes" json:"nodes"`
+	Platform          Platform         `yaml:"platform" json:"platform"`
+	Backup            Backup           `yaml:"backup" json:"backup"`
+	Maintenance       Maintenance      `yaml:"maintenance,omitempty" json:"maintenance,omitempty"`
+	Auth              ClusterAuth      `yaml:"auth,omitempty" json:"auth,omitempty"`
+	Storage           Storage          `yaml:"storage,omitempty" json:"storage,omitempty"`
+	Patches           []map[string]any `yaml:"patches,omitempty" json:"patches,omitempty"`
 }
 
 type ClusterAuth struct {
@@ -140,6 +141,7 @@ type Pool struct {
 	Extensions  []string          `yaml:"extensions,omitempty" json:"extensions,omitempty"`
 	SchematicID string            `yaml:"schematicID,omitempty" json:"schematicID,omitempty"`
 	InstallDisk *InstallDisk      `yaml:"installDisk,omitempty" json:"installDisk,omitempty"`
+	Patches     []map[string]any  `yaml:"patches,omitempty" json:"patches,omitempty"`
 }
 
 type ControlPlane struct {
@@ -159,15 +161,18 @@ type Node struct {
 	InstallDisk InstallDisk       `yaml:"installDisk,omitempty" json:"installDisk,omitempty"`
 	DataDisks   []string          `yaml:"dataDisks,omitempty" json:"dataDisks,omitempty"`
 	KVM         bool              `yaml:"kvm,omitempty" json:"kvm,omitempty"`
+	TPM         bool              `yaml:"tpm,omitempty" json:"tpm,omitempty"`
+	Watchdog    bool              `yaml:"watchdog,omitempty" json:"watchdog,omitempty"`
 	Network     *NodeNetwork      `yaml:"network,omitempty" json:"network,omitempty"`
 	Labels      map[string]string `yaml:"labels,omitempty" json:"labels,omitempty"`
 	Taints      map[string]string `yaml:"taints,omitempty" json:"taints,omitempty"`
 	Annotations map[string]string `yaml:"annotations,omitempty" json:"annotations,omitempty"`
+	Patches     []map[string]any  `yaml:"patches,omitempty" json:"patches,omitempty"`
 }
 
 type Platform struct {
 	MetalLB       MetalLB `yaml:"metallb" json:"metallb"`
-	IngressNginx  Addon   `yaml:"ingressNginx" json:"ingressNginx"`
+	Traefik       Addon   `yaml:"traefik" json:"traefik"`
 	GVisor        Addon   `yaml:"gvisor" json:"gvisor"`
 	MetricsServer Addon   `yaml:"metricsServer" json:"metricsServer"`
 	CertManager   Addon   `yaml:"certManager" json:"certManager"`
@@ -175,11 +180,12 @@ type Platform struct {
 	Longhorn      Addon   `yaml:"longhorn" json:"longhorn"`
 	Builds        Addon   `yaml:"builds" json:"builds"`
 
-	LegacyArgoCD *Addon `yaml:"argocd,omitempty" json:"-"`
+	LegacyArgoCD       *Addon `yaml:"argocd,omitempty" json:"-"`
+	LegacyIngressNginx *Addon `yaml:"ingressNginx,omitempty" json:"-"`
 }
 
 func (p Platform) AddOns() bool {
-	return p.MetalLB.Enabled || p.IngressNginx.Enabled || p.MetricsServer.Enabled || p.CertManager.Enabled || p.Flux.Enabled || p.Longhorn.Enabled || p.Builds.Enabled
+	return p.MetalLB.Enabled || p.Traefik.Enabled || p.MetricsServer.Enabled || p.CertManager.Enabled || p.Flux.Enabled || p.Longhorn.Enabled || p.Builds.Enabled
 }
 
 type Addon struct {
@@ -281,6 +287,16 @@ func (c *Cluster) applyDefaults() {
 	if p := &c.Spec.Platform; p.LegacyArgoCD != nil {
 		p.Flux.Enabled = p.Flux.Enabled || p.LegacyArgoCD.Enabled
 		p.LegacyArgoCD = nil
+	}
+	if p := &c.Spec.Platform; p.LegacyIngressNginx != nil {
+		p.Traefik.Enabled = p.Traefik.Enabled || p.LegacyIngressNginx.Enabled
+		p.LegacyIngressNginx = nil
+	}
+	if c.Spec.Network.Policies == nil {
+		c.Spec.Network.Policies = new(true)
+	}
+	if c.Spec.Network.Discovery == nil {
+		c.Spec.Network.Discovery = new(true)
 	}
 	if c.Spec.Storage.SystemDisk && c.Spec.Storage.EphemeralSize == "" {
 		c.Spec.Storage.EphemeralSize = DefaultEphemeralSize

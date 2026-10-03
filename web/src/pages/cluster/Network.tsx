@@ -13,7 +13,7 @@ import type { ClusterCtx } from './ClusterPage'
 const home = (x: KService) => (x.namespace === 'default' && x.name === 'kubernetes' ? 'kube-system' : x.namespace)
 
 export function Network({ ctx }: { ctx: ClusterCtx }) {
-  const { name, cluster } = ctx
+  const { name, status, cluster } = ctx
   const spec = cluster.spec.spec
   const { data: view, error } = useLive(() => api.network(name), [name], [[name, 'network'], [name, 'addons']])
   const pool = view?.pool
@@ -44,7 +44,7 @@ export function Network({ ctx }: { ctx: ClusterCtx }) {
     { id: 'addr', header: 'Address', mono: true, cell: (i) => (i.addresses ?? []).join(', ') || <span class="text-muted">pending</span> },
     { id: 'age', header: 'Age', sort: createdSort, cell: (i) => <span class="text-muted"><Age at={i.createdAt} fallback={i.age} /></span> },
   ], 'ns', !!s.ns), [alerts, s.ns])
-  const ingressIP = pool?.allocated.find((a) => a.service.startsWith('ingress-nginx/'))?.ip
+  const ingressIP = status?.platform?.outputs?.ingress_ip || pool?.allocated.find((a) => a.service === 'traefik/traefik')?.ip
 
   return (
     <div class="flex flex-col gap-5">
@@ -84,7 +84,7 @@ export function Network({ ctx }: { ctx: ClusterCtx }) {
       <Section title={`Services (${services.length})`} help="Endpoints counts ready backends.">
         <DataTable loading={loading} id="services" columns={scols} rows={services} rowKey={(x) => x.namespace + '/' + x.name} defaultSort={{ id: 'type', dir: 'desc' }} empty={s.scope === 'apps' && !s.ns ? 'No app services yet.' : 'No services.'} />
       </Section>
-      <Section title={`Ingresses (${ingresses.length})`} help={`HTTP routes served by Ingress-NGINX${ingressIP ? ` at ${ingressIP}` : ''}.`}>
+      <Section title={`Ingresses (${ingresses.length})`} help={`HTTP routes served by Traefik${ingressIP ? ` at ${ingressIP}` : ''}.`}>
         <DataTable loading={loading} id="ingresses" columns={icols} rows={ingresses} rowKey={(i) => i.namespace + '/' + i.name} empty="No Ingress objects yet." />
       </Section>
     </div>

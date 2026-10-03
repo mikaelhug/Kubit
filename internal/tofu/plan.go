@@ -135,7 +135,7 @@ func AddonOf(address string) string {
 		name = name[:i]
 	}
 	for prefix, addon := range map[string]string{
-		"metallb": "metallb", "ingress_nginx": "ingress-nginx", "runtimeclass": "gvisor",
+		"metallb": "metallb", "traefik": "traefik", "ingress_nginx": "traefik", "runtimeclass": "gvisor",
 		"metrics_server": "metrics-server", "cert_manager": "cert-manager", "flux": "flux", "longhorn": "longhorn", "builds": "builds",
 	} {
 		if name == prefix || strings.HasPrefix(name, prefix+"_") {

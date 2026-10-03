@@ -209,7 +209,7 @@ var launchdPlist = template.Must(template.New("plist").Parse(`<?xml version="1.0
   <dict>
     <key>KUBIT_HOME</key><string>{{.Home}}</string>
     <key>KUBIT_SERVICE</key><string>1</string>
-    <key>PATH</key><string>/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin</string>
+    <key>PATH</key><string>/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
   </dict>
   <key>WorkingDirectory</key><string>{{.Home}}</string>
   <key>RunAtLoad</key><true/>

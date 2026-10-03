@@ -18,6 +18,9 @@ type clusterForm struct {
 	Extensions           []string            `json:"extensions"`
 	Nameservers          []string            `json:"nameservers"`
 	NTP                  []string            `json:"ntp"`
+	NetworkPolicies      *bool               `json:"networkPolicies"`
+	Discovery            *bool               `json:"discovery"`
+	Firewall             *bool               `json:"firewall"`
 	EtcdSnapshotInterval string              `json:"etcdSnapshotInterval"`
 	EtcdSnapshotKeep     int                 `json:"etcdSnapshotKeep"`
 	MaintenanceWindow    string              `json:"maintenanceWindow"`
@@ -51,6 +54,9 @@ func (f clusterForm) apply(c *config.Cluster) {
 	c.Spec.Extensions = f.Extensions
 	c.Spec.Network.Nameservers = f.Nameservers
 	c.Spec.Network.NTP = f.NTP
+	c.Spec.Network.Policies = f.NetworkPolicies
+	c.Spec.Network.Discovery = f.Discovery
+	c.Spec.Network.Firewall = f.Firewall
 	if f.EtcdSnapshotInterval != "" {
 		c.Spec.Backup.Etcd.Interval = f.EtcdSnapshotInterval
 	}

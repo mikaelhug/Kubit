@@ -4,7 +4,7 @@ export interface AddonInfo { key: keyof PlatformSpec; name: string; what: string
 
 export const addonCatalog: AddonInfo[] = [
   { key: 'metallb', name: 'MetalLB', what: 'LoadBalancer addresses from the range, announced over ARP.', size: '~120 MiB, 1 controller + 1 speaker per node', docs: 'https://metallb.universe.tf/configuration/', hint: 'The pool range is a setting of its own.' },
-  { key: 'ingressNginx', name: 'ingress-nginx', what: 'HTTP(S) ingress controller; the default IngressClass.', size: '~250 MiB, 1 pod', docs: 'https://github.com/kubernetes/ingress-nginx/blob/main/charts/ingress-nginx/values.yaml' },
+  { key: 'traefik', name: 'Traefik', what: 'HTTP(S) ingress and Gateway API controller; the default IngressClass.', size: '~100 MiB, 1 pod', docs: 'https://github.com/traefik/traefik-helm-chart/blob/master/traefik/values.yaml', hint: 'Also serves Ingress objects of class nginx.' },
   { key: 'gvisor', name: 'gVisor', what: 'RuntimeClasses gvisor and gvisor-kvm for sandboxed pods.', size: 'no running pods', docs: 'https://gvisor.dev/docs/user_guide/containerd/quick_start/', hint: 'Plain manifests; no values.' },
   { key: 'metricsServer', name: 'metrics-server', what: 'Pod and node CPU and memory usage.', size: '~100 MiB, 1 pod', docs: 'https://github.com/kubernetes-sigs/metrics-server/blob/master/charts/metrics-server/values.yaml' },
   { key: 'certManager', name: 'cert-manager', what: 'X.509 certificates from ACME or internal CAs.', size: '~300 MiB, 3 pods', docs: 'https://cert-manager.io/docs/installation/helm/' },

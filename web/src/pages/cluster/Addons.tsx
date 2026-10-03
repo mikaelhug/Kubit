@@ -60,7 +60,7 @@ export function Addons({ ctx }: { ctx: ClusterCtx }) {
         <div class="grid grid-cols-1 lg:grid-cols-2 gap-3">
           {addonCatalog.map((d) => {
             const a = addons?.find((x) => x.key === d.key)
-            const link = d.key === 'ingressNginx' && status?.platform?.outputs?.ingress_ip ? `http://${status.platform.outputs.ingress_ip}` : undefined
+            const link = d.key === 'traefik' && status?.platform?.outputs?.ingress_ip ? `http://${status.platform.outputs.ingress_ip}` : undefined
             const st = a?.state ?? (addons ? 'disabled' : null)
             return (
               <div key={d.key} class={`panel p-4 flex gap-3 ${st === 'disabled' ? 'opacity-75' : ''}`}>

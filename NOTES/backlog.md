@@ -325,3 +325,137 @@
   pass delete it safely.
 - A Debian mirror without ETags can still answer 304 for an older-dated `current`
   file; deb.debian.org sends ETags.
+- Node remove leaves the removed node's subnet in the other nodes' firewall rules until
+  the next Apply, and when it was the only node of that subnet config status reports the
+  remaining nodes behind. Harmless (slightly wide); re-apply after remove, as re-address
+  does with its `narrow` step.
+- Node add's `firewall` step applies each existing node's full regenerated config, so a
+  pending declaration change (an unapplied patch) reaches them too, and one unreachable
+  node fails the add. Apply only the firewall documents, merged with the running config.
+- `CheckCluster` runs on every edit, so a cluster whose generation already fails for an
+  unrelated reason refuses every save with 422 until fixed. Watch clusters stored by
+  older versions; offer a YAML save that skips the check for repairs.
+- Host firewall hint "Blocks node ports from outside the cluster" (wizard, Settings) is
+  broad: apid and the API stay open. Use "Only cluster traffic reaches node ports".
+- Patches are YAML only. Add a per-cluster/pool/node patch editor with the 422 message
+  shown inline.
+- `POST /clusters` (create) checks patches only when the operation generates; the wizard
+  calls `/config/validate` first. Run `CheckCluster` in the create handler too.
+- Host firewall unverified on Talos: `talosctl get nftableschains`, `kubectl top nodes`
+  (pod→kubelet), a LoadBalancer Service (MetalLB memberlist) and a node add from a
+  second subnet on a lab cluster with the firewall on.
+- Add-node dialog does not mark TPM-less machines when the cluster is TPM-encrypted; the
+  add is refused by validation. Grey them out with the reason.
+- `POST /clusters/{name}/nodes` does not fill `tpm`/`watchdog` from inventory when the
+  body omits them (dialog and CLI do). Fill from the machine row like the CLI.
+- Declarations with `encryption: tpm` and a node without `tpm: true` no longer parse;
+  only possible for declarations saved by an interim build before TPM validation landed.
+  Intended; remember it if a stored cluster will not load.
+- Existing nodes have no `watchdog`/`tpm` keys. A "refresh hardware flags from
+  inventory" action could fill `tpm`/`watchdog`/`kvm` on declared nodes.
+- Disk encryption, TPM and watchdog detection unverified on hardware: confirm `LS` sees
+  `/dev/tpmrm0`, `/sys/firmware/efi`, `/dev/watchdog0` in maintenance mode (any error
+  but NotFound counts as present), `volumestatus` shows luks2, `nodeID` volumes unlock
+  after reboot, `watchdogtimerstatus` is armed and a hung node resets.
+- Secure Boot installs are the prerequisite for making `tpm` the default: Talos 1.14
+  sealing reads the PCR signing key only signed UKIs carry. Needs signed images from the
+  Image Factory, key enrolment on the machines, and a PXE path that boots signed UKIs.
+- `ConfigStatus` regenerates every node's config on each fetch (per cluster row write
+  while a view is open). Cache by spec hash plus machine-config write if it shows up.
+- Apply's manifests step reads bootstrap manifests right after the last node; if Talos
+  has not re-rendered them yet the old ones are synced and NetworkPolicy enforcement
+  waits for the next Apply. Lab check: turn `policies` on, Apply, look for the
+  `kube-network-policies` DaemonSet; wait for the manifest version if it lags.
+- `cluster.apply` stops before the manifests step when a node fails; a retry re-applies
+  every node first. Resume at the failed node instead.
+- `kubit status` does not print which nodes are behind the declaration. Add a line from
+  `ConfigStatus`.
+- `node.upgrade` now stores the config it applies but is not in `configKinds`
+  (`internal/api/live.go`), so the `config` scope does not refresh after a single-node
+  upgrade. Add it.
+- Turning `network.policies` off stops Talos from rendering kube-network-policies, but
+  the DaemonSet already in the cluster keeps enforcing. Prune it in the manifests step
+  (server-side apply does not delete) when policies go off.
+- Failed drain after a Talos install leaves the new image in the inactive slot; the node
+  boots it on any later reboot. Show "installed, not booted" in Lifecycle (boot entry vs
+  `readNodeImage`) or offer *Reboot without drain* from the failure.
+- A node left cordoned by a failed upgrade looks like an operator's cordon, so a retry
+  leaves it cordoned and the cluster precheck refuses it. Mark Kubit's cordon with an
+  annotation and uncordon only those on retry.
+- Drain timeout (5 min) and PDB policy are hardcoded; single-node clusters and Longhorn's
+  last-replica PDB can block a drain. Offer *skip drain* / *disable eviction* per run.
+- `LifecycleService.Upgrade` lacks the etcd guard the legacy `MachineService.Upgrade`
+  (force=false) ran on each control plane; precheck and `waitBack` cover the run
+  boundaries but not a member that turns unhealthy mid-run. Check etcd health before
+  each control plane's drain.
+- `configBehind` relies on byte-identical `config.Generate` output. Add a unit test that
+  two Generate calls with the same bundle are equal so upgrades never flap "behind".
+- No linter catches deprecated machinery calls; run `staticcheck` (SA1019).
+- Lifecycle/Image API upgrade unverified on a node: installer pulled into `NS_SYSTEM`,
+  the digest-pinned name accepted as `ImageName`, a plain reboot (and kexec) boots the
+  new slot, the pre-reboot config apply on the old OS, install log volume.
+- Containerd config v4 arrives with Talos 1.15; check Kubit's `RegistryMirrorConfig` and
+  any containerd patches against it before allowing 1.15 targets.
+- Pushed stage: a tick whose probe started before a pushed change stores the older
+  stage, restarts that watch, and the fresh watch patches it back (one extra
+  `status`/`nodes` pair). Have the tick consult the watch's last-seen time first.
+- `OnStatus` side effects (snapshot scheduling, cert checks, off-site, heartbeat) also run
+  on pushed statuses. Harmless (gated), but a publish-only hook would be clearer.
+- A node reachable on :50000 that refuses the COSI stage watch logs once per tick. Add a
+  per-node backoff or log-once.
+- Pushed stage unverified on a node: a reboot/upgrade on the lab should move the stage
+  pill without waiting for a tick, and a sleep/wake should log no stale pushes.
+- Gateway API objects (Gateway, HTTPRoute, GRPCRoute) are not in the Network view and
+  raise no alerts (`ingress.no-address` covers Ingress only). List them, and alert on a
+  route no Gateway accepts or a Gateway without an address.
+- The empty `ingress-nginx` namespace stays after migration (Helm keeps namespaces). Add
+  an explicit, reviewed cleanup step.
+- Traefik's own CRDs come from the chart's `crds/` and are never upgraded by Helm. A
+  chart bump that changes them needs a CRD apply step like the Gateway API CRDs.
+- Gateway API CRDs owned by another manager (Flux, another controller) fight with
+  Kubit's force-conflicts apply. Add a setting to skip Kubit's CRDs.
+- The plan view shows full CRD bodies (`yaml_body_parsed`) on the first apply; fold or
+  summarise CRD resources.
+- The default Gateway listens on HTTP only; HTTPS listeners need `certificateRefs`
+  through values. Offer a cert-manager-backed HTTPS listener when cert-manager is on.
+- A failed plan/apply clears `ingress_ip` in platform status, which raises `lb.lost`
+  while the address is in use. Keep the outputs on error (and drop the tfvars pin
+  fallback).
+- `metrics-server.tf` is not `tofu fmt` clean (alignment of `=`). Run `tofu fmt`.
+- Cilium as a create-time CNI option (Flannel + kube-network-policies stays the
+  default); needs `cni: none`, a Cilium chart in the platform layer before nodes go
+  Ready, and kube-proxy replacement as a choice.
+- Kubelet serving-certificate rotation (`rotate-server-certificates`) would let
+  metrics-server drop `--kubelet-insecure-tls`; it needs an in-cluster CSR approver.
+- Wake-on-LAN through Talos `EthernetConfig` (enable WoL on the NIC) needs the kernel NIC
+  name, which the uplink alias does not give; record it from inventory first.
+- A pushed stage `OnStatus` and a tick `OnStatus` can be published out of order; the next
+  tick corrects it. Stamp statuses with their probe time and drop older ones on publish.
+- Re-address, move to pool and rename push the full regenerated config to a control plane
+  without syncing the bootstrap manifests, so a pending manifest change (such as
+  `network.policies`) waits for the next Apply. Run the `manifests` step after them when a
+  control plane was applied, as Talos upgrade and node add do.
+- Rename does not uncordon when its drain fails (only when the apply fails). Uncordon on
+  any failure before the apply, as the upgrade drain does.
+- Retrying a failed `node.add` operation (`ops.go`) skips the trial generation the
+  `POST /clusters/{name}/nodes` handler runs. Run `checkNodeAdd` there too.
+- `upgrade kubernetes` refuses a node Kubit cordoned during an interrupted Talos upgrade
+  ("uncordon before upgrading"); only `upgrade talos` resumes and releases it. Release
+  Kubit's cordon in `ApplyConfigs` too, or say in the message to rerun the Talos upgrade.
+- The etcd check before a control plane goes down reads Talos's etcd service health,
+  which refreshes every 20 s, so a member that failed moments earlier still counts as
+  healthy. Add a direct quorum read per member if that window matters.
+- A Talos upgrade that fails mid-run leaves the upgraded nodes with stored configs for
+  the new version while the declaration keeps the old one, so they show "Config behind"
+  and Apply would push the old version's configs back. Point the notice at resuming the
+  upgrade, or save the target version before the first node.
+- Traefik migration without an address pin (MetalLB off or the old IP outside the
+  range): the `nginx` IngressClass is created once Traefik is up, unordered against the
+  ingress-nginx uninstall, which deletes its own `nginx` class. If the uninstall is
+  slower, the class is gone while tofu state keeps it. Re-plan after the migration, or
+  recreate the class in a second apply step.
+- Apply node configs now fails at the manifests step when the Kubernetes API does not
+  answer, although every node config was applied; the CLI then skips the platform apply.
+  Report it as a warning with a retry hint instead of failing the operation.
+- `checkNodeAdd` (API) and `AddNode` place the new node in the declaration with
+  different matching rules (hostname and IP vs hostname or IP). Share one helper.

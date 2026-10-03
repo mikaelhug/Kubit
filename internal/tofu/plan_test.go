@@ -72,8 +72,12 @@ func TestAddonOf(t *testing.T) {
 		"helm_release.metallb[0]":                     "metallb",
 		"kubectl_manifest.metallb_pool[0]":            "metallb",
 		"kubernetes_namespace_v1.metallb[0]":          "metallb",
-		"helm_release.ingress_nginx[0]":               "ingress-nginx",
-		"data.kubernetes_service_v1.ingress_nginx[0]": "ingress-nginx",
+		"helm_release.ingress_nginx[0]":               "traefik",
+		"data.kubernetes_service_v1.ingress_nginx[0]": "traefik",
+		"helm_release.traefik[0]":                     "traefik",
+		"data.kubernetes_service_v1.traefik[0]":       "traefik",
+		"kubectl_manifest.traefik_nginx_class[0]":     "traefik",
+		`kubectl_manifest.traefik_gateway_api["/apis/apiextensions.k8s.io/v1/customresourcedefinitions/httproutes.gateway.networking.k8s.io"]`: "traefik",
 		"kubectl_manifest.runtimeclass_gvisor_kvm[0]": "gvisor",
 		"helm_release.metrics_server[0]":              "metrics-server",
 		"helm_release.cert_manager[0]":                "cert-manager",
@@ -83,5 +87,22 @@ func TestAddonOf(t *testing.T) {
 		if got := tofu.AddonOf(addr); got != want {
 			t.Errorf("AddonOf(%s) = %s, want %s", addr, got, want)
 		}
+	}
+}
+
+func TestRetiredIngressDestroyShowsUnderTraefik(t *testing.T) {
+	raw := []byte(`{"resource_changes": [
+		{"address": "helm_release.ingress_nginx[0]", "mode": "managed", "type": "helm_release", "name": "ingress_nginx", "change": {"actions": ["delete"], "before": {"name": "ingress-nginx"}, "after": null}},
+		{"address": "helm_release.traefik[0]", "mode": "managed", "type": "helm_release", "name": "traefik", "change": {"actions": ["create"], "before": null, "after": {"name": "traefik"}}}
+	]}`)
+	d, err := tofu.ParseShowPlan(raw, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(d.Groups) != 1 || d.Groups[0].Addon != "traefik" || len(d.Groups[0].Changes) != 2 {
+		t.Fatalf("groups: %+v", d.Groups)
+	}
+	if d.Summary.Add != 1 || d.Summary.Remove != 1 {
+		t.Errorf("summary: %+v", d.Summary)
 	}
 }

@@ -8,6 +8,7 @@ import (
 	"net/netip"
 	"net/url"
 	"path"
+	"slices"
 	"strings"
 	"time"
 
@@ -77,12 +78,13 @@ func Generate(c *Cluster, bundle *secrets.Bundle, installer Installer) (*Generat
 		generate.WithInstallImage(installer(c.controlPlaneInstallPool())),
 		generate.WithAllowSchedulingOnControlPlanes(*c.Spec.ControlPlane.AllowScheduling),
 		generate.WithSkipUnattendedInstallConfig(true),
+		generate.WithClusterDiscovery(c.DiscoveryOn()),
 	}
 	if c.Spec.Platform.GVisor.Enabled {
 		opts = append(opts, generate.WithSysctls(map[string]string{gvisorUserNamespacesSysctl: gvisorUserNamespacesValue}))
 	}
-	if vip := c.Spec.ControlPlane.VIP; vip != "" {
-		opts = append(opts, generate.WithAdditionalSubjectAltNames([]string{vip}))
+	if sans := c.apiServerSANs(cpIPs); len(sans) > 0 {
+		opts = append(opts, generate.WithAdditionalSubjectAltNames(sans))
 	}
 	in, err := generate.NewInput(c.Metadata.Name, c.Spec.ControlPlane.Endpoint, strings.TrimPrefix(c.Spec.KubernetesVersion, "v"), opts...)
 	if err != nil {
@@ -105,6 +107,19 @@ func Generate(c *Cluster, bundle *secrets.Bundle, installer Installer) (*Generat
 	return out, nil
 }
 
+func (c *Cluster) apiServerSANs(cpIPs []string) []string {
+	var sans []string
+	if vip := c.Spec.ControlPlane.VIP; vip != "" {
+		sans = append(sans, vip)
+	}
+	if u, err := url.Parse(c.Spec.ControlPlane.Endpoint); err == nil {
+		if host := u.Hostname(); host != "" && !slices.Contains(sans, host) && !slices.Contains(cpIPs, host) {
+			sans = append(sans, host)
+		}
+	}
+	return sans
+}
+
 func (c *Cluster) controlPlaneInstallPool() Pool {
 	if p := c.ControlPlanePool(); p != nil {
 		return *p
@@ -123,8 +138,15 @@ func generateNode(c *Cluster, in *generate.Input, n Node, installerImage string)
 	}
 	docs := base.Documents()
 	if authn := c.Spec.Auth.AuthenticationConfig(); authn != nil && n.Role == RoleControlPlane {
-		auth := findOrAppend(&docs, k8s.NewKubeAuthenticationConfigV1Alpha1)
-		auth.AuthConfig = meta.Unstructured{Object: authn}
+		auth := findOrAppend(&docs, k8s.DefaultAuthenticationConfig)
+		auth.AuthConfig = meta.Unstructured{Object: withJWT(auth.AuthConfig.Object, authn["jwt"])}
+	}
+	if c.PoliciesOn() {
+		for _, d := range docs {
+			if flannel, ok := d.(*k8s.KubeFlannelCNIConfigV1Alpha1); ok {
+				flannel.FlannelKubeNetworkPoliciesEnabled = new(true)
+			}
+		}
 	}
 
 	install := runtime.NewUnattendedInstallConfigV1Alpha1()
@@ -145,7 +167,7 @@ func generateNode(c *Cluster, in *generate.Input, n Node, installerImage string)
 		if _, err := c.Spec.Storage.EphemeralBytes(); err != nil {
 			return nil, err
 		}
-		eph := ephemeralVolume(&docs)
+		eph := volumeConfig(&docs, constants.EphemeralPartitionLabel)
 		eph.ProvisioningSpec.ProvisioningMaxSize = block.MustSize(c.Spec.Storage.EphemeralSize)
 		eph.ProvisioningSpec.ProvisioningGrow = new(false)
 		vol, err := systemVolume()
@@ -153,6 +175,10 @@ func generateNode(c *Cluster, in *generate.Input, n Node, installerImage string)
 			return nil, err
 		}
 		docs = append(docs, vol)
+	}
+	encryptVolumes(&docs, c.Spec.Storage)
+	if n.Watchdog {
+		docs = append(docs, watchdogTimer())
 	}
 
 	host := findOrAppend(&docs, network.NewHostnameConfigV1Alpha1)
@@ -242,11 +268,28 @@ func generateNode(c *Cluster, in *generate.Input, n Node, installerImage string)
 		ts.TimeNTP = &network.NTPConfig{Servers: c.Spec.Network.NTP}
 	}
 
+	docs = append(docs, firewallDocs(c, n)...)
+
 	cfg, err := container.New(docs...)
 	if err != nil {
 		return nil, err
 	}
-	return cfg.Bytes()
+	patched, err := applyPatches(cfg, nodePatches(c, n))
+	if err != nil {
+		return nil, err
+	}
+	return patched.Bytes()
+}
+
+func withJWT(authn map[string]any, jwt any) map[string]any {
+	out := maps.Clone(authn)
+	if out == nil {
+		out = map[string]any{}
+	}
+	existing, _ := out["jwt"].([]any)
+	added, _ := jwt.([]any)
+	out["jwt"] = append(slices.Clone(existing), added...)
+	return out
 }
 
 func fillLink(l *network.CommonLinkConfig, nn *NodeNetwork) error {
@@ -364,16 +407,39 @@ func systemVolume() (*block.UserVolumeConfigV1Alpha1, error) {
 	return vol, nil
 }
 
-func ephemeralVolume(docs *[]config.Document) *block.VolumeConfigV1Alpha1 {
+func volumeConfig(docs *[]config.Document, name string) *block.VolumeConfigV1Alpha1 {
 	for _, d := range *docs {
-		if v, ok := d.(*block.VolumeConfigV1Alpha1); ok && v.MetaName == constants.EphemeralPartitionLabel {
+		if v, ok := d.(*block.VolumeConfigV1Alpha1); ok && v.MetaName == name {
 			return v
 		}
 	}
 	v := block.NewVolumeConfigV1Alpha1()
-	v.MetaName = constants.EphemeralPartitionLabel
+	v.MetaName = name
 	*docs = append(*docs, v)
 	return v
+}
+
+func encryptVolumes(docs *[]config.Document, s Storage) {
+	spec, ok := s.encryptionSpec()
+	if !ok {
+		return
+	}
+	volumeConfig(docs, constants.StatePartitionLabel).EncryptionSpec = spec
+	volumeConfig(docs, constants.EphemeralPartitionLabel).EncryptionSpec = spec
+	for _, d := range *docs {
+		if v, ok := d.(*block.UserVolumeConfigV1Alpha1); ok {
+			v.EncryptionSpec = spec
+		}
+	}
+}
+
+const watchdogDevice = "/dev/watchdog0"
+
+func watchdogTimer() *runtime.WatchdogTimerV1Alpha1 {
+	wd := runtime.NewWatchdogTimerV1Alpha1()
+	wd.WatchdogDevice = watchdogDevice
+	wd.WatchdogTimeout = runtime.DefaultWatchdogTimeout
+	return wd
 }
 
 func diskSelector(d InstallDisk) (cel.Expression, error) {

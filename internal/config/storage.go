@@ -5,12 +5,21 @@ import (
 
 	"github.com/siderolabs/talos/pkg/machinery/config/configloader"
 	"github.com/siderolabs/talos/pkg/machinery/config/types/block"
+	blockres "github.com/siderolabs/talos/pkg/machinery/resources/block"
 )
 
 type Storage struct {
-	SystemDisk    bool   `yaml:"systemDisk,omitempty" json:"systemDisk,omitempty"`
-	EphemeralSize string `yaml:"ephemeralSize,omitempty" json:"ephemeralSize,omitempty"`
+	SystemDisk    bool       `yaml:"systemDisk,omitempty" json:"systemDisk,omitempty"`
+	EphemeralSize string     `yaml:"ephemeralSize,omitempty" json:"ephemeralSize,omitempty"`
+	Encryption    Encryption `yaml:"encryption,omitempty" json:"encryption,omitempty"`
 }
+
+type Encryption string
+
+const (
+	EncryptionTPM    Encryption = "tpm"
+	EncryptionNodeID Encryption = "nodeID"
+)
 
 const (
 	DefaultEphemeralSize = "40GiB"
@@ -18,6 +27,26 @@ const (
 	MinSystemDataSize    = "10GiB"
 	SystemDataVolume     = "data-system"
 )
+
+func (c *Cluster) DefaultEncryption() Encryption {
+	if len(c.Spec.Nodes) == 0 {
+		return ""
+	}
+	return EncryptionNodeID
+}
+
+func (s Storage) encryptionSpec() (block.EncryptionSpec, bool) {
+	key := block.EncryptionKey{KeySlot: 0}
+	switch s.Encryption {
+	case EncryptionTPM:
+		key.KeyTPM = &block.EncryptionKeyTPM{TPMOptions: &block.EncryptionKeyTPMOptions{}}
+	case EncryptionNodeID:
+		key.KeyNodeID = &block.EncryptionKeyNodeID{}
+	default:
+		return block.EncryptionSpec{}, false
+	}
+	return block.EncryptionSpec{EncryptionProvider: blockres.EncryptionProviderLUKS2, EncryptionKeys: []block.EncryptionKey{key}}, true
+}
 
 func (s Storage) EphemeralBytes() (uint64, error) {
 	var size block.Size
@@ -90,6 +119,13 @@ func CheckChange(old, next *Cluster, installed, split map[string]bool) error {
 	}
 	if anySplit && old.Spec.Storage != next.Spec.Storage {
 		return fmt.Errorf("storage must stay: nodes hold a system-disk volume")
+	}
+	if old.Spec.Storage.Encryption != next.Spec.Storage.Encryption {
+		for _, n := range old.Spec.Nodes {
+			if installed[n.IP] {
+				return fmt.Errorf("storage.encryption must stay: %s is installed", n.Hostname)
+			}
+		}
 	}
 	for _, nn := range next.Spec.Nodes {
 		if installed[nn.IP] && !split[nn.IP] && next.SharesSystemDisk(nn) {

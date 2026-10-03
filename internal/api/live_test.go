@@ -334,16 +334,37 @@ func TestClusterMessageCarriesTheSpec(t *testing.T) {
 	}
 }
 
+func TestSavingTheDeclarationRefreshesConfigStatus(t *testing.T) {
+	s, st, _ := localServer(t)
+	sub := s.hub.subscribe(0)
+	defer s.hub.unsubscribe(sub)
+	ctx := t.Context()
+	st.OnChange(func(c store.Change) { s.onChange(ctx, c) })
+	if err := st.PutCluster(ctx, store.ClusterRow{Name: "c", Spec: []byte("x"), State: "ready"}); err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Contains(drainScopes(t, sub.ch), "c/config") {
+		t.Error("a saved declaration must refresh the config status")
+	}
+}
+
 func TestOperationRefreshesTheViewsItChanges(t *testing.T) {
 	for _, c := range []struct {
 		kind string
 		want []string
 	}{
-		{"cluster.create", []string{"nodes", "addons", "network", "flux", "certificates", "sops"}},
+		{"cluster.create", []string{"nodes", "addons", "network", "flux", "certificates", "sops", "config"}},
 		{"platform.apply", []string{"addons", "network", "flux"}},
 		{"cert.rotate", []string{"certificates"}},
-		{"node.add", []string{"nodes"}},
-		{"upgrade.talos", []string{"nodes"}},
+		{"cluster.apply", []string{"nodes", "config"}},
+		{"node.add", []string{"nodes", "config"}},
+		{"node.remove", []string{"nodes", "config"}},
+		{"node.rename", []string{"nodes", "config"}},
+		{"node.pool", []string{"nodes", "config"}},
+		{"node.readdress", []string{"nodes", "config"}},
+		{"node.reboot", []string{"nodes"}},
+		{"upgrade.talos", []string{"nodes", "config"}},
+		{"upgrade.kubernetes", []string{"nodes", "config"}},
 		{"etcd.snapshot", []string{"nodes"}},
 		{"discover", nil},
 	} {

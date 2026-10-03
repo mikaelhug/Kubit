@@ -90,7 +90,11 @@ func (m *Manager) platformRunner(ctx context.Context, name string, sink Sink) (*
 		return nil, err
 	}
 	dir := m.platformDir(name)
-	if err := tofu.Render(dir, c, kubeconfig); err != nil {
+	var ingressIP string
+	if p, err := m.Store.GetPlatformStatus(ctx, name); err == nil {
+		ingressIP = p.Outputs["ingress_ip"]
+	}
+	if err := tofu.Render(dir, c, kubeconfig, ingressIP); err != nil {
 		return nil, err
 	}
 	bin, err := m.tofuBin(ctx)

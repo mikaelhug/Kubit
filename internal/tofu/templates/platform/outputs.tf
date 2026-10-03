@@ -1,3 +1,3 @@
 output "ingress_ip" {
-  value = var.ingress_nginx.enabled ? try(data.kubernetes_service_v1.ingress_nginx[0].status[0].load_balancer[0].ingress[0].ip, "") : ""
+  value = var.traefik.enabled ? try(data.kubernetes_service_v1.traefik[0].status[0].load_balancer[0].ingress[0].ip, "") : ""
 }

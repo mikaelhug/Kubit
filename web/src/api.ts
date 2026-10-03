@@ -1,5 +1,5 @@
 import { authedUrl, req, reqRaw } from './api/http'
-import type { AddonStatus, ApiToken, AuditEntry, Build, CertInfo, ClusterForm, ClusterRow, ClusterSpec, FluxObject, FluxRepository, HealthEvent, ImageStatus, Inventory, LabLocal, LabUpdates, MaintenanceState, Me, Namespace, NetworkView, NodeDetail, NodeNetwork, NodeRow, NodeSpec, OOBConfig, OOBInfo, ObserverState, OffsiteStatus, OffsiteTarget, OpRef, Operation, PodEvent, PodSummary, Pool, PxeStatus, Role, SOPSKey, Sample, Service, ServiceHealth, Settings, Snapshot, Status, StorageView, User, VMPlan, Versions, Warning, Workload } from './api/types'
+import type { AddonStatus, ApiToken, AuditEntry, Build, CertInfo, ClusterForm, ClusterRow, ClusterSpec, ConfigStatus, FluxObject, FluxRepository, HealthEvent, ImageStatus, Inventory, LabLocal, LabUpdates, MaintenanceState, Me, Namespace, NetworkView, NodeDetail, NodeNetwork, NodeRow, NodeSpec, OOBConfig, OOBInfo, ObserverState, OffsiteStatus, OffsiteTarget, OpRef, Operation, PodEvent, PodSummary, Pool, PxeStatus, Role, SOPSKey, Sample, Service, ServiceHealth, Settings, Snapshot, Status, StorageView, User, VMPlan, Versions, Warning, Workload } from './api/types'
 
 export type * from './api/types'
 export { authedUrl, getToken, setUnauthorizedHandler } from './api/http'
@@ -73,6 +73,7 @@ export const api = {
   workloads: (name: string) => req<Workload[]>('GET', `/clusters/${name}/workloads`),
   namespaces: (name: string) => req<Namespace[]>('GET', `/clusters/${name}/namespaces`),
   imageStatus: (name: string) => req<ImageStatus>('GET', `/clusters/${name}/image`),
+  configStatus: (name: string) => req<ConfigStatus>('GET', `/clusters/${name}/config`),
   sopsKey: (name: string) => req<SOPSKey>('GET', `/clusters/${name}/sops`),
   flux: (name: string) => req<FluxObject[]>('GET', `/clusters/${name}/flux`),
   builds: (name: string) => req<Build[]>('GET', `/clusters/${name}/builds`),

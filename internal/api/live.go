@@ -65,16 +65,21 @@ func (s *Server) refresh(cluster string, scopes ...string) {
 const (
 	scopeCertificates = "certificates"
 	scopeMachines     = "machines"
+	scopeConfig       = "config"
 )
+
+var configKinds = map[string]bool{"cluster.apply": true, "node.add": true, "node.remove": true, "node.rename": true, "node.pool": true, "node.readdress": true, "upgrade.talos": true, "upgrade.kubernetes": true}
 
 func scopesForKind(kind string) []string {
 	switch {
 	case kind == "cluster.create":
-		return []string{k8s.ScopeNodes, k8s.ScopeAddons, k8s.ScopeNetwork, k8s.ScopeFlux, scopeCertificates, "sops"}
+		return []string{k8s.ScopeNodes, k8s.ScopeAddons, k8s.ScopeNetwork, k8s.ScopeFlux, scopeCertificates, "sops", scopeConfig}
 	case strings.HasPrefix(kind, "platform."):
 		return []string{k8s.ScopeAddons, k8s.ScopeNetwork, k8s.ScopeFlux}
 	case kind == "cert.rotate":
 		return []string{scopeCertificates}
+	case configKinds[kind]:
+		return []string{k8s.ScopeNodes, scopeConfig}
 	case strings.HasPrefix(kind, "etcd."), strings.HasPrefix(kind, "node."), strings.HasPrefix(kind, "cluster."), strings.HasPrefix(kind, "upgrade."):
 		return []string{k8s.ScopeNodes}
 	}
@@ -185,6 +190,7 @@ func (s *Server) onChange(ctx context.Context, c store.Change) {
 		}
 		if row, err := s.store.GetCluster(ctx, c.Key); err == nil {
 			s.hub.publish(Message{Kind: "cluster", Cluster: row.Name, ClusterRow: summarize(*row)})
+			s.refresh(row.Name, scopeConfig)
 		}
 	case "machines":
 		if c.Op == "delete" {

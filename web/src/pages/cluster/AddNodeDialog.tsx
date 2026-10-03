@@ -33,7 +33,7 @@ export function AddNodeDialog({ cluster, onClose, preselect }: { cluster: Cluste
   }, [selected?.mac])
   const submit = () => {
     if (!selected) return
-    const node: NodeSpec = { hostname: name, ip: selected.ip, mac: selected.mac, uuid: selected.uuid, pool, arch: selected.arch, kvm: !!selected.inventory?.kvm, installDisk: disk ? { path: disk } : undefined, dataDisks: dataDisks.length ? dataDisks : undefined, labels, taints, network }
+    const node: NodeSpec = { hostname: name, ip: selected.ip, mac: selected.mac, uuid: selected.uuid, pool, arch: selected.arch, kvm: !!selected.inventory?.kvm, tpm: !!selected.inventory?.tpm, watchdog: !!selected.inventory?.watchdog, installDisk: disk ? { path: disk } : undefined, dataDisks: dataDisks.length ? dataDisks : undefined, labels, taints, network }
     api.addNode(cluster.name, node).then((r) => { onClose(); watch(r) }).catch((e) => setError(e.message))
   }
   const cps = cluster.spec.spec.nodes.filter((x) => x.role === 'controlplane').length

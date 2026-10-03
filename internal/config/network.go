@@ -11,6 +11,9 @@ type Network struct {
 	ServiceCIDR string   `yaml:"serviceCIDR,omitempty" json:"serviceCIDR,omitempty"`
 	Nameservers []string `yaml:"nameservers,omitempty" json:"nameservers,omitempty"`
 	NTP         []string `yaml:"ntp,omitempty" json:"ntp,omitempty"`
+	Policies    *bool    `yaml:"policies,omitempty" json:"policies,omitempty"`
+	Discovery   *bool    `yaml:"discovery,omitempty" json:"discovery,omitempty"`
+	Firewall    *bool    `yaml:"firewall,omitempty" json:"firewall,omitempty"`
 }
 
 func (n Node) TargetIP() string {

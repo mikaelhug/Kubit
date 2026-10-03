@@ -35,6 +35,8 @@ type Inventory struct {
 	UUID         string      `json:"uuid,omitempty"`
 	Serial       string      `json:"serial,omitempty"`
 	KVM          bool        `json:"kvm"`
+	TPM          bool        `json:"tpm"`
+	Watchdog     bool        `json:"watchdog"`
 	Virtual      bool        `json:"virtual"`
 	Disks        []Disk      `json:"disks"`
 	Links        []Link      `json:"links"`
@@ -122,6 +124,8 @@ func (c *Client) Inspect(ctx context.Context) (*Inventory, error) {
 		inv.Serial = si.TypedSpec().SerialNumber
 	}
 	inv.KVM = c.exists(ctx, "/dev/kvm")
+	inv.TPM = c.exists(ctx, "/dev/tpmrm0") && c.exists(ctx, "/sys/firmware/efi")
+	inv.Watchdog = c.exists(ctx, "/dev/watchdog0")
 
 	disks, err := safe.StateListAll[*block.Disk](ctx, c.COSI)
 	if err != nil {

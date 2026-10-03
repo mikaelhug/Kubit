@@ -4,10 +4,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/cosi-project/runtime/pkg/safe"
+	"github.com/siderolabs/talos/pkg/machinery/api/common"
 	machineapi "github.com/siderolabs/talos/pkg/machinery/api/machine"
 	"github.com/siderolabs/talos/pkg/machinery/constants"
 	"github.com/siderolabs/talos/pkg/machinery/resources/k8s"
@@ -70,9 +73,134 @@ func (c *Client) RebootMachine(ctx context.Context) error {
 	return c.Reboot(c.nodeContext(ctx))
 }
 
-func (c *Client) UpgradeTo(ctx context.Context, image string) error {
-	_, err := c.Upgrade(c.nodeContext(ctx), image, false, false)
-	return err
+func systemContainerd() *common.ContainerdInstance {
+	return &common.ContainerdInstance{Driver: common.ContainerDriver_CRI, Namespace: common.ContainerdNamespace_NS_SYSTEM}
+}
+
+func (c *Client) PullImage(ctx context.Context, ref string, progress func(string)) (string, error) {
+	stream, err := c.ImageClient.Pull(c.nodeContext(ctx), &machineapi.ImageServicePullRequest{Containerd: systemContainerd(), ImageRef: ref})
+	if err != nil {
+		return "", err
+	}
+	pull := pullProgress{report: progress, every: pullReportEvery, layers: map[string]layerProgress{}}
+	name := ref
+	for {
+		resp, err := stream.Recv()
+		if errors.Is(err, io.EOF) {
+			pull.flush()
+			return name, nil
+		}
+		if err != nil {
+			return "", err
+		}
+		switch r := resp.GetResponse().(type) {
+		case *machineapi.ImageServicePullResponse_Name:
+			name = r.Name
+		case *machineapi.ImageServicePullResponse_PullProgress:
+			pull.update(r.PullProgress)
+		}
+	}
+}
+
+func (c *Client) LifecycleUpgrade(ctx context.Context, image string, progress func(string)) error {
+	stream, err := c.LifecycleClient.Upgrade(c.nodeContext(ctx), &machineapi.LifecycleServiceUpgradeRequest{
+		Containerd: systemContainerd(),
+		Source:     &machineapi.InstallArtifactsSource{ImageName: image},
+	})
+	if err != nil {
+		return err
+	}
+	var (
+		tail   []string
+		exit   int32
+		exited bool
+	)
+	for {
+		resp, err := stream.Recv()
+		if errors.Is(err, io.EOF) {
+			break
+		}
+		if err != nil {
+			return err
+		}
+		switch r := resp.GetProgress().GetResponse().(type) {
+		case *machineapi.LifecycleServiceInstallProgress_Message:
+			for _, line := range strings.Split(r.Message, "\n") {
+				if line = strings.TrimSpace(line); line != "" {
+					progress(line)
+					tail = append(tail[max(0, len(tail)-installTail+1):], line)
+				}
+			}
+		case *machineapi.LifecycleServiceInstallProgress_ExitCode:
+			exit, exited = r.ExitCode, true
+		}
+	}
+	switch {
+	case !exited:
+		return errors.New("installer ended without an exit code")
+	case exit != 0 && len(tail) > 0:
+		return fmt.Errorf("installer exited with code %d: %s", exit, strings.Join(tail, "; "))
+	case exit != 0:
+		return fmt.Errorf("installer exited with code %d", exit)
+	}
+	return nil
+}
+
+const (
+	pullReportEvery = 3 * time.Second
+	installTail     = 5
+)
+
+type layerProgress struct {
+	done, total int64
+	complete    bool
+}
+
+type pullProgress struct {
+	report func(string)
+	every  time.Duration
+	last   time.Time
+	dirty  bool
+	layers map[string]layerProgress
+}
+
+func (p *pullProgress) update(m *machineapi.ImageServicePullProgress) {
+	l := p.layers[m.GetLayerId()]
+	lp := m.GetProgress()
+	if lp.GetTotal() > 0 {
+		l.total = lp.GetTotal()
+	}
+	switch lp.GetStatus() {
+	case machineapi.ImageServicePullLayerProgress_DOWNLOADING:
+		l.done = lp.GetOffset()
+	case machineapi.ImageServicePullLayerProgress_EXTRACT_COMPLETE, machineapi.ImageServicePullLayerProgress_ALREADY_EXISTS:
+		l.done, l.complete = l.total, true
+	default:
+		l.done = l.total
+	}
+	p.layers[m.GetLayerId()] = l
+	p.dirty = true
+	if now := time.Now(); now.Sub(p.last) >= p.every {
+		p.last = now
+		p.flush()
+	}
+}
+
+func (p *pullProgress) flush() {
+	if !p.dirty {
+		return
+	}
+	p.dirty = false
+	var done, total int64
+	complete := 0
+	for _, l := range p.layers {
+		done += l.done
+		total += l.total
+		if l.complete {
+			complete++
+		}
+	}
+	p.report(fmt.Sprintf("pulling: %d of %d MiB, %d of %d layers done", done>>20, total>>20, complete, len(p.layers)))
 }
 
 func (c *Client) ResetToMaintenance(ctx context.Context) error {

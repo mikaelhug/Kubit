@@ -105,7 +105,7 @@ export function runbookFor(kind: string, c: Ctx): Runbook | null {
       ] }
     case 'ingress.no-address':
       return { title: 'Ingress has no address', steps: [
-        { text: 'Check the ingress-nginx add-on and its address.', link: addons },
+        { text: 'Check the Traefik add-on and its address.', link: addons },
       ] }
     default:
       return null

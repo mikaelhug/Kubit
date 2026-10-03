@@ -1,9 +1,13 @@
 package config_test
 
 import (
+	"bytes"
 	"fmt"
+	"maps"
+	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/mikael/kubit/internal/config"
 	blockpb "github.com/siderolabs/talos/pkg/machinery/api/resource/definitions/block"
@@ -11,6 +15,7 @@ import (
 	talosconfig "github.com/siderolabs/talos/pkg/machinery/config"
 	"github.com/siderolabs/talos/pkg/machinery/config/configloader"
 	"github.com/siderolabs/talos/pkg/machinery/config/types/block"
+	clustertypes "github.com/siderolabs/talos/pkg/machinery/config/types/cluster"
 	"github.com/siderolabs/talos/pkg/machinery/config/types/cri"
 	"github.com/siderolabs/talos/pkg/machinery/config/types/k8s"
 	"github.com/siderolabs/talos/pkg/machinery/config/types/network"
@@ -567,5 +572,237 @@ func TestSystemDiskUntouchedWithoutLonghorn(t *testing.T) {
 		if v, ok := d.(*block.VolumeConfigV1Alpha1); ok && v.MetaName == "EPHEMERAL" && !v.ProvisioningSpec.ProvisioningMaxSize.IsZero() {
 			t.Error("without Longhorn EPHEMERAL must not be capped")
 		}
+	}
+}
+
+func TestGenerateDeterministic(t *testing.T) {
+	c, g1 := generateSample(t)
+	g2, err := config.Generate(c, sharedSecrets(t), config.FixedInstaller(installer))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for host, b := range g1.Nodes {
+		if !bytes.Equal(b, g2.Nodes[host]) {
+			t.Errorf("%s: two generations differ", host)
+		}
+	}
+}
+
+func TestGeneratePoliciesAndDiscovery(t *testing.T) {
+	_, g := generateSample(t)
+	cp := load(t, g.Nodes["cp-01"])
+	if f := doc[*k8s.KubeFlannelCNIConfigV1Alpha1](t, cp); f.FlannelKubeNetworkPoliciesEnabled == nil || !*f.FlannelKubeNetworkPoliciesEnabled {
+		t.Errorf("control plane flannel = %+v", f)
+	}
+	worker := load(t, g.Nodes["worker-01"])
+	if hasDoc[*k8s.KubeFlannelCNIConfigV1Alpha1](worker) {
+		t.Error("workers carry no flannel document")
+	}
+	for _, cfg := range []talosconfig.Provider{cp, worker} {
+		if !hasDoc[*clustertypes.DiscoveryServiceConfigV1Alpha1](cfg) {
+			t.Error("discovery is on by default")
+		}
+	}
+
+	c, err := config.Parse([]byte(strings.Replace(sampleCluster, "spec:\n", "spec:\n  network: { policies: false, discovery: false }\n", 1)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	g, err = config.Generate(c, sharedSecrets(t), config.FixedInstaller(installer))
+	if err != nil {
+		t.Fatal(err)
+	}
+	cp = load(t, g.Nodes["cp-01"])
+	if f := doc[*k8s.KubeFlannelCNIConfigV1Alpha1](t, cp); f.FlannelKubeNetworkPoliciesEnabled != nil {
+		t.Errorf("policies off must leave flannel as generated: %+v", f)
+	}
+	for host, b := range g.Nodes {
+		if hasDoc[*clustertypes.DiscoveryServiceConfigV1Alpha1](load(t, b)) {
+			t.Errorf("%s: discovery off must emit no discovery service", host)
+		}
+	}
+}
+
+func TestGenerateOIDCKeepsAnonymousHealth(t *testing.T) {
+	c, err := config.Parse([]byte(sampleCluster))
+	if err != nil {
+		t.Fatal(err)
+	}
+	c.Spec.Auth.OIDC = &config.ClusterOIDC{Issuer: "https://sso.example/realms/ops", ClientID: "kubernetes"}
+	g, err := config.Generate(c, sharedSecrets(t), config.FixedInstaller(installer))
+	if err != nil {
+		t.Fatal(err)
+	}
+	authn := doc[*k8s.KubeAuthenticationConfigV1Alpha1](t, load(t, g.Nodes["cp-01"])).AuthConfig.Object
+	anon, _ := authn["anonymous"].(map[string]any)
+	if anon == nil || anon["enabled"] != true {
+		t.Fatalf("anonymous = %v", authn["anonymous"])
+	}
+	var paths []string
+	for _, cond := range anon["conditions"].([]any) {
+		paths = append(paths, cond.(map[string]any)["path"].(string))
+	}
+	for _, want := range []string{"/livez", "/readyz", "/healthz"} {
+		if !slices.Contains(paths, want) {
+			t.Errorf("anonymous paths %v lack %s", paths, want)
+		}
+	}
+	jwt, _ := authn["jwt"].([]any)
+	if len(jwt) != 1 || jwt[0].(map[string]any)["issuer"].(map[string]any)["url"] != "https://sso.example/realms/ops" {
+		t.Errorf("jwt = %v", authn["jwt"])
+	}
+}
+
+func TestGenerateEndpointSAN(t *testing.T) {
+	c, err := config.Parse([]byte(strings.Replace(sampleCluster, "    vip: 192.168.64.9\n", "    vip: 192.168.64.9\n    endpoint: https://k8s.example.lan:6443\n", 1)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	g, err := config.Generate(c, sharedSecrets(t), config.FixedInstaller(installer))
+	if err != nil {
+		t.Fatal(err)
+	}
+	sans := doc[*k8s.KubeAPIServerConfigV1Alpha1](t, load(t, g.Nodes["cp-01"])).PodCertExtraSANs
+	for _, want := range []string{"k8s.example.lan", "192.168.64.9"} {
+		if n := slices.Index(sans, want); n < 0 || slices.Index(sans[n+1:], want) >= 0 {
+			t.Errorf("SANs %v must hold %s exactly once", sans, want)
+		}
+	}
+	_, g = generateSample(t)
+	if sans := doc[*k8s.KubeAPIServerConfigV1Alpha1](t, load(t, g.Nodes["cp-01"])).PodCertExtraSANs; !slices.Equal(sans, []string{"192.168.64.9"}) {
+		t.Errorf("a VIP endpoint adds no extra SAN: %v", sans)
+	}
+}
+
+func encryptedSample(t *testing.T, storage string) *config.Generated {
+	t.Helper()
+	y := strings.Replace(sampleCluster, "spec:\n", "spec:\n  storage: "+storage+"\n", 1)
+	c, err := config.Parse([]byte(strings.ReplaceAll(y, "arch: arm64,", "arch: arm64, tpm: true,")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	c.Spec.Platform.Longhorn.Enabled = true
+	g, err := config.Generate(c, sharedSecrets(t), config.FixedInstaller(installer))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return g
+}
+
+func volumeEncryption(cfg talosconfig.Provider) map[string]block.EncryptionSpec {
+	out := map[string]block.EncryptionSpec{}
+	for _, d := range cfg.Documents() {
+		switch v := d.(type) {
+		case *block.VolumeConfigV1Alpha1:
+			out[v.MetaName] = v.EncryptionSpec
+		case *block.UserVolumeConfigV1Alpha1:
+			out[v.MetaName] = v.EncryptionSpec
+		}
+	}
+	return out
+}
+
+func encryptedVolumes(t *testing.T, g *config.Generated, check func(string, block.EncryptionKey)) {
+	t.Helper()
+	for host, want := range map[string][]string{"cp-01": {"STATE", "EPHEMERAL", "data-system"}, "worker-01": {"STATE", "EPHEMERAL", "data-1", "data-2"}} {
+		got := volumeEncryption(load(t, g.Nodes[host]))
+		if len(got) != len(want) {
+			t.Errorf("%s: volumes %v, want %v", host, slices.Sorted(maps.Keys(got)), want)
+		}
+		for _, name := range want {
+			enc, ok := got[name]
+			if !ok || enc.EncryptionProvider != blockres.EncryptionProviderLUKS2 || len(enc.EncryptionKeys) != 1 || enc.EncryptionKeys[0].KeySlot != 0 {
+				t.Errorf("%s %s: encryption %+v", host, name, enc)
+				continue
+			}
+			check(host+" "+name, enc.EncryptionKeys[0])
+		}
+	}
+}
+
+func TestGenerateEncryptionTPM(t *testing.T) {
+	g := encryptedSample(t, "{ systemDisk: true, encryption: tpm }")
+	encryptedVolumes(t, g, func(where string, k block.EncryptionKey) {
+		if k.KeyTPM == nil || k.KeyNodeID != nil || k.KeyStatic != nil || k.KeyKMS != nil {
+			t.Errorf("%s: key %+v", where, k)
+			return
+		}
+		if k.KeyTPM.TPMOptions == nil || len(k.TPM().PCRs()) != 0 || k.TPM().CheckSecurebootOnEnroll() {
+			t.Errorf("%s: TPM key must bind no PCRs and skip the Secure Boot check: %+v", where, k.KeyTPM)
+		}
+	})
+	if !bytes.Contains(g.Nodes["cp-01"], []byte("options: {}")) {
+		t.Errorf("the empty TPM options must survive encoding:\n%s", g.Nodes["cp-01"])
+	}
+}
+
+func TestGenerateEncryptionNodeID(t *testing.T) {
+	g := encryptedSample(t, "{ systemDisk: true, encryption: nodeID }")
+	encryptedVolumes(t, g, func(where string, k block.EncryptionKey) {
+		if k.KeyNodeID == nil || k.KeyTPM != nil || k.KeyStatic != nil || k.KeyKMS != nil {
+			t.Errorf("%s: key %+v", where, k)
+		}
+	})
+}
+
+func TestGenerateEncryptionOffEmitsNothing(t *testing.T) {
+	c, plain := generateSample(t)
+	for i := range c.Spec.Nodes {
+		c.Spec.Nodes[i].TPM = true
+	}
+	withTPM, err := config.Generate(c, sharedSecrets(t), config.FixedInstaller(installer))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for host, b := range plain.Nodes {
+		if !bytes.Equal(b, withTPM.Nodes[host]) {
+			t.Errorf("%s: a TPM without storage.encryption changes the config", host)
+		}
+		for name, enc := range volumeEncryption(load(t, b)) {
+			if name == "STATE" || !enc.IsZero() {
+				t.Errorf("%s: %s carries encryption %+v", host, name, enc)
+			}
+		}
+	}
+}
+
+func TestEncryptionKeepsEphemeralSizing(t *testing.T) {
+	g := encryptedSample(t, "{ systemDisk: true, ephemeralSize: 60GiB, encryption: tpm }")
+	cp := load(t, g.Nodes["cp-01"])
+	for _, d := range cp.Documents() {
+		switch v := d.(type) {
+		case *block.VolumeConfigV1Alpha1:
+			if v.MetaName == "EPHEMERAL" && (v.ProvisioningSpec.ProvisioningMaxSize.Value() != 60<<30 || v.ProvisioningSpec.ProvisioningGrow == nil || *v.ProvisioningSpec.ProvisioningGrow || v.EncryptionSpec.IsZero()) {
+				t.Errorf("EPHEMERAL must stay capped and grow-free while encrypted: %+v", v)
+			}
+			if v.MetaName == "STATE" && !v.ProvisioningSpec.IsZero() {
+				t.Errorf("STATE carries only encryption: %+v", v.ProvisioningSpec)
+			}
+		case *block.UserVolumeConfigV1Alpha1:
+			if v.ProvisioningSpec.ProvisioningMinSize.Value() != 10<<30 || !*v.ProvisioningSpec.ProvisioningGrow || v.ProvisioningSpec.DiskSelectorSpec.Match.String() != "system_disk" || v.EncryptionSpec.IsZero() {
+				t.Errorf("data-system must keep its placement while encrypted: %+v", v)
+			}
+		}
+	}
+	if !config.HasSystemVolume(g.Nodes["cp-01"]) {
+		t.Error("the encrypted split must still be recognised")
+	}
+}
+
+func TestGenerateWatchdog(t *testing.T) {
+	c, err := config.Parse([]byte(strings.Replace(sampleCluster, "kvm: true,", "kvm: true, watchdog: true,", 1)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	g, err := config.Generate(c, sharedSecrets(t), config.FixedInstaller(installer))
+	if err != nil {
+		t.Fatal(err)
+	}
+	wd := doc[*runtime.WatchdogTimerV1Alpha1](t, load(t, g.Nodes["worker-01"]))
+	if wd.Device() != "/dev/watchdog0" || wd.WatchdogTimeout != time.Minute {
+		t.Errorf("watchdog %s every %s", wd.Device(), wd.WatchdogTimeout)
+	}
+	if hasDoc[*runtime.WatchdogTimerV1Alpha1](load(t, g.Nodes["cp-01"])) {
+		t.Error("a node without a watchdog gets no timer")
 	}
 }

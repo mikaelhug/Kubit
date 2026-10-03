@@ -6,26 +6,23 @@ import (
 	"strings"
 
 	"github.com/mikael/kubit/internal/config"
+	"github.com/mikael/kubit/internal/k8s"
+	"github.com/mikael/kubit/internal/store"
 	"github.com/mikael/kubit/internal/talos"
 )
 
 func (m *Manager) ApplyConfigs(ctx context.Context, c *config.Cluster, wantKubelet string, sink Sink) error {
-	name := c.Metadata.Name
-	sec, bundle, err := m.loadSecrets(ctx, name)
+	sec, gen, err := m.generateNodeConfigs(ctx, c)
 	if err != nil {
 		return err
 	}
-	kc, err := m.KubeClientFor(name, sec)
-	if err != nil {
-		return err
-	}
-	gen, err := config.Generate(c, bundle, m.installer(c))
+	kc, err := m.KubeClientFor(c.Metadata.Name, sec)
 	if err != nil {
 		return err
 	}
 	nodes := orderedNodes(c)
 	if wantKubelet == "" {
-		sink.Plan(nodeSteps(nodes, "Apply")...)
+		sink.Plan(append(nodeSteps(nodes, "Apply"), manifestsStep)...)
 	}
 	for _, n := range nodes {
 		step := nodeStep(n)
@@ -57,7 +54,31 @@ func (m *Manager) ApplyConfigs(ctx context.Context, c *config.Cluster, wantKubel
 			return fmt.Errorf("%s: %w", n.Hostname, err)
 		}
 	}
-	return nil
+	if wantKubelet != "" {
+		return nil
+	}
+	return m.syncManifestsStep(ctx, c, kc, sink)
+}
+
+func (m *Manager) syncManifestsStep(ctx context.Context, c *config.Cluster, kc *k8s.Client, sink Sink) error {
+	return sink.Run(manifestsStep.ID, func() error {
+		if _, err := kc.Nodes(ctx); err != nil {
+			return fmt.Errorf("Kubernetes API unreachable; bootstrap manifests not synced: %w", err)
+		}
+		return m.SyncManifests(ctx, c, sink)
+	})
+}
+
+func (m *Manager) generateNodeConfigs(ctx context.Context, c *config.Cluster) (*store.ClusterSecrets, *config.Generated, error) {
+	sec, bundle, err := m.loadSecrets(ctx, c.Metadata.Name)
+	if err != nil {
+		return nil, nil, err
+	}
+	gen, err := config.Generate(c, bundle, m.installer(c))
+	if err != nil {
+		return nil, nil, err
+	}
+	return sec, gen, nil
 }
 
 func (m *Manager) applyNodeConfig(ctx context.Context, n config.Node, cfg []byte, talosconfig []byte, step string, sink Sink) (rebooted bool, err error) {

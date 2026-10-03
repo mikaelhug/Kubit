@@ -28,6 +28,9 @@ func clusterCreateCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
+			if err := m.CheckCluster(cmd.Context(), c); err != nil {
+				return err
+			}
 			if err := m.Create(cmd.Context(), c, printEvents(cmd)); err != nil {
 				return err
 			}
@@ -149,6 +152,9 @@ func clusterApplyCmd() *cobra.Command {
 					return fmt.Errorf("%s declares cluster %q, not %q", file, updated.Metadata.Name, c.Metadata.Name)
 				}
 				updated.Spec.SchematicID = c.Spec.SchematicID
+				if err := m.CheckCluster(cmd.Context(), updated); err != nil {
+					return err
+				}
 				if err := m.SaveCluster(cmd.Context(), updated, ""); err != nil {
 					return err
 				}

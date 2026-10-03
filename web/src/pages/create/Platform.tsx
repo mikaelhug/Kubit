@@ -14,7 +14,7 @@ export function PlatformStep({ draft, setCluster, patch }: { draft: Draft; setCl
   })
   return (
     <>
-      <div class="panel p-3"><p class="text-[13px] text-muted">Applied once the nodes are Ready; ingress-nginx needs MetalLB.</p></div>
+      <div class="panel p-3"><p class="text-[13px] text-muted">Applied once the nodes are Ready; without MetalLB, Traefik listens on node ports.</p></div>
       <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
         {addonCatalog.map((a) => {
           const on = c.spec.platform[a.key].enabled

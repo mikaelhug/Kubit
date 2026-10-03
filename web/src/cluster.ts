@@ -4,6 +4,7 @@ export function formOf(spec: ClusterSpec['spec']): ClusterForm {
   return {
     talosVersion: spec.talosVersion, kubernetesVersion: spec.kubernetesVersion, endpoint: spec.controlPlane.endpoint, vip: spec.controlPlane.vip ?? '', allowScheduling: spec.controlPlane.allowScheduling ?? null,
     podCIDR: spec.network.podCIDR, serviceCIDR: spec.network.serviceCIDR, extensions: spec.extensions ?? [], nameservers: spec.network.nameservers ?? [], ntp: spec.network.ntp ?? [],
+    networkPolicies: spec.network.policies ?? true, discovery: spec.network.discovery ?? true, firewall: spec.network.firewall ?? false,
     etcdSnapshotInterval: spec.backup?.etcd.interval ?? '6h', etcdSnapshotKeep: spec.backup?.etcd.keep ?? 28, maintenanceWindow: spec.maintenance?.window ?? '', maintenanceTimezone: spec.maintenance?.timezone ?? '', oidc: spec.auth?.oidc ?? null,
   }
 }

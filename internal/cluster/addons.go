@@ -25,7 +25,7 @@ type AddonStatus struct {
 
 var addonMeta = []struct{ key, tofu, namespace string }{
 	{"metallb", "metallb", "metallb-system"},
-	{"ingressNginx", "ingress-nginx", "ingress-nginx"},
+	{"traefik", "traefik", "traefik"},
 	{"gvisor", "gvisor", ""},
 	{"metricsServer", "metrics-server", "kube-system"},
 	{"certManager", "cert-manager", "cert-manager"},
@@ -47,6 +47,8 @@ func PlatformNamespace(ns string) (string, bool) {
 	switch ns {
 	case "kube-system", "kube-public", "kube-node-lease":
 		return "kubernetes", true
+	case "ingress-nginx":
+		return "traefik", true
 	}
 	return addonOf(ns)
 }
@@ -60,8 +62,8 @@ func addonSpec(p config.Platform, key string) (bool, map[string]any) {
 	switch key {
 	case "metallb":
 		return p.MetalLB.Enabled, p.MetalLB.Values
-	case "ingressNginx":
-		return p.IngressNginx.Enabled, p.IngressNginx.Values
+	case "traefik":
+		return p.Traefik.Enabled, p.Traefik.Values
 	case "gvisor":
 		return p.GVisor.Enabled, p.GVisor.Values
 	case "metricsServer":

@@ -16,6 +16,8 @@ type Machine struct {
 	CPUs     int           `json:"cpus"`
 	MemBytes uint64        `json:"memBytes"`
 	KVM      bool          `json:"kvm"`
+	TPM      bool          `json:"tpm"`
+	Watchdog bool          `json:"watchdog"`
 	Virtual  bool          `json:"virtual"`
 	Host     string        `json:"host,omitempty"`
 	Disks    []MachineDisk `json:"disks"`
@@ -49,12 +51,13 @@ func Design(name string, machines []Machine, opts DesignOptions) (*Cluster, []Wa
 	})
 	c := &Cluster{APIVersion: APIVersion, Kind: KindCluster, Metadata: Metadata{Name: name}}
 	c.Spec.Pools = []Pool{{Name: "controlplane", Role: RoleControlPlane}, {Name: "worker", Role: RoleWorker}}
-	c.Spec.Platform = Platform{MetalLB: MetalLB{Enabled: true}, IngressNginx: Addon{Enabled: true}, MetricsServer: Addon{Enabled: true}, CertManager: Addon{Enabled: true}, Flux: Flux{Enabled: true}}
+	c.Spec.Platform = Platform{MetalLB: MetalLB{Enabled: true}, Traefik: Addon{Enabled: true}, MetricsServer: Addon{Enabled: true}, CertManager: Addon{Enabled: true}, Flux: Flux{Enabled: true}}
 	sched := topo.AllowScheduling
 	c.Spec.ControlPlane.AllowScheduling = &sched
+	c.Spec.Network.Firewall = new(true)
 	cps, workers := 0, 0
 	for i, mch := range ordered {
-		n := Node{IP: mch.IP, MAC: mch.MAC, UUID: mch.UUID, Arch: mch.Arch, KVM: mch.KVM}
+		n := Node{IP: mch.IP, MAC: mch.MAC, UUID: mch.UUID, Arch: mch.Arch, KVM: mch.KVM, TPM: mch.TPM, Watchdog: mch.Watchdog}
 		if i < topo.ControlPlanes {
 			cps++
 			n.Pool, n.Hostname = "controlplane", fmt.Sprintf("%s-cp-%02d", name, cps)
@@ -73,6 +76,7 @@ func Design(name string, machines []Machine, opts DesignOptions) (*Cluster, []Wa
 		c.Spec.Nodes = append(c.Spec.Nodes, n)
 	}
 	c.Spec.Storage.SystemDisk = true
+	c.Spec.Storage.Encryption = c.DefaultEncryption()
 	c.Spec.Platform.Longhorn.Enabled = len(c.LonghornNodes()) > 0
 	if opts.MetalLBRange != "" {
 		c.Spec.Platform.MetalLB.Range = opts.MetalLBRange
@@ -225,6 +229,15 @@ func Lint(c *Cluster, machines []Machine) []Warning {
 				}
 			}
 		}
+	}
+	if !c.FirewallOn() {
+		warn("info", "firewall-off", "", "Host firewall is off: every node port is open to the network.")
+	}
+	if c.Spec.Storage.Encryption == "" {
+		warn("info", "encryption-off", "", "Disk encryption is off: a removed disk exposes its data.")
+	}
+	if c.Spec.Storage.Encryption == EncryptionTPM {
+		warn("warn", "encryption-tpm-secureboot", "", "TPM sealing needs a Secure Boot image, which Kubit does not install yet.")
 	}
 	if len(c.Spec.Nodes) > 0 && !c.Spec.Platform.MetricsServer.Enabled {
 		warn("info", "no-metrics", "", "metrics-server is off: no CPU/memory usage in Kubit or kubectl top.")

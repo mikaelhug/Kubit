@@ -4,6 +4,7 @@ import (
 	"embed"
 	"encoding/json"
 	"io/fs"
+	"net/netip"
 	"os"
 	"path/filepath"
 	"strings"
@@ -14,7 +15,7 @@ import (
 //go:embed all:templates
 var templates embed.FS
 
-func Render(dir string, c *config.Cluster, kubeconfigPath string) error {
+func Render(dir string, c *config.Cluster, kubeconfigPath, ingressIP string) error {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return err
 	}
@@ -38,18 +39,33 @@ func Render(dir string, c *config.Cluster, kubeconfigPath string) error {
 		return err
 	}
 	for _, e := range existing {
-		if filepath.Ext(e.Name()) == ".tf" && !current[e.Name()] {
+		if ext := filepath.Ext(e.Name()); (ext == ".tf" || ext == ".yaml") && !current[e.Name()] {
 			if err := os.Remove(filepath.Join(dir, e.Name())); err != nil {
 				return err
 			}
 		}
 	}
-	vars := Vars(c, kubeconfigPath)
+	if ingressIP == "" {
+		ingressIP = renderedPin(dir)
+	}
+	vars := Vars(c, kubeconfigPath, ingressIP)
 	b, err := json.MarshalIndent(vars, "", "  ")
 	if err != nil {
 		return err
 	}
 	return os.WriteFile(filepath.Join(dir, "terraform.tfvars.json"), append(b, '\n'), 0o600)
+}
+
+func renderedPin(dir string) string {
+	b, err := os.ReadFile(filepath.Join(dir, "terraform.tfvars.json"))
+	if err != nil {
+		return ""
+	}
+	var v struct {
+		Pin string `json:"ingress_ip_pin"`
+	}
+	_ = json.Unmarshal(b, &v)
+	return v.Pin
 }
 
 type addonVars struct {
@@ -93,8 +109,15 @@ var metallbDefaults = map[string]any{
 	"controller": map[string]any{"resources": requests("20m", "64Mi")},
 }
 
-var ingressDefaults = map[string]any{
-	"controller": map[string]any{"replicaCount": 1, "resources": requests("50m", "128Mi")},
+var traefikDefaults = map[string]any{
+	"deployment":   map[string]any{"replicas": 1},
+	"resources":    requests("50m", "64Mi"),
+	"ingressClass": map[string]any{"enabled": true, "isDefaultClass": true},
+	"providers": map[string]any{
+		"kubernetesIngress":      map[string]any{"enabled": true},
+		"kubernetesIngressNGINX": map[string]any{"enabled": true, "publishService": map[string]any{"enabled": true}},
+		"kubernetesGateway":      map[string]any{"enabled": true},
+	},
 }
 
 var metricsDefaults = map[string]any{
@@ -124,7 +147,8 @@ func merged(defaults, over map[string]any) map[string]any {
 
 var ChartVersions = map[string]string{
 	"metallb":        "0.16.1",
-	"ingress-nginx":  "4.15.1",
+	"traefik":        "41.6.1",
+	"gateway-api":    "v1.6.1",
 	"metrics-server": "3.14.0",
 	"cert-manager":   "v1.21.2",
 	"flux":           "2.19.1",
@@ -139,12 +163,25 @@ func chartVersionVars() map[string]string {
 	return out
 }
 
-func Vars(c *config.Cluster, kubeconfigPath string) map[string]any {
+func ingressPin(p config.Platform, recorded string) string {
+	ip, err := netip.ParseAddr(recorded)
+	if !p.MetalLB.Enabled || err != nil {
+		return ""
+	}
+	lo, hi, err := config.ParseIPRange(p.MetalLB.Range)
+	if err != nil || ip.Less(lo) || hi.Less(ip) {
+		return ""
+	}
+	return ip.String()
+}
+
+func Vars(c *config.Cluster, kubeconfigPath, ingressIP string) map[string]any {
 	p := c.Spec.Platform
 	return map[string]any{
 		"kubeconfig":       kubeconfigPath,
 		"metallb":          metallbVars{Enabled: p.MetalLB.Enabled, Range: p.MetalLB.Range, Values: merged(metallbDefaults, p.MetalLB.Values)},
-		"ingress_nginx":    addonVars{p.IngressNginx.Enabled, merged(ingressDefaults, p.IngressNginx.Values)},
+		"traefik":          addonVars{p.Traefik.Enabled, merged(traefikDefaults, p.Traefik.Values)},
+		"ingress_ip_pin":   ingressPin(p, ingressIP),
 		"gvisor":           addonVars{p.GVisor.Enabled, vals(p.GVisor.Values)},
 		"metrics_server":   addonVars{p.MetricsServer.Enabled, merged(metricsDefaults, p.MetricsServer.Values)},
 		"cert_manager":     addonVars{p.CertManager.Enabled, vals(p.CertManager.Values)},

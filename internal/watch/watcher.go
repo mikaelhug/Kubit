@@ -8,6 +8,7 @@ import (
 
 	"github.com/mikael/kubit/internal/cluster"
 	"github.com/mikael/kubit/internal/store"
+	"github.com/mikael/kubit/internal/talos"
 )
 
 type Watcher struct {
@@ -38,6 +39,8 @@ type Watcher struct {
 	gaps         []time.Time
 	labNoNet     map[string]bool
 	offlineTicks int
+	stages       map[string]map[string]*stageWatch
+	watchStage   stageSource
 
 	sigMu       sync.Mutex
 	kubeSignals map[string]chan struct{}
@@ -47,7 +50,7 @@ func New(m *cluster.Manager, interval time.Duration) *Watcher {
 	if interval <= 0 {
 		interval = 15 * time.Second
 	}
-	w := &Watcher{Manager: m, Store: m.Store, ServiceInterval: 4 * interval, retune: make(chan struct{}), stopping: map[string]chan struct{}{}, last: map[string]*cluster.Status{}, lastServices: map[string]*cluster.ServiceHealth{}, trackers: map[string]*ServiceTracker{}, confirms: map[string]*confirm{}, lastTick: map[string]time.Time{}, lastContact: map[string]time.Time{}, running: map[string]*clusterLoop{}, memHigh: map[string]int{}, labNoNet: map[string]bool{}, kubeSignals: map[string]chan struct{}{}, observer: ObserverState{Online: true}}
+	w := &Watcher{Manager: m, Store: m.Store, ServiceInterval: 4 * interval, retune: make(chan struct{}), stopping: map[string]chan struct{}{}, last: map[string]*cluster.Status{}, lastServices: map[string]*cluster.ServiceHealth{}, trackers: map[string]*ServiceTracker{}, confirms: map[string]*confirm{}, lastTick: map[string]time.Time{}, lastContact: map[string]time.Time{}, running: map[string]*clusterLoop{}, memHigh: map[string]int{}, labNoNet: map[string]bool{}, kubeSignals: map[string]chan struct{}{}, stages: map[string]map[string]*stageWatch{}, watchStage: talos.WatchStage, observer: ObserverState{Online: true}}
 	w.interval.Store(int64(interval))
 	return w
 }
@@ -156,6 +159,7 @@ func (w *Watcher) forget(name string, done chan struct{}) {
 	delete(w.confirms, name)
 	delete(w.lastTick, name)
 	delete(w.lastContact, name)
+	w.dropStageWatches(name)
 }
 
 func (w *Watcher) Latest(name string) *cluster.Status {

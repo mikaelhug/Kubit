@@ -207,7 +207,7 @@ func (s *Server) designMachines(ctx context.Context, macs []string, labVMs bool)
 
 func designMachine(m *store.Machine, labVM bool) config.Machine {
 	inv, _ := inventoryOf(m)
-	cm := config.Machine{IP: m.IP, MAC: m.MAC, UUID: m.UUID, Arch: config.Arch(m.Arch), CPUs: inv.CPUs, MemBytes: inv.MemoryBytes, KVM: inv.KVM, Virtual: inv.Virtual || talos.IsVirtual(inv.Manufacturer, inv.Product), Host: m.Host, Model: strings.TrimSpace(inv.Manufacturer + " " + inv.Product)}
+	cm := config.Machine{IP: m.IP, MAC: m.MAC, UUID: m.UUID, Arch: config.Arch(m.Arch), CPUs: inv.CPUs, MemBytes: inv.MemoryBytes, KVM: inv.KVM, TPM: inv.TPM, Watchdog: inv.Watchdog, Virtual: inv.Virtual || talos.IsVirtual(inv.Manufacturer, inv.Product), Host: m.Host, Model: strings.TrimSpace(inv.Manufacturer + " " + inv.Product)}
 	if labVM {
 		cm.Virtual, cm.Model = true, "Kubit lab VM"
 	}

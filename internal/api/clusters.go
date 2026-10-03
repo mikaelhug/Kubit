@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"slices"
 	"strconv"
 
 	"github.com/mikael/kubit/internal/cluster"
@@ -31,6 +32,7 @@ func (s *Server) clusterRoutes() {
 	r.HandleFunc("POST /api/v1/clusters/{name}/platform/apply/{planId}", s.handlePlatformApplyPlan)
 	r.HandleFunc("POST /api/v1/clusters/{name}/upgrade/talos", s.disruptive(s.handleUpgradeTalos))
 	r.HandleFunc("GET /api/v1/clusters/{name}/image", s.handleImageStatus)
+	r.HandleFunc("GET /api/v1/clusters/{name}/config", s.handleConfigStatus)
 	r.HandleFunc("POST /api/v1/clusters/{name}/upgrade/kubernetes", s.disruptive(s.handleUpgradeKubernetes))
 	r.HandleFunc("POST /api/v1/clusters/{name}/export", s.handleExport)
 	r.HandleFunc("POST /api/v1/clusters/{name}/nodes", s.handleNodeAdd)
@@ -214,16 +216,23 @@ func (s *Server) handleClusterApply(w http.ResponseWriter, r *http.Request) {
 	if !decodeOptionalJSON(w, r, &req) {
 		return
 	}
+	var updated *config.Cluster
+	if req.YAML != "" {
+		var err error
+		if updated, err = config.Parse([]byte(req.YAML)); err == nil {
+			err = s.manager.CheckCluster(r.Context(), updated)
+		}
+		if err != nil {
+			writeErr(w, unprocessable(err))
+			return
+		}
+	}
 	s.startOp(w, name, "cluster.apply", req, func(ctx context.Context, sink cluster.Sink) (any, error) {
 		c, _, err := s.manager.LoadCluster(ctx, name)
 		if err != nil {
 			return nil, err
 		}
-		if req.YAML != "" {
-			updated, err := config.Parse([]byte(req.YAML))
-			if err != nil {
-				return nil, err
-			}
+		if updated != nil {
 			if err := adoptDeclaration(c, updated); err != nil {
 				return nil, err
 			}
@@ -294,6 +303,15 @@ func (s *Server) handleImageStatus(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, st)
 }
 
+func (s *Server) handleConfigStatus(w http.ResponseWriter, r *http.Request) {
+	st, err := s.manager.ConfigStatus(r.Context(), r.PathValue("name"))
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, st)
+}
+
 func (s *Server) handleUpgradeTalos(w http.ResponseWriter, r *http.Request) {
 	s.upgrade(w, r, "upgrade.talos", s.manager.UpgradeTalos)
 }
@@ -345,8 +363,32 @@ func (s *Server) handleNodeAdd(w http.ResponseWriter, r *http.Request) {
 			n.MAC = row.MAC
 		}
 	}
+	if err := s.checkNodeAdd(r.Context(), name, n); err != nil {
+		writeErr(w, err)
+		return
+	}
 	id, err := s.startNodeAdd(name, n)
 	accepted(w, id, err)
+}
+
+func (s *Server) checkNodeAdd(ctx context.Context, name string, n config.Node) error {
+	c, _, err := s.manager.LoadCluster(ctx, name)
+	if err != nil {
+		return err
+	}
+	i := slices.IndexFunc(c.Spec.Nodes, func(e config.Node) bool { return e.Hostname == n.Hostname && e.IP == n.IP })
+	if i < 0 {
+		c.Spec.Nodes = append(c.Spec.Nodes, n)
+	} else {
+		c.Spec.Nodes[i] = n
+	}
+	if err := c.Validate(); err != nil {
+		return unprocessable(err)
+	}
+	if err := s.manager.CheckCluster(ctx, c); err != nil {
+		return unprocessable(err)
+	}
+	return nil
 }
 
 func (s *Server) startNodeAdd(name string, n config.Node) (int64, error) {
@@ -370,6 +412,9 @@ func (s *Server) handleConfigValidate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	c, err := config.Parse(body)
+	if err == nil {
+		err = s.manager.CheckCluster(r.Context(), c)
+	}
 	if err != nil {
 		writeErr(w, unprocessable(err))
 		return
@@ -400,7 +445,7 @@ func (s *Server) draft(r *http.Request, name string, ips []string) (*config.Clus
 	topo := config.Recommend(len(ips))
 	c := &config.Cluster{APIVersion: config.APIVersion, Kind: config.KindCluster, Metadata: config.Metadata{Name: name}}
 	c.Spec.Platform = config.Platform{
-		MetalLB: config.MetalLB{Enabled: true}, IngressNginx: config.Addon{Enabled: true},
+		MetalLB: config.MetalLB{Enabled: true}, Traefik: config.Addon{Enabled: true},
 		GVisor: config.Addon{Enabled: true}, MetricsServer: config.Addon{Enabled: true},
 	}
 	names := hostnamer{name: name}
@@ -410,7 +455,7 @@ func (s *Server) draft(r *http.Request, name string, ips []string) (*config.Clus
 			return nil, err
 		}
 		inv, _ := inventoryOf(row)
-		n := config.Node{IP: ip, MAC: row.MAC, Arch: config.Arch(row.Arch), KVM: inv.KVM}
+		n := config.Node{IP: ip, MAC: row.MAC, Arch: config.Arch(row.Arch), KVM: inv.KVM, TPM: inv.TPM, Watchdog: inv.Watchdog}
 		names.assign(&n, i < topo.ControlPlanes)
 		if cand := inv.InstallCandidates(); len(cand) > 0 {
 			n.InstallDisk = config.InstallDisk{Path: cand[0].DevPath}
@@ -421,6 +466,8 @@ func (s *Server) draft(r *http.Request, name string, ips []string) (*config.Clus
 	}
 	sched := topo.AllowScheduling
 	c.Spec.ControlPlane.AllowScheduling = &sched
+	c.Spec.Network.Firewall = new(true)
+	c.Spec.Storage.Encryption = c.DefaultEncryption()
 	if len(ips) > 0 {
 		c.Spec.Platform.MetalLB.Range = config.DefaultMetalLBRange(ips[0])
 	}

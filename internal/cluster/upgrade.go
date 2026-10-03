@@ -1,6 +1,7 @@
 package cluster
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"strings"
@@ -64,27 +65,33 @@ func (m *Manager) UpgradeTalos(ctx context.Context, name, version string, sink S
 		}
 		return nodeImage{version: version, schematic: schematic}
 	}
-	var gen *config.Generated
-	if reimage {
-		_, bundle, err := m.loadSecrets(ctx, name)
-		if err != nil {
-			return err
-		}
-		next := *c
-		next.Spec.SchematicID = schematic
-		next.Spec.Pools = append([]config.Pool(nil), c.Spec.Pools...)
-		for i := range next.Spec.Pools {
-			if id, ok := pools[next.Spec.Pools[i].Name]; ok {
-				next.Spec.Pools[i].SchematicID = id
-			}
-		}
-		if gen, err = config.Generate(&next, bundle, func(p config.Pool) string { return m.Factory.InstallerImage(next.SchematicFor(p), version) }); err != nil {
+	_, bundle, err := m.loadSecrets(ctx, name)
+	if err != nil {
+		return err
+	}
+	next := upgradedDeclaration(c, version, schematic, pools)
+	final, err := config.Generate(&next, bundle, m.installer(&next))
+	if err != nil {
+		return err
+	}
+	staged := final
+	if reimage && version != c.Spec.TalosVersion {
+		current := next
+		current.Spec.TalosVersion = c.Spec.TalosVersion
+		if staged, err = config.Generate(&current, bundle, m.installer(&next)); err != nil {
 			return err
 		}
 	}
+	configsFor := func(n config.Node) nodeConfigs {
+		cfgs := nodeConfigs{final: final.Nodes[n.Hostname]}
+		if reimage {
+			cfgs.staged = staged.Nodes[n.Hostname]
+		}
+		return cfgs
+	}
 	kubeFrom, _ := liveKubelets(ctx, kc, c, c.Spec.KubernetesVersion)
 	nodes := orderedNodes(c)
-	sink.Plan(append(upgradePrechecks, nodeSteps(nodes, "Upgrade")...)...)
+	sink.Plan(append(append(upgradePrechecks, nodeSteps(nodes, "Upgrade")...), manifestsStep)...)
 	if reimage {
 		sink.Emit(Info, "precheck", "", "Talos %s → %s with a new image: extensions %s", c.Spec.TalosVersion, version, strings.Join(c.Spec.Extensions, ", "))
 	} else {
@@ -103,13 +110,8 @@ func (m *Manager) UpgradeTalos(ctx context.Context, name, version string, sink S
 	for _, n := range nodes {
 		step := nodeStep(n)
 		err := sink.Run(step, func() error {
-			if gen != nil {
-				if _, err := m.applyNodeConfig(ctx, n, gen.Nodes[n.Hostname], sec.Talosconfig, step, sink); err != nil {
-					return fmt.Errorf("machine config for the new extensions: %w", err)
-				}
-			}
 			want := wantFor(n)
-			already, err := m.upgradeInPlace(ctx, c, kc, n, sec.Talosconfig, m.Factory.InstallerImage(want.schematic, version), want, c.SchematicFor(c.PoolOf(n)) != want.schematic, step, sink)
+			already, err := m.upgradeInPlace(ctx, c, kc, n, sec.Talosconfig, m.Factory.InstallerImage(want.schematic, version), want, c.SchematicFor(c.PoolOf(n)) != want.schematic, configsFor(n), step, sink)
 			if err != nil {
 				return err
 			}
@@ -124,18 +126,48 @@ func (m *Manager) UpgradeTalos(ctx context.Context, name, version string, sink S
 			return fmt.Errorf("%s: %w", n.Hostname, err)
 		}
 	}
-	c.Spec.TalosVersion = version
-	c.Spec.SchematicID = schematic
-	for i := range c.Spec.Pools {
-		if id, ok := pools[c.Spec.Pools[i].Name]; ok {
-			c.Spec.Pools[i].SchematicID = id
-		}
-	}
-	if err := m.saveExisting(ctx, c); err != nil {
+	if err := m.saveExisting(ctx, &next); err != nil {
 		return err
 	}
-	sink.Emit(Done, nodeStep(nodes[len(nodes)-1]), "", "all nodes on Talos %s", version)
+	if err := m.syncManifestsStep(ctx, &next, kc, sink); err != nil {
+		return fmt.Errorf("all nodes on Talos %s; %w; apply node configs to sync them", version, err)
+	}
+	sink.Emit(Done, manifestsStep.ID, "", "all nodes on Talos %s", version)
 	return nil
+}
+
+func upgradedDeclaration(c *config.Cluster, version, schematic string, pools map[string]string) config.Cluster {
+	next := *c
+	next.Spec.TalosVersion = version
+	next.Spec.SchematicID = schematic
+	next.Spec.Pools = append([]config.Pool(nil), c.Spec.Pools...)
+	for i := range next.Spec.Pools {
+		if id, ok := pools[next.Spec.Pools[i].Name]; ok {
+			next.Spec.Pools[i].SchematicID = id
+		}
+	}
+	return next
+}
+
+func configBehind(stored []byte, readErr error, want []byte) bool {
+	return want != nil && (readErr != nil || !bytes.Equal(stored, want))
+}
+
+func (m *Manager) applyIfBehind(ctx context.Context, n config.Node, cfg, talosconfig []byte, step string, sink Sink) (rebooted bool, err error) {
+	stored, err := m.Store.GetNodeMachineConfig(ctx, n.IP)
+	if !configBehind(stored, err, cfg) {
+		return false, nil
+	}
+	return m.applyNodeConfig(ctx, n, cfg, talosconfig, step, sink)
+}
+
+func (m *Manager) applyBehindAndWait(ctx context.Context, c *config.Cluster, kc *k8s.Client, n config.Node, cfg, talosconfig []byte, step string, sink Sink) error {
+	before := kubeBootID(ctx, kc, n.Hostname)
+	rebooted, err := m.applyIfBehind(ctx, n, cfg, talosconfig, step, sink)
+	if err != nil || !rebooted {
+		return err
+	}
+	return m.waitBack(ctx, c, kc, n, before, talosconfig)
 }
 
 func (m *Manager) UpgradeKubernetes(ctx context.Context, name, version string, sink Sink) error {

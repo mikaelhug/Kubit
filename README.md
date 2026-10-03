@@ -8,7 +8,7 @@ PCs and VMs. Single Go binary: CLI, daemon, embedded web UI.
 | Layer | Owner | Mechanism |
 |---|---|---|
 | Discovery, machine config, apply, bootstrap, kubeconfig, OS/K8s upgrades, drain, reset, etcd | Kubit | Talos API via `siderolabs/talos/pkg/machinery` + `client-go` |
-| Platform add-ons: MetalLB, ingress-nginx, gVisor RuntimeClasses, metrics-server, cert-manager, Longhorn, Flux | OpenTofu (`infra/platform/`), executed by Kubit with a pinned binary | `hashicorp/helm` for charts, `alekc/kubectl` for CRs |
+| Platform add-ons: MetalLB, Traefik (Ingress and Gateway API), gVisor RuntimeClasses, metrics-server, cert-manager, Longhorn, Flux | OpenTofu (`infra/platform/`), executed by Kubit with a pinned binary | `hashicorp/helm` for charts, `alekc/kubectl` for CRs |
 | User workloads | Flux add-on (headless), syncing an apps repository you own | Kubit creates GitRepository and Kustomization `flux-system/flux-system` from `platform.flux.repository`; the path holds one Flux Kustomization per app, so a broken app fails alone. Kubit is the only UI and alerts on failed syncs. Example: [github.com/mikaelhug/kubit-apps](https://github.com/mikaelhug/kubit-apps) |
 | App secrets | SOPS-encrypted files in the apps repository, one age key per cluster | Flux's kustomize-controller decrypts them in the cluster; Kubit generates, seals, backs up and installs the key |
 | Escape hatch | Operator | `infra/talos/` export (talos provider HCL + `import {}`) and native artifacts (`secrets.yaml`, `talosconfig`, machine configs, kubeconfig) — never executed by Kubit |
@@ -38,8 +38,8 @@ make build     # npm run build (if web/node_modules exists) + go build → bin/k
 make test
 ```
 
-Requires Go 1.26+, Node 20+ for the UI. Talos machinery pinned to v1.14.0
-(Kubernetes 1.37.0 default).
+Requires Go 1.26+, Node 20+ for the UI. Talos machinery pinned to v1.14.2
+(Kubernetes 1.37.1 default).
 
 ## Dev VMs
 
@@ -80,8 +80,8 @@ apiVersion: kubit.dev/v1
 kind: Cluster
 metadata: { name: dev }
 spec:
-  talosVersion: v1.14.0            # default: machinery's version
-  kubernetesVersion: v1.37.0       # default: machinery's DefaultKubernetesVersion
+  talosVersion: v1.14.2            # default: machinery's version
+  kubernetesVersion: v1.37.1       # default: machinery's DefaultKubernetesVersion
   extensions: []                   # default: derived from platform.gvisor and platform.longhorn
   schematicID: ""                  # Image Factory schematic; created from extensions when empty
   controlPlane:
@@ -93,10 +93,22 @@ spec:
     serviceCIDR: 10.96.0.0/12
     nameservers: [192.168.64.1]    # optional; ResolverConfig on every node
     ntp: [time.cloudflare.com]     # optional; TimeSyncConfig on every node
+    policies: true                 # default true; Flannel's kube-network-policies enforce NetworkPolicy
+    discovery: true                # default true; nodes register with discovery.talos.dev
+    firewall: true                 # absent = off; drafted clusters set true; host ingress firewall
+  storage:
+    systemDisk: true               # rest of the install disk → data-system for Longhorn; drafted true
+    ephemeralSize: 40GiB           # /var (EPHEMERAL) when the system disk is split
+    encryption: nodeID             # nodeID | tpm; absent = off; drafted as nodeID; fixed after install
+  patches:                         # Talos config patches (strategic merge) for every node, after Kubit's config
+    - machine: { sysctls: { vm.max_map_count: "262144" } }
   pools:                           # default when absent: controlplane + worker, no overrides
-    - { name: controlplane, role: controlplane }
+    - name: controlplane
+      role: controlplane
+      patches:                     # control-plane-only documents belong here, not at cluster level
+        - { apiVersion: v1alpha1, kind: KubeAPIServerConfig, extraArgs: { audit-log-maxage: "7" } }
     - { name: worker, role: worker }
-    - name: gpu                    # a pool owns role, labels, taints, extensions, disk policy
+    - name: gpu                    # a pool owns role, labels, taints, extensions, disk policy, patches
       role: worker
       labels: { workload: gpu }
       taints: { nvidia.com/gpu: "true:NoSchedule" }
@@ -109,6 +121,8 @@ spec:
       pool: controlplane           # replaces role: (still accepted → mapped to the default pool)
       arch: arm64                  # amd64 | arm64
       kvm: true                    # /dev/kvm present → also labelled for runsc-kvm
+      tpm: true                    # from discovery: TPM 2.0 on a UEFI boot; required on every node for encryption: tpm
+      watchdog: true               # from discovery: /dev/watchdog0 → WatchdogTimerConfig (1m)
       installDisk: { path: /dev/vda }   # or a selector; empty = pool policy
       dataDisks: [/dev/vdb, /dev/vdc]   # whole disks → xfs volumes at /var/mnt/data-1, data-2
       labels: { rack: a1 }         # merged over the pool's; taints:/annotations: likewise
@@ -121,6 +135,8 @@ spec:
         gateway: 192.168.64.1
         nameservers: [192.168.64.1]
         vlan: 0                    # > 0 → VLANConfig on the uplink, addresses move to the VLAN link
+      patches:                     # applied last; wins over cluster and pool patches
+        - { apiVersion: v1alpha1, kind: NetworkRuleConfig, name: kubelet, $patch: delete }
   backup:
     etcd: { interval: 6h, keep: 28 }   # scheduled etcd snapshots; interval 0 disables
   maintenance:                          # optional; gates disruptive operations
@@ -128,7 +144,7 @@ spec:
     timezone: Europe/Stockholm          # IANA; empty = daemon host zone
   platform:
     metallb: { enabled: true, range: 192.168.64.200-192.168.64.220 }
-    ingressNginx: { enabled: true }
+    traefik: { enabled: true }          # was ingressNginx (still read; folded in on the next save)
     gvisor: { enabled: true }
     metricsServer: { enabled: true }
     certManager: { enabled: false }
@@ -147,10 +163,30 @@ Generated machine configs are Talos 1.14 multi-document: the v1alpha1 core plus
 (labels `kubit.dev/pool`, `sandbox.runtime/gvisor[-kvm]`, pool ∪ node labels, taints and
 annotations; NoSchedule taint when control planes are dedicated), `LinkAliasConfig`
 `uplink` (by MAC, else the first physical link), `DHCPv4Config` or `LinkConfig` +
-default `RouteConfig` (+ `VLANConfig`) on the alias, `ResolverConfig`, `TimeSyncConfig`
-and, on control planes with a VIP, `Layer2VIPConfig`. `config.Lint` reports advisory
-findings (even/single control planes, small disks, mixed arch, ranges off-subnet or
-overlapping, VIP or MetalLB range taken by another stored cluster).
+default `RouteConfig` (+ `VLANConfig`) on the alias, `ResolverConfig`, `TimeSyncConfig`,
+on control planes with a VIP `Layer2VIPConfig`, and on control planes the
+`KubeFlannelCNIConfig` Talos emits with `kubeNetworkPoliciesEnabled: true` (unless
+`network.policies: false`). `network.discovery` (default on) emits a
+`DiscoveryServiceConfig` `default` (discovery.talos.dev) on every node; off emits none.
+With `network.firewall: true` every node gets `NetworkDefaultActionConfig` (`ingress:
+block`) and `NetworkRuleConfig`s (see *Host firewall*); with `storage.encryption` a
+`VolumeConfig` `STATE` and LUKS2 `encryption` on the EPHEMERAL `VolumeConfig` and every
+Kubit `UserVolumeConfig`; a node with `watchdog: true` gets `WatchdogTimerConfig`
+(`/dev/watchdog0`, 1 m). API server SANs are the VIP plus the host of
+`controlPlane.endpoint` when it is neither a control-plane IP nor the VIP (a DNS
+endpoint is in the certificate; the 1.14 contract no longer adds it on its own), in
+`KubeAPIServerConfig.certExtraSANs` and the machine cert SANs. With `spec.auth.oidc` the
+OIDC `jwt` authenticator is appended to Talos's own `KubeAuthenticationConfig`, which
+keeps anonymous access to `/livez`, `/readyz` and `/healthz`. Patches apply last
+(*Patches*). `config.Lint` reports advisory findings (even/single control planes, small
+disks, mixed arch, ranges off-subnet or overlapping, VIP or MetalLB range taken by
+another stored cluster, `firewall-off`, `encryption-off`, `encryption-tpm-secureboot`).
+
+**Existing clusters.** `network.policies` defaults to true when absent, so an existing
+cluster's control planes show as behind the declaration and the cluster starts
+enforcing NetworkPolicies on its next Apply, which also syncs the bootstrap manifests
+(*Config freshness*). The firewall and encryption defaults are written only into newly
+drafted clusters; a stored cluster without the keys keeps both off.
 
 **Disk roles.** A node has one install disk and any number of *data disks*
 (`dataDisks`, up to 8, never the install disk). Each data disk becomes a
@@ -178,14 +214,94 @@ the cluster is installed. The split happens only while Longhorn is enabled. Desi
 60 GiB sparse disks for this.
 
 **Default add-ons.** A drafted cluster (wizard, lab host) comes up ready to run apps
-from Git: MetalLB, ingress-nginx, metrics-server (Kubit's usage views read it),
+from Git: MetalLB, Traefik, metrics-server (Kubit's usage views read it),
 cert-manager, Flux, Longhorn (on data disks or the system disk, so its Talos
 extensions are in the first install and no re-image is needed) and Builds. gVisor is
 opt-in. The
 wizard's Platform step and the lab host dialog take the apps repository (URL and path);
 Flux syncs it on the first platform apply. In the wizard, claiming the first data disk
 turns Longhorn on and releasing the last turns it off; the Platform step can still
-change either.
+change either. Drafts (`config.Design`, the lab host design, `POST /config/draft`) also
+write `network.firewall: true` and `storage.encryption: nodeID`, and copy `kvm`, `tpm` and
+`watchdog` from each machine's inventory; the wizard's Network step can change the
+firewall, policies, discovery and encryption before install.
+
+**TPM and watchdog.** Discovery records `tpm` (`/dev/tpmrm0` and `/sys/firmware/efi`
+both present: TPM 2.0 on a UEFI boot) and `watchdog` (`/dev/watchdog0`) with the same
+`LS` probe as `kvm`; inventories stored earlier have neither and show "—" on the
+Hardware tab (tiles CPUs, Memory, KVM, TPM, Watchdog, Disks). The add-node dialog and
+`kubit node add` (`--tpm`, `--watchdog`) take them from the machine's inventory;
+`POST /clusters/{name}/nodes` takes them only from the body. With `watchdog: true` Talos
+arms the hardware watchdog with a 1-minute timeout, so a hung node resets itself.
+Nodes declared earlier have no `watchdog` key; set it in the YAML.
+
+### Host firewall
+
+With `network.firewall: true` (written into every drafted cluster) each node blocks
+inbound connections except what Kubernetes and Talos need:
+
+| Rule | Proto | Ports | From | Nodes |
+|---|---|---|---|---|
+| `apid` | tcp | 50000 | anywhere | all |
+| `kubelet` | tcp | 10250 | cluster subnets + pod CIDR | all |
+| `flannel-vxlan` | udp | 4789 | cluster subnets | all |
+| `kubernetes-api` | tcp | 6443 | anywhere | control planes |
+| `trustd` | tcp | 50001 | cluster subnets | control planes |
+| `etcd` | tcp | 2379-2380, 2383 | cluster subnets | control planes |
+| `metallb-tcp` / `metallb-udp` | tcp / udp | 7946 | cluster subnets | all, with MetalLB |
+| `ingress-nodeports` | tcp | 30000-32767 | anywhere | all, ingress without MetalLB |
+
+apid and the API stay open to every network so Kubit reaches the cluster from wherever
+the laptop is. Cluster subnets (`config.ClusterSubnets`) are each node's static address
+prefixes, else the /24 of its IP. The pod CIDR reaches the kubelet because
+metrics-server scrapes it from a pod. Talos itself always accepts loopback,
+established/related traffic, rate-limited ICMP and pod/service-CIDR traffic.
+LoadBalancer IPs are not node addresses and are not filtered; NodePorts on node
+addresses are. A cluster without the key stays open (lint `firewall-off`); turning it on
+takes effect on the next Apply. Adding a node from a new subnet first re-applies the
+existing nodes whose config changed, control planes first, each Ready (or back from its
+reboot) before the next (step `firewall`), then syncs the bootstrap manifests (step
+`manifests`; both skipped otherwise); node add runs preflight → secrets → firewall →
+manifests → install → ready. Re-addressing a node into a new subnet first lets the other
+nodes accept both the old and the new subnet (`firewall`) and drops the old one after the
+move (`narrow`). Not yet verified on a node.
+
+### Patches
+
+`patches` (cluster), `pools[].patches` and `nodes[].patches` take Talos config patches in
+strategic-merge form: a v1alpha1 fragment (`machine: …`) or a multi-doc document
+(`apiVersion`/`kind`/`name`). They apply in that order to each node's generated config
+(Talos `configpatcher`), after everything Kubit generates, firewall and encryption
+included, so a patch can override any value and `$patch: delete` removes a document; no
+patches leave the output byte-identical. Every parse checks that each patch loads
+(errors name `patches[0]`, `pools[1].patches[0]`, `<hostname>.patches[0]`). Every save
+(YAML, form, pools, add-on toggles), `POST /config/validate`, `POST
+/clusters/{name}/apply` with `yaml`, `POST /clusters/{name}/nodes`, `cluster create` and
+`cluster apply -f` also generate every node's config with the stored
+secrets (`Manager.CheckCluster`) and run Talos's metal-mode validation, answering 422
+with the node and role when Talos rejects it: a control-plane-only document
+(`KubeAPIServerConfig`, …) patched at cluster level fails on workers; put it on the
+control-plane pool. Patches take effect on the next Apply. YAML only; the console has no
+patch editor.
+
+### Disk encryption
+
+`storage.encryption` encrypts STATE (machine config), EPHEMERAL (`/var`: etcd, images,
+pod data) and every Kubit data volume (`data-N`, `data-system`) with LUKS2, one key in
+slot 0. **New clusters default to `nodeID`**: the key derives from the machine's UUID and
+the partition label, works on any machine and protects a disk removed from it, but not
+against someone who knows the UUID. `tpm` seals a random key to the node's TPM 2.0
+without PCR binding and needs `tpm: true` on every node (validation names each node
+without one, so a TPM-less machine cannot join). Talos 1.14 TPM sealing always reads the
+PCR signing key that only Secure Boot (signed UKI) images carry, and Kubit installs
+non-Secure-Boot images, so `tpm` is expected to fail disk provisioning at first boot;
+the wizard keeps it selectable for when Secure Boot installs exist, and lint warns
+(`encryption-tpm-secureboot`). Absent means off (lint `encryption-off`). Talos encrypts
+when it creates the partitions, so the mode is fixed at install: once a node has a
+stored machine config Kubit refuses a change (`storage.encryption must stay: <hostname>
+is installed`), and changing it means reinstalling the cluster. Settings shows the mode
+read-only. Not yet verified on hardware: `talosctl get volumestatus` should show
+`encryptionProvider: luks2` and a `nodeID` node should unlock after a reboot.
 
 ## Secrets
 
@@ -235,7 +351,8 @@ keeps working while the laptop sleeps.
 
 `kubit discover 192.168.64.0/24` TCP-probes :50000, then tries the insecure maintenance
 API. Nodes that answer are `maintenance` (inventory recorded: MAC of the link holding the
-IP, arch, CPUs, RAM, disks, `/dev/kvm` presence, SMBIOS UUID and serial); nodes that
+IP, arch, CPUs, RAM, disks, `/dev/kvm`, TPM and watchdog presence, SMBIOS UUID and
+serial); nodes that
 reject the insecure TLS handshake are `configured`. Results are upserted into the
 `machines` table **keyed by uplink MAC**: a machine that reappears on a new DHCP address
 keeps its row (`ips_seen` history, hardware, cluster membership) and, for cluster
@@ -282,7 +399,8 @@ A node with static `network:` is applied on its maintenance-mode lease and await
 the static address; cluster.yaml and the machine row then switch to it. Node
 operations: **rename** (drain → `HostnameConfig` without reboot → kubelet re-registers
 → old Node deleted → uncordon), **move to pool** (same role; label/taint re-apply, and a
-re-image to the pool's installer when the node reports another schematic or none),
+re-image to the pool's installer when the node reports another schematic or none,
+installed, drained and rebooted like a Talos upgrade),
 **re-address** (DHCP↔static; applies via whichever address answers, waits on the new
 one, then restarts the kubelet on workers or reboots control planes — etcd and the
 static pods keep the old address until restart; refused for the no-VIP endpoint node). `PUT
@@ -295,7 +413,7 @@ planes are virtual; VIP
 warnings for any declaration.
 
 Other commands: `cluster apply` (regenerate + re-apply every machine config from
-cluster.yaml, then platform), `node add`, `node remove` (drain → delete → graceful
+cluster.yaml, sync the bootstrap manifests, then platform), `node add`, `node remove` (drain → delete → graceful
 reset; refuses to drop to 0 or, without `--force`, 2 control planes, and always refuses
 the no-VIP endpoint node). `--force` — the console's *Remove anyway*, offered when the
 API or the node does not answer — skips what cannot be reached: a 5 s API probe, no drain
@@ -309,9 +427,42 @@ control plane says to remove it first. Further: `upgrade talos`,
 
 `upgrade talos` also re-images. The schematic is recomputed from the current
 extensions (Image Factory IDs are content hashes); when it differs from what the nodes
-were installed with, every node gets its regenerated machine config and then the new
-installer, even at the same Talos version. `GET /api/v1/clusters/{name}/image` reports
-installed vs desired, and Lifecycle says when the nodes are behind.
+were installed with, every node gets the new installer even at the same Talos version.
+Per node, control planes first, through the Lifecycle and Image APIs (the
+`MachineService.Upgrade` call is deprecated): the installer image is pulled into the
+system containerd (`ImageService.Pull`, progress coalesced to one line every 3 s) and
+written to the inactive boot slot (`LifecycleService.Upgrade`, installer output streamed
+into the operation log; a non-zero exit fails the step with its last lines) while
+workloads keep running. Before a control plane goes down Kubit checks through Talos that
+every etcd member is started and healthy and that etcd does not have exactly 2 members
+(Talos's own upgrade rules), refusing with the member at fault. Kubit then drains the node
+(5 min, PodDisruptionBudgets respected; pods without a controller are deleted and named in
+the log), applies the regenerated machine config when the image changes, reboots,
+waits for the new boot ID, Ready and (control planes) the etcd member count, applies the
+config generated for the target version when it differs from the stored one, and
+uncordons; a node cordoned before the upgrade stays cordoned. Kubit marks its own cordon
+(annotation `kubit.dev/cordoned-by: upgrade`): a drain or staged-apply failure uncordons
+at once, a retry uncordons a node Kubit cordoned, and the `upgrade talos` precheck lets
+such a node through. The run ends by syncing the bootstrap manifests (step `manifests`)
+before the new version is saved. Every stored node config then matches the new version,
+so no node shows as behind. `GET
+/api/v1/clusters/{name}/image` reports installed vs desired, and Lifecycle says when the
+nodes are behind. Not yet verified on a node.
+
+**Config freshness.** Saving the declaration never touches nodes. Kubit stores the
+machine config it last applied to each node and compares it byte for byte with what the
+saved declaration generates now (`Manager.ConfigStatus`, deterministic for the
+cluster's secrets bundle). `GET /api/v1/clusters/{name}/config` returns `{"behind":
+[hostnames]}`; nodes without a stored config and clusters that are not
+`ready`/`bootstrapped` report nothing. Defaults introduced by a Kubit release (such as
+NetworkPolicy enforcement) change the generated config, so existing clusters show their
+nodes as behind until the next Apply. *Apply node configs* (also `POST
+/clusters/{name}/apply`, `cluster apply`) applies every node, control planes first, then
+syncs the bootstrap manifests (kube-proxy, CoreDNS, Flannel with kube-network-policies)
+from the first control plane, the step a Kubernetes upgrade ends with; the Apply fails
+if the Kubernetes API does not answer then. Settings shows "N nodes are behind the
+declaration." with *Apply node configs*, Overview the same line linking to Settings, and
+Nodes a "Config behind" pill per row. Not yet verified on a cluster.
 
 Talos < 1.14 is rejected: Kubit only emits the multi-document config set.
 
@@ -320,8 +471,11 @@ Talos < 1.14 is rejected: Kubit only emits the multi-document config set.
 `~/.kubit/clusters/<name>/infra/platform/` is rendered from embedded templates plus a
 `terraform.tfvars.json` from cluster.yaml, then `tofu init/plan/apply` with a pinned
 binary (`internal/tofu.Version`, checksum-verified download into `~/.kubit/bin`). Charts
-are pinned in `variables.tf`. Providers: `hashicorp/helm` 3.x, `hashicorp/kubernetes`
-3.x (`*_v1` data sources), `alekc/kubectl` for CRs.
+are pinned in `internal/tofu/render.go` (`ChartVersions`, rendered as `chart_versions`).
+Render writes every embedded file and removes `.tf` and `.yaml` files that no longer
+ship. Providers: `hashicorp/helm` 3.x, `hashicorp/kubernetes` 3.x (`*_v1` data
+sources), `alekc/kubectl` for CRs and manifests; nothing is fetched at plan time except
+charts and providers.
 
 Findings baked into the templates:
 
@@ -337,13 +491,47 @@ Findings baked into the templates:
   containers per node) by default; Kubit only configures an `L2Advertisement`, so
   `internal/tofu/render.go` merges `frrk8s.enabled=false` and `speaker.frr.enabled=false`
   under the user's `platform.metallb.values`. A 3-node cluster runs 16 pods, not 20.
-- **Every add-on carries resource requests** (MetalLB 20m/64Mi, ingress-nginx
-  50m/128Mi single replica, metrics-server 20m/48Mi) so the pods are Burstable: on a
+- **Every add-on carries resource requests** (MetalLB 20m/64Mi, Traefik
+  50m/64Mi single replica, metrics-server 20m/48Mi) so the pods are Burstable: on a
   starved node Talos's OOM controller evicts BestEffort work first instead of killing
   the platform in a loop, and a node that cannot fit them leaves them Pending, which
   the service health reports. User `values` override any default key by key.
 - `helm_release` is `atomic`: a failed install uninstalls itself, so a transient API
   blip never leaves a release that blocks the next apply with "cannot re-use a name".
+- **Traefik** (`platform.traefik`, chart `traefik` 41.6.1, Traefik v3.7.13) replaces
+  ingress-nginx, which was retired upstream in March 2026. Release `traefik` in namespace
+  `traefik`, one replica; its IngressClass `traefik` is the cluster default. Three
+  providers are on: Kubernetes Ingress, Ingress-NGINX compatibility (class `nginx`) and
+  Gateway API (GatewayClass `traefik`, Gateway `traefik/traefik-gateway` on HTTP; HTTPS
+  listeners need `certificateRefs` through values). Service `traefik/traefik` is a
+  LoadBalancer with MetalLB, else a NodePort. Kubit applies an IngressClass `nginx`
+  (controller `k8s.io/ingress-nginx`, not default), so Ingresses written for
+  ingress-nginx keep being served; Traefik supports a subset of the
+  `nginx.ingress.kubernetes.io/*` annotations and ignores the rest, so snippet or Lua
+  annotations need a rewrite
+  ([list](https://doc.traefik.io/traefik/reference/routing-configuration/kubernetes/ingress-nginx/)).
+  The Gateway API standard-channel CRDs v1.6.1 ship with Kubit
+  (`internal/tofu/templates/platform/gateway-api-v1.6.1.yaml`, the upstream
+  `standard-install.yaml`: 10 CRDs plus the `safe-upgrades` ValidatingAdmissionPolicy and
+  binding; the file name follows `ChartVersions["gateway-api"]`), rendered next to the
+  `.tf` files and applied per document server-side with `force_conflicts` and
+  `apply_only`, so disabling Traefik never deletes them and HTTPRoutes survive. Traefik's
+  own CRDs come from the chart's `crds/`, which Helm installs once and never upgrades.
+  `platform.traefik.values` merges over Kubit's defaults; the Service type and address
+  pin are Kubit's. The tofu output `ingress_ip` reads Service `traefik/traefik`.
+- **Migration from ingress-nginx** happens on an existing cluster's next platform plan
+  and apply: the declaration key `platform.ingressNginx` is still read and folded into
+  `traefik` (its `values` are dropped) and is gone after the next save; the render
+  deletes `ingress-nginx.tf`; the plan, under the `traefik` add-on, destroys
+  `helm_release.ingress_nginx` and creates the CRDs, Traefik and the `nginx` class. The
+  old address is pinned: the last recorded `ingress_ip` (or, after a failed run, the pin
+  of the previous `terraform.tfvars.json`) becomes `ingress_ip_pin` when it lies inside
+  `platform.metallb.range`, and Traefik's Service carries
+  `metallb.io/loadBalancerIPs: <ip>`, so DNS records and port-forwards keep working; the
+  pin stays sticky and is dropped only when the range no longer holds it. Expect
+  seconds to a minute without ingress while the controllers swap; until the apply the
+  Add-ons card shows the old release (chart `ingress-nginx` 4.15.1) as Traefik deploying.
+  Not yet verified on a cluster.
 - **Longhorn** (`platform.longhorn`, chart 1.10.1) is the storage add-on: replicated
   block volumes, the default StorageClass, snapshots, backups to S3. It runs on the
   nodes' **data disks**, or on the system disk's `data-system` partition — Kubit labels
@@ -360,8 +548,9 @@ Findings baked into the templates:
   refuses a cluster where no node has storage. On an existing cluster the order is
   enforced: after enabling Longhorn, Lifecycle and Add-ons say the nodes' image lacks
   the extensions, and platform plan/apply refuse until **Upgrade Talos** (at the same
-  version is fine) has re-imaged the nodes. That upgrade first applies each node's
-  regenerated machine config, so the Longhorn disk labels land before the chart
+  version is fine) has re-imaged the nodes. That upgrade applies each node's
+  regenerated machine config after the install and drain, before its reboot, so the
+  Longhorn disk labels land before the chart
   installs; Longhorn only reads them when it first registers a node. Default replica
   count is 3 or the
   number of storage nodes. `longhorn-system` is created `privileged` like
@@ -409,16 +598,18 @@ Findings baked into the templates:
   included) before the new Kustomizations re-create it. A failed chart pull shows on the
   OCIRepository or HelmRepository while the HelmRelease stays Ready on the old chart,
   which is why sources are listed. The GitRepository is created only after every other
-  platform release is up: on a fresh cluster the first sync once raced ingress-nginx's
+  platform release is up: on a fresh cluster the first sync once raced the then ingress-nginx's
   admission webhook and both HelmReleases failed their install. Kustomize's `helmCharts` is not available; Helm
   charts are HelmRelease objects. The controllers run with cluster-admin, so anything in the
   repository can change anything in the cluster.
 
 Per-add-on Helm values: `platform.<addon>.values` in cluster.yaml is passed as `values = [yamlencode(...)]` only when non-empty, so declaring nothing never triggers a Helm upgrade.
 
-Verified on a single-node VM: ingress-nginx reachable from the Mac on its MetalLB IP, a
-`runtimeClassName: gvisor` pod boots gVisor, `kubectl top nodes` works, and a second
-`kubit platform plan` reports no changes.
+Verified on a single-node VM (with ingress-nginx, before Traefik): the ingress reachable
+from the Mac on its MetalLB IP, a `runtimeClassName: gvisor` pod boots gVisor, `kubectl
+top nodes` works, and a second `kubit platform plan` reports no changes. Traefik, the
+Gateway API CRDs and the migration are not yet verified on a cluster; the rendered
+module passes `tofu validate`.
 
 ## Export
 
@@ -481,6 +672,7 @@ of your own in the directory stay.
 ### Endpoints
 
 - `GET clusters`, `GET clusters/{n}`, `GET clusters/{n}/status|yaml|kubeconfig`
+- `GET clusters/{n}/config` (`{"behind": [hostname]}`: nodes whose applied machine config differs from the declaration; refreshed by the `config` scope), `GET clusters/{n}/image` (installed vs desired schematic)
 - `POST clusters` `{yaml, skipPlatform}` → operation; `POST clusters/{n}/apply|platform/plan|platform/apply|upgrade/talos|upgrade/kubernetes|export|nodes`, `DELETE clusters/{n}[/nodes/{host}]` (`?vms=delete` also deletes the cluster's lab VMs)
 - `GET nodes`, `POST discover {targets}`, `GET nodes/{ip}/services|logs?service=&follow=`, `POST nodes/{ip}/reboot`
 - `POST config/validate` (raw YAML → defaulted YAML), `POST config/draft {name, ips}` (topology recommendation → cluster.yaml)
@@ -547,10 +739,12 @@ line each) · Fleet: Inventory, Network boot · Kubit: Activity, Settings.
 
 **Namespaces.** Workloads, Network and Storage open on **Apps**: every namespace that is
 not the platform. **Platform** is `kube-system`, `kube-public`, `kube-node-lease` and the
-namespaces of Kubit's add-ons (`metallb-system`, `ingress-nginx`, `cert-manager`,
-`flux-system`, `longhorn-system`; `cluster.PlatformNamespace`, served with each namespace's
-Pod Security level by `GET /api/v1/clusters/{name}/namespaces`); the `kubernetes` API
-Service in `default` counts as platform too. **All** shows both. A namespace picker narrows
+namespaces of Kubit's add-ons (`metallb-system`, `traefik`, `cert-manager`,
+`flux-system`, `longhorn-system`, `kubit-builds`; `cluster.PlatformNamespace`, served with
+each namespace's Pod Security level by `GET /api/v1/clusters/{name}/namespaces`); the
+`kubernetes` API Service in `default` counts as platform too. The empty `ingress-nginx`
+namespace a migrated cluster keeps (Helm never deletes namespaces) counts as Traefik's,
+so it never shows as an app; delete it with kubectl when convenient. **All** shows both. A namespace picker narrows
 to one namespace; scope and namespace live in the URL (`?scope=`, `?ns=`), so alert
 links land filtered. Kubit creates namespaces only for its add-ons: an app's namespace
 belongs in Git next to the app (a Namespace manifest in the app's folder).
@@ -571,7 +765,9 @@ attribute diffs (sensitive and known-after-apply marked, provider deprecation wa
 folded away) and *Apply these N changes* executes exactly that saved `plan.tfplan`
 (`Manager.ApplyPlan`). A plan is refused when cluster.yaml changed after it or a newer
 plan exists. Settings → *Save* only stores cluster.yaml; *Apply node configs* pushes
-machine configs; platform changes always go through a reviewed plan. The CLI's
+machine configs; platform changes always go through a reviewed plan. When nodes run a
+config that is behind the declaration, Settings, Overview and Nodes say so (*Config
+freshness*). The CLI's
 `platform apply` and `cluster create` still converge without review.
 
 ## Health watcher
@@ -592,6 +788,21 @@ once it is resized. `GET /clusters/{name}/status` serves the
 watcher's latest result; `?fresh=true` forces a live query; it carries `observedAt`,
 `lastSnapshotAt` and `snapshotInterval` for the Overview's Backups card.
 
+**Pushed stage.** Between ticks the watcher holds one COSI watch of
+`runtime.MachineStatus` per Talos-reachable node (`internal/watch/stage.go`,
+`talos.WatchStage`) on its own Talos client with the cluster's talosconfig. A stage
+change (running, rebooting, booting, upgrading…) replaces the latest status
+copy-on-write and publishes `status` plus a `nodes` refresh at once instead of up to
+15 s later; it never feeds confirmation, alerts or the tick clock. The tick owns the
+watches: it cancels a node's watch when the node is unreachable, removed or
+readdressed, when the talosconfig changed, when the tick's stage disagrees with the last
+pushed one (a missed event means a dead stream), and on every gap tick, and it starts
+missing ones, so a watch that ended comes back on the next tick, never in a loop. The
+Talos gRPC client has no keepalive and a stream can stay half-open after sleep, so a
+watch is never trusted to notice a dead connection. Events from a cancelled or replaced
+watch, or for a node the newer tick found unreachable or elsewhere, are dropped. Not
+yet verified against a real node.
+
 **Retention.** Hourly the watcher prunes the store: samples keep full resolution for
 24 h, then one per hour for 30 d; acknowledged events go after 90 days (open alerts
 stay); finished operations older than 90 days go with their logs, except the newest 500
@@ -604,7 +815,8 @@ held for three consecutive ticks with no gap between them (`internal/watch/confi
 raised. A tick that arrives more than twice the interval after the previous one is a
 *gap*: the laptop running Kubit slept, which is a normal thing for it to do. Kubit is a
 tool, not a service the clusters depend on: on wake the tick re-baselines, alerts start
-counting again from zero, a due snapshot is taken then, and `backup.stale` is not
+counting again from zero, the stage watches are dropped and re-dialled on the next
+tick, a due snapshot is taken then, and `backup.stale` is not
 raised for time Kubit was asleep (gaps are counted, `GET /observer`).
 Every dial failure is classified (`internal/cluster/reach.go`): a refusal or timeout is
 the target's problem, `EHOSTUNREACH`/`ENETUNREACH`/`EHOSTDOWN` is the observer's. When
@@ -690,6 +902,13 @@ first while the cluster is still healthy.
   Kubernetes the `apiserver_requested_deprecated_apis` metric checked against the
   target release — usage of an API removed in the target blocks the upgrade) and a
   `pre-upgrade` etcd snapshot.
+- **Drained upgrades** — every Talos upgrade (cluster, single node, pool move with a
+  new image) installs first, then drains, reboots and uncordons. A drain blocked by a
+  PodDisruptionBudget fails the node after 5 minutes naming the budget, uncordons it and
+  leaves the new Talos installed; it boots into it on its next reboot. Pull and install
+  share the install timeout. Etcd health is checked before the run, before each control
+  plane goes down (all members started and healthy, never 2 members) and by member
+  count after each one.
 - **Credentials** — `GET /clusters/{name}/certificates` parses the stored talosconfig
   and kubeconfig client certificates and the four CAs; `cert.expiring` (warn ≤ 30
   days, critical ≤ 7) is raised hourly per credential. `POST …/certificates/rotate`
@@ -769,7 +988,9 @@ heartbeat that stops arriving means the daemon is down — the dead-man's switch
   endpoint slices, ingresses, claims, volumes, classes, nodes; debounced 1 s; running
   from `bootstrapped` on; workload changes in an add-on namespace also fire `addons`),
   the daemon-side PXE watch, the watcher's service-health
-  collection (`services`, per cluster), off-site status changes (`offsite`, Kubit-wide)
+  collection (`services`, per cluster), config freshness (`config`, per cluster: on
+  every cluster row write and when an operation that applies or stores machine configs
+  finishes), pushed Talos stages (`status` plus `nodes`), off-site status changes (`offsite`, Kubit-wide)
   and the hourly `versions` check (the console then refetches `/versions` once into the
   store). The console keeps normalized live state (`web/src/store.ts`) that every view
   derives from, and refetches only large derived views when their scope fires: views
@@ -1082,7 +1303,8 @@ export` hands over everything. Keeping the daemon running only adds the observer
 features — alerts, scheduled etcd snapshots, watcher history — and the UI shows when
 they lapse (Observer card, `backup.stale`). `kubit service install [--addr]` writes a
 user unit and starts it at login: `~/Library/LaunchAgents/dev.kubit.serve.plist`
-(launchd, `KeepAlive`, log in `~/.kubit/log/serve.log`) on macOS,
+(launchd, `KeepAlive`, log in `~/.kubit/log/serve.log`, `PATH` with `/usr/sbin` and
+`/sbin` for `sysctl` and `networksetup`) on macOS,
 `~/.config/systemd/user/kubit.service` on Linux (`--system` for
 `/etc/systemd/system`, run as root; `loginctl enable-linger` keeps a user unit alive
 while logged out). `service status` / `service uninstall` manage it; the unit sets
@@ -1158,6 +1380,7 @@ Not yet exercised: `runsc-kvm` (no nested virtualisation in the VMs).
 - [x] M23 — App secrets (2026-09-26): SOPS + age with a per-cluster key held by Kubit (sealed, outlives the cluster, backed up), installed as `argocd/kubit-sops-age` on every platform apply, KSOPS in the Argo CD add-on, recipient/export/import in Add-ons and `kubit sops`. Argo CD's admin password no longer stored. Verified on `lab`: [kubit-apps](https://github.com/mikaelhug/kubit-apps) `apps/linkding` with an encrypted admin login synced 78 s after push and the login works; with Kubit stopped, a deleted app Secret came back decrypted from Git in 3 s; a deleted cluster key came back unchanged on an empty-plan apply
 - [x] M24 — Flux replaces Argo CD (2026-09-26): headless `flux2` 2.19.1 add-on, GitRepository and Kustomization from `platform.flux.repository` (prune, `deletionPolicy: Orphan`, SOPS via `flux-system/sops-age`), Argo CD and KSOPS removed, stale templates removed on render, Flux card with live sync state (`GET …/flux`, `flux` scope from CRD-gated informers). Verified on a rebuilt `lab` on this Mac (1 control plane + 2 workers with data disks, Ready in 4 min): cert-manager and Flux applied in 36 s; [kubit-apps](https://github.com/mikaelhug/kubit-apps) synced within seconds of the apply (GitRepository, Kustomization, the podinfo HelmRelease Ready); podinfo, whoami and it-tools served over HTTPS; linkding's Secret decrypted from Git with the key that outlived the old cluster, and came back 484 s after being deleted (the Kustomization's 10 min interval); Flux uses 105 MiB in 4 pods; disabling Flux removed the controllers and the key and left the apps running, re-enabling resumed the sync; a requested reconcile reached the UI as a `flux` refresh within a second. Five simulated users then pushed to kubit-apps from separate clones (concurrent pushes, rebased on rejection): a plain YAML app, a chart from an OCI registry, nginx basic auth from a SOPS Secret encrypted with public recipients only, a malformed Deployment, an update plus a removal. Fixes from that run: one Flux Kustomization per app (the single root held every push back behind the malformed one), `flux.not-ready` alerts, OCIRepository and HelmRepository on the card (a missing chart tag was invisible). After the fixes a broken app fails alone and alerts, the others land within a minute of the push, a password rotation takes effect without restarts, removals prune their namespace. Defaults then changed to a ready-to-go cluster (Flux, cert-manager, Longhorn on data disks; gVisor opt-in; apps repository in the lab dialog and wizard): `lab` rebuilt from the dialog with kubit-apps reached Ready with every add-on in 5 min 33 s, no re-image, and all 14 Flux objects were Ready 21 s later; every app served, Longhorn volumes Bound, health `healthy`
 - [x] M25 — Storage on the system disk, in-cluster builds, a blank-canvas run (2026-09-26): `storage.systemDisk` caps EPHEMERAL at `ephemeralSize` (40 GiB) and gives the rest of the install disk to a `data-system` Longhorn volume; the Builds add-on (registry on a fixed ClusterIP that nodes reach through kube-proxy — first on the last MetalLB address, moved off the LAN after review; rootful BuildKit; Talos `RegistryMirrorConfig` `registry.kubit`) with build Jobs in the apps repo; forgetting a cluster resolves its open alerts; Flux objects waiting on a dependency never alert. Verified from an empty `~/.kubit` and a new master key: the lab host dialog (1 control plane 3 GiB, 2 workers 2 GiB, 60 GiB disks, no data disks, kubit-apps `./flux`) gave a Ready cluster with every add-on in under 5 min, each node a 17 GiB `data-system` Longhorn disk, the SOPS key installed and the first sync done. The first run found Longhorn's 30 % default-disk reserve leaving 12 GiB schedulable, so the 20 GiB registry volume never scheduled; reserve now 5 %, registry 5 GiB. Five simulated users then pushed from their own clones: Ben's Deno clock (a single `main.ts`, edits roll out by themselves), Eve's bot without a Service (secret from SOPS, calls Ben's clock over cluster DNS), Dan's docker-compose WordPress + MariaDB (DB passwords from SOPS, Longhorn volumes), Cara's web/api/worker monorepo with Redis (image built in the cluster in 12 s) and Ana's Phoenix + Postgres (built in the cluster in 43 s; 0.1.1 with a wait for Postgres re-created the build Job and rolled out). All served over HTTPS, data survived deleting database pods, 4.4 of 6.6 GiB RAM in use, health `healthy`
+- [~] M26 — Talos 1.14 hardening (2026-10): machinery v1.14.2; NetworkPolicy enforcement (Flannel's kube-network-policies) and the discovery service as declaration switches; host firewall; Talos config patches at cluster, pool and node with generate-and-validate on every save; LUKS2 disk encryption (`nodeID` default for new clusters, `tpm` selectable but blocked on Secure Boot); TPM and watchdog detection with an armed hardware watchdog; config freshness with bootstrap-manifest sync on Apply; Talos upgrades on the Lifecycle and Image APIs with drain; pushed Talos stage between ticks; Traefik with Gateway API CRDs shipped in Kubit replacing ingress-nginx, with a pinned-address migration. Unit-, API- and render-tested, the platform module passes `tofu validate`; **not yet verified on a lab cluster or hardware**: none of it has run against a real Talos node
 
 - [x] M21 — Namespace scopes: Apps · Platform · All with a namespace picker on Workloads, Network and Storage (URL-backed, live on namespace changes), Overview counts app and platform pods apart, CronJobs listed. Verified on a lab cluster on this Mac: fresh cluster opens on an empty Apps (14 platform pods), a new `shop` namespace appears live, `?ns=` links filter Network and Storage
 - [x] M20 — Lab host drivers: `labhost.Driver` seam (libvirt unchanged), *Lab host on this Mac* with vfkit + vmnet-helper VMs under launchd, driver-aware lab host page, per-host memory reserve. Verified end to end on this Mac (see *On this Mac*); firmware reboot, sleep during setup and the launchd-run daemon are not. Hyper-V: feasibility only, in NOTES/backlog.md. Full-stack run on this Mac (2026-09-25): three control planes (4 GiB, data disks) from the dialog to Ready with MetalLB, ingress, gVisor and metrics-server in 3 min 35 s; cert-manager and Argo CD applied from the Add-ons tab in 51 s; an Argo CD Application (podinfo from GitHub) synced and served over HTTPS through ingress with a cert-manager certificate; a gVisor pod ran; a control plane killed and restarted kept the API up on the VIP and raised and auto-resolved `talos.unreachable`. Longhorn not exercised

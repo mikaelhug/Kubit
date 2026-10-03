@@ -38,10 +38,12 @@ export function HardwareTab({ inv: live, invErr, node }: { inv: Inventory | null
   return (
     <div class="flex flex-col gap-5">
       {note && <Notice tone={invErr ? 'bad' : 'muted'}>{note}</Notice>}
-      <div class="grid grid-cols-2 lg:grid-cols-4 gap-4">
+      <div class="grid grid-cols-2 lg:grid-cols-3 gap-4">
         <Tile label="CPUs" value={String(inv.cpus)} sub={inv.arch} />
         <Tile label="Memory" value={fmt.bytes(inv.memoryBytes)} />
         <Tile label="KVM" value={inv.kvm ? 'available' : 'absent'} sub={inv.kvm ? 'runsc-kvm eligible' : 'gVisor uses systrap'} />
+        <Tile label="TPM" value={presence(inv.tpm)} sub={inv.tpm === undefined ? undefined : inv.tpm ? 'TPM disk encryption eligible' : 'Node ID encryption only'} />
+        <Tile label="Watchdog" value={presence(inv.watchdog)} sub={inv.watchdog === undefined ? undefined : inv.watchdog ? 'Resets a hung node' : 'No hardware reset'} />
         <Tile label="Disks" value={String(inv.disks.length)} sub={fmt.bytes(inv.disks.reduce((a, d) => a + d.sizeBytes, 0)) + ' total'} />
       </div>
       <Section title="Disks">
@@ -53,3 +55,5 @@ export function HardwareTab({ inv: live, invErr, node }: { inv: Inventory | null
     </div>
   )
 }
+
+const presence = (v?: boolean) => v === undefined ? '—' : v ? 'available' : 'absent'

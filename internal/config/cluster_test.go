@@ -35,6 +35,18 @@ func TestParseDefaults(t *testing.T) {
 	if len(c.ControlPlanes()) != 3 || len(c.Workers()) != 1 {
 		t.Errorf("roles: %d cp, %d workers", len(c.ControlPlanes()), len(c.Workers()))
 	}
+	if nw := c.Spec.Network; nw.Policies == nil || !*nw.Policies || nw.Discovery == nil || !*nw.Discovery {
+		t.Errorf("network policies and discovery default on: %+v", nw)
+	}
+	if c.Spec.Network.Firewall != nil {
+		t.Errorf("firewall has no default, got %v", *c.Spec.Network.Firewall)
+	}
+	if c.Spec.Storage.Encryption != "" {
+		t.Errorf("encryption has no default, got %q", c.Spec.Storage.Encryption)
+	}
+	if !c.Spec.Platform.Traefik.Enabled {
+		t.Error("traefik should be enabled")
+	}
 }
 
 func TestPrereleaseTalosVersionAccepted(t *testing.T) {
@@ -74,6 +86,7 @@ func TestValidateRejects(t *testing.T) {
 		"flux over http":     sampleCluster + "    flux: { enabled: true, repository: { url: http://example.com/apps.git } }\n",
 		"flux path escapes":  sampleCluster + "    flux: { enabled: true, repository: { url: https://example.com/apps.git, path: ../other } }\n",
 		"flux interval":      sampleCluster + "    flux: { enabled: true, repository: { url: https://example.com/apps.git, interval: soon } }\n",
+		"bad encryption":     strings.Replace(sampleCluster, "spec:\n", "spec:\n  storage: { encryption: luks }\n", 1),
 	}
 	for name, doc := range cases {
 		if _, err := config.Parse([]byte(doc)); err == nil {
@@ -82,10 +95,28 @@ func TestValidateRejects(t *testing.T) {
 	}
 }
 
+const declaredExtras = `  network: { policies: false, discovery: false, firewall: true }
+  storage: { encryption: nodeID }
+  patches:
+    - machine: { sysctls: { vm.max_map_count: "262144" } }
+  pools:
+    - name: controlplane
+      role: controlplane
+      patches: [ { machine: { kernel: { modules: [ { name: br_netfilter } ] } } } ]
+`
+
 func TestRoundTrip(t *testing.T) {
-	c, err := config.Parse([]byte(sampleCluster))
+	c, err := config.Parse([]byte(strings.Replace(strings.Replace(sampleCluster, "spec:\n", "spec:\n"+declaredExtras, 1),
+		"kvm: true,", "kvm: true, tpm: true, watchdog: true, patches: [ { machine: { install: { wipe: false } } } ],", 1)))
 	if err != nil {
 		t.Fatal(err)
+	}
+	nw, w := c.Spec.Network, c.Spec.Nodes[3]
+	if *nw.Policies || *nw.Discovery || !*nw.Firewall || c.Spec.Storage.Encryption != config.EncryptionNodeID {
+		t.Errorf("network %+v storage %+v", nw, c.Spec.Storage)
+	}
+	if len(c.Spec.Patches) != 1 || len(c.Spec.Pools[0].Patches) != 1 || len(w.Patches) != 1 || !w.TPM || !w.Watchdog {
+		t.Errorf("patches %v / %v / %v, node %+v", c.Spec.Patches, c.Spec.Pools[0].Patches, w.Patches, w)
 	}
 	b, err := c.Marshal()
 	if err != nil {
@@ -152,6 +183,26 @@ func TestLegacyArgoCDStillParses(t *testing.T) {
 	}
 }
 
+func TestLegacyIngressNginxFoldsIntoTraefik(t *testing.T) {
+	c, err := config.Parse([]byte(strings.Replace(sampleCluster, "    traefik: { enabled: true }\n", "    ingressNginx: { enabled: true, values: { controller: { replicaCount: 2 } } }\n", 1)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p := c.Spec.Platform; !p.Traefik.Enabled || p.Traefik.Values != nil || p.LegacyIngressNginx != nil {
+		t.Errorf("platform = %+v", p)
+	}
+	b, err := c.Marshal()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(b), "ingressNginx") || strings.Contains(string(b), "replicaCount") {
+		t.Errorf("ingressNginx survived the save:\n%s", b)
+	}
+	if !strings.Contains(string(b), "traefik:") {
+		t.Errorf("traefik missing from the save:\n%s", b)
+	}
+}
+
 func TestRegistryIP(t *testing.T) {
 	for cidr, want := range map[string]string{"10.96.0.0/12": "10.96.0.50", "172.20.8.0/22": "172.20.8.50", "172.20.8.0/24": "", "fd00::/108": "", "nope": ""} {
 		c, _ := config.Parse([]byte(sampleCluster))
@@ -198,6 +249,52 @@ func TestCheckChange(t *testing.T) {
 	bigger.Spec.Platform.Longhorn.Enabled = true
 	if err := config.CheckChange(withLonghorn, bigger, all(bigger, true), all(bigger, true)); err == nil {
 		t.Error("storage must stay once nodes hold a volume")
+	}
+}
+
+func TestValidateTPMNeedsTPMOnEveryNode(t *testing.T) {
+	tpm := strings.Replace(sampleCluster, "spec:\n", "spec:\n  storage: { encryption: tpm }\n", 1)
+	_, err := config.Parse([]byte(strings.Replace(tpm, "kvm: true,", "kvm: true, tpm: true,", 1)))
+	if err == nil || !strings.Contains(err.Error(), "cp-01: no TPM; storage.encryption is tpm") || strings.Contains(err.Error(), "worker-01") {
+		t.Errorf("nodes without a TPM must be named: %v", err)
+	}
+	if _, err := config.Parse([]byte(strings.ReplaceAll(tpm, "arch: arm64,", "arch: arm64, tpm: true,"))); err != nil {
+		t.Errorf("TPM on every node: %v", err)
+	}
+	if _, err := config.Parse([]byte(strings.Replace(sampleCluster, "spec:\n", "spec:\n  storage: { encryption: nodeID }\n", 1))); err != nil {
+		t.Errorf("nodeID needs no TPM: %v", err)
+	}
+	c, err := config.Parse([]byte(strings.ReplaceAll(tpm, "arch: arm64,", "arch: arm64, tpm: true,")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	c.Spec.Nodes = append(c.Spec.Nodes, config.Node{Hostname: "worker-02", IP: "192.168.64.6", Pool: "worker", Role: config.RoleWorker, Arch: config.ArchARM64, InstallDisk: config.InstallDisk{Path: "/dev/vda"}})
+	if err := c.Validate(); err == nil || !strings.Contains(err.Error(), "worker-02: no TPM") {
+		t.Errorf("a machine without a TPM must not join a TPM-encrypted cluster: %v", err)
+	}
+}
+
+func TestEncryptionFixedOnceInstalled(t *testing.T) {
+	parse := func(storage string) *config.Cluster {
+		c, err := config.Parse([]byte(strings.Replace(sampleCluster, "spec:\n", "spec:\n  storage: "+storage+"\n", 1)))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return c
+	}
+	off, nodeID := parse("{}"), parse("{ encryption: nodeID }")
+	cp01 := map[string]bool{"192.168.64.2": true}
+	if err := config.CheckChange(off, nodeID, cp01, nil); err == nil || !strings.Contains(err.Error(), "storage.encryption must stay: cp-01 is installed") {
+		t.Errorf("turning encryption on over an installed node must be refused: %v", err)
+	}
+	if err := config.CheckChange(nodeID, off, cp01, map[string]bool{"192.168.64.2": false}); err == nil {
+		t.Error("turning encryption off over an installed node must be refused")
+	}
+	if err := config.CheckChange(off, nodeID, nil, nil); err != nil {
+		t.Errorf("before install encryption may change: %v", err)
+	}
+	if err := config.CheckChange(nodeID, parse("{ encryption: nodeID, ephemeralSize: 80GiB }"), cp01, nil); err != nil {
+		t.Errorf("other storage fields are not encryption's concern: %v", err)
 	}
 }
 

@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'preact/hooks'
 import { api, fmt, type Sample, type ServiceHealth, type Status } from '../../api'
 import { nowEvery } from '../../clock'
 import { AlertGroup, EventRow } from '../../components/Alerts'
+import { behindText, useConfigStatus } from '../../configStatus'
 import { useNamespaces } from '../../components/NamespaceScope'
 import { RangeButtons, Sparkline, spanOf } from '../../components/Sparkline'
 import { Ago } from '../../components/Time'
@@ -29,10 +30,12 @@ export function Overview({ ctx }: { ctx: ClusterCtx }) {
   const { data: service } = useLive(() => api.serviceHealth(name).then((r) => r.latest), [name], [[name, 'services']], { onError: 'silent' })
   const down = !!status && !status.apiReachable
   const workers = spec.nodes.filter((n) => n.role === 'worker').length
+  const behind = useConfigStatus(name)?.behind ?? []
 
   return (
     <>
       {updates.length > 0 && <Notice tone="info"><span class="flex items-center gap-2">Update available: {updates.join(' · ')}<a href={`/clusters/${name}/lifecycle`} class="ml-auto text-accent hover:underline text-[12px]">Lifecycle</a></span></Notice>}
+      {behind.length > 0 && <Notice tone="warn"><span class="flex items-center gap-2"><span title={behind.join(', ')}>{behindText(behind.length)}</span><a href={`/clusters/${name}/settings`} class="ml-auto text-accent hover:underline text-[12px]">Settings</a></span></Notice>}
       <Reachability status={status} />
       <AlertGroup id={name} alerts={openAlerts(name)} />
       <div class="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-6 gap-3">

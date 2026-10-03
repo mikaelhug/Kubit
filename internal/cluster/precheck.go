@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/url"
 	"slices"
 	"sort"
 	"strings"
@@ -12,6 +13,7 @@ import (
 
 	"github.com/mikael/kubit/internal/config"
 	"github.com/mikael/kubit/internal/k8s"
+	"github.com/mikael/kubit/internal/talos"
 	machineapi "github.com/siderolabs/talos/pkg/machinery/api/machine"
 	"github.com/siderolabs/talos/pkg/machinery/compatibility"
 	"github.com/siderolabs/talos/pkg/machinery/gendata"
@@ -44,8 +46,10 @@ func (m *Manager) precheckUpgrade(ctx context.Context, c *config.Cluster, kc *k8
 			problems = append(problems, fmt.Sprintf("%s: Talos API unreachable (%s)", n.Hostname, n.TalosError))
 		case st.APIReachable && !n.Ready:
 			problems = append(problems, fmt.Sprintf("%s: not Ready", n.Hostname))
-		case n.Unschedulable:
+		case n.Unschedulable && !resumesCordon(ctx, kc, kind, n.Hostname):
 			problems = append(problems, fmt.Sprintf("%s: cordoned — uncordon before upgrading", n.Hostname))
+		case n.Unschedulable:
+			sink.Emit(Info, "precheck", n.Hostname, "cordoned by an interrupted upgrade; uncordoned when it completes")
 		}
 	}
 	if len(problems) > 0 {
@@ -91,6 +95,95 @@ func (m *Manager) precheckUpgrade(ctx context.Context, c *config.Cluster, kc *k8
 		}
 	}
 	return nil
+}
+
+type etcdMemberHealth struct {
+	id      uint64
+	name    string
+	healthy bool
+}
+
+func etcdTolerance(members []etcdMemberHealth, alarms []string) error {
+	const why = "every member must be healthy before a control plane goes down"
+	if len(alarms) > 0 {
+		return fmt.Errorf("etcd alarm %s; %s", strings.Join(alarms, ", "), why)
+	}
+	if len(members) == 2 {
+		return errors.New("etcd has 2 members and loses quorum when one goes down; add or remove a control plane first")
+	}
+	for _, mm := range members {
+		if mm.name == "" {
+			return fmt.Errorf("etcd member %016x is not started; %s", mm.id, why)
+		}
+		if !mm.healthy {
+			return fmt.Errorf("etcd member %s is not healthy; %s", mm.name, why)
+		}
+	}
+	return nil
+}
+
+func (m *Manager) etcdTolerates(ctx context.Context, c *config.Cluster, n config.Node, talosconfig []byte) error {
+	tc, err := talos.Dial(ctx, n.IP, talosconfig)
+	if err != nil {
+		return fmt.Errorf("etcd check: %w", err)
+	}
+	defer tc.Close()
+	call, cancel := context.WithTimeout(ctx, rpcTimeout)
+	defer cancel()
+	peers, err := tc.EtcdPeers(call)
+	if err != nil {
+		return fmt.Errorf("etcd members: %w", err)
+	}
+	alarms, err := tc.EtcdAlarms(call)
+	if err != nil {
+		return fmt.Errorf("etcd alarms: %w", err)
+	}
+	members := make([]etcdMemberHealth, 0, len(peers))
+	for _, p := range peers {
+		h := etcdMemberHealth{id: p.ID, name: p.Hostname}
+		if p.Hostname != "" {
+			h.healthy = etcdServiceHealthy(ctx, peerAddress(p, c.ControlPlanes()), talosconfig)
+		}
+		members = append(members, h)
+	}
+	return etcdTolerance(members, alarms)
+}
+
+func etcdServiceHealthy(ctx context.Context, ip string, talosconfig []byte) bool {
+	if ip == "" {
+		return false
+	}
+	call, cancel := context.WithTimeout(ctx, 15*time.Second)
+	defer cancel()
+	tc, err := talos.Dial(call, ip, talosconfig)
+	if err != nil {
+		return false
+	}
+	defer tc.Close()
+	ok, err := tc.ServiceHealthy(call, "etcd")
+	return err == nil && ok
+}
+
+func peerAddress(p talos.EtcdPeer, cps []config.Node) string {
+	for _, cp := range cps {
+		if cp.Hostname == p.Hostname {
+			return cp.IP
+		}
+	}
+	for _, raw := range p.PeerURLs {
+		if u, err := url.Parse(raw); err == nil && u.Hostname() != "" {
+			return u.Hostname()
+		}
+	}
+	return ""
+}
+
+func resumesCordon(ctx context.Context, kc *k8s.Client, kind, hostname string) bool {
+	if kind != "talos" {
+		return false
+	}
+	unschedulable, by, err := kc.CordonState(ctx, hostname)
+	return err == nil && cordonOf(unschedulable, by) == cordonKubit
 }
 
 func (m *Manager) checkVarHeadroom(ctx context.Context, c *config.Cluster, talosconfig []byte, sink Sink) []string {
