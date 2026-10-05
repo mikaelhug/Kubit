@@ -19,6 +19,7 @@ type Watcher struct {
 	OnRefresh       func(name, scope string)
 
 	OnObserver func(o ObserverState)
+	Subnets    func(ctx context.Context) []string
 
 	interval time.Duration
 

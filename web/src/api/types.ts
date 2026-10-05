@@ -89,3 +89,6 @@ export interface Status {
 export interface Service { id: string; state: string; healthy: boolean; unknown?: boolean; last: string }
 
 export type OpRef = { operationId: number }
+export interface SecretKey { path: string[]; encrypted: boolean; list?: boolean }
+export interface SecretFile { path: string; recipients: string[]; keys: SecretKey[]; kind?: string; name?: string; namespace?: string; error?: string }
+export interface SecretRepo { index: number; dir: string; name: string; cluster?: string; error?: string; files: SecretFile[] }

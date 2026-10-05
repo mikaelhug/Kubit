@@ -14,6 +14,7 @@ import { Discovery } from './pages/Discovery'
 import { Home } from './pages/Home'
 import { NodePage } from './pages/node/NodePage'
 import { Operations } from './pages/Operations'
+import { Secrets } from './pages/Secrets'
 import { runningCount } from './ops'
 import { clusters, connected, daemon, drawerHeight, drawerOpen, machineList, reconnectAttempt, resyncing, statuses, stopped, toast } from './store'
 
@@ -49,6 +50,7 @@ function Shell() {
         <ClusterNav active={activeCluster} />
         <div class="px-4 pt-5 pb-1 label">Kubit</div>
         <NavLink href="/discovery" path={path}>Discovery <DiscoveryBadge /></NavLink>
+        <NavLink href="/secrets" path={path}>Secrets</NavLink>
         <NavLink href="/operations" path={path}>Activity <RunningBadge /></NavLink>
         <StopKubit />
         <div class="px-4 py-2.5 text-[11px] text-muted border-t border-border flex items-center gap-2">
@@ -66,6 +68,7 @@ function Shell() {
           <Route path="/nodes/:ip" component={NodePage} />
           <Route path="/machines/:mac" component={NodePage} />
           <Route path="/discovery" component={Discovery} />
+          <Route path="/secrets" component={Secrets} />
           <Route path="/operations" component={Operations} />
           <Route path="/operations/:id" component={Operations} />
           <Route path="/" component={Home} />

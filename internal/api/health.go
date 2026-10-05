@@ -29,6 +29,7 @@ func (s *Server) AttachWatcher(ctx context.Context, w *watch.Watcher) {
 		s.forwardEvent(e)
 	}
 	w.OnRefresh = func(name, scope string) { s.refresh(name, scope) }
+	w.Subnets = s.discoverySubnets
 	w.OnObserver = func(o watch.ObserverState) {
 		s.hub.publish(Message{Kind: "observer", Observer: &o})
 		if o.Online {

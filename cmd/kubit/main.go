@@ -36,9 +36,10 @@ func rootCmd() *cobra.Command {
 	console := serveCmd(true)
 	root := &cobra.Command{
 		Use:           "kubit",
-		Short:         "Declarative Talos/Kubernetes cluster lifecycle manager; without a command it runs the daemon and opens the console",
+		Short:         "Declarative Talos clusters from a repo; kubit [dirs...] runs the daemon and opens the console",
 		SilenceUsage:  true,
 		SilenceErrors: true,
+		Args:          cobra.ArbitraryArgs,
 		RunE:          console.RunE,
 	}
 	root.Flags().AddFlagSet(console.Flags())

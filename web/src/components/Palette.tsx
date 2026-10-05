@@ -19,7 +19,7 @@ function paletteItems(): Item[] {
   for (const m of machineList.value) {
     if (m.kind !== 'member') out.push({ label: m.hostname || m.mac, hint: `${kindLabel[m.kind]} · ${m.ip || m.mac}`, href: `/machines/${m.mac}`, group: 'Machines' })
   }
-  out.push({ label: 'Home', href: '/', group: 'Kubit' }, { label: 'Discovery', href: '/discovery', group: 'Kubit' }, { label: 'Activity', href: '/operations', group: 'Kubit' })
+  out.push({ label: 'Home', href: '/', group: 'Kubit' }, { label: 'Discovery', href: '/discovery', group: 'Kubit' }, { label: 'Secrets', href: '/secrets', group: 'Kubit' }, { label: 'Activity', href: '/operations', group: 'Kubit' })
   return out
 }
 

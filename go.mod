@@ -6,8 +6,10 @@ require (
 	filippo.io/age v1.3.2
 	github.com/coder/websocket v1.8.15
 	github.com/cosi-project/runtime v1.16.3
+	github.com/fsnotify/fsnotify v1.9.0
 	github.com/insomniacslk/dhcp v0.0.0-20260901064844-234b97448fae
 	github.com/pin/tftp/v3 v3.2.0
+	github.com/siderolabs/crypto v0.6.5
 	github.com/siderolabs/talos/pkg/machinery v1.14.2
 	github.com/spf13/cobra v1.10.2
 	github.com/zalando/go-keyring v0.2.8
@@ -107,7 +109,6 @@ require (
 	github.com/russross/blackfriday/v2 v2.1.0 // indirect
 	github.com/ryanuber/go-glob v1.0.0 // indirect
 	github.com/sasha-s/go-deadlock v0.3.9 // indirect
-	github.com/siderolabs/crypto v0.6.5 // indirect
 	github.com/siderolabs/gen v0.8.8 // indirect
 	github.com/siderolabs/go-api-signature v0.3.13 // indirect
 	github.com/siderolabs/go-pointer v1.0.1 // indirect

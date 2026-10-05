@@ -1,5 +1,5 @@
 import { authedUrl, req } from './api/http'
-import type { AddonStatus, AuditEntry, Build, CertInfo, ClusterRow, ConfigStatus, FluxObject, HealthEvent, ImageStatus, Inventory, MaintenanceState, Namespace, NetworkView, NodeDetail, NodeRow, ObserverState, OpRef, Operation, PodEvent, PodSummary, PxeStatus, SOPSKey, Sample, Service, ServiceHealth, Snapshot, Status, StorageView, Versions, Workload } from './api/types'
+import type { AddonStatus, AuditEntry, Build, CertInfo, ClusterRow, ConfigStatus, FluxObject, HealthEvent, ImageStatus, Inventory, MaintenanceState, Namespace, NetworkView, NodeDetail, NodeRow, ObserverState, OpRef, Operation, PodEvent, PodSummary, PxeStatus, SecretRepo, SOPSKey, Sample, Service, ServiceHealth, Snapshot, Status, StorageView, Versions, Workload } from './api/types'
 
 export type * from './api/types'
 export { authedUrl, getToken } from './api/http'
@@ -41,6 +41,17 @@ export const api = {
   nodeKubernetes: (ip: string) => req<NodeDetail>('GET', `/nodes/${ip}/kubernetes`),
   operations: () => req<Operation[]>('GET', '/operations'),
   operation: (id: number) => req<Operation>('GET', `/operations/${id}`),
+  secrets: () => req<SecretRepo[]>('GET', '/secrets'),
+  secretValue: (repo: number, file: string, key: string[]) => req<{ value: string }>('GET', `/secrets/value?${secretQuery(repo, file, key)}`),
+  setSecret: (repo: number, file: string, key: string[], value: string) => req<void>('PUT', '/secrets/value', { repo, file, key, value }),
+  deleteSecret: (repo: number, file: string, key: string[]) => req<void>('DELETE', `/secrets/value?${secretQuery(repo, file, key)}`),
+  newSecret: (repo: number, file: string, name: string, namespace: string) => req<void>('POST', '/secrets/files', { repo, file, name, namespace }),
+}
+
+function secretQuery(repo: number, file: string, key: string[]) {
+  const q = new URLSearchParams({ repo: String(repo), file })
+  for (const k of key) q.append('key', k)
+  return q.toString()
 }
 
 export const kubeconfigUrl = (cluster: string) => authedUrl(`/clusters/${cluster}/kubeconfig`)

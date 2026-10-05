@@ -480,7 +480,7 @@ func (m *Manager) Converge(ctx context.Context, d *Desired, p *Plan, opts Conver
 		}
 		return m.ApplyPlatform(ctx, name, sink)
 	}
-	if err := m.adopt(ctx, d, p.applied); err != nil {
+	if err := m.adopt(ctx, d, p.applied, true); err != nil {
 		return err
 	}
 	for _, n := range p.adds {
@@ -518,7 +518,23 @@ func (m *Manager) Converge(ctx context.Context, d *Desired, p *Plan, opts Conver
 	return m.settle(ctx, d)
 }
 
-func (m *Manager) adopt(ctx context.Context, d *Desired, applied *config.Cluster) error {
+func (m *Manager) Track(ctx context.Context, d *Desired) (bool, error) {
+	if err := m.checkCachedSecrets(ctx, d); err != nil {
+		return false, err
+	}
+	name := d.Cluster.Metadata.Name
+	m.UsePlatformState(name, d.StatePath, d.Passphrase)
+	if row, err := m.Store.GetCluster(ctx, name); err == nil && Observable(row.State) {
+		return true, m.cacheSecrets(ctx, d)
+	}
+	ls := m.observe(ctx, d)
+	if !ls.exists {
+		return false, nil
+	}
+	return true, m.adopt(ctx, d, appliedSpec(d.Cluster, ls, nil), ls.api)
+}
+
+func (m *Manager) adopt(ctx context.Context, d *Desired, applied *config.Cluster, ready bool) error {
 	name := applied.Metadata.Name
 	if err := m.EnsureSchematic(ctx, applied); err != nil {
 		return err
@@ -528,8 +544,8 @@ func (m *Manager) adopt(ctx context.Context, d *Desired, applied *config.Cluster
 		return err
 	}
 	state := StateBootstrapped
-	if row, err := m.Store.GetCluster(ctx, name); err == nil && Observable(row.State) {
-		state = row.State
+	if ready {
+		state = StateReady
 	}
 	if err := m.Store.PutCluster(ctx, store.ClusterRow{Name: name, Spec: spec, SchematicID: applied.Spec.SchematicID, State: state}); err != nil {
 		return err

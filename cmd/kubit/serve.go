@@ -23,9 +23,10 @@ func serveCmd(openConsole bool) *cobra.Command {
 	var interval, serviceInterval time.Duration
 	var open bool
 	cmd := &cobra.Command{
-		Use:   "serve",
-		Short: "Run the Kubit daemon and web UI",
-		RunE: func(cmd *cobra.Command, _ []string) error {
+		Use:   "serve [dirs...]",
+		Short: "Run the Kubit daemon and web console, observing the cluster repos in dirs",
+		Args:  cobra.ArbitraryArgs,
+		RunE: func(cmd *cobra.Command, args []string) error {
 			settings, err := loadServeConfig(configPath)
 			if err != nil {
 				return err
@@ -74,6 +75,9 @@ func serveCmd(openConsole bool) *cobra.Command {
 			}
 			srv.AttachWatcher(ctx, w)
 			srv.AttachStop(stop)
+			if err := srv.ServeRepos(ctx, args); err != nil {
+				return err
+			}
 			hs := &http.Server{Handler: srv}
 			errc := make(chan error, 1)
 			go func() { errc <- hs.Serve(ln) }()

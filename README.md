@@ -200,8 +200,10 @@ maintenance API: MAC of the uplink, arch, CPUs, RAM, disks, KVM, TPM, watchdog, 
 UUID and serial. Machines are keyed by MAC, so a new DHCP lease keeps the row and raises
 `machine.ip-changed` for members. Kinds are derived: **member** (in a cluster),
 **maintenance**, **configured** (Talos with a config Kubit did not apply), **booting**,
-**unbooted**. The daemon reprobes maintenance and configured machines in the background
-and pushes changes to the console.
+**unbooted**. Every minute the daemon scans `discoverySubnets` plus the /24 of every
+node declared in a served repo for new maintenance-mode machines, reprobes the known
+ones, and pushes changes to the console, where *Copy node entry* gives the cluster.yaml
+lines for a machine.
 
 ## Plan and apply
 
@@ -289,12 +291,17 @@ is a no-op on a live cluster). A re-export removes only files it wrote.
 
 ## Console and API
 
-`kubit` runs the daemon in the foreground and opens the console; `kubit serve` does the
-same without a browser. It binds `127.0.0.1:8090`; a non-loopback bind requires a bearer
-token (`--token` / `KUBIT_TOKEN`).
+`kubit lab apps` runs the daemon in the foreground for those repos and opens the console;
+`kubit serve lab apps` does the same without a browser. A dir with `cluster.yaml` is a
+cluster repo: Kubit decrypts it with your age key, adopts the cluster into its cache
+when its nodes answer (so health, alerts and add-on state follow the repo), and watches
+the files (fsnotify) to reload on change. A dir without one only feeds the secrets
+editor. It binds `127.0.0.1:8090`; a non-loopback bind requires a bearer token
+(`--token` / `KUBIT_TOKEN`). `kubit status lab --watch` gives the same health in a
+terminal.
 
-The console is read-only apart from Discovery's scan, alert acknowledgement and *Stop
-Kubit*:
+The console is read-only apart from Discovery's scan, alert acknowledgement, the secrets
+editor and *Stop Kubit*:
 
 | route | shows |
 |---|---|
@@ -302,6 +309,7 @@ Kubit*:
 | `/clusters/<name>/…` | Overview, Nodes, Workloads, Network, Storage, Add-ons, Backups, Config (cluster.yaml, kubeconfig, certificates) |
 | `/machines/<mac>` | Overview, Hardware, Kubernetes, Services, Logs |
 | `/discovery` | machines in maintenance mode with *Copy node entry*, scan, PXE state |
+| `/secrets` | the SOPS files of the served repos: keys, values on demand, add, edit, delete, new Secret |
 | `/operations` | operations and audit log |
 
 Everything is live over one WebSocket (`/api/v1/ws`): store changes, watcher status,
@@ -314,8 +322,17 @@ config|image|addons|flux|builds|sops|certificates|maintenance|snapshots[/{id}]|e
 samples|service-health|workloads|pods|namespaces|network|storage]`, `nodes`,
 `nodes/{ip}/inventory|services|logs|kubernetes`, `machines[/{mac}]`, `operations[/{id}]`,
 `audit`, `observer`, `versions`, `pxe`, `pxe/decide`, `version`, `ws`; `POST discover`,
-`POST events/{id}/ack`, `POST clusters/{n}/events/ack`, `POST daemon/stop`. Unknown
-`/api/` paths answer 404 JSON.
+`POST events/{id}/ack`, `POST clusters/{n}/events/ack`, `POST daemon/stop`,
+`GET secrets`, `GET|PUT|DELETE secrets/value`, `POST secrets/files`. Unknown `/api/`
+paths answer 404 JSON.
+
+**Secrets editor.** Lists every `*.sops.yaml` under the served repos (not the repo's own
+`secrets.sops.yaml`, nor `.git`, `state/`, `.terraform/`) with its keys and recipients,
+read from the file without decrypting. A value is decrypted only when shown (audited as
+`secret.read`). An edit decrypts the file with your age key, changes the one value and
+re-encrypts it for the same recipients and rules (`secret.write`); a new Secret takes its
+recipients from the repo's `.sops.yaml` and encrypts only `data`/`stringData`. Kubit never
+commits. Encrypted comments are dropped on a write.
 
 **Settings** come from `kubit serve --config kubit.yaml` (defaults otherwise):
 
@@ -397,6 +414,8 @@ Roadmap (2026-10-05):
   removal, platform), Lease lock, exit codes, encrypted tofu state in the repo;
   `cluster create|apply`, `node add|remove`, `upgrade`, `platform`, `sops` commands
   removed. Unit-tested; not yet run against a cluster
-- [ ] 4 — `kubit serve <dirs…>`, status, discovery polish, secrets editor
+- [x] 4 — `kubit serve <dirs…>` (adopt, watch, reload), `kubit status [dir] --watch`,
+  discovery scans served subnets every minute, console secrets editor (verified against
+  the sops CLI and live external edits)
 - [ ] 5 — talos-backup add-on, off by default
 - [ ] 6 — migration: `kubit export --repo`

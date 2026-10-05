@@ -39,6 +39,7 @@ type Server struct {
 	stop            context.CancelFunc
 	stopDaemon      func()
 	token           string
+	repos           repoSet
 }
 
 func New(version string, m *cluster.Manager, token string, crypto *store.Crypto) *Server {
@@ -74,6 +75,7 @@ func (s *Server) routes() {
 	s.certRoutes()
 	s.sopsRoutes()
 	s.maintenanceRoutes()
+	s.secretRoutes()
 	s.mux.HandleFunc("/api/", func(w http.ResponseWriter, _ *http.Request) {
 		writeErr(w, &statusError{Status: http.StatusNotFound, Msg: "not found"})
 	})

@@ -236,12 +236,18 @@
 - `OnStatus` side effects (snapshot scheduling, cert checks) also run on pushed
   statuses. Harmless (gated), but a publish-only hook would be clearer.
 - Phase 1 cut leftovers (2026-10-05):
-  - `hack/e2e.sh` drove the removed design/create/rename API; rewrite it against
-    `kubit plan`/`kubit apply` in Phase 3.
-  - `settings.discoverySubnets` is read by nothing; Phase 4's discovery should scan
-    those subnets on its own instead of the console's Scan box.
   - Schema still carries `users`, `sessions`, `api_tokens`, machine `oob`/`provision`/
     `labhost`/`host`/`wol` columns, `snapshots.offsite`; drop them in Phase 6.
-  - `kubit pxe` still asks the daemon (`/api/v1/pxe/decide`) for member MACs; read them
-    from the repos' cluster.yaml once Phase 2 lands.
-  - The web Welcome page names `kubit cluster create -f`; switch to `kubit apply` in Phase 3.
+  - `kubit pxe` without `--repo` still asks the daemon; drop that path once every
+    cluster lives in a repo.
+- Converge follow-ups (2026-10-05):
+  - Not yet run against a cluster: create, add, config, upgrades, removal, platform
+    through `kubit apply`; the Lease lock; encrypted state on a real platform module.
+  - Apply operations run in the CLI process and print to the terminal; record them in
+    the operations table so the console's Activity shows CI and laptop applies.
+  - The tofu provider lock file lives in `~/.kubit`; a fresh machine resolves providers
+    again within the pinned ranges. Writing `.terraform.lock.hcl` into the repo would pin them.
+  - A node declared with `ip:` = its DHCP lease is found by MAC when the lease moves only
+    before it joins; afterwards the plan asks to update cluster.yaml or pin a static address.
+  - Secrets editor: keys under sequences are listed but not editable; non-Secret files
+    split keys on dots.
