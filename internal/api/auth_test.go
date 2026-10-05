@@ -80,6 +80,9 @@ func TestIdentityLifecycle(t *testing.T) {
 	if rec := do(t, srv, "GET", "/api/v1/users", "", "Cookie", ops); rec.Code != http.StatusForbidden {
 		t.Errorf("operator must not manage users: %d", rec.Code)
 	}
+	if rec := do(t, srv, "POST", "/api/v1/daemon/stop", "", "Cookie", ops); rec.Code != http.StatusForbidden {
+		t.Errorf("operator must not stop Kubit: %d", rec.Code)
+	}
 	if rec := do(t, srv, "PUT", "/api/v1/users/mikael", `{"role":"viewer"}`, "Cookie", admin); rec.Code != http.StatusConflict {
 		t.Errorf("demoting the only admin must be refused: %d %s", rec.Code, rec.Body.String())
 	}

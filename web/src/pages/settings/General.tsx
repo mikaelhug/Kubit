@@ -1,12 +1,15 @@
-import { fmt } from '../../api'
+import { useState } from 'preact/hooks'
+import { api, fmt } from '../../api'
 import { Elapsed } from '../../components/Time'
-import { ErrorBox, Field, KeyValue, MovedNotice, Section } from '../../components/ui'
-import { daemon } from '../../store'
+import { ConfirmDialog, ErrorBox, Field, KeyValue, MovedNotice, Section } from '../../components/ui'
+import { runningCount } from '../../ops'
+import { can, connected, daemon, stopped, toast } from '../../store'
 import { SaveBar, useSettingsSlice } from './Layout'
 
 export function General() {
   const f = useSettingsSlice('general', (s) => ({ factoryUrl: s.factoryUrl, watchIntervalSec: s.watchIntervalSec, defaultMetalLBRange: s.defaultMetalLBRange }), (s, v) => ({ ...s, ...v }))
   const d = daemon.value
+  const [stopping, setStopping] = useState(false)
   if (!f.draft) return <div class="text-muted">{f.error ?? 'Loading'}</div>
   const v = f.draft
   return (
@@ -21,14 +24,18 @@ export function General() {
         </div>
         <SaveBar dirty={f.dirty} onSave={f.save} />
       </Section>
-      <Section title="Daemon">
+      <Section title="Daemon" actions={can('admin') && <button class="btn btn-danger" disabled={!connected.value || runningCount.value > 0} title={runningCount.value > 0 ? 'Operations are running' : ''} onClick={() => setStopping(true)}>Stop Kubit</button>}>
         <div class="panel p-3">
           <KeyValue rows={[
             ['Version', <span class="mono">{d?.version ?? '—'}</span>],
-            ['Runs as', d ? (d.service ? 'service' : 'foreground process') : '—'],
             ['Up since', d ? <>{fmt.datetime(d.startedAt)} (<Elapsed from={d.startedAt} />)</> : '—'],
           ]} />
         </div>
+        {stopping && (
+          <ConfirmDialog title="Stop Kubit" action="Stop Kubit" tone="danger" onClose={() => setStopping(false)}
+            onConfirm={() => api.stopDaemon().then(() => { stopped.value = true; setStopping(false) }).catch((e) => toast(e.message, 'error'))}
+            impact={<p>Alerts and scheduled snapshots pause until <span class="mono">kubit</span> runs again.</p>} />
+        )}
       </Section>
     </>
   )

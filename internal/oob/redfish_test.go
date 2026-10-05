@@ -172,7 +172,7 @@ func TestRedfishErrors(t *testing.T) {
 
 func TestRedfishClientsShareOneTransport(t *testing.T) {
 	a, b := newRedfish(Config{Host: "10.0.0.1"}, nil), newRedfish(Config{Host: "10.0.0.2"}, nil)
-	if a.client.Transport != b.client.Transport || a.client == b.client {
+	if a.client.Transport != b.client.Transport || a.client == b.client || a.writes.Transport != b.writes.Transport {
 		t.Error("each BMC client must reuse the package transport, not open its own pool")
 	}
 }
@@ -198,5 +198,137 @@ func TestAliveChecksLoginWithOneRequest(t *testing.T) {
 	}
 	if redfishTransport.Proxy != nil {
 		t.Error("a LAN BMC is never reached through a proxy")
+	}
+}
+
+func iLO4(t *testing.T, oem map[string]any, adapters bool) (*httptest.Server, *[]string) {
+	t.Helper()
+	var resets []string
+	write := func(w http.ResponseWriter, v any) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(v)
+	}
+	mux := http.NewServeMux()
+	mux.HandleFunc("/redfish/v1/", func(w http.ResponseWriter, r *http.Request) {
+		write(w, map[string]any{"RedfishVersion": "1.0.0", "Systems": map[string]string{"@odata.id": "/redfish/v1/Systems/"}})
+	})
+	mux.HandleFunc("/redfish/v1/Systems/", func(w http.ResponseWriter, r *http.Request) {
+		write(w, map[string]any{"Members": []map[string]string{{"@odata.id": "/redfish/v1/Systems/1/"}}})
+	})
+	mux.HandleFunc("/redfish/v1/Systems/1/", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPatch {
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+		write(w, map[string]any{
+			"Manufacturer": "HP", "Model": "ProLiant ML350p Gen8", "SerialNumber": "CZ1234567", "PowerState": "On",
+			"Boot":               map[string]any{"BootSourceOverrideSupported": []string{"None", "Cd", "Hdd", "Usb", "Pxe"}},
+			"EthernetInterfaces": map[string]string{"@odata.id": "/redfish/v1/Systems/1/EthernetInterfaces/"},
+			"Oem":                oem,
+			"Actions":            map[string]any{"#ComputerSystem.Reset": map[string]any{"target": "/redfish/v1/Systems/1/Actions/ComputerSystem.Reset/", "ResetType@Redfish.AllowableValues": []string{"On", "ForceOff", "ForceRestart", "Nmi", "PushPowerButton"}}},
+		})
+	})
+	mux.HandleFunc("/redfish/v1/Systems/1/EthernetInterfaces/", func(w http.ResponseWriter, r *http.Request) {
+		write(w, map[string]any{"Members": []map[string]string{}})
+	})
+	mux.HandleFunc("/redfish/v1/Systems/1/NetworkAdapters/", func(w http.ResponseWriter, r *http.Request) {
+		if !adapters {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		write(w, map[string]any{"Members": []map[string]string{{"@odata.id": "/redfish/v1/Systems/1/NetworkAdapters/1/"}}})
+	})
+	mux.HandleFunc("/redfish/v1/Systems/1/NetworkAdapters/1/", func(w http.ResponseWriter, r *http.Request) {
+		write(w, map[string]any{"PhysicalPorts": []map[string]string{{"MacAddress": ""}, {"MacAddress": "AC:16:2D:11:22:33"}, {"MacAddress": "ac:16:2d:11:22:34"}}})
+	})
+	mux.HandleFunc("/redfish/v1/Systems/1/Actions/ComputerSystem.Reset/", func(w http.ResponseWriter, r *http.Request) {
+		var body struct{ ResetType string }
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		resets = append(resets, body.ResetType)
+		w.WriteHeader(http.StatusOK)
+	})
+	srv := httptest.NewTLSServer(mux)
+	t.Cleanup(srv.Close)
+	return srv, &resets
+}
+
+func TestRedfishFindsTheHostMACOnAnILO4(t *testing.T) {
+	links := map[string]any{"NetworkAdapters": map[string]string{"@odata.id": "/redfish/v1/Systems/1/NetworkAdapters/"}}
+	for name, c := range map[string]struct {
+		oem      map[string]any
+		adapters bool
+	}{
+		"host correlation": {map[string]any{"Hp": map[string]any{"HostCorrelation": map[string]any{"HostMACAddress": []string{"00:00:00:00:00:00", "ac:16:2d:11:22:33", "ac:16:2d:11:22:34"}}, "Links": links}}, false},
+		"network adapters": {map[string]any{"Hp": map[string]any{"Links": links}}, true},
+	} {
+		srv, resets := iLO4(t, c.oem, c.adapters)
+		m, err := Open(Config{Type: "redfish", Host: srv.URL, User: "admin", Password: "pw"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		info, err := m.Probe(ctx)
+		if err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		if info.MAC != "ac:16:2d:11:22:33" || info.Model != "ProLiant ML350p Gen8" {
+			t.Errorf("%s: probe %+v", name, info)
+		}
+		if err := m.Power(ctx, BootPXE); err != nil {
+			t.Fatalf("%s: pxe: %v", name, err)
+		}
+		if len(*resets) != 1 || (*resets)[0] != "ForceRestart" {
+			t.Errorf("%s: a running iLO 4 host restarts into PXE, got %v", name, *resets)
+		}
+		cancel()
+	}
+}
+
+func TestRedfishWritesSurviveABMCThatDropsTheConnection(t *testing.T) {
+	var resets []string
+	var mu sync.Mutex
+	mux := http.NewServeMux()
+	mux.HandleFunc("/redfish/v1/", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"RedfishVersion":"1.0.0","Systems":{"@odata.id":"/redfish/v1/Systems/"}}`))
+	})
+	mux.HandleFunc("/redfish/v1/Systems/", func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"Members":[{"@odata.id":"/redfish/v1/Systems/1/"}]}`))
+	})
+	mux.HandleFunc("/redfish/v1/Systems/1/", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPatch {
+			_, _ = w.Write([]byte(`{"PowerState":"Off","Actions":{"#ComputerSystem.Reset":{"target":"/redfish/v1/Systems/1/Actions/ComputerSystem.Reset/"}}}`))
+			return
+		}
+		conn, buf, err := w.(http.Hijacker).Hijack()
+		if err != nil {
+			t.Error(err)
+			return
+		}
+		_, _ = buf.WriteString("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 2\r\n\r\n{}")
+		_ = buf.Flush()
+		go func() { time.Sleep(300 * time.Millisecond); conn.Close() }()
+	})
+	mux.HandleFunc("/redfish/v1/Systems/1/Actions/ComputerSystem.Reset/", func(w http.ResponseWriter, r *http.Request) {
+		var body struct{ ResetType string }
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		mu.Lock()
+		resets = append(resets, body.ResetType)
+		mu.Unlock()
+		w.WriteHeader(http.StatusOK)
+	})
+	srv := httptest.NewTLSServer(mux)
+	defer srv.Close()
+	m, err := Open(Config{Type: "redfish", Host: srv.URL, User: "admin", Password: "pw"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := m.Power(ctx, BootPXE); err != nil {
+		t.Fatalf("an iLO that drops the connection after a write must not fail the next write: %v", err)
+	}
+	if len(resets) != 1 || resets[0] != "On" {
+		t.Errorf("resets: %v", resets)
 	}
 }

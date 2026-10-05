@@ -5,7 +5,7 @@ export interface Step { id: string; title: string; status: StepStatus; node?: st
 export interface Event { seq?: number; time: string; clock?: string; kind?: 'log' | 'steps' | 'step'; level: Level; step: string; node?: string; message: string; steps?: Step[]; status?: StepStatus }
 export type OpStatus = 'running' | 'done' | 'failed' | 'cancelled'
 export interface Operation { id: number; cluster: string; kind: string; status: OpStatus; log?: string; startedAt: string; finishedAt?: string; steps: Step[]; artifact?: unknown; request?: unknown }
-export interface Message { seq?: number; kind: 'hello' | 'resync' | 'event' | 'operation' | 'status' | 'health' | 'refresh' | 'cluster' | 'clusterRemoved' | 'machine' | 'machineRemoved' | 'snapshot' | 'snapshotRemoved' | 'audit' | 'settings' | 'healthAck' | 'healthResolved' | 'versions' | 'hostSample' | 'observer'; observer?: ObserverState; operationId?: number; event?: Event; operation?: Operation; cluster?: string; status?: Status; health?: HealthEvent; scope?: string; clusterRow?: ClusterRow; machine?: NodeRow; snapshot?: Snapshot; audit?: AuditEntry; settings?: Settings; sample?: Sample; key?: string; node?: string; hello?: { seq: number; version: string; startedAt: string; service: boolean; pid: number; os?: string } }
+export interface Message { seq?: number; kind: 'hello' | 'stopped' | 'resync' | 'event' | 'operation' | 'status' | 'health' | 'refresh' | 'cluster' | 'clusterRemoved' | 'machine' | 'machineRemoved' | 'snapshot' | 'snapshotRemoved' | 'audit' | 'settings' | 'healthAck' | 'healthResolved' | 'versions' | 'hostSample' | 'observer'; observer?: ObserverState; operationId?: number; event?: Event; operation?: Operation; cluster?: string; status?: Status; health?: HealthEvent; scope?: string; clusterRow?: ClusterRow; machine?: NodeRow; snapshot?: Snapshot; audit?: AuditEntry; settings?: Settings; sample?: Sample; key?: string; node?: string; hello?: { seq: number; version: string; startedAt: string; pid: number; os?: string } }
 export interface ObserverState { online: boolean; since?: string; error?: string; gaps24h: number; lastGapAt?: string }
 export interface HealthEvent { id: number; ts: string; cluster: string; node?: string; severity: 'info' | 'warn' | 'critical'; kind: string; message: string; acked: boolean }
 export interface ServiceHealth { collectedAt: string; metallb: boolean; workloads?: { kind: string; namespace: string; name: string; ready: number; desired: number; available: boolean; ageSec: number }[]; pods?: { namespace: string; name: string; node?: string; owner?: string; phase: string; restarts: number; ageSec: number }[]; claims?: { namespace: string; name: string; phase: string; ageSec: number }[]; services?: { namespace: string; name: string; type: string; hasSelector: boolean; endpoints: number; ageSec: number }[]; ingresses?: { namespace: string; name: string; hasAddress: boolean; ageSec: number }[]; pool?: { range: string; total: number; allocated: number } }
@@ -68,7 +68,7 @@ export interface ClusterRow { name: string; state: string; schematicId: string; 
 
 export interface Inventory {
   ip: string; hostname?: string; uuid?: string; serial?: string; cpus: number; memoryBytes: number; kvm: boolean; tpm?: boolean; watchdog?: boolean; virtual?: boolean; arch: string; talosVersion: string; platform: string; stage: string; manufacturer?: string; product?: string
-  disks: { devPath: string; sizeBytes: number; model?: string; transport?: string; rotational: boolean; readonly: boolean; cdrom: boolean }[]
+  disks: { devPath: string; sizeBytes: number; model?: string; transport?: string; rotational: boolean; readonly: boolean; cdrom: boolean; serial?: string; wwid?: string; links?: string[]; key?: string }[]
   links: { name: string; mac: string; up: boolean; addresses?: string[] }[]
   bootTime?: string; extensions?: { name: string; version: string; author?: string }[]
   etcd?: { memberId: string; leader: boolean; learner: boolean; dbSizeBytes: number; dbInUseBytes: number; raftIndex: number; raftTerm: number; errors?: string[] }
@@ -83,16 +83,21 @@ export interface NodeDetail {
 }
 export interface OOBConfig { type: '' | 'amt' | 'redfish'; host: string; user: string; password: string; tls: boolean }
 export interface OOBInfo { version: string; mac: string; uuid?: string; manufacturer?: string; model?: string; serial?: string; power: string; cpus?: number; memoryBytes?: number; disks?: { model?: string; sizeBytes: number; transport?: string; media?: string }[] }
-export interface LabVM { name: string; mac: string; state: string; cpus: number; memMiB: number; diskGiB: number; dataGiB?: number; boot: 'talos' | 'disk'; ip?: string }
-export interface LabCapacity { cpus: number; memMiB: number; diskGiB: number; kvm: boolean; kernel: string; libvirt: string; hostname: string; arch: string; bridge: string; ready: boolean; checkedAt: string; model?: string; os?: string; hypervisor?: string; reserveMiB?: number; problem?: string; command?: string }
+export interface LabVMDisk { target: string; pool?: string; device?: string; gib: number }
+export interface LabVM { name: string; mac: string; state: string; cpus: number; memMiB: number; diskGiB: number; dataGiB?: number; boot: 'talos' | 'disk'; ip?: string; disks?: LabVMDisk[] }
+export interface LabDiskRef { key: string; devPath?: string; links?: string[]; wwid?: string; serial?: string; sizeBytes: number; model?: string }
+export interface LabDisk extends LabDiskRef { id: string; transport?: string; rotational?: boolean; use: 'os' | 'pool' | 'free' | 'busy'; pool?: string; signature?: string }
+export interface LabPool { name: string; dir: string; disk?: string; sizeBytes: number; freeBytes: number; mounted: boolean }
+export interface LabPoolUsage { name: string; used: number; total: number; mounted: boolean }
+export interface LabCapacity { cpus: number; memMiB: number; diskGiB: number; kvm: boolean; kernel: string; libvirt: string; hostname: string; arch: string; bridge: string; ready: boolean; checkedAt: string; model?: string; os?: string; hypervisor?: string; reserveMiB?: number; problem?: string; command?: string; disks?: LabDisk[]; pools?: LabPool[] }
 export interface LabLocal { supported: boolean; problem?: string; command?: string; capacity?: LabCapacity; subnet?: string; host?: string }
-export interface LabMetrics { load1: number; cpuPct: number; memUsed: number; memTotal: number; diskUsed: number; diskTotal: number; vmsRunning: number; uptimeSec: number; at: string }
+export interface LabMetrics { load1: number; cpuPct: number; memUsed: number; memTotal: number; diskUsed: number; diskTotal: number; vmsRunning: number; uptimeSec: number; at: string; pools?: LabPoolUsage[] }
 export interface LabUpdates { count: number; security: number; rebootRequired: boolean; kernelRunning: string; kernelInstalled: string; release: string; unattended: boolean; checkedAt: string }
-export interface VMSize { name?: string; role: 'controlplane' | 'worker'; cpus: number; memMiB: number; diskGiB: number; dataGiB: number }
+export interface VMSize { name?: string; role: 'controlplane' | 'worker'; cpus: number; memMiB: number; diskGiB: number; dataGiB: number; systemDisk?: string; dataDisk?: string }
 export interface VMPlan { each: VMSize[]; prefix?: string }
 export interface LabBootLine { kernel: string; initrd: string; cmdline: string }
 export interface LabInstall { stage: 'installer' | 'partitioning' | 'packages' | 'late-done' | 'booted' | string; at: string }
-export interface LabHost { state: 'installing' | 'setup' | 'ready' | 'updating' | 'error'; error?: string; capacity: LabCapacity; talos?: string; vms: LabVM[] | null; metrics?: LabMetrics; updates?: LabUpdates; install?: LabInstall; network?: 'bridge' | 'routed'; disk?: string; boot?: LabBootLine; failures?: number; driver?: 'libvirt' | 'vfkit'; iso?: string; updatedAt: string }
+export interface LabHost { state: 'installing' | 'setup' | 'ready' | 'updating' | 'error'; error?: string; capacity: LabCapacity; talos?: string; vms: LabVM[] | null; metrics?: LabMetrics; updates?: LabUpdates; install?: LabInstall; network?: 'bridge' | 'routed'; disk?: string; installDisk?: LabDiskRef; boot?: LabBootLine; failures?: number; driver?: 'libvirt' | 'vfkit'; iso?: string; updatedAt: string }
 
 export type MachineKind = 'member' | 'maintenance' | 'configured' | 'labhost' | 'booting' | 'unbooted'
 export interface NodeRow { ip: string; mac: string; uuid?: string; serial?: string; ipsSeen?: string[]; cluster: string; hostname: string; pool: string; arch: string; role: string; source: string; state: string; kind: MachineKind; talos: boolean; talosVersion: string; wol: boolean; oob?: OOBConfig; oobType?: string; provision?: boolean; provisionKind?: string; labhost?: LabHost; host?: string; firstSeen: string; lastSeen: string; inventory?: Inventory }

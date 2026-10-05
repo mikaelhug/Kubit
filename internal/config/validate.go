@@ -98,12 +98,8 @@ func (c *Cluster) validateStorage() []error {
 	if s.EphemeralSize == "" {
 		return errs
 	}
-	b, err := s.EphemeralBytes()
-	if err != nil {
+	if err := s.CheckEphemeral(); err != nil {
 		return append(errs, fmt.Errorf("storage.ephemeralSize %q: %w", s.EphemeralSize, err))
-	}
-	if b < MinEphemeralBytes {
-		return append(errs, fmt.Errorf("storage.ephemeralSize %q: at least 10GiB", s.EphemeralSize))
 	}
 	return errs
 }

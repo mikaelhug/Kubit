@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"slices"
 	"strings"
 
 	"github.com/mikael/kubit/internal/config"
@@ -68,12 +69,14 @@ type addVMsRequest struct {
 }
 
 type vmSize struct {
-	Name    string `json:"name,omitempty"`
-	Role    string `json:"role,omitempty"`
-	CPUs    int    `json:"cpus"`
-	MemMiB  int    `json:"memMiB"`
-	DiskGiB int    `json:"diskGiB"`
-	DataGiB int    `json:"dataGiB"`
+	Name       string `json:"name,omitempty"`
+	Role       string `json:"role,omitempty"`
+	CPUs       int    `json:"cpus"`
+	MemMiB     int    `json:"memMiB"`
+	DiskGiB    int    `json:"diskGiB"`
+	DataGiB    int    `json:"dataGiB"`
+	SystemDisk string `json:"systemDisk,omitempty"`
+	DataDisk   string `json:"dataDisk,omitempty"`
 }
 
 const minControlPlaneMiB = 2048
@@ -130,14 +133,37 @@ func (r addVMsRequest) validate() error {
 		return fmt.Errorf("vms: between 1 and 32 VMs")
 	}
 	for i, v := range sz {
-		if v.CPUs < 1 || v.MemMiB < minVMMiB || v.DiskGiB < 8 || v.DataGiB < 0 {
+		wholeSystem, _, err := labhost.ParseDiskChoice(v.SystemDisk)
+		if err != nil {
+			return fmt.Errorf("vm %d: %w", i+1, err)
+		}
+		wholeData, dataKey, err := labhost.ParseDiskChoice(v.DataDisk)
+		if err != nil {
+			return fmt.Errorf("vm %d: %w", i+1, err)
+		}
+		if v.CPUs < 1 || v.MemMiB < minVMMiB || v.DiskGiB < 8 && !wholeSystem || v.DataGiB < 0 {
 			return fmt.Errorf("vm %d: at least 1 vCPU, %d MiB, 8 GiB disk", i+1, minVMMiB)
+		}
+		if dataKey != "" && !wholeData && v.DataGiB < 1 {
+			return fmt.Errorf("vm %d: a data image needs a size", i+1)
 		}
 		if v.Role == "controlplane" && v.MemMiB < minControlPlaneMiB {
 			return fmt.Errorf("vm %d: a control plane needs at least %d MiB", i+1, minControlPlaneMiB)
 		}
 	}
 	return nil
+}
+
+func (r addVMsRequest) usesDisks() bool {
+	return slices.ContainsFunc(r.Each, func(v vmSize) bool { return v.SystemDisk != "" || v.DataDisk != "" })
+}
+
+func diskRefs(inv talos.Inventory) []labhost.DiskRef {
+	var out []labhost.DiskRef
+	for _, d := range inv.InstallCandidates() {
+		out = append(out, labhost.DiskRef{Key: labhost.DiskKey(d.Links, d.WWID, d.Serial, d.DevPath), DevPath: d.DevPath, Links: d.Links, WWID: d.WWID, Serial: d.Serial, SizeBytes: d.SizeBytes, Model: d.Model})
+	}
+	return out
 }
 
 func freeMiB(capa labhost.Capacity, vms []labhost.VM) int {

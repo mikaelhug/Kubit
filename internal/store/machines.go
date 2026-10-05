@@ -385,25 +385,27 @@ func (s *Store) SetMachineProvision(ctx context.Context, mac string, on bool, ki
 }
 
 type LabHost struct {
-	State     string           `json:"state"`
-	Error     string           `json:"error,omitempty"`
-	Capacity  labhost.Capacity `json:"capacity"`
-	Talos     string           `json:"talos,omitempty"`
-	Schematic string           `json:"schematic,omitempty"`
-	Kernel    string           `json:"kernel,omitempty"`
-	Initrd    string           `json:"initrd,omitempty"`
-	ISO       string           `json:"iso,omitempty"`
-	Driver    string           `json:"driver,omitempty"`
-	Index     int              `json:"index"`
-	VMs       []labhost.VM     `json:"vms"`
-	Metrics   *labhost.Metrics `json:"metrics,omitempty"`
-	Updates   *labhost.Updates `json:"updates,omitempty"`
-	Install   *InstallProgress `json:"install,omitempty"`
-	Network   string           `json:"network,omitempty"`
-	Disk      string           `json:"disk,omitempty"`
-	Boot      *BootLine        `json:"boot,omitempty"`
-	Failures  int              `json:"failures,omitempty"`
-	UpdatedAt string           `json:"updatedAt"`
+	State       string            `json:"state"`
+	Error       string            `json:"error,omitempty"`
+	Capacity    labhost.Capacity  `json:"capacity"`
+	Talos       string            `json:"talos,omitempty"`
+	Schematic   string            `json:"schematic,omitempty"`
+	Kernel      string            `json:"kernel,omitempty"`
+	Initrd      string            `json:"initrd,omitempty"`
+	ISO         string            `json:"iso,omitempty"`
+	Driver      string            `json:"driver,omitempty"`
+	Index       int               `json:"index"`
+	VMs         []labhost.VM      `json:"vms"`
+	Metrics     *labhost.Metrics  `json:"metrics,omitempty"`
+	Updates     *labhost.Updates  `json:"updates,omitempty"`
+	Install     *InstallProgress  `json:"install,omitempty"`
+	Network     string            `json:"network,omitempty"`
+	Disk        string            `json:"disk,omitempty"`
+	InstallDisk *labhost.DiskRef  `json:"installDisk,omitempty"`
+	PlanDisks   []labhost.DiskRef `json:"planDisks,omitempty"`
+	Boot        *BootLine         `json:"boot,omitempty"`
+	Failures    int               `json:"failures,omitempty"`
+	UpdatedAt   string            `json:"updatedAt"`
 }
 
 type BootLine struct {

@@ -3,6 +3,7 @@ package watch
 import (
 	"bytes"
 	"context"
+	"strings"
 	"testing"
 
 	"github.com/mikael/kubit/internal/cluster"
@@ -177,5 +178,32 @@ func TestLabTickOnThisMac(t *testing.T) {
 	}
 	if lh.Updates != nil {
 		t.Error("a Mac has no package updates to check")
+	}
+}
+
+func TestLabDiskAlertsPerStorageDisk(t *testing.T) {
+	w, host := labWatcher(t)
+	host.LabHost.Capacity.Pools = []labhost.Pool{{Name: labhost.SystemPool}, {Name: "pool1", Disk: "wwn-0xb"}}
+	host.LabHost.Capacity.Disks = []labhost.HostDisk{{DiskRef: labhost.DiskRef{Key: "wwn-0xb", DevPath: "/dev/sdb"}}}
+	ctx := context.Background()
+	key := store.LabHostKey(host.MAC)
+	step := func(system, pool1 int64) []store.EventRow {
+		m := labhost.Metrics{MemTotal: 100, Pools: []labhost.PoolUsage{{Name: labhost.SystemPool, Used: system, Total: 100, Mounted: true}, {Name: "pool1", Used: pool1, Total: 100, Mounted: true}, {Name: "pool2", Used: 99, Total: 100}}}
+		evs := w.labResourceEvents(ctx, host, m)
+		w.emit(ctx, key, evs)
+		return evs
+	}
+	evs := step(10, 90)
+	if len(evs) != 1 || evs[0].Node != "pool1" || evs[0].Kind != "labhost.disk-low" || !strings.Contains(evs[0].Message, "pool1 (sdb) 90% full") {
+		t.Fatalf("pool1 fills up while Debian's disk is fine; an unmounted pool stays quiet: %+v", evs)
+	}
+	if evs := step(88, 90); len(evs) != 1 || evs[0].Node != "" {
+		t.Fatalf("the system disk alerts on its own: %+v", evs)
+	}
+	if evs := step(88, 50); len(evs) != 1 || evs[0].Kind != "labhost.disk-ok" || evs[0].Node != "pool1" {
+		t.Fatalf("pool1 recovers: %+v", evs)
+	}
+	if w.Store.HasOpenEvent(ctx, key, "pool1", "labhost.disk-low") || !w.Store.HasOpenEvent(ctx, key, "", "labhost.disk-low") {
+		t.Error("recovery closes only pool1's alert")
 	}
 }

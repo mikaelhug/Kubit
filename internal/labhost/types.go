@@ -6,31 +6,34 @@ import (
 )
 
 type VMSpec struct {
-	Name    string `json:"name"`
-	MAC     string `json:"mac"`
-	CPUs    int    `json:"cpus"`
-	MemMiB  int    `json:"memMiB"`
-	DiskGiB int    `json:"diskGiB"`
-	DataGiB int    `json:"dataGiB,omitempty"`
-	Kernel  string `json:"-"`
-	Initrd  string `json:"-"`
-	ISO     string `json:"-"`
-	Arch    string `json:"-"`
-	Bridge  string `json:"-"`
-	Routed  bool   `json:"-"`
-	TCG     bool   `json:"-"`
+	Name    string    `json:"name"`
+	MAC     string    `json:"mac"`
+	CPUs    int       `json:"cpus"`
+	MemMiB  int       `json:"memMiB"`
+	DiskGiB int       `json:"diskGiB"`
+	DataGiB int       `json:"dataGiB,omitempty"`
+	Kernel  string    `json:"-"`
+	Initrd  string    `json:"-"`
+	ISO     string    `json:"-"`
+	Arch    string    `json:"-"`
+	Bridge  string    `json:"-"`
+	Routed  bool      `json:"-"`
+	TCG     bool      `json:"-"`
+	System  Placement `json:"-"`
+	Data    Placement `json:"-"`
 }
 
 type VM struct {
-	Name    string `json:"name"`
-	MAC     string `json:"mac"`
-	State   string `json:"state"`
-	CPUs    int    `json:"cpus"`
-	MemMiB  int    `json:"memMiB"`
-	DiskGiB int    `json:"diskGiB"`
-	DataGiB int    `json:"dataGiB,omitempty"`
-	Boot    string `json:"boot"`
-	IP      string `json:"ip,omitempty"`
+	Name    string   `json:"name"`
+	MAC     string   `json:"mac"`
+	State   string   `json:"state"`
+	CPUs    int      `json:"cpus"`
+	MemMiB  int      `json:"memMiB"`
+	DiskGiB int      `json:"diskGiB"`
+	DataGiB int      `json:"dataGiB,omitempty"`
+	Boot    string   `json:"boot"`
+	IP      string   `json:"ip,omitempty"`
+	Disks   []VMDisk `json:"disks,omitempty"`
 }
 
 func MAC(host, n int) string { return fmt.Sprintf("52:54:00:6b:%02x:%02x", host&0xff, n&0xff) }
@@ -47,15 +50,16 @@ func TalosKernelArgs(consoles ...string) []string {
 }
 
 type Metrics struct {
-	Load1      float64 `json:"load1"`
-	CPUPct     float64 `json:"cpuPct"`
-	MemUsed    int64   `json:"memUsed"`
-	MemTotal   int64   `json:"memTotal"`
-	DiskUsed   int64   `json:"diskUsed"`
-	DiskTotal  int64   `json:"diskTotal"`
-	VMsRunning int     `json:"vmsRunning"`
-	UptimeSec  int64   `json:"uptimeSec"`
-	At         string  `json:"at"`
+	Load1      float64     `json:"load1"`
+	CPUPct     float64     `json:"cpuPct"`
+	MemUsed    int64       `json:"memUsed"`
+	MemTotal   int64       `json:"memTotal"`
+	DiskUsed   int64       `json:"diskUsed"`
+	DiskTotal  int64       `json:"diskTotal"`
+	VMsRunning int         `json:"vmsRunning"`
+	UptimeSec  int64       `json:"uptimeSec"`
+	At         string      `json:"at"`
+	Pools      []PoolUsage `json:"pools,omitempty"`
 }
 
 type Updates struct {

@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'preact/hooks'
 import { useLocation } from 'preact-iso'
 import { fmt, type NodeRow } from '../api'
-import { AddVMsDialog, HostAlerts, HostMetrics, HostStateNotice, HostSystem, HostVMs, MacSystem, ReleaseHostDialog } from '../components/labhost'
+import { AddVMsDialog, HostAlerts, HostMetrics, HostStateNotice, HostStorage, HostSystem, HostVMs, MacSystem, ReleaseHostDialog } from '../components/labhost'
 import { RemoteManagement } from '../components/RemoteManagement'
 import { Tabs } from '../components/Tabs'
 import { identityRows } from '../components/Machine'
@@ -12,8 +12,8 @@ import { running } from '../ops'
 import { live, machines, openAlerts } from '../store'
 import { stateTone } from '../tone'
 
-type TabId = 'overview' | 'vms' | 'actions'
-const tabs: { id: TabId; label: string }[] = [{ id: 'overview', label: 'Overview' }, { id: 'vms', label: 'VMs' }, { id: 'actions', label: 'Actions' }]
+type TabId = 'overview' | 'vms' | 'storage' | 'actions'
+const allTabs: { id: TabId; label: string }[] = [{ id: 'overview', label: 'Overview' }, { id: 'vms', label: 'VMs' }, { id: 'storage', label: 'Storage' }, { id: 'actions', label: 'Actions' }]
 
 export function LabHostPage({ mac, tab = 'overview' }: { mac: string; tab?: string }) {
   const { route } = useLocation()
@@ -21,6 +21,7 @@ export function LabHostPage({ mac, tab = 'overview' }: { mac: string; tab?: stri
   useEffect(() => { if (host && !host.labhost) route(`/machines/${host.mac}`, true) }, [host?.mac, !!host?.labhost])
   if (!host || !host.labhost) return <div class="p-8 text-muted">{!host && live.value ? `No lab host ${mac} is known.` : 'Loading'}</div>
   const lh = host.labhost
+  const tabs = allTabs.filter((t) => t.id !== 'storage' || (!onMac(lh) && (lh.capacity.disks?.length ?? 0) > 0))
   const shown = (tabs.some((t) => t.id === tab) ? tab : 'overview') as TabId
   const key = labHostKey(host.mac)
   const alert = openAlerts(key)[0]
@@ -44,6 +45,7 @@ export function LabHostPage({ mac, tab = 'overview' }: { mac: string; tab?: stri
       <div class="p-5 flex flex-col gap-4 max-w-[1300px]">
         {shown === 'overview' && <OverviewTab host={host} busy={busy} />}
         {shown === 'vms' && <><HostStateNotice host={host} /><HostVMs host={host} /></>}
+        {shown === 'storage' && <HostStorage host={host} busy={busy} />}
         {shown === 'actions' && <ActionsTab host={host} />}
       </div>
     </div>

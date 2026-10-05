@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/netip"
 	"os"
+	"slices"
 	"strings"
 	"time"
 
@@ -25,12 +26,55 @@ type labPlan struct {
 	Network string         `json:"network,omitempty"`
 	Disk    string         `json:"disk,omitempty"`
 	VMs     *addVMsRequest `json:"vms,omitempty"`
-	Cluster *struct {
-		Name          string                 `json:"name"`
-		ControlPlanes int                    `json:"controlPlanes"`
-		SkipPlatform  bool                   `json:"skipPlatform"`
-		Repository    *config.FluxRepository `json:"repository,omitempty"`
-	} `json:"cluster,omitempty"`
+	Cluster *labCluster    `json:"cluster,omitempty"`
+	install *labhost.DiskRef
+	disks   []labhost.DiskRef
+}
+
+type labCluster struct {
+	Name          string                 `json:"name"`
+	ControlPlanes int                    `json:"controlPlanes"`
+	SkipPlatform  bool                   `json:"skipPlatform"`
+	Repository    *config.FluxRepository `json:"repository,omitempty"`
+	EphemeralSize string                 `json:"ephemeralSize,omitempty"`
+}
+
+func (lc labCluster) apply(c *config.Cluster) (*config.Cluster, error) {
+	c.Spec.Platform.Flux.Repository = lc.Repository
+	if lc.EphemeralSize != "" {
+		c.Spec.Storage.EphemeralSize = lc.EphemeralSize
+	}
+	return reparse(c)
+}
+
+func labPlanDisks(m *store.Machine, plan *labPlan) error {
+	var refs []labhost.DiskRef
+	if inv, ok := inventoryOf(m); ok {
+		refs = diskRefs(inv)
+	}
+	var install *labhost.DiskRef
+	switch {
+	case plan.Disk == "" && len(refs) > 0:
+		install = &refs[0]
+	case plan.Disk != "":
+		if i := slices.IndexFunc(refs, func(r labhost.DiskRef) bool { return r.Key == plan.Disk || r.DevPath == plan.Disk }); i >= 0 {
+			install = &refs[i]
+		} else if len(refs) == 0 && labhost.SafeDevice(plan.Disk) {
+			install = &labhost.DiskRef{Key: plan.Disk, DevPath: plan.Disk}
+		} else {
+			return errors.New("disk must be a /dev path or a disk from the machine's inventory")
+		}
+	}
+	if plan.VMs != nil && plan.VMs.usesDisks() {
+		if len(refs) == 0 {
+			return errors.New("Scan the machine's disks first.")
+		}
+		if _, err := planStorage(plan.VMs.sizes(), inventoryCapacity(install, refs), nil); err != nil {
+			return err
+		}
+	}
+	plan.install, plan.disks = install, refs
+	return nil
 }
 
 func (s *Server) handleLabProvision(w http.ResponseWriter, r *http.Request) {
@@ -46,6 +90,10 @@ func (s *Server) handleLabProvision(w http.ResponseWriter, r *http.Request) {
 	m, err := s.store.GetMachine(r.Context(), mac)
 	if err != nil {
 		writeErr(w, err)
+		return
+	}
+	if err := labPlanDisks(m, &plan); err != nil {
+		writeErr(w, badRequest(err.Error()))
 		return
 	}
 	if m.Cluster != "" {
@@ -131,7 +179,11 @@ func (s *Server) labProvisionOp(ctx context.Context, sink cluster.Sink, mac stri
 	if err := s.store.SetMachineProvision(ctx, mac, true, "labhost"); err != nil {
 		return nil, err
 	}
-	if err := s.store.SetLabHost(ctx, mac, &store.LabHost{State: "installing", Network: plan.Network, Disk: plan.Disk}); err != nil {
+	installing := &store.LabHost{State: "installing", Network: plan.Network, Disk: plan.Disk, InstallDisk: plan.install, PlanDisks: plan.disks}
+	if plan.install != nil {
+		installing.Disk = plan.install.DevPath
+	}
+	if err := s.store.SetLabHost(ctx, mac, installing); err != nil {
 		return nil, err
 	}
 	_ = s.store.SetNodeState(ctx, m.IP, "labhost")
@@ -162,7 +214,7 @@ func (s *Server) labProvisionOp(ctx context.Context, sink cluster.Sink, mac stri
 	}
 	sink.End("arm")
 
-	lc, err := s.labWaitInstall(ctx, m, plan.Manual, sink)
+	lc, err := s.labWaitInstall(ctx, m, plan.Manual, labBootBudget(c), sink)
 	if err != nil {
 		if errors.Is(err, context.Canceled) {
 			err = fmt.Errorf("install cancelled: %w", err)
@@ -202,12 +254,14 @@ func (s *Server) checkLabPlan(ctx context.Context, plan *labPlan) (int, error) {
 	if plan.Network != "" && plan.Network != "bridge" && plan.Network != "routed" {
 		return http.StatusBadRequest, errors.New("network must be bridge or routed")
 	}
-	if plan.Disk != "" && !strings.HasPrefix(plan.Disk, "/dev/") {
-		return http.StatusBadRequest, errors.New("disk must be a /dev path")
-	}
 	if plan.Cluster != nil {
 		if r := plan.Cluster.Repository; r != nil && r.URL == "" {
 			plan.Cluster.Repository = nil
+		}
+		if e := plan.Cluster.EphemeralSize; e != "" {
+			if err := (config.Storage{EphemeralSize: e}).CheckEphemeral(); err != nil {
+				return http.StatusBadRequest, fmt.Errorf("cluster.ephemeralSize %q: %w", e, err)
+			}
 		}
 		if r := plan.Cluster.Repository; r != nil {
 			r.Default()
@@ -240,7 +294,13 @@ func (s *Server) labRunPlan(ctx context.Context, mac string, plan labPlan, sink 
 		return nil, err
 	}
 	sink.Begin("define")
-	macs, err := s.labAddVMs(ctx, host, *plan.VMs, sink)
+	req := *plan.VMs
+	if req.usesDisks() && host.LabHost != nil {
+		if req, err = translatePlan(req, host.LabHost.PlanDisks, host.LabHost.Capacity.Disks); err != nil {
+			return nil, err
+		}
+	}
+	macs, err := s.labAddVMs(ctx, host, req, sink)
 	if err != nil {
 		return nil, err
 	}
@@ -260,7 +320,9 @@ func (s *Server) labRunPlan(ctx context.Context, mac string, plan labPlan, sink 
 	if err != nil {
 		return nil, err
 	}
-	c.Spec.Platform.Flux.Repository = plan.Cluster.Repository
+	if c, err = plan.Cluster.apply(c); err != nil {
+		return nil, err
+	}
 	skip := plan.Cluster.SkipPlatform
 	opID, err := s.startCreate(c, skip, map[string]any{"yaml": mustYAML(c), "skipPlatform": skip, "from": "labhost"})
 	if err != nil {
@@ -275,6 +337,7 @@ func (s *Server) labSetup(ctx context.Context, lc labhost.Driver, m *store.Machi
 	lh := &store.LabHost{State: "setup"}
 	if m.LabHost != nil {
 		lh.Index, lh.Network, lh.Driver = m.LabHost.Index, m.LabHost.Network, m.LabHost.Driver
+		lh.Disk, lh.InstallDisk, lh.PlanDisks = m.LabHost.Disk, m.LabHost.InstallDisk, m.LabHost.PlanDisks
 	}
 	if lh.Network == "routed" {
 		rt, ok := lc.(labhost.Router)
@@ -293,6 +356,11 @@ func (s *Server) labSetup(ctx context.Context, lc labhost.Driver, m *store.Machi
 	lh.Capacity = capa
 	if capa.Problem != "" {
 		return lh, errors.New(strings.TrimSpace(capa.Problem + " " + capa.Command))
+	}
+	if lh.InstallDisk != nil {
+		if d, ok := labhost.MatchDisk(*lh.InstallDisk, capa.Disks); ok && d.Use != labhost.DiskOS {
+			return lh, fmt.Errorf("Debian is not on the planned disk %s", lh.InstallDisk.Label())
+		}
 	}
 	if lh.Driver == "" && !capa.KVM {
 		if os.Getenv("KUBIT_LAB_ALLOW_TCG") == "" {

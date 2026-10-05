@@ -37,6 +37,7 @@ type Server struct {
 	crypto          *store.Crypto
 	ctx             context.Context
 	stop            context.CancelFunc
+	stopDaemon      func()
 	token           string
 }
 

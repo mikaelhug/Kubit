@@ -72,7 +72,7 @@ func requiredRole(r *http.Request) store.Role {
 	p := r.URL.Path
 	read := r.Method == http.MethodGet || r.Method == http.MethodHead
 	switch {
-	case strings.HasPrefix(p, "/api/v1/users"), p == "/api/v1/settings" && !read, strings.HasPrefix(p, "/api/v1/backup"):
+	case strings.HasPrefix(p, "/api/v1/users"), p == "/api/v1/settings" && !read, strings.HasPrefix(p, "/api/v1/backup"), p == "/api/v1/daemon/stop":
 		return store.RoleAdmin
 	case strings.HasSuffix(p, "/kubeconfig"), strings.HasSuffix(p, "/export"), strings.Contains(p, "/certificates"), strings.HasSuffix(p, "/sops/identity"):
 		return store.RoleAdmin

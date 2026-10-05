@@ -12,6 +12,7 @@ import (
 	"github.com/mikael/kubit/internal/cluster"
 	"github.com/mikael/kubit/internal/labhost/libvirt"
 	"github.com/mikael/kubit/internal/netx"
+	"github.com/mikael/kubit/internal/oob"
 	"github.com/mikael/kubit/internal/pxe"
 	"github.com/mikael/kubit/internal/store"
 	"github.com/mikael/kubit/internal/talos"
@@ -126,23 +127,31 @@ func (p *pxeWatch) wait(ctx context.Context, step string, budget time.Duration, 
 }
 
 var (
-	labBootWait      = 3 * time.Minute
-	labIPXEWait      = 2 * time.Minute
-	labInstallerWait = 5 * time.Minute
-	labInstallWait   = 30 * time.Minute
-	labSSHWait       = 5 * time.Minute
-	labPollEvery     = 5 * time.Second
+	labBootWait       = 3 * time.Minute
+	labServerBootWait = 10 * time.Minute
+	labIPXEWait       = 2 * time.Minute
+	labInstallerWait  = 5 * time.Minute
+	labInstallWait    = 30 * time.Minute
+	labSSHWait        = 5 * time.Minute
+	labPollEvery      = 5 * time.Second
 )
 
-func (s *Server) labWaitBoot(ctx context.Context, watch *pxeWatch) error {
+func labBootBudget(c *oob.Config) time.Duration {
+	if c != nil && c.Type == "redfish" {
+		return labServerBootWait
+	}
+	return labBootWait
+}
+
+func (s *Server) labWaitBoot(ctx context.Context, watch *pxeWatch, budget time.Duration) error {
 	mac := watch.mac
-	if err := watch.wait(ctx, "boot", labBootWait, func() (bool, string) {
+	if err := watch.wait(ctx, "boot", budget, func() (bool, string) {
 		if b := watch.poll(ctx); b != nil && b.Stage != "nopxe" {
 			return true, fmt.Sprintf("network boot request from %s (%s firmware)", mac, b.Arch)
 		} else if b != nil {
-			return false, fmt.Sprintf("%s asked for an address without PXE (vendor class %q): the machine came up from its disk, or only its management engine did. Check the BIOS boot order (network boot first, UEFI IPv4 PXE enabled) and that the AMT boot override is honoured.", mac, b.Class)
+			return false, fmt.Sprintf("%s asked for an address without PXE (vendor class %q): the machine came up from its disk, or only its management engine did. Check the BIOS boot order (network boot first, PXE enabled on the wired NIC) and that the remote management boot override is honoured.", mac, b.Class)
 		}
-		return false, fmt.Sprintf("no network boot request from %s within %s. The machine booted from its disk or another PXE server answered first: check the BIOS boot order and that the AMT boot override is honoured. Kubit's PXE server answers on the interface it was started with — on a laptop that is usually Wi-Fi, and some access points drop DHCP replies; a wired interface is safer.", mac, labBootWait)
+		return false, fmt.Sprintf("no network boot request from %s within %s. The machine booted from its disk or another PXE server answered first: check the BIOS boot order and that the remote management boot override is honoured. Kubit's PXE server answers on the interface it was started with — on a laptop that is usually Wi-Fi, and some access points drop DHCP replies; a wired interface is safer.", mac, budget)
 	}); err != nil {
 		return err
 	}
@@ -154,7 +163,7 @@ func (s *Server) labWaitBoot(ctx context.Context, watch *pxeWatch) error {
 	})
 }
 
-func (s *Server) labWaitInstall(ctx context.Context, m *store.Machine, manual bool, sink cluster.Sink) (*libvirt.Client, error) {
+func (s *Server) labWaitInstall(ctx context.Context, m *store.Machine, manual bool, bootBudget time.Duration, sink cluster.Sink) (*libvirt.Client, error) {
 	mac := m.MAC
 	watch := newPXEWatch(s, mac, sink)
 	stageAt := func() (string, time.Time) {
@@ -165,7 +174,7 @@ func (s *Server) labWaitInstall(ctx context.Context, m *store.Machine, manual bo
 		t, _ := time.Parse(time.RFC3339, row.LabHost.Install.At)
 		return row.LabHost.Install.Stage, t
 	}
-	stageRank := map[string]int{"installer": 1, "partitioning": 2, "packages": 3, "late-done": 4, "booted": 5}
+	stageRank := map[string]int{"installer": 1, "partitioning": 2, "nodisk": 2, "packages": 3, "late-done": 4, "booted": 5}
 	wait := func(step string, budget time.Duration, check func() (bool, string)) error {
 		return watch.wait(ctx, step, budget, func() (bool, string) {
 			watch.poll(ctx)
@@ -173,7 +182,7 @@ func (s *Server) labWaitInstall(ctx context.Context, m *store.Machine, manual bo
 		})
 	}
 	if !manual {
-		if err := s.labWaitBoot(ctx, watch); err != nil {
+		if err := s.labWaitBoot(ctx, watch, bootBudget); err != nil {
 			return nil, err
 		}
 	}
@@ -188,12 +197,22 @@ func (s *Server) labWaitInstall(ctx context.Context, m *store.Machine, manual bo
 	}
 	if err := wait("install", labInstallWait, func() (bool, string) {
 		st, at := stageAt()
+		if st == "nodisk" {
+			return true, "the installer found no install disk"
+		}
 		if stageRank[st] >= 4 {
 			return true, "Debian installed; rebooting"
 		}
 		return false, fmt.Sprintf("the installer stopped after %q (%s ago): it is waiting on a question, usually partitioning or a mirror error. Attach a screen to see it.", st, time.Since(at).Round(time.Minute))
 	}); err != nil {
 		return nil, err
+	}
+	if st, _ := stageAt(); st == "nodisk" {
+		disk := "chosen for Debian"
+		if row, err := s.store.GetMachine(ctx, mac); err == nil && row.LabHost != nil && row.LabHost.InstallDisk != nil {
+			disk = row.LabHost.InstallDisk.Label()
+		}
+		return nil, fmt.Errorf("the installer did not find the install disk %s; scan the machine's disks again", disk)
 	}
 	priv, _, err := s.store.SSHKey(ctx)
 	if err != nil {

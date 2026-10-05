@@ -22,3 +22,14 @@ func TestInventoryCarriesTPMAndWatchdog(t *testing.T) {
 		t.Errorf("a record from before detection reads as absent: %+v %v", old, err)
 	}
 }
+
+func TestByIDLinksKeepsOnlyStableNames(t *testing.T) {
+	got := byIDLinks([]string{"/dev/disk/by-path/pci-0000:03:00.0-scsi-0:1:0:0", "/dev/disk/by-id/wwn-0x600508b1", "/dev/disk/by-id/scsi-3600508b1", "/dev/disk/by-diskseq/1"})
+	if len(got) != 2 || got[0] != "scsi-3600508b1" || got[1] != "wwn-0x600508b1" {
+		t.Errorf("by-id links: %v", got)
+	}
+	inv := Inventory{Disks: []Disk{{SizeBytes: 1 << 40}, {DevPath: "/dev/sda", SizeBytes: 1 << 30}}}
+	if c := inv.InstallCandidates(); len(c) != 1 || c[0].DevPath != "/dev/sda" {
+		t.Errorf("a disk without a device path is no install candidate: %+v", c)
+	}
+}

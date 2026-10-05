@@ -103,7 +103,7 @@ const (
 	MinControlPlaneBytes = 1600 << 20
 )
 
-const talosPartitionsBytes = 2 << 30
+const talosPartitionsBytes = 3 << 30
 
 type Warning struct {
 	Level   string `json:"level"`

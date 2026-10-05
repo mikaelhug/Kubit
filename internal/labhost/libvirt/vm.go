@@ -3,6 +3,7 @@ package libvirt
 import (
 	"bytes"
 	"context"
+	"encoding/xml"
 	"fmt"
 	"regexp"
 	"strconv"
@@ -43,15 +44,13 @@ var domainTmpl = template.Must(template.New("domain").Parse(`<domain type='{{.Ty
   <on_reboot>restart</on_reboot>
   <devices>
     <emulator>{{.Emulator}}</emulator>
-    <disk type='file' device='disk'>
+{{range .Disks}}{{if eq .Type "block"}}    <disk type='block' device='disk'>
+      <driver name='qemu' type='raw' cache='none' io='native' discard='unmap'/>
+      <source dev='{{.Path}}'/>
+{{else}}    <disk type='file' device='disk'>
       <driver name='qemu' type='qcow2' discard='unmap'/>
-      <source file='{{.Disk}}'/>
-      <target dev='vda' bus='virtio'/>
-    </disk>
-{{if .Data}}    <disk type='file' device='disk'>
-      <driver name='qemu' type='qcow2' discard='unmap'/>
-      <source file='{{.Data}}'/>
-      <target dev='vdb' bus='virtio'/>
+      <source file='{{.Path}}'/>
+{{end}}      <target dev='{{.Target}}' bus='virtio'/>
     </disk>
 {{end}}{{if .Routed}}    <interface type='network'>
       <source network='kubit'/>
@@ -81,13 +80,17 @@ func DomainXML(s labhost.VMSpec) (string, error) {
 	if s.TCG {
 		typ, cpu = "qemu", "maximum"
 	}
+	disks := vmDisks(s)
+	for _, d := range disks {
+		if d.Type == "block" && !labhost.SafeDevice(d.Path) || !labhost.ValidPoolName(orSystem(d.Pool)) {
+			return "", fmt.Errorf("%s: bad disk %s", s.Name, d.Path)
+		}
+	}
 	data := struct {
 		labhost.VMSpec
-		QemuArch, Machine, Emulator, Disk, Data, Bridge, Type, CPUMode, Loader, Vars, NVRAM, Cmdline string
-	}{s, qarch, machine, emulator, diskPath(s.Name), "", bridge, typ, cpu, loader, vars, vmDir + "/" + s.Name + ".nvram", vmCmdline(s.Arch)}
-	if s.DataGiB > 0 {
-		data.Data = dataPath(s.Name)
-	}
+		QemuArch, Machine, Emulator, Bridge, Type, CPUMode, Loader, Vars, NVRAM, Cmdline string
+		Disks                                                                            []domDisk
+	}{s, qarch, machine, emulator, bridge, typ, cpu, loader, vars, vmDir + "/" + s.Name + ".nvram", vmCmdline(s.Arch), disks}
 	var b bytes.Buffer
 	if err := domainTmpl.Execute(&b, data); err != nil {
 		return "", err
@@ -95,8 +98,31 @@ func DomainXML(s labhost.VMSpec) (string, error) {
 	return b.String(), nil
 }
 
-func diskPath(name string) string { return vmDir + "/" + name + ".qcow2" }
-func dataPath(name string) string { return vmDir + "/" + name + "-data.qcow2" }
+type domDisk struct {
+	Type, Path, Target, Pool string
+	GiB                      int
+}
+
+func vmDisks(s labhost.VMSpec) []domDisk {
+	disk := func(p labhost.Placement, suffix, target string, gib int) domDisk {
+		if p.Device != "" {
+			return domDisk{Type: "block", Path: p.Device, Target: target}
+		}
+		return domDisk{Type: "file", Path: imagePath(p.Pool, s.Name, suffix), Target: target, Pool: p.Pool, GiB: gib}
+	}
+	out := []domDisk{disk(s.System, "", "vda", s.DiskGiB)}
+	if s.Data.Device != "" || s.DataGiB > 0 {
+		out = append(out, disk(s.Data, "-data", "vdb", s.DataGiB))
+	}
+	return out
+}
+
+func orSystem(pool string) string {
+	if pool == "" {
+		return labhost.SystemPool
+	}
+	return pool
+}
 
 func (c *Client) Define(ctx context.Context, s labhost.VMSpec) error {
 	xml, err := DomainXML(s)
@@ -104,11 +130,14 @@ func (c *Client) Define(ctx context.Context, s labhost.VMSpec) error {
 		return err
 	}
 	defer labhost.ForgetCapacity(c.capacityKey())
-	if err := c.qcow2(ctx, diskPath(s.Name), s.DiskGiB); err != nil {
-		return err
-	}
-	if s.DataGiB > 0 {
-		if err := c.qcow2(ctx, dataPath(s.Name), s.DataGiB); err != nil {
+	for _, d := range vmDisks(s) {
+		var err error
+		if d.Type == "block" {
+			err = c.wipe(ctx, d.Path)
+		} else {
+			err = c.qcow2(ctx, d.Path, d.GiB)
+		}
+		if err != nil {
 			return err
 		}
 	}
@@ -156,8 +185,12 @@ func (c *Client) EnsureRouted(ctx context.Context) error {
 	return err
 }
 
+func qcow2Script(path string, gib int) string {
+	return fmt.Sprintf(`d=$(dirname %[1]s); [ "$d" = %[2]s ] || mountpoint -q "$d" || { echo "$d is not mounted" >&2; exit 1; }; [ -f %[1]s ] || qemu-img create -q -f qcow2 %[1]s %[3]dG`, path, vmDir, gib)
+}
+
 func (c *Client) qcow2(ctx context.Context, path string, gib int) error {
-	_, err := c.Run(ctx, fmt.Sprintf("[ -f %s ] || qemu-img create -q -f qcow2 %s %dG", path, path, gib))
+	_, err := c.Run(ctx, qcow2Script(path, gib))
 	return err
 }
 
@@ -256,9 +289,17 @@ func (c *Client) Stop(ctx context.Context, name string, force bool) error {
 	return err
 }
 
+func deleteScript(name string) string {
+	return strings.NewReplacer("NAME", name, "VMDIR", vmDir, "POOLS", poolsDir).Replace(`blk=$(virsh domblklist NAME --details --inactive 2>/dev/null | awk '$1=="block" && $2=="disk"{print $4}'); ` +
+		`virsh destroy NAME >/dev/null 2>&1; virsh undefine NAME --nvram >/dev/null 2>&1 || virsh undefine NAME >/dev/null 2>&1; ` +
+		`rm -f VMDIR/NAME.qcow2 VMDIR/NAME-data.qcow2 POOLS/*/NAME.qcow2 POOLS/*/NAME-data.qcow2 VMDIR/NAME.xml VMDIR/NAME.nvram; ` +
+		`if virsh dominfo NAME >/dev/null 2>&1; then echo 'domain still defined after undefine' >&2; exit 1; fi; ` +
+		wipeFn + `; for b in $blk; do case "$b" in /dev/*) wipe "$b" || echo "could not wipe $b" >&2;; esac; done; true`)
+}
+
 func (c *Client) Delete(ctx context.Context, name string) error {
 	defer labhost.ForgetCapacity(c.capacityKey())
-	_, err := c.Run(ctx, fmt.Sprintf("virsh destroy %s >/dev/null 2>&1; virsh undefine %s --nvram >/dev/null 2>&1 || virsh undefine %s >/dev/null 2>&1; rm -f %s %s %s/%s.xml %s/%s.nvram; if virsh dominfo %s >/dev/null 2>&1; then echo 'domain still defined after undefine' >&2; exit 1; fi", name, name, name, diskPath(name), dataPath(name), vmDir, name, vmDir, name, name))
+	_, err := c.Run(ctx, deleteScript(name))
 	return err
 }
 
@@ -267,36 +308,121 @@ func (c *Client) Resize(ctx context.Context, name string, cpus, memMiB int) erro
 	return err
 }
 
-func (c *Client) List(ctx context.Context) ([]labhost.VM, error) {
-	out, err := c.Run(ctx, `for d in $(virsh list --all --name); do [ -z "$d" ] && continue; st=$(virsh domstate $d | head -1); x=$(virsh dumpxml $d --inactive); mac=$(echo "$x" | grep -o "mac address='[^']*'" | head -1 | cut -d"'" -f2); mem=$(echo "$x" | grep -o "<memory unit='[A-Za-z]*'>[0-9]*" | grep -o "[0-9]*$"); unit=$(echo "$x" | grep -o "<memory unit='[A-Za-z]*'" | cut -d"'" -f2); cpu=$(echo "$x" | grep -o "<vcpu[^>]*>[0-9]*" | grep -o "[0-9]*$"); boot=$(echo "$x" | grep -q "<kernel>" && echo talos || echo disk); disk=$(qemu-img info -U `+vmDir+`/$d.qcow2 2>/dev/null | grep '^virtual size' | grep -o '([0-9]* bytes)' | tr -dc 0-9); data=$(qemu-img info -U `+vmDir+`/$d-data.qcow2 2>/dev/null | grep '^virtual size' | grep -o '([0-9]* bytes)' | tr -dc 0-9); ip=$( (virsh domifaddr $d --source lease 2>/dev/null; virsh domifaddr $d --source arp 2>/dev/null) | awk '/ipv4/{print $4}' | head -1 | cut -d/ -f1); echo "$d|$st|$mac|$mem|$unit|$cpu|$boot|$disk|$ip|$data"; done`)
-	if err != nil {
-		return nil, err
-	}
+const listScript = `for d in $(virsh list --all --name); do [ -z "$d" ] && continue; st=$(virsh domstate $d | head -1); ` +
+	`ip=$( (virsh domifaddr $d --source lease 2>/dev/null; virsh domifaddr $d --source arp 2>/dev/null) | awk '/ipv4/{print $4}' | head -1 | cut -d/ -f1); ` +
+	`echo "@@vm $d|$st|$ip"; virsh dumpxml $d --inactive; ` +
+	`virsh domblklist $d --details --inactive 2>/dev/null | awk 'NR>2 && $2=="disk"{print $1, $4}' | while read t src; do ` +
+	`if [ "$t" = block ]; then b=$(blockdev --getsize64 "$src" 2>/dev/null); else b=$(qemu-img info -U "$src" 2>/dev/null | grep '^virtual size' | grep -o '([0-9]* bytes)' | tr -dc 0-9); fi; ` +
+	`echo "@@size $src|$b"; done; done`
+
+type domainDoc struct {
+	Memory struct {
+		Unit  string `xml:"unit,attr"`
+		Value int64  `xml:",chardata"`
+	} `xml:"memory"`
+	VCPU int `xml:"vcpu"`
+	OS   struct {
+		Kernel string `xml:"kernel"`
+	} `xml:"os"`
+	Devices struct {
+		Disks []struct {
+			Device string `xml:"device,attr"`
+			Source struct {
+				File string `xml:"file,attr"`
+				Dev  string `xml:"dev,attr"`
+			} `xml:"source"`
+			Target struct {
+				Dev string `xml:"dev,attr"`
+			} `xml:"target"`
+		} `xml:"disk"`
+		Interfaces []struct {
+			MAC struct {
+				Address string `xml:"address,attr"`
+			} `xml:"mac"`
+		} `xml:"interface"`
+	} `xml:"devices"`
+}
+
+func parseList(out string) []labhost.VM {
 	var vms []labhost.VM
-	for _, line := range strings.Split(strings.TrimSpace(out), "\n") {
-		f := strings.Split(line, "|")
-		if len(f) < 9 || f[0] == "" {
-			continue
+	var head string
+	var doc strings.Builder
+	sizes := map[string]int64{}
+	flush := func() {
+		if head == "" {
+			return
 		}
-		vm := labhost.VM{Name: f[0], State: f[1], MAC: f[2], Boot: f[6], IP: f[8]}
-		mem, _ := strconv.Atoi(f[3])
-		switch f[4] {
-		case "KiB":
-			mem /= 1024
-		case "GiB":
-			mem *= 1024
+		f := strings.Split(head, "|")
+		for len(f) < 3 {
+			f = append(f, "")
 		}
-		vm.MemMiB = mem
-		vm.CPUs, _ = strconv.Atoi(f[5])
-		if b, err := strconv.ParseInt(f[7], 10, 64); err == nil {
-			vm.DiskGiB = int(b >> 30)
-		}
-		if len(f) > 9 {
-			if b, err := strconv.ParseInt(f[9], 10, 64); err == nil {
-				vm.DataGiB = int(b >> 30)
+		vm := labhost.VM{Name: f[0], State: f[1], IP: f[2], Boot: "disk"}
+		var d domainDoc
+		if err := xml.Unmarshal([]byte(doc.String()), &d); err == nil {
+			mem := d.Memory.Value
+			switch d.Memory.Unit {
+			case "", "KiB", "k":
+				mem /= 1024
+			case "GiB", "G":
+				mem *= 1024
+			case "b", "bytes":
+				mem >>= 20
+			}
+			vm.MemMiB, vm.CPUs = int(mem), d.VCPU
+			if strings.TrimSpace(d.OS.Kernel) != "" {
+				vm.Boot = "talos"
+			}
+			if len(d.Devices.Interfaces) > 0 {
+				vm.MAC = d.Devices.Interfaces[0].MAC.Address
+			}
+			for _, disk := range d.Devices.Disks {
+				if disk.Device != "" && disk.Device != "disk" {
+					continue
+				}
+				vd := labhost.VMDisk{Target: disk.Target.Dev}
+				src := disk.Source.File
+				if disk.Source.Dev != "" {
+					src, vd.Device = disk.Source.Dev, disk.Source.Dev
+				} else {
+					vd.Pool = poolOfImage(src)
+				}
+				vd.GiB = int(sizes[src] >> 30)
+				switch vd.Target {
+				case "vda":
+					vm.DiskGiB = vd.GiB
+				case "vdb":
+					vm.DataGiB = vd.GiB
+				}
+				vm.Disks = append(vm.Disks, vd)
 			}
 		}
 		vms = append(vms, vm)
+		head = ""
+		doc.Reset()
+		clear(sizes)
 	}
-	return vms, nil
+	for _, line := range strings.Split(out, "\n") {
+		switch {
+		case strings.HasPrefix(line, "@@vm "):
+			flush()
+			head = strings.TrimPrefix(line, "@@vm ")
+		case strings.HasPrefix(line, "@@size "):
+			src, b, _ := strings.Cut(strings.TrimPrefix(line, "@@size "), "|")
+			n, _ := strconv.ParseInt(strings.TrimSpace(b), 10, 64)
+			sizes[src] = n
+		case head != "":
+			doc.WriteString(line)
+			doc.WriteByte('\n')
+		}
+	}
+	flush()
+	return vms
+}
+
+func (c *Client) List(ctx context.Context) ([]labhost.VM, error) {
+	out, err := c.Run(ctx, listScript)
+	if err != nil {
+		return nil, err
+	}
+	return parseList(out), nil
 }

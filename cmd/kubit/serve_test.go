@@ -20,7 +20,7 @@ func TestServeFailsFastOnABusyPortOrHome(t *testing.T) {
 	}
 	defer busy.Close()
 	serve := func() (string, error) {
-		cmd := serveCmd()
+		cmd := serveCmd(false)
 		var out bytes.Buffer
 		cmd.SetOut(&out)
 		cmd.SetArgs([]string{"--addr", busy.Addr().String()})
@@ -42,5 +42,17 @@ func TestServeFailsFastOnABusyPortOrHome(t *testing.T) {
 	defer lock.Release()
 	if _, err := serve(); err == nil || !strings.Contains(err.Error(), "another kubit serve") {
 		t.Errorf("a held home must fail before anything else: %v", err)
+	}
+}
+
+func TestConsoleURLPointsAtAReachableHost(t *testing.T) {
+	for addr, want := range map[string]string{"127.0.0.1:8090": "http://127.0.0.1:8090", "0.0.0.0:8090": "http://127.0.0.1:8090", "[::]:8090": "http://127.0.0.1:8090", "192.168.1.5:8090": "http://192.168.1.5:8090"} {
+		tcp, err := net.ResolveTCPAddr("tcp", addr)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := consoleURL(tcp); got != want {
+			t.Errorf("%s: %s, want %s", addr, got, want)
+		}
 	}
 }

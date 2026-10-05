@@ -8,6 +8,8 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"os/exec"
+	"runtime"
 	"time"
 
 	"github.com/mikael/kubit/internal/api"
@@ -16,9 +18,10 @@ import (
 	"github.com/spf13/cobra"
 )
 
-func serveCmd() *cobra.Command {
+func serveCmd(openConsole bool) *cobra.Command {
 	var addr, token string
 	var interval, serviceInterval time.Duration
+	var open bool
 	cmd := &cobra.Command{
 		Use:   "serve",
 		Short: "Run the Kubit daemon and web UI",
@@ -54,22 +57,25 @@ func serveCmd() *cobra.Command {
 				}
 				fmt.Fprintf(cmd.OutOrStdout(), "non-loopback bind: API requires Authorization: Bearer %s\n", token)
 			}
-			mode := "foreground"
-			if os.Getenv("KUBIT_SERVICE") != "" {
-				mode = "service"
-			}
 			srv := api.New(version, m, token, crypto)
 			srv.Start()
-			ctx := cmd.Context()
+			ctx, stop := context.WithCancel(cmd.Context())
+			defer stop()
 			w := watch.New(m, interval)
 			if serviceInterval > 0 {
 				w.ServiceInterval = serviceInterval
 			}
 			srv.AttachWatcher(ctx, w)
+			srv.AttachStop(stop)
 			hs := &http.Server{Handler: srv}
 			errc := make(chan error, 1)
 			go func() { errc <- hs.Serve(ln) }()
-			fmt.Fprintf(cmd.OutOrStdout(), "kubit %s listening on http://%s (%s, master key from %s)\n", version, ln.Addr(), mode, store.MasterKeySource())
+			fmt.Fprintf(cmd.OutOrStdout(), "kubit %s listening on http://%s (master key from %s); Ctrl-C stops it\n", version, ln.Addr(), store.MasterKeySource())
+			if open {
+				if u := consoleURL(ln.Addr()); openBrowser(u) != nil {
+					fmt.Fprintf(cmd.OutOrStdout(), "open %s in a browser\n", u)
+				}
+			}
 			select {
 			case err := <-errc:
 				return err
@@ -80,12 +86,37 @@ func serveCmd() *cobra.Command {
 			shutdown, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancel()
 			_ = hs.Shutdown(shutdown)
-			return m.Store.Checkpoint(context.Background())
+			if err := m.Store.Checkpoint(context.Background()); err != nil {
+				fmt.Fprintln(cmd.ErrOrStderr(), "kubit:", err)
+			}
+			return nil
 		},
 	}
 	cmd.Flags().StringVar(&addr, "addr", "127.0.0.1:8090", "listen address")
 	cmd.Flags().StringVar(&token, "token", "", "API bearer token (generated when binding beyond loopback)")
 	cmd.Flags().DurationVar(&interval, "watch-interval", 15*time.Second, "how often every cluster is polled for health samples and events")
 	cmd.Flags().DurationVar(&serviceInterval, "service-interval", 0, "how often workloads, pods, claims and services are inspected for alerts (default 4× watch-interval)")
+	cmd.Flags().BoolVar(&open, "open", openConsole, "open the console in the default browser once listening")
 	return cmd
+}
+
+func consoleURL(addr net.Addr) string {
+	host, port, err := net.SplitHostPort(addr.String())
+	if err != nil {
+		return "http://" + addr.String()
+	}
+	if ip := net.ParseIP(host); ip == nil || ip.IsUnspecified() {
+		host = "127.0.0.1"
+	}
+	return "http://" + net.JoinHostPort(host, port)
+}
+
+func openBrowser(url string) error {
+	switch runtime.GOOS {
+	case "darwin":
+		return exec.Command("open", url).Run()
+	case "linux":
+		return exec.Command("xdg-open", url).Start()
+	}
+	return fmt.Errorf("no browser opener on %s", runtime.GOOS)
 }

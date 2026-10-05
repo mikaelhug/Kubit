@@ -211,7 +211,7 @@ func (s *Server) oobPowerOp(ctx context.Context, sink cluster.Sink, m *store.Mac
 		return nil, nil
 	}
 	watch := newPXEWatch(s, mac, sink)
-	if err := s.labWaitBoot(ctx, watch); err != nil {
+	if err := s.labWaitBoot(ctx, watch, labBootBudget(c)); err != nil {
 		return nil, err
 	}
 	sink.Begin("wait")

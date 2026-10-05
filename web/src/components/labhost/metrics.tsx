@@ -22,7 +22,7 @@ export function HostMetrics({ host, lh }: { host: NodeRow; lh: LabHost }) {
     return { cpu: pts((s) => s.cpuMilli / 10), mem: pts((s) => s.memBytes), disk: pts((s) => s.disk ?? 0), vms: pts((s) => s.pods) }
   }, [samples])
   const m = lh.metrics
-  const committed = vms.reduce((s, v) => s + v.diskGiB, 0)
+  const committed = vms.reduce((s, v) => s + (v.disks ? v.disks.filter((d) => !d.device).reduce((t, d) => t + d.gib, 0) : v.diskGiB + (v.dataGiB ?? 0)), 0)
   const diskPct = m && m.diskTotal ? fmt.pct(m.diskUsed, m.diskTotal) : 0
   const memPct = m && m.memTotal ? fmt.pct(m.memUsed, m.memTotal) : 0
   const offline = labOffline(lh)

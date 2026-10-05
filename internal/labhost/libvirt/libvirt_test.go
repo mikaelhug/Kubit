@@ -1,6 +1,10 @@
 package libvirt
 
 import (
+	"fmt"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -8,18 +12,21 @@ import (
 )
 
 func TestPreseedAndKernelArgs(t *testing.T) {
-	out, err := Preseed(PreseedParams{Hostname: "lab-abc", Disk: "/dev/nvme0n1", PublicKey: "ssh-ed25519 AAAA kubit", PostURL: "http://10.0.0.2:8069/labhost/aa/postinstall"})
+	out, err := Preseed(PreseedParams{Hostname: "lab-abc", Disk: labhost.DiskRef{DevPath: "/dev/nvme0n1", Links: []string{"nvme-eui.0025388b"}, WWID: "eui.0025388b", SizeBytes: 512 << 30}, PublicKey: "ssh-ed25519 AAAA kubit", PostURL: "http://10.0.0.2:8069/labhost/aa/postinstall"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"d-i netcfg/get_hostname string lab-abc", "d-i partman-auto/disk string /dev/nvme0n1", "ssh-ed25519 AAAA kubit", "bridge_ports $IF", "libvirt-daemon-system", "mirror/http/hostname string deb.debian.org", "curl -fsS \"http://10.0.0.2:8069/labhost/aa/postinstall\""} {
+	for _, want := range []string{"d-i netcfg/get_hostname string lab-abc", "P='/dev/nvme0n1'", "W='eui.0025388b'", "for l in 'nvme-eui.0025388b'", `debconf-set grub-installer/bootdev "$D"`, "d-i partman-auto/cap-ram string 1024", "ssh-ed25519 AAAA kubit", "bridge_ports $IF", "ip -o route show default", "libvirt-daemon-system", "mirror/http/hostname string deb.debian.org", "curl -fsS \"http://10.0.0.2:8069/labhost/aa/postinstall\""} {
 		if !strings.Contains(out, want) {
 			t.Errorf("preseed missing %q", want)
 		}
 	}
 	auto, _ := Preseed(PreseedParams{Hostname: "x", PublicKey: "k", PostURL: "u"})
-	if !strings.Contains(auto, "partman/early_command") || strings.Contains(auto, "partman-auto/disk string") {
+	if !strings.Contains(auto, "partman/early_command") || strings.Contains(auto, "partman-auto/disk string") || !strings.Contains(auto, "K=''") || !strings.Contains(auto, "/removable") {
 		t.Error("without a disk the early command must pick one")
+	}
+	if strings.Count(out, "\nd-i partman/early_command string ") != 1 {
+		t.Error("the early command is one preseed line")
 	}
 	args := KernelArgs("http://10.0.0.2:8069/labhost/aa/preseed", "lab-abc")
 	if !strings.Contains(args, "auto=true") || !strings.Contains(args, "url=http://10.0.0.2:8069/labhost/aa/preseed") {
@@ -98,5 +105,102 @@ func TestTalosKernelArgsAreShared(t *testing.T) {
 	pxe := strings.Join(labhost.TalosKernelArgs("console=tty0", "console=ttyS0"), " ")
 	if pxe != "talos.platform=metal console=tty0 console=ttyS0 init_on_alloc=1 slab_nomerge pti=on" {
 		t.Errorf("pxe args %q", pxe)
+	}
+}
+
+func TestPartmanResolvesTheInstallDisk(t *testing.T) {
+	type disk struct {
+		name, wwid string
+		size       int64
+		removable  bool
+		usb        bool
+		links      []string
+	}
+	host := []disk{
+		{name: "sda", wwid: "naa.600508b1001ca", size: 300 << 30, links: []string{"wwn-0x600508b1001ca", "scsi-3600508b1001ca"}},
+		{name: "sdb", wwid: "naa.600508b1001cb", size: 2000 << 30, links: []string{"wwn-0x600508b1001cb"}},
+		{name: "sdc", size: 4000 << 30, usb: true},
+		{name: "sdd", size: 3000 << 30, removable: true},
+	}
+	cases := []struct {
+		name string
+		ref  labhost.DiskRef
+		want string
+	}{
+		{"by-id link", labhost.DiskRef{Links: []string{"scsi-3600508b1001ca"}, DevPath: "/dev/sdb", SizeBytes: 2000 << 30}, "sda"},
+		{"wwid when the link is missing", labhost.DiskRef{Links: []string{"wwn-0xgone"}, WWID: "naa.600508b1001cb"}, "sdb"},
+		{"device path with a matching size", labhost.DiskRef{DevPath: "/dev/sdb", SizeBytes: 2000 << 30}, "sdb"},
+		{"device path with another size", labhost.DiskRef{DevPath: "/dev/sdb", SizeBytes: 999 << 30}, "kubit-no-disk"},
+		{"no pin takes the largest fixed disk", labhost.DiskRef{}, "sdb"},
+	}
+	for _, c := range cases {
+		dir, err := filepath.EvalSymlinks(t.TempDir())
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, d := range host {
+			dev := dir + "/dev/" + d.name
+			sys := dir + "/devices/pci/" + d.name
+			if d.usb {
+				sys = dir + "/devices/pci/usb1/" + d.name
+			}
+			for _, p := range []string{dir + "/dev", sys, dir + "/sys/block", dir + "/by-id"} {
+				if err := os.MkdirAll(p, 0o755); err != nil {
+					t.Fatal(err)
+				}
+			}
+			removable := map[bool]string{true: "1", false: "0"}[d.removable]
+			for file, body := range map[string]string{dev: "", dev + ".size": fmt.Sprint(d.size), sys + "/removable": removable, sys + "/wwid": d.wwid} {
+				if err := os.WriteFile(file, []byte(body), 0o644); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := os.Symlink(sys, dir+"/sys/block/"+d.name); err != nil {
+				t.Fatal(err)
+			}
+			for _, l := range d.links {
+				if err := os.Symlink(dev, dir+"/by-id/"+l); err != nil {
+					t.Fatal(err)
+				}
+			}
+		}
+		bin := dir + "/bin"
+		_ = os.MkdirAll(bin, 0o755)
+		var devs []string
+		for _, d := range host {
+			devs = append(devs, dir+"/dev/"+d.name)
+		}
+		for name, body := range map[string]string{
+			"list-devices": "printf '%s\\n' " + strings.Join(devs, " "),
+			"blockdev":     `cat "$2.size"`,
+			"debconf-set":  `echo "$1 $2" >> "$LOG"`,
+			"wget":         `echo "wget $4" >> "$LOG"`,
+		} {
+			if err := os.WriteFile(bin+"/"+name, []byte("#!/bin/sh\n"+body+"\n"), 0o755); err != nil {
+				t.Fatal(err)
+			}
+		}
+		ref := c.ref
+		if ref.DevPath != "" {
+			ref.DevPath = "/dev/" + strings.TrimPrefix(ref.DevPath, "/dev/")
+		}
+		script := partmanEarly(PreseedParams{Disk: ref, PostURL: "http://k/postinstall"})
+		script = strings.NewReplacer("/sys/block/", dir+"/sys/block/", "/dev/disk/by-id/", dir+"/by-id/", "P='/dev/", "P='"+dir+"/dev/", `[ -b "$P" ]`, `[ -e "$P" ]`, "D=/dev/kubit-no-disk", "D="+dir+"/dev/kubit-no-disk").Replace(script)
+		if out, err := exec.Command("sh", "-n", "-c", script).CombinedOutput(); err != nil {
+			t.Fatalf("%s: syntax: %v %s", c.name, err, out)
+		}
+		cmd := exec.Command("sh", "-c", script)
+		cmd.Env = append(os.Environ(), "PATH="+bin+":/usr/bin:/bin", "LOG="+dir+"/log")
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("%s: %v %s", c.name, err, out)
+		}
+		log, _ := os.ReadFile(dir + "/log")
+		want := dir + "/dev/" + c.want
+		if !strings.Contains(string(log), "partman-auto/disk "+want+"\n") || !strings.Contains(string(log), "grub-installer/bootdev "+want+"\n") {
+			t.Errorf("%s: want %s for partman and grub:\n%s", c.name, c.want, log)
+		}
+		if nodisk := strings.Contains(string(log), "stage=nodisk"); nodisk != (c.want == "kubit-no-disk") {
+			t.Errorf("%s: nodisk reported %v", c.name, nodisk)
+		}
 	}
 }

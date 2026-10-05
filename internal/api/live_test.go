@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -12,6 +13,7 @@ import (
 	"time"
 
 	"github.com/coder/websocket"
+	"github.com/mikael/kubit/internal/cluster"
 	"github.com/mikael/kubit/internal/store"
 )
 
@@ -478,5 +480,101 @@ func TestForgettingAClusterSendsOneMachinesRefresh(t *testing.T) {
 	}
 	if slices.Contains(kinds, "machine:") || !slices.Contains(kinds, "refresh:machines") || len(kinds) > 3 {
 		t.Errorf("frames: %v", kinds)
+	}
+}
+
+func TestHubShutdownFlushesThenRefuses(t *testing.T) {
+	h := newHub()
+	sub := h.subscribe(0)
+	h.publish(Message{Kind: "status"})
+	h.shutdown(Message{Kind: "stopped"})
+	var kinds []string
+	for f := range sub.ch {
+		kinds = append(kinds, decodeFrame(t, f).Kind)
+	}
+	if !slices.Equal(kinds, []string{"status", "stopped"}) {
+		t.Fatalf("queued frames, then stopped, then a closed channel: %v", kinds)
+	}
+	if h.subscribe(0) != nil {
+		t.Fatal("a stopping hub must refuse new listeners")
+	}
+	if h.idle() {
+		t.Fatal("the listener has not left yet")
+	}
+	h.unsubscribe(sub)
+	if !h.idle() {
+		t.Fatal("no listener is left")
+	}
+}
+
+func TestDrainTellsLiveClientsKubitStopped(t *testing.T) {
+	s, _, _ := localServer(t)
+	srv := httptest.NewServer(s)
+	defer srv.Close()
+	u := "ws" + strings.TrimPrefix(srv.URL, "http") + "/api/v1/ws"
+	conn, _, err := websocket.Dial(t.Context(), u, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.CloseNow()
+	if _, _, err := conn.Read(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	s.Drain(time.Second)
+	ctx, cancel := context.WithTimeout(t.Context(), 3*time.Second)
+	defer cancel()
+	for {
+		_, b, err := conn.Read(ctx)
+		if err != nil {
+			t.Fatalf("the connection ended before stopped: %v", err)
+		}
+		if strings.Contains(string(b), `"kind":"stopped"`) {
+			break
+		}
+	}
+	if _, _, err := conn.Read(ctx); err == nil {
+		t.Fatal("the connection outlived the stop")
+	}
+	if _, resp, err := websocket.Dial(t.Context(), u, nil); err == nil || resp == nil || resp.StatusCode != http.StatusServiceUnavailable {
+		t.Fatalf("a stopping daemon must refuse new live connections: %v", err)
+	}
+	if !s.hub.idle() {
+		t.Error("listeners left after the drain")
+	}
+}
+
+func TestDaemonStopWaitsForOperationsAndAudits(t *testing.T) {
+	s, st, _ := localServer(t)
+	if rec := call(t, s, "POST", "/api/v1/daemon/stop", ""); rec.Code != http.StatusConflict {
+		t.Fatalf("without a stop hook: %d %s", rec.Code, rec.Body)
+	}
+	stops := 0
+	s.AttachStop(func() { stops++ })
+	id, err := s.runOperation("c", "test.block", nil, func(ctx context.Context, _ cluster.Sink) (any, error) {
+		<-ctx.Done()
+		return nil, ctx.Err()
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rec := call(t, s, "POST", "/api/v1/daemon/stop", ""); rec.Code != http.StatusConflict || stops != 0 {
+		t.Fatalf("a running operation must hold the stop: %d %s", rec.Code, rec.Body)
+	}
+	s.cancelOperation(id)
+	waitOp(t, st, id)
+	for deadline := time.Now().Add(5 * time.Second); s.running() > 0; time.Sleep(10 * time.Millisecond) {
+		if time.Now().After(deadline) {
+			t.Fatal("the cancelled operation is still registered")
+		}
+	}
+	if rec := call(t, s, "POST", "/api/v1/daemon/stop", ""); rec.Code != http.StatusAccepted || stops != 1 {
+		t.Fatalf("stop: %d %s, hook called %d times", rec.Code, rec.Body, stops)
+	}
+	entries, err := st.ListAudit(t.Context(), "", 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.ContainsFunc(entries, func(e store.AuditEntry) bool { return e.Action == "kubit.stop" }) {
+		t.Errorf("stop not audited: %+v", entries)
 	}
 }

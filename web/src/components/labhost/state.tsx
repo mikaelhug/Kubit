@@ -6,7 +6,7 @@ import { AlertGroup } from '../Alerts'
 import { Code, Notice } from '../ui'
 import { MakeLabHostDialog } from './dialogs'
 
-const installStages: Record<string, string> = { installer: 'installer started', partitioning: 'partitioning', packages: 'packages installed', 'late-done': 'rebooting', booted: 'booted into Debian' }
+const installStages: Record<string, string> = { installer: 'installer started', partitioning: 'partitioning', packages: 'packages installed', 'late-done': 'rebooting', booted: 'booted into Debian', nodisk: 'install disk not found' }
 
 export function HostStateNotice({ host }: { host: NodeRow }) {
   const lh = host.labhost

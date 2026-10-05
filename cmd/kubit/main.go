@@ -27,13 +27,16 @@ func main() {
 }
 
 func rootCmd() *cobra.Command {
+	console := serveCmd(true)
 	root := &cobra.Command{
 		Use:           "kubit",
-		Short:         "Declarative Talos/Kubernetes cluster lifecycle manager",
+		Short:         "Declarative Talos/Kubernetes cluster lifecycle manager; without a command it runs the daemon and opens the console",
 		SilenceUsage:  true,
 		SilenceErrors: true,
+		RunE:          console.RunE,
 	}
-	root.AddCommand(versionCmd(), serveCmd(), configCmd(), discoverCmd(), clusterCmd(), nodeCmd(), platformCmd(), sopsCmd(), upgradeCmd(), etcdCmd(), statusCmd(), backupCmd(), restoreCmd(), keyCmd(), pxeCmd(), serviceCmd())
+	root.Flags().AddFlagSet(console.Flags())
+	root.AddCommand(versionCmd(), serveCmd(false), configCmd(), discoverCmd(), clusterCmd(), nodeCmd(), platformCmd(), sopsCmd(), upgradeCmd(), etcdCmd(), statusCmd(), backupCmd(), restoreCmd(), keyCmd(), pxeCmd())
 	return root
 }
 

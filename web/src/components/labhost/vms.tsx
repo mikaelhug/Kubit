@@ -1,5 +1,6 @@
 import { useMemo, useState } from 'preact/hooks'
 import { api, fmt, type LabVM, type NodeRow } from '../../api'
+import { vmDisksText } from '../../labdisks'
 import { hostName, hostOf, labOffline, onMac, vmsOf } from '../../machine'
 import { runOp } from '../../ops'
 import { machines, toast } from '../../store'
@@ -38,7 +39,7 @@ export function HostVMs({ host }: { host: NodeRow }) {
       </span>
     ) } },
     { id: 'state', header: 'State', cell: (vm) => <Pill tone={!offline && vm.state === 'running' ? 'good' : 'muted'}>{vm.state}</Pill> },
-    { id: 'size', header: 'Size', cell: (vm) => <span>{vm.cpus} vCPU · {fmt.bytes(mib(vm.memMiB))} · {vm.diskGiB} GiB{vm.dataGiB ? ` + ${vm.dataGiB} GiB data` : ''}</span> },
+    { id: 'size', header: 'Size', cell: (vm) => <span>{vm.cpus} vCPU · {fmt.bytes(mib(vm.memMiB))} · {vmDisksText(lh, vm)}</span> },
     { id: 'boot', header: 'Boot', cell: (vm) => <Pill tone={vm.boot === 'disk' ? 'info' : 'muted'}>{vm.boot === 'disk' ? 'disk' : onMac(lh) ? 'Talos ISO' : 'Talos (RAM)'}</Pill> },
     { id: 'kubit', header: 'Kubit', cell: (vm) => { const row = byMac.get(vm.mac); return row ? (row.cluster ? <a class="text-accent hover:underline" href={`/clusters/${row.cluster}/nodes`}>{row.cluster} · {row.hostname}</a> : <KindPill m={row} />) : <span class="text-muted">—</span> } },
     { id: 'actions', header: '', align: 'right', cell: (vm) => { const row = byMac.get(vm.mac); const member = !!row?.cluster; return (

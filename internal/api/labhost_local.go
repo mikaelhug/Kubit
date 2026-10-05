@@ -73,8 +73,8 @@ func (s *Server) handleLabLocalCreate(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, badRequest("driver must be vfkit"))
 		return
 	}
-	if plan.Manual || plan.Network != "" || plan.Disk != "" {
-		writeErr(w, badRequest("manual, network and disk do not apply to VMs on this Mac"))
+	if plan.Manual || plan.Network != "" || plan.Disk != "" || plan.VMs != nil && plan.VMs.usesDisks() {
+		writeErr(w, badRequest("manual, network and disks do not apply to VMs on this Mac"))
 		return
 	}
 	if code, err := s.checkLabPlan(r.Context(), &plan); err != nil {

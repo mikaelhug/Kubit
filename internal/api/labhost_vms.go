@@ -16,6 +16,7 @@ import (
 	"github.com/mikael/kubit/internal/cluster"
 	"github.com/mikael/kubit/internal/labhost"
 	"github.com/mikael/kubit/internal/labhost/vfkit"
+	"github.com/mikael/kubit/internal/netx"
 	"github.com/mikael/kubit/internal/store"
 	"github.com/mikael/kubit/internal/talos"
 )
@@ -41,6 +42,16 @@ func (s *Server) handleLabAddVMs(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, &statusError{Status: http.StatusUnprocessableEntity, Msg: fmt.Sprintf("%d MiB requested, %d MiB free (host keeps %s)", need, free, mib(lh.Capacity.Reserve()))})
 		return
 	}
+	if req.usesDisks() {
+		if lh.Driver == labhost.DriverVFKit {
+			writeErr(w, badRequest("disk choices need a Debian lab host"))
+			return
+		}
+		if _, err := planStorage(req.sizes(), lh.Capacity, lh.VMs); err != nil {
+			writeErr(w, badRequest(err.Error()))
+			return
+		}
+	}
 	s.startOp(w, "labhost:"+mac, "labhost.vms", req, func(ctx context.Context, sink cluster.Sink) (any, error) {
 		return s.labAddVMs(ctx, host, req, sink)
 	})
@@ -61,13 +72,32 @@ func (s *Server) labAddVMs(ctx context.Context, host *store.Machine, req addVMsR
 	}
 	defer lc.Close()
 	existing, _ := lc.List(ctx)
+	sizes := req.sizes()
+	if _, ok := lc.(labhost.Storage); !ok && req.usesDisks() {
+		return nil, errors.New("disk choices need a Debian lab host")
+	}
+	layout, err := s.applyStorage(ctx, lc, mac, sizes, existing, func(format string, args ...any) { sink.Emit(cluster.Info, "define", "", format, args...) })
+	if err != nil {
+		return nil, err
+	}
+	used := map[string]bool{}
+	for _, vm := range existing {
+		used[strings.ToLower(vm.MAC)] = true
+	}
+	if rows, err := s.store.ListNodes(ctx, ""); err == nil {
+		for _, row := range rows {
+			if row.Host != "" && netx.MACKey(row.Host) == netx.MACKey(mac) {
+				used[strings.ToLower(row.MAC)] = true
+			}
+		}
+	}
 	next := len(existing) + 1
 	prefix := req.Prefix
 	if prefix == "" {
 		prefix = "vm"
 	}
 	var created, createdMACs []string
-	for _, size := range req.sizes() {
+	for i, size := range sizes {
 		name := size.Name
 		if name == "" || nameTaken(existing, name) {
 			name = fmt.Sprintf("%s-%02d", prefix, next)
@@ -76,7 +106,15 @@ func (s *Server) labAddVMs(ctx context.Context, host *store.Machine, req addVMsR
 				name = fmt.Sprintf("%s-%02d", prefix, next)
 			}
 		}
-		spec := labhost.VMSpec{Name: name, MAC: labhost.MAC(lh.Index, next), CPUs: size.CPUs, MemMiB: size.MemMiB, DiskGiB: size.DiskGiB, DataGiB: size.DataGiB, Kernel: lh.Kernel, Initrd: lh.Initrd, ISO: lh.ISO, Arch: lh.Capacity.Arch, Bridge: lh.Capacity.Bridge, Routed: lh.Network == "routed", TCG: !lh.Capacity.KVM}
+		vmMAC, err := nextVMMAC(lh.Index, used)
+		if err != nil {
+			return nil, err
+		}
+		used[vmMAC] = true
+		spec := labhost.VMSpec{Name: name, MAC: vmMAC, CPUs: size.CPUs, MemMiB: size.MemMiB, DiskGiB: size.DiskGiB, DataGiB: size.DataGiB, Kernel: lh.Kernel, Initrd: lh.Initrd, ISO: lh.ISO, Arch: lh.Capacity.Arch, Bridge: lh.Capacity.Bridge, Routed: lh.Network == "routed", TCG: !lh.Capacity.KVM}
+		if i < len(layout.VMs) {
+			spec.System, spec.Data = layout.VMs[i].System, layout.VMs[i].Data
+		}
 		if err := lc.Define(ctx, spec); err != nil {
 			for i, n := range created {
 				_ = lc.Delete(ctx, n)
@@ -94,7 +132,7 @@ func (s *Server) labAddVMs(ctx context.Context, host *store.Machine, req addVMsR
 		existing = append(existing, labhost.VM{Name: name, MAC: spec.MAC})
 		created = append(created, name)
 		createdMACs = append(createdMACs, spec.MAC)
-		sink.Emit(cluster.Info, "define", name, "defined and started: %s, %d vCPU, %d MiB, %d GiB%s, %s", size.Role, size.CPUs, size.MemMiB, size.DiskGiB, map[bool]string{true: fmt.Sprintf(" + %d GiB data", size.DataGiB), false: ""}[size.DataGiB > 0], spec.MAC)
+		sink.Emit(cluster.Info, "define", name, "defined and started: %s, %d vCPU, %d MiB, %s, %s", size.Role, size.CPUs, size.MemMiB, placementText(spec), spec.MAC)
 		next++
 	}
 	if vms, err := lc.List(ctx); err == nil {
@@ -107,6 +145,32 @@ func (s *Server) labAddVMs(ctx context.Context, host *store.Machine, req addVMsR
 	_ = s.store.Audit(ctx, "", "labhost.vms", fmt.Sprintf("%s +%d", mac, len(created)))
 	sink.Emit(cluster.Done, "vmboot", "", "%d VM(s) in maintenance mode, ready to be picked for a cluster", len(created))
 	return createdMACs, nil
+}
+
+func nextVMMAC(index int, used map[string]bool) (string, error) {
+	for n := 1; n <= 255; n++ {
+		if m := labhost.MAC(index, n); !used[m] {
+			return m, nil
+		}
+	}
+	return "", errors.New("no free VM MAC left on this lab host")
+}
+
+func placementText(s labhost.VMSpec) string {
+	where := func(p labhost.Placement, gib int) string {
+		switch {
+		case p.Device != "":
+			return "whole " + p.Device
+		case p.Pool != "" && p.Pool != labhost.SystemPool:
+			return fmt.Sprintf("%d GiB on %s", gib, p.Pool)
+		}
+		return fmt.Sprintf("%d GiB", gib)
+	}
+	out := where(s.System, s.DiskGiB)
+	if s.Data.Device != "" || s.DataGiB > 0 {
+		out += " + data " + where(s.Data, s.DataGiB)
+	}
+	return out
 }
 
 func (s *Server) labWaitMaintenance(ctx context.Context, lc labhost.Driver, lh *store.LabHost, mac string, created []string, sink cluster.Sink) error {

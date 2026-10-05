@@ -21,7 +21,7 @@ import { NodePage } from './pages/node/NodePage'
 import { Operations } from './pages/Operations'
 import { SignIn } from './pages/SignIn'
 import { runningCount } from './ops'
-import { clusters, connected, daemon, drawerHeight, drawerOpen, labHosts, loadMe, me, reconnectAttempt, resyncing, statuses, toast } from './store'
+import { clusters, connected, daemon, drawerHeight, drawerOpen, labHosts, loadMe, me, reconnectAttempt, resyncing, statuses, stopped, toast } from './store'
 import { stateTone } from './tone'
 
 export function App() {
@@ -150,17 +150,17 @@ function Account() {
 function ConnectionDot() {
   const live = connected.value
   const attempt = reconnectAttempt.value
-  return <span class={`inline-block h-1.5 w-1.5 rounded-full shrink-0 ${live ? (resyncing.value ? 'bg-warn animate-pulse' : 'bg-good') : 'bg-bad animate-pulse'}`} title={live ? (resyncing.value ? 'resyncing' : 'live') : `reconnecting${attempt > 1 ? ` (${attempt})` : ''}`} />
+  return <span class={`inline-block h-1.5 w-1.5 rounded-full shrink-0 ${live ? (resyncing.value ? 'bg-warn animate-pulse' : 'bg-good') : 'bg-bad animate-pulse'}`} title={live ? (resyncing.value ? 'resyncing' : 'live') : stopped.value ? 'stopped' : `reconnecting${attempt > 1 ? ` (${attempt})` : ''}`} />
 }
 
 function ReconnectBanner() {
   if (connected.value) return null
   const attempt = reconnectAttempt.value
-  return <div class="sticky top-0 z-30 bg-warn/15 border-b border-warn/40 text-warn text-[12.5px] px-4 py-1.5">Live updates paused; reconnecting{attempt > 1 ? ` (attempt ${attempt})` : ''}.</div>
+  return <div class="sticky top-0 z-30 bg-warn/15 border-b border-warn/40 text-warn text-[12.5px] px-4 py-1.5">{stopped.value ? <>Kubit stopped; start it with <span class="mono">kubit</span>.</> : `Live updates paused; reconnecting${attempt > 1 ? ` (attempt ${attempt})` : ''}.`}</div>
 }
 
 function DaemonUptime() {
   const v = daemon.value
   if (!v) return null
-  return <span class="whitespace-nowrap" title={`kubit ${v.version} (${v.service ? 'service' : 'foreground'}), up since ${fmt.datetime(v.startedAt)}`}>uptime <Elapsed from={v.startedAt} /></span>
+  return <span class="whitespace-nowrap" title={`kubit ${v.version}, up since ${fmt.datetime(v.startedAt)}`}>uptime <Elapsed from={v.startedAt} /></span>
 }

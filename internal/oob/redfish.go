@@ -19,6 +19,7 @@ type redfish struct {
 	c Config
 	tracer
 	client *http.Client
+	writes *http.Client
 	system string
 }
 
@@ -31,8 +32,14 @@ var redfishTransport = &http.Transport{
 	IdleConnTimeout:     30 * time.Second,
 }
 
+var redfishWrites = &http.Transport{
+	TLSClientConfig:     &tls.Config{InsecureSkipVerify: true},
+	TLSHandshakeTimeout: 10 * time.Second,
+	DisableKeepAlives:   true,
+}
+
 func newRedfish(c Config, trace func(string)) *redfish {
-	return &redfish{c: c, tracer: trace, client: &http.Client{Timeout: 20 * time.Second, Transport: redfishTransport}}
+	return &redfish{c: c, tracer: trace, client: &http.Client{Timeout: 20 * time.Second, Transport: redfishTransport}, writes: &http.Client{Timeout: 30 * time.Second, Transport: redfishWrites}}
 }
 
 func (r *redfish) url(path string) string {
@@ -62,7 +69,11 @@ func (r *redfish) do(ctx context.Context, method, path string, body any, out any
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}
-	resp, err := r.client.Do(req)
+	client := r.client
+	if method != http.MethodGet && method != http.MethodHead {
+		client, req.Close = r.writes, true
+	}
+	resp, err := client.Do(req)
 	if err != nil {
 		return fmt.Errorf("BMC at %s: %w", r.c.Host, describeRedfish(err))
 	}
@@ -134,14 +145,30 @@ type redfishSystem struct {
 	Processors struct {
 		Count int `json:"Count"`
 	} `json:"ProcessorSummary"`
-	Ethernet redfishRef `json:"EthernetInterfaces"`
-	Storage  redfishRef `json:"Storage"`
-	Actions  struct {
+	Ethernet        redfishRef      `json:"EthernetInterfaces"`
+	Storage         redfishRef      `json:"Storage"`
+	HostCorrelation hostCorrelation `json:"HostCorrelation"`
+	Oem             struct {
+		Hp  hpSystem `json:"Hp"`
+		Hpe hpSystem `json:"Hpe"`
+	} `json:"Oem"`
+	Actions struct {
 		Reset struct {
 			Target  string   `json:"target"`
 			Allowed []string `json:"ResetType@Redfish.AllowableValues"`
 		} `json:"#ComputerSystem.Reset"`
 	} `json:"Actions"`
+}
+
+type hostCorrelation struct {
+	MACs []string `json:"HostMACAddress"`
+}
+
+type hpSystem struct {
+	HostCorrelation hostCorrelation `json:"HostCorrelation"`
+	Links           struct {
+		NetworkAdapters redfishRef `json:"NetworkAdapters"`
+	} `json:"Links"`
 }
 
 func (r *redfish) systemPath(ctx context.Context) (string, error) {
@@ -199,7 +226,7 @@ func (r *redfish) Probe(ctx context.Context) (Info, error) {
 	info.Power = redfishPower(sys.PowerState)
 	info.CPUs = sys.Processors.Count
 	info.MemoryBytes = int64(sys.Memory.GiB * float64(1<<30))
-	info.MAC = r.firstMAC(ctx, sys.Ethernet.ID)
+	info.MAC = r.hostMAC(ctx, sys)
 	info.Disks = r.drives(ctx, sys.Storage.ID)
 	return info, nil
 }
@@ -216,18 +243,41 @@ func redfishPower(state string) string {
 	return strings.ToLower(state)
 }
 
-func (r *redfish) firstMAC(ctx context.Context, path string) string {
+func (r *redfish) hostMAC(ctx context.Context, sys *redfishSystem) string {
+	if mac := r.firstMAC(ctx, sys.Ethernet.ID); mac != "" {
+		return mac
+	}
+	for _, m := range slices.Concat(sys.HostCorrelation.MACs, sys.Oem.Hp.HostCorrelation.MACs, sys.Oem.Hpe.HostCorrelation.MACs) {
+		if mac := usableMAC(m); mac != "" {
+			r.tracef("host MAC %s from HostCorrelation", mac)
+			return mac
+		}
+	}
+	for _, ref := range []redfishRef{sys.Oem.Hp.Links.NetworkAdapters, sys.Oem.Hpe.Links.NetworkAdapters} {
+		if mac := r.adapterMAC(ctx, ref.ID); mac != "" {
+			r.tracef("host MAC %s from NetworkAdapters", mac)
+			return mac
+		}
+	}
+	return ""
+}
+
+func (r *redfish) members(ctx context.Context, what, path string) []redfishRef {
 	if path == "" {
-		return ""
+		return nil
 	}
 	var col struct {
 		Members []redfishRef `json:"Members"`
 	}
 	if err := r.do(ctx, http.MethodGet, path, nil, &col); err != nil {
-		r.tracef("ethernet interfaces: %v", err)
-		return ""
+		r.tracef("%s: %v", what, err)
+		return nil
 	}
-	for _, m := range col.Members {
+	return col.Members
+}
+
+func (r *redfish) firstMAC(ctx context.Context, path string) string {
+	for _, m := range r.members(ctx, "ethernet interfaces", path) {
 		var nic struct {
 			MAC       string `json:"MACAddress"`
 			Permanent string `json:"PermanentMACAddress"`
@@ -239,9 +289,35 @@ func (r *redfish) firstMAC(ctx context.Context, path string) string {
 		if mac == "" {
 			mac = nic.MAC
 		}
-		if mac = netx.Normalize(mac); mac != "" {
+		if mac = usableMAC(mac); mac != "" {
 			return mac
 		}
+	}
+	return ""
+}
+
+func (r *redfish) adapterMAC(ctx context.Context, path string) string {
+	for _, m := range r.members(ctx, "network adapters", path) {
+		var adapter struct {
+			Ports []struct {
+				MAC string `json:"MacAddress"`
+			} `json:"PhysicalPorts"`
+		}
+		if err := r.do(ctx, http.MethodGet, m.ID, nil, &adapter); err != nil {
+			continue
+		}
+		for _, p := range adapter.Ports {
+			if mac := usableMAC(p.MAC); mac != "" {
+				return mac
+			}
+		}
+	}
+	return ""
+}
+
+func usableMAC(s string) string {
+	if mac := netx.Normalize(s); mac != "00:00:00:00:00:00" {
+		return mac
 	}
 	return ""
 }

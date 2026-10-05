@@ -117,6 +117,7 @@ function labRunbook(kind: string, mac: string): Runbook | null {
   switch (kind) {
     case 'labhost.disk-low':
       return { title: 'The VM disk is filling up', steps: [
+        { text: 'Put new VMs on another disk.', link: { label: 'Storage', href: `/labhosts/${mac}/storage` } },
         { text: 'Delete unused VMs.', link: host },
         { text: 'Move images and volumes off the lab VMs.' },
         { text: 'Re-provision a VM to reclaim its space, or rebuild the host with a larger disk.', link: host },

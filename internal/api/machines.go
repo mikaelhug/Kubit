@@ -220,10 +220,13 @@ func designMachine(m *store.Machine, labVM bool) config.Machine {
 
 func inventoryOf(m *store.Machine) (talos.Inventory, bool) {
 	var inv talos.Inventory
-	if len(m.Hardware) <= 2 {
+	if len(m.Hardware) <= 2 || json.Unmarshal(m.Hardware, &inv) != nil {
 		return inv, false
 	}
-	return inv, json.Unmarshal(m.Hardware, &inv) == nil
+	for i, d := range inv.Disks {
+		inv.Disks[i].Key = labhost.DiskKey(d.Links, d.WWID, d.Serial, d.DevPath)
+	}
+	return inv, true
 }
 
 type hostnamer struct {

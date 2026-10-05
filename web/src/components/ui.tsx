@@ -32,9 +32,9 @@ export function StatusDot({ tone, pulse }: { tone: Tone; pulse?: boolean }) {
   return <span class={`inline-block h-2 w-2 rounded-full ${toneBg[tone]} ${pulse ? 'animate-pulse' : ''}`} />
 }
 
-export function Meter({ label, used, cap, format }: { label: string; used: number; cap: number; format: (n: number) => string }) {
+export function Meter({ label, used, cap, format, color }: { label: string; used: number; cap: number; format: (n: number) => string; color?: string }) {
   const pct = cap ? Math.min(100, Math.round((used / cap) * 100)) : 0
-  const tone = pct > 90 ? 'var(--bad)' : pct > 75 ? 'var(--warn)' : 'var(--accent)'
+  const tone = color ?? (pct > 90 ? 'var(--bad)' : pct > 75 ? 'var(--warn)' : 'var(--accent)')
   return (
     <div class="flex flex-col gap-1.5">
       <div class="flex items-baseline justify-between">

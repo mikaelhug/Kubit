@@ -157,21 +157,51 @@ const (
 	labMemSamples   = 3
 )
 
+func (w *Watcher) diskEvents(ctx context.Context, key, node, label string, used, total int64) []store.EventRow {
+	pct := int(used * 100 / total)
+	open := w.Store.OpenEventSeverity(ctx, key, node, "labhost.disk-low")
+	msg := fmt.Sprintf("%s %d%% full (%s of %s)", label, pct, cluster.HumanBytes(uint64(used)), cluster.HumanBytes(uint64(total)))
+	switch {
+	case pct >= labDiskCritical && open != "critical":
+		_ = w.Store.ResolveEvents(ctx, key, node, "labhost.disk-low")
+		return []store.EventRow{{Cluster: key, Node: node, Severity: "critical", Kind: "labhost.disk-low", Message: msg}}
+	case pct >= labDiskWarn && pct < labDiskCritical && open == "":
+		return []store.EventRow{{Cluster: key, Node: node, Severity: "warn", Kind: "labhost.disk-low", Message: msg}}
+	case pct < labDiskOK && open != "":
+		return []store.EventRow{{Cluster: key, Node: node, Severity: "info", Kind: "labhost.disk-ok", Message: fmt.Sprintf("%s back to %d%%", label, pct)}}
+	}
+	return nil
+}
+
+func poolDiskName(host *store.Machine, pool string) string {
+	if host.LabHost == nil {
+		return pool
+	}
+	capa := host.LabHost.Capacity
+	for _, p := range capa.Pools {
+		for _, d := range capa.Disks {
+			if p.Name == pool && p.Disk != "" && d.Key == p.Disk {
+				return pool + " (" + d.Name() + ")"
+			}
+		}
+	}
+	return pool
+}
+
 func (w *Watcher) labResourceEvents(ctx context.Context, host *store.Machine, m labhost.Metrics) []store.EventRow {
 	key, name := store.LabHostKey(host.MAC), labName(host)
 	var out []store.EventRow
-	if m.DiskTotal > 0 {
-		pct := int(m.DiskUsed * 100 / m.DiskTotal)
-		open := w.Store.OpenEventSeverity(ctx, key, "", "labhost.disk-low")
-		msg := fmt.Sprintf("%s: VM disk %d%% full (%s of %s)", name, pct, cluster.HumanBytes(uint64(m.DiskUsed)), cluster.HumanBytes(uint64(m.DiskTotal)))
-		switch {
-		case pct >= labDiskCritical && open != "critical":
-			_ = w.Store.ResolveEvents(ctx, key, "", "labhost.disk-low")
-			out = append(out, store.EventRow{Cluster: key, Severity: "critical", Kind: "labhost.disk-low", Message: msg})
-		case pct >= labDiskWarn && pct < labDiskCritical && open == "":
-			out = append(out, store.EventRow{Cluster: key, Severity: "warn", Kind: "labhost.disk-low", Message: msg})
-		case pct < labDiskOK && open != "":
-			out = append(out, store.EventRow{Cluster: key, Severity: "info", Kind: "labhost.disk-ok", Message: fmt.Sprintf("%s: VM disk back to %d%%", name, pct)})
+	if len(m.Pools) == 0 && m.DiskTotal > 0 {
+		out = append(out, w.diskEvents(ctx, key, "", name+": VM disk", m.DiskUsed, m.DiskTotal)...)
+	}
+	for _, p := range m.Pools {
+		if !p.Mounted || p.Total <= 0 {
+			continue
+		}
+		if p.Name == labhost.SystemPool {
+			out = append(out, w.diskEvents(ctx, key, "", name+": VM disk", p.Used, p.Total)...)
+		} else {
+			out = append(out, w.diskEvents(ctx, key, p.Name, name+": "+poolDiskName(host, p.Name), p.Used, p.Total)...)
 		}
 	}
 	if m.MemTotal > 0 {

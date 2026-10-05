@@ -75,13 +75,17 @@ type EtcdMember struct {
 }
 
 type Disk struct {
-	DevPath    string `json:"devPath"`
-	SizeBytes  uint64 `json:"sizeBytes"`
-	Model      string `json:"model,omitempty"`
-	Transport  string `json:"transport,omitempty"`
-	Rotational bool   `json:"rotational"`
-	Readonly   bool   `json:"readonly"`
-	CDROM      bool   `json:"cdrom"`
+	DevPath    string   `json:"devPath"`
+	SizeBytes  uint64   `json:"sizeBytes"`
+	Model      string   `json:"model,omitempty"`
+	Transport  string   `json:"transport,omitempty"`
+	Rotational bool     `json:"rotational"`
+	Readonly   bool     `json:"readonly"`
+	CDROM      bool     `json:"cdrom"`
+	Serial     string   `json:"serial,omitempty"`
+	WWID       string   `json:"wwid,omitempty"`
+	Links      []string `json:"links,omitempty"`
+	Key        string   `json:"key,omitempty"`
 }
 
 type Link struct {
@@ -139,6 +143,7 @@ func (c *Client) Inspect(ctx context.Context) (*Inventory, error) {
 		inv.Disks = append(inv.Disks, Disk{
 			DevPath: s.DevPath, SizeBytes: s.Size, Model: s.Model, Transport: s.Transport,
 			Rotational: s.Rotational, Readonly: s.Readonly, CDROM: s.CDROM,
+			Serial: s.Serial, WWID: s.WWID, Links: byIDLinks(s.Symlinks),
 		})
 	}
 	sort.Slice(inv.Disks, func(i, j int) bool { return inv.Disks[i].DevPath < inv.Disks[j].DevPath })
@@ -210,10 +215,21 @@ func (inv *Inventory) PrimaryMAC() string {
 	return ""
 }
 
+func byIDLinks(symlinks []string) []string {
+	var out []string
+	for _, l := range symlinks {
+		if id, ok := strings.CutPrefix(l, "/dev/disk/by-id/"); ok && id != "" {
+			out = append(out, id)
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
 func (inv *Inventory) InstallCandidates() []Disk {
 	var out []Disk
 	for _, d := range inv.Disks {
-		if d.Readonly || d.CDROM || d.Transport == "usb" {
+		if d.DevPath == "" || d.Readonly || d.CDROM || d.Transport == "usb" {
 			continue
 		}
 		out = append(out, d)

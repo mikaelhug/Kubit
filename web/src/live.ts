@@ -3,7 +3,7 @@ import { editMap, setIn } from './maps'
 import { pushEvent, reloadLogs, reloadOfflineLogs, reloadOperations, operations, upsertOp } from './ops'
 import {
   audit, bumpAllRefreshes, bumpRefresh, clusters, connected, daemon, health, hostSamples, loadAllHealth, loadMachines, loadObserver, loadSettings, loadSnapshots, loadVersions, machineKey, machines, me, observer,
-  reconnectAttempt, reloadClusters, resyncing, settings, snapshots, statuses, toast, upsertCluster,
+  reconnectAttempt, reloadClusters, resyncing, settings, snapshots, statuses, stopped, toast, upsertCluster,
 } from './store'
 
 let ws: WebSocket | null = null
@@ -77,11 +77,12 @@ async function runResync() {
 
 function hello(m: Message) {
   connected.value = true
+  stopped.value = false
   attempt = 0
   reconnectAttempt.value = 0
   const h = m.hello
   if (!h) return
-  daemon.value = { version: h.version, startedAt: h.startedAt, service: h.service, os: h.os }
+  daemon.value = { version: h.version, startedAt: h.startedAt, os: h.os }
   const restarted = h.seq < lastSeq || (!!startedAt && h.startedAt !== startedAt)
   startedAt = h.startedAt
   helloSeq = h.seq
@@ -92,6 +93,7 @@ function hello(m: Message) {
 
 function apply(m: Message) {
   if (m.kind === 'hello') return hello(m)
+  if (m.kind === 'stopped') { stopped.value = true; return }
   if (m.seq) {
     if (m.seq <= lastSeq) return
     if (m.seq > lastSeq + 1) return resume()

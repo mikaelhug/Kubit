@@ -29,8 +29,9 @@ export async function loadMe() {
 setUnauthorizedHandler(() => { if (me.value !== null) me.value = null })
 const rank: Record<Role, number> = { viewer: 1, operator: 2, admin: 3 }
 export const can = (role: Role) => { const r = me.value?.role; return !!r && rank[r] >= rank[role] }
-export const daemon = signal<{ version: string; startedAt: string; service: boolean; os?: string } | null>(null)
+export const daemon = signal<{ version: string; startedAt: string; os?: string } | null>(null)
 export const connected = signal(false)
+export const stopped = signal(false)
 export const resyncing = signal(false)
 export const live = computed(() => connected.value && !resyncing.value)
 export const reconnectAttempt = signal(0)

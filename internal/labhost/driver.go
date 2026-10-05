@@ -57,23 +57,25 @@ type Autostarter interface {
 }
 
 type Capacity struct {
-	CPUs       int    `json:"cpus"`
-	MemMiB     int    `json:"memMiB"`
-	DiskGiB    int    `json:"diskGiB"`
-	KVM        bool   `json:"kvm"`
-	Kernel     string `json:"kernel"`
-	Libvirt    string `json:"libvirt"`
-	Hostname   string `json:"hostname"`
-	Arch       string `json:"arch"`
-	Bridge     string `json:"bridge"`
-	Ready      bool   `json:"ready"`
-	CheckedAt  string `json:"checkedAt"`
-	Model      string `json:"model,omitempty"`
-	OS         string `json:"os,omitempty"`
-	Hypervisor string `json:"hypervisor,omitempty"`
-	ReserveMiB int    `json:"reserveMiB,omitempty"`
-	Problem    string `json:"problem,omitempty"`
-	Command    string `json:"command,omitempty"`
+	CPUs       int        `json:"cpus"`
+	MemMiB     int        `json:"memMiB"`
+	DiskGiB    int        `json:"diskGiB"`
+	KVM        bool       `json:"kvm"`
+	Kernel     string     `json:"kernel"`
+	Libvirt    string     `json:"libvirt"`
+	Hostname   string     `json:"hostname"`
+	Arch       string     `json:"arch"`
+	Bridge     string     `json:"bridge"`
+	Ready      bool       `json:"ready"`
+	CheckedAt  string     `json:"checkedAt"`
+	Model      string     `json:"model,omitempty"`
+	OS         string     `json:"os,omitempty"`
+	Hypervisor string     `json:"hypervisor,omitempty"`
+	ReserveMiB int        `json:"reserveMiB,omitempty"`
+	Problem    string     `json:"problem,omitempty"`
+	Command    string     `json:"command,omitempty"`
+	Disks      []HostDisk `json:"disks,omitempty"`
+	Pools      []Pool     `json:"pools,omitempty"`
 }
 
 const defaultReserveMiB = 2048

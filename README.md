@@ -210,16 +210,18 @@ gets an absolute `maxSize` with `grow: false`, and a `UserVolumeConfig` selects
 it creates them and never shrinks EPHEMERAL, so this takes effect on fresh installs;
 an existing node needs to be removed and added again, so `storage` cannot change once
 the cluster is installed. The split happens only while Longhorn is enabled. Design warns
-(`small-system-disk`) when a disk leaves under 10 GiB after `/var`. Lab VMs default to
-60 GiB sparse disks for this.
+(`small-system-disk`) when a disk leaves under 10 GiB after `/var` and about 3 GiB of
+Talos partitions. Lab VMs are sized for this by the lab host dialogs, which may also lower
+`/var` for a small host (`ephemeralSize` in the plan).
 
 **Default add-ons.** A drafted cluster (wizard, lab host) comes up ready to run apps
 from Git: MetalLB, Traefik, metrics-server (Kubit's usage views read it),
 cert-manager, Flux, Longhorn (on data disks or the system disk, so its Talos
 extensions are in the first install and no re-image is needed) and Builds. gVisor is
 opt-in. The
-wizard's Platform step and the lab host dialog take the apps repository (URL and path);
-Flux syncs it on the first platform apply. In the wizard, claiming the first data disk
+wizard's Platform step takes the apps repository (URL and path); a cluster from the lab
+host dialog starts without one and gets it from the Flux add-on's *Configure*. Flux syncs
+it on the first platform apply. In the wizard, claiming the first data disk
 turns Longhorn on and releasing the last turns it off; the Platform step can still
 change either. Drafts (`config.Design`, the lab host design, `POST /config/draft`) also
 write `network.firewall: true` and `storage.encryption: nodeID`, and copy `kvm`, `tpm` and
@@ -309,8 +311,8 @@ read-only. Not yet verified on hardware: `talosctl get volumestatus` should show
 kubeconfig, per-node machine config) are AES-256-GCM sealed with a 32-byte master key
 kept in the macOS Keychain as service `kubit` / account `master-key`.
 `KUBIT_MASTER_KEY` (base64) overrides everything; a `master.key` file (0600) in
-`$KUBIT_HOME` is used when present or when no keyring is reachable (headless Linux,
-systemd units) and is minted there automatically. `kubit serve` logs which source it
+`$KUBIT_HOME` is used when present or when no keyring is reachable (headless Linux)
+and is minted there automatically. `kubit serve` logs which source it
 used; back that up (`kubit key export`).
 
 ### App secrets (SOPS + age)
@@ -678,7 +680,8 @@ of your own in the directory stay.
 - `GET nodes`, `POST discover {targets}`, `GET nodes/{ip}/services|logs?service=&follow=`, `POST nodes/{ip}/reboot`
 - `POST config/validate` (raw YAML → defaulted YAML), `POST config/draft {name, ips}` (topology recommendation → cluster.yaml)
 - `GET operations[/{id}]`, `DELETE operations/{id}` (cancel), `POST operations/{id}/retry`
-- `GET ws` (WebSocket: every operation event, status change and `refresh`; `?since=` replays what a reconnecting client missed)
+- `GET ws` (WebSocket: every operation event, status change and `refresh`; `?since=` replays what a reconnecting client missed; `stopped` as the last message of a clean shutdown, 503 while the daemon drains)
+- `POST daemon/stop` (admin: the same clean shutdown as SIGTERM; 409 while operations run)
 - `GET clusters/{n}/events[?unacked=true]`, `POST clusters/{n}/events/ack`, `POST events/{id}/ack` (health alerts)
 - `GET clusters/{n}/flux` (GitRepositories, OCIRepositories, HelmRepositories, Kustomizations, HelmReleases with their Ready condition and revision; refreshed by the `flux` scope)
 - `GET clusters/{n}/sops` (the age recipient), `GET|PUT clusters/{n}/sops/identity` (admin: export, or import `{keys}`)
@@ -736,7 +739,7 @@ line each) · Fleet: Inventory, Network boot · Kubit: Activity, Settings.
 | `/fleet/inventory` | The hardware ledger: every physical machine by MAC, grouped by what happens next (Available · Needs boot · In use), with lab VMs behind a toggle. Scan, add by remote management, ISO links, bulk *Boot into Talos*. |
 | `/fleet/network-boot` | The PXE server: state and command, enrollment switch, machines that booted through it. |
 | `/operations` | Activity: Operations · Audit, filtered per cluster; `/operations/<id>` shows steps and log. |
-| `/settings/<page>` | This installation: General, Discovery, Alerts, Off-site, Accounts, Single sign-on, Backup. Each page saves only its own fields and keeps unsaved edits while you look at another page. |
+| `/settings/<page>` | This installation: General (with *Stop Kubit* for admins), Discovery, Alerts, Off-site, Accounts, Single sign-on, Backup. Each page saves only its own fields and keeps unsaved edits while you look at another page. |
 
 **Namespaces.** Workloads, Network and Storage open on **Apps**: every namespace that is
 not the platform. **Platform** is `kube-system`, `kube-public`, `kube-node-lease` and the
@@ -1004,6 +1007,9 @@ heartbeat that stops arriving means the daemon is down — the dead-man's switch
   reconnects with `?since=` and catches up from the ring. Writes by another process (the CLI while
   the daemon runs) are detected daemon-side via SQLite's `data_version` and trigger
   `resync`. While disconnected the console shows a banner and the status dot pulses;
+  a clean shutdown sends `stopped` and refuses new connections until the process exits,
+  so the banner says Kubit stopped and names the command that starts it, and the tab
+  goes live again on the next `hello`;
   the only timer in the UI is the shared clock (`web/src/clock.ts`), read only by leaf
   components (`Ago`, `Elapsed`, `SeenAgo`) so a tick never re-renders a page.
 - **Reads are cheap.** The daemon keeps one Kubernetes client per cluster (replaced when
@@ -1060,7 +1066,10 @@ redfish`). Two backends in `internal/oob`:
   conformant BMC) over plain HTTPS + basic auth on the BMC's own address, stdlib
   client, self-signed certificates accepted. `Probe` reads the service root, the first
   `ComputerSystem` (manufacturer, model, serial, UUID, power state, CPU count, memory),
-  the first host NIC with a MAC, and every drive under `Storage` (model, size,
+  the first host NIC with a MAC (from `EthernetInterfaces`, else HPE's
+  `HostCorrelation.HostMACAddress` or `Oem.Hp(e).Links.NetworkAdapters` physical ports:
+  iLO 4 lists host NICs under `EthernetInterfaces` only while HPE's agent runs in the
+  OS), and every drive under `Storage` (model, size,
   protocol, media — no device path until Talos boots; the Hardware tab says so).
   `Power` posts `ComputerSystem.Reset` with `On / ForceOff / ForceRestart / PowerCycle`,
   falling back to what the BMC's `ResetType@Redfish.AllowableValues` lists
@@ -1068,7 +1077,8 @@ redfish`). Two backends in `internal/oob`:
   `Boot.BootSourceOverrideEnabled=Once, BootSourceOverrideTarget=Pxe` and refuses up
   front when the BMC does not list `Pxe`. Errors carry the BMC's
   `@Message.ExtendedInfo` text. Tested against an in-process fake BMC
-  (`internal/oob/redfish_test.go`); **unverified on a real BMC**.
+  (`internal/oob/redfish_test.go`, including an iLO 4-shaped one); **unverified on a
+  real BMC**.
 
 Discovery sweeps the addresses that did not answer as Talos: port 16992 → AMT, else an
 unauthenticated `GET /redfish/v1` → BMC. With the default credentials from Kubit
@@ -1087,10 +1097,9 @@ makes the BIOS honour the source; AMT answers a wrong instance name with `4 Inva
 Reference` and boots normally, so a non-zero return fails the operation. Every request
 and reply is mirrored into the operation log as `amt:` lines.
 
-Install the PXE server once as a root service — `sudo kubit service install --pxe
---iface en0 --kubit-url http://127.0.0.1:8090` (launchd system daemon / systemd unit;
-`service uninstall --pxe` removes it) — the only sudo Kubit ever needs; the Network
-boot page prints the exact command while it is not running. The machine finds it by
+Run the PXE server in a terminal while machines boot from the network — `sudo kubit pxe
+--iface en0 --kubit-url http://127.0.0.1:8090` — the only sudo Kubit ever needs; the
+Network boot page prints the exact command while it is not running. The machine finds it by
 broadcast: UEFI network boot sends a DHCP request, the LAN's DHCP answers with the
 address and Kubit's proxyDHCP adds the boot file, so the server must sit on the
 machines' VLAN and nothing is configured on the machine or the router.
@@ -1109,19 +1118,18 @@ never needs PXE because `node remove` resets Talos to maintenance mode from disk
 
 ## Lab hosts (one machine, several Talos VMs)
 
-A machine with AMT can become a **lab host**: Inventory → *Make lab host* (or
-the machine page). Kubit arms a network boot (`provision_kind = labhost`, the PXE
-process serves the Debian 13 netboot installer with a preseed from
-`GET /api/v1/labhost/preseed`), resets the box via AMT, and the unattended install
-puts Debian + `qemu-kvm` + `libvirt` on the install disk chosen in the dialog (a
-select over the inventory's writable disks, largest preselected, when a Talos scan has
-seen the machine; with one or no known disk the dialog states what will happen and the
-installer takes the largest non-removable disk) with `br0` bridged onto the LAN and Kubit's SSH key (minted once, sealed in settings) for user `kubit`. The
+A machine with AMT or a Redfish BMC can become a **lab host**: Inventory → *Make lab
+host* (or the machine page). Kubit arms a network boot (`provision_kind = labhost`, the
+PXE process serves the Debian 13 netboot installer with a preseed from
+`GET /api/v1/labhost/preseed`), resets the box through its management engine, and the unattended install
+puts Debian + `qemu-kvm` + `libvirt` on the *Debian disk* chosen in the dialog (a
+select over the inventory's writable disks, the smallest preselected when there are
+two or more; the API without a choice keeps the largest) with `br0` bridged onto the LAN through the NIC that carried the installer's default route (the first NIC when there was none) and Kubit's SSH key (minted once, sealed in settings) for user `kubit`. The
 `labhost.provision` operation waits for SSH, verifies `/dev/kvm` and the bridge,
 records capacity and fetches the Talos kernel/initramfs onto the host
-(`/var/lib/kubit/boot`). Then **Add VMs…** (count, vCPU, RAM, disk, optional data
-disk; memory checked against what is free, host keeps 2 GiB): each VM is a libvirt
-domain — `vda` for Talos, a second thin qcow2 `vdb` when a data disk was asked for,
+(`/var/lib/kubit/boot`). Then **Add VMs…** (count, vCPU, RAM, system and data disk, see
+*Lab host disks*; memory checked against what is free, host keeps 2 GiB): each VM is a libvirt
+domain — `vda` for Talos, a second disk `vdb` (image or whole disk) when a data disk was asked for,
 which the lab plan claims as `/var/mnt/data-1` on every node (`vda` stays the install
 disk even when the data disk is larger) — that boots Talos
 **directly from the kernel/initramfs** — no PXE, no ISO — into maintenance mode, and
@@ -1138,6 +1146,54 @@ or updating, and Retire is refused until the host is released (a VM row is delet
 from its host, not retired). Lint reports an all-VMs-on-one-host control plane as
 `lab-cluster` (info).
 
+### Lab host disks
+
+Disks are known before the install only from a Talos scan (iLO 4 and most BMCs report
+none over Redfish): *Scan disks* in the dialog runs *Boot into Talos* once and the
+dialog fills in live. Each disk gets a stable key — its preferred `/dev/disk/by-id`
+link (`wwn-` > `nvme-eui.` > `scsi-3` > `nvme-` > `ata-` > `scsi-`, never `-partN` or
+`usb-`), else `wwid-…`, `serial-…` or the device path — from the same function for the
+Talos inventory and for Debian's `lsblk`, so a plan made from the scan finds its disks
+after the install even when device names move (matched by link, then WWID, then serial,
+then device path with the same size; an ambiguous match is no match). The preseed's
+`partman/early_command` resolves the Debian disk the same way (by-id link, sysfs
+`wwid`, device path with a size check), sets both `partman-auto/disk` and
+`grub-installer/bootdev` to it — GRUB on `default` can land on another disk or an
+internal SD card — and reports `nodisk` when the pinned disk is missing, which fails the
+install at once. Without a pin it takes the largest disk that is neither removable nor
+on USB. Setup checks that Debian landed on the planned disk.
+
+Every planned VM picks a **system disk** and a **data disk** from the host's disks:
+*Image on X* (a thin qcow2 on that disk; several VMs share it), *Whole X* (the
+physical disk passed through to that VM alone, raw, `cache='none' io='native'`) or,
+for data, *On the system disk* (no `vdb`; drafted clusters then split the system disk:
+`storage.systemDisk`, `/var` as large as the plan's `ephemeralSize`, the rest
+`data-system` for Longhorn — for an image and for a whole disk alike). The dialog fills
+these from the sizing suggestion (*Sizing* below). Images on Debian's disk live in `/var/lib/kubit/vms`
+(the `system` pool); a free disk chosen for images becomes a storage disk on demand when
+the VMs are defined: wiped, `mkfs.ext4 -m 0 -T largefile -L kubit-poolN`, mounted at
+`/var/lib/kubit/pools/poolN` by UUID with `nofail,x-systemd.device-timeout=30s,
+x-systemd.before=libvirtd.service` (autostarted VMs wait for it; a missing disk does not
+hang the boot), and the mountpoint is `chattr +i` so an unmounted pool never fills the
+root filesystem; `qemu-img create` also refuses a pool that is not mounted. NVRAM and
+domain XML stay in `/var/lib/kubit/vms`. A whole disk is wiped (every signature, the
+first 32 MiB) before the VM is defined — a leftover Talos STATE would otherwise boot an
+old config — and again when the VM is deleted; a wipe refuses a disk with anything
+mounted or with LVM, crypt or RAID on it. Overcommit only warns (the dialog and the
+operation log name the disk); thin images start small and the per-disk alert covers the
+rest. The same dropdowns are in *Add VMs* once the host runs, fed by the host's own
+inventory (`lsblk -J`, by-id links, sysfs `wwid`, fstab, `df`), which the capacity read
+reports as `capacity.disks` (`os`, `pool`, `free`, `busy`) and `capacity.pools`.
+`List` reads each VM's disks from its domain XML (`virsh dumpxml --inactive`,
+`domblklist --details`), so VMs from before the change read as images on `system`. The
+lab host's *Storage* tab lists the disks with their use, space and VMs; *Release* on an
+empty storage disk unmounts and wipes it (`DELETE /api/v1/machines/{mac}/labhost/pools/{name}`,
+refused while it holds images). VMs on this Mac take no disk choices.
+
+HP Smart Array (P420i and alike): Debian only sees one disk per logical drive, so make
+one logical drive per physical disk (or set the controller to HBA mode), and with legacy
+BIOS make the Debian drive the controller's boot volume.
+
 ### Watching an install, and installing without AMT
 
 The install is not a blind wait any more. The preseed reports each stage back
@@ -1145,7 +1201,8 @@ The install is not a blind wait any more. The preseed reports each stage back
 `packages` … `late-done`, a one-shot unit on first boot → `booted`) through the pxe
 proxy's `/labhost/<mac>/progress` to `GET /api/v1/labhost/progress`, which lands on
 `LabHost.Install` (live on the lab host page). The operation runs
-phases with their own budgets and diagnoses — `boot` (PXE saw the MAC, 3 min: else
+phases with their own budgets and diagnoses — `boot` (PXE saw the MAC, 3 min; 10 min
+behind a Redfish BMC, since a rack server's POST alone can take minutes: else
 "check BIOS boot order / AMT override / Wi-Fi interface"), `ipxe` (kernel fetched,
 2 min: else "TFTP/HTTP blocked"), `installer` (5 min: else "installer never reached
 the network"), `install` (30 min: else "stopped after <stage>; attach a screen"),
@@ -1175,10 +1232,30 @@ arches, and grub also lands on the removable EFI path. `KUBIT_LAB_ALLOW_TCG=1` l
 refuse less): a 1 GiB Talos guest keeps ~450 MiB for pods once Talos and the kubelet
 have theirs, and the platform add-ons alone need more — that shape OOM-churned MetalLB
 on the EliteDesk and cost the host a core per worker in reclaim. The *Make lab host*
-and *Add VMs* dialogs propose what fits (`planFor`): as many 3 GiB VMs as the host
-memory minus the 2 GiB reserve allows, else fewer, larger ones (a 7.7 GiB host gets one
-control plane and one worker at 2816 MiB), the first being the control plane. Both the
-plan path and *Add VMs* refuse a set that exceeds host memory minus the 2 GiB reserve — an
+and *Add VMs* dialogs propose what fits (`suggestPlan`, `web/src/labsizing.ts`) from the
+host's free memory, CPUs and disks, and **Suggest** restores it after edits. Usable image
+space per disk is modelled: Debian's disk `0.93·size − 12 GiB` before the install (EFI,
+/boot, a swap capped at 1 GiB by `partman-auto/cap-ram`, journal, inodes, ext4's 5 % root
+reserve that `libvirt-qemu` cannot use, Debian and Talos assets), other disks `0.98·size`,
+after the install `df` (Debian's filesystem `0.95·size − 8 GiB`); 90 % of what is left
+after existing images is planned. The search tries 1–6 VMs against `/var` of 40, 30, 25
+and 20 GiB and keeps the best layout: a whole disk as each VM's data disk with its system
+image on a fast disk, data images, a whole disk as system disk, or one split image per
+VM spread worst-fit (equal shares, since Longhorn with ≤ 3 nodes holds every volume on
+every node). A candidate counts only with `/var` ≥ 25 GiB (the buildkit cache and images
+live there) and ≥ 15 GiB of Longhorn volumes (5 GiB registry + apps); among those it
+prefers up to 3 nodes, fast system disks, more VMs, a larger `/var`, then more volume
+space. More than 3 VMs only when each still gets 4 GiB, `/var` ≥ 30 GiB, 20 GiB of
+Longhorn and 2 vCPU; 3 control planes from 5 VMs. Control planes get 2–8 GiB and up to 4
+vCPU, workers the rest of the memory and up to 16 vCPU (≤ 1 vCPU per GiB, the host
+keeps 2 CPUs). A free disk that holds a filesystem is never picked. The dialog names
+what limits the host (memory, CPUs or disk space) and shows the Longhorn capacity of
+the rows as edited; `/var per VM` goes into `cluster.yaml` as `storage.ephemeralSize`.
+On a Mac: 60 % of the free space, at most 60 GiB and 4 GiB per VM. Examples: a 126 GiB,
+32-thread server with one 128 GB disk gets a control plane and a worker on 44 GiB images
+with a 25 GiB `/var` (15 GiB of volumes); a 240 GB SSD plus a 2 TB HDD with 64 GiB gets
+3 control planes and 2 workers, system images on the SSD and data images on the HDD.
+Both the plan path and *Add VMs* refuse a set that exceeds host memory minus the 2 GiB reserve — an
 overcommitted host does not fail loudly, its guests swap until kube-scheduler dies
 and the cluster sits at NotReady (found in the harness; the memory alert fired, the
 refusal is what prevents it). While a manual install waits for its machine, the Lab
@@ -1247,14 +1324,13 @@ restart leaves the VMs running; an unloaded job comes back through autostart; ad
 with data disk (`vda`/`vdb` virtio, the ISO is a read-only USB `sda` and never an
 install candidate), re-provision and delete. **Not verified:** a firmware reboot
 (`talosctl reboot --mode powercycle`) — the VM probably stops and shows `shut off`
-until started; laptop sleep during setup; the daemon under launchd (`kubit service`)
-reaching the VM subnet through macOS Local Network privacy.
+until started; laptop sleep during setup.
 
 ### Host metrics, alerts and updates
 
 The host itself gets the treatment nodes get. Every service interval the watcher's
 SSH tick also reads `/proc` and `df` (`libvirt.Client.Metrics`: load, CPU %, memory
-used, the filesystem carrying `/var/lib/kubit`, running VMs, uptime) and files a
+used, the filesystems holding VM images (Debian's and every mounted storage disk, summed and per disk), running VMs, uptime) and files a
 sample. CPU % is the `/proc/stat` delta since the previous tick (a 1 s sample when there
 is none or it is older than 5 min; on a Mac `top` samples 1 s, as macOS has no
 cumulative tick counter outside Mach calls). Capacity (CPUs, memory, free disk, kernel,
@@ -1269,7 +1345,7 @@ a `hostSample` live message appends each reading. Alerts come from the same path
 
 | kind | raised | cleared |
 |---|---|---|
-| `labhost.disk-low` | VM filesystem ≥ 85 % (warn), ≥ 95 % (critical; the warn is resolved and re-raised) | `labhost.disk-ok` below 80 % |
+| `labhost.disk-low` | VM filesystem ≥ 85 % (warn), ≥ 95 % (critical; the warn is resolved and re-raised), per storage disk (node = the pool; Debian's disk on no node) | `labhost.disk-ok` below 80 % |
 | `labhost.memory-pressure` | ≥ 92 % used for three readings | `labhost.memory-ok` below 85 % |
 | `labhost.unreachable` | three failed SSH ticks in a row | `labhost.back` |
 | `labhost.updates` (info) | pending packages or a reboot required, at most daily | — |
@@ -1297,34 +1373,35 @@ quiet window applies, and the watcher skips the host while it is `updating` so t
 reboot is not counted as an outage. The heartbeat lists each lab host with its disk
 percentage and pending updates.
 
-## Running as a service
+## Running Kubit
 
-A cluster never depends on Kubit: Talos and Kubernetes run on their own and `cluster
-export` hands over everything. Keeping the daemon running only adds the observer
-features — alerts, scheduled etcd snapshots, watcher history — and the UI shows when
-they lapse (Observer card, `backup.stale`). `kubit service install [--addr]` writes a
-user unit and starts it at login: `~/Library/LaunchAgents/dev.kubit.serve.plist`
-(launchd, `KeepAlive`, log in `~/.kubit/log/serve.log`, `PATH` with `/usr/sbin` and
-`/sbin` for `sysctl` and `networksetup`) on macOS,
-`~/.config/systemd/user/kubit.service` on Linux (`--system` for
-`/etc/systemd/system`, run as root; `loginctl enable-linger` keeps a user unit alive
-while logged out). `service status` / `service uninstall` manage it; the unit sets
-`KUBIT_SERVICE=1`, shown as "service" in the status bar. On macOS this is also what keeps
-the LAN and the VM subnet reachable: Local Network privacy judges a process by the app
-responsible for it, and a `kubit serve` started from an app that has since quit (an
-editor, an agent, a closed terminal) gets `EHOSTUNREACH` for every local address after
-the next network change, while the Internet and other processes still work. Seen twice
-(2026-09-19, 2026-09-28: all nodes `no route to host` from the daemon, reachable from a
-shell); under launchd `kubit` is its own responsible process. `kubit serve` takes the home
-lock, opens the store and binds the address before anything starts, so a second
-daemon or a busy port fails at once; "listening on" is printed after the bind. Every
-command stops cleanly on SIGINT/SIGTERM (a second signal kills it): `serve` records
-running operations as cancelled, drains the listener and checkpoints the WAL.
+Kubit runs only when you start it; nothing installs it in the background. `kubit`
+without a command runs the daemon in the terminal and opens the console in the default
+browser (`--open=false` skips that); `kubit serve` does the same without opening a
+browser. Ctrl-C or *Stop Kubit* under Settings → General (admin; refused while
+operations run, so nothing is cancelled) stops it, and the console then says Kubit
+stopped until the next `kubit` brings it back live. A cluster never depends on Kubit:
+Talos and Kubernetes run on their own and `cluster export` hands over everything.
+While Kubit is stopped the observer features — alerts, scheduled etcd snapshots,
+watcher history — pause, and the UI shows the gap when it is back (Observer card,
+`backup.stale`).
 
-Under `sudo` (`kubit pxe`, `service install --pxe`, `--system`) Kubit uses the invoking
+Start it from a terminal that stays open. On macOS, Local Network privacy judges a
+process by the app responsible for it, and a daemon started from an app that has since
+quit (an editor, an agent, a closed terminal) gets `EHOSTUNREACH` for every local
+address after the next network change, while the Internet and other processes still
+work (seen 2026-09-19 and 2026-09-28: all nodes `no route to host` from the daemon,
+reachable from a shell). The daemon takes the home lock, opens the store and binds the
+address before anything starts, so a second daemon or a busy port fails at once;
+"listening on" is printed after the bind. Every command stops cleanly on SIGINT/SIGTERM
+(a second signal kills it): `serve` records running operations as cancelled, drains
+the listener and checkpoints the WAL; a checkpoint that finds the database busy is
+logged, not an error, so a clean stop always exits 0.
+
+Under `sudo` (`kubit pxe`) Kubit uses the invoking
 user's home (`SUDO_USER`'s `~/.kubit`) unless `KUBIT_HOME` is set, and hands the
 directories it creates there (the home, `log`, `cache`) to the home's owner, so the
-daemon keeps working as that user. Files the root PXE service writes into them stay
+daemon keeps working as that user. Files the root PXE server writes into them stay
 root-owned but deletable by the user.
 
 ## Backup and restore
@@ -1364,7 +1441,7 @@ Not yet exercised: `runsc-kvm` (no nested virtualisation in the VMs).
 - [~] M6 — Inventory: Adopt… opens the target cluster's add-node dialog preselected; PXE page reads the separate `kubit pxe` process's `/status.json` (server state, per-MAC boot stages dhcp → ipxe → kernel, log) and shows the exact sudo command when it is not running; Kubit Settings (`settings` table: factory URL, poll interval, discovery subnets, default MetalLB range, PXE status URL — applied live); `kubit backup`/`restore`/`key export` and a Download backup button — verified: backup restored into a fresh KUBIT_HOME manages the live cluster. **PXE boot itself is unverified** (see NOTES/backlog.md): pending real hardware
 - [x] M8 — Onboarding & identity: machines keyed by MAC (migration v7, `ips_seen`, UUID/serial, WoL flag), node pools (role/labels/taints/extensions/disk policy → per-pool schematic), per-node DHCP or static addressing (+VLAN), cluster nameservers/NTP, `config.Design`/`Lint`, 5-step create wizard (Machines → Design → Network → Platform → Review), rename / move-to-pool / re-address operations, Inventory by machine with Retire and Wake-on-LAN, `/machines/<mac>` pages. Verified on 4 VMs: wizard with a `sandbox` pool (label + taint, static `.150`), rename, DHCP→static re-address of a control plane (reboot path) and static→static of a worker (kubelet-restart path). **Not exercised:** the `machine.ip-changed` path with a real DHCP lease change (vmnet leases are sticky; unit-tested in `internal/watch`), pool moves with a different extension set (re-image path shares `UpgradeNode`)
 - [x] M9 — Lifecycle safety: scheduled/verified/sealed etcd snapshots with restore drill (verified live), credential inventory + rotation (verified), upgrade pre-checks + pre-upgrade snapshot (verified: refuses cordoned node and unpublished Talos version; passes on healthy `lab`), maintenance windows (verified 409/override), alert forwarding via webhook (verified with a local receiver; SMTP verified in M10) and audit UI. Application-layer add-ons (storage, monitoring) are intentionally left to Argo CD.
-- [x] M10 — Service health & always-on: workload alerts from the API server (`internal/watch/services.go`: crashloop, unavailable workload, pending PVC, service without endpoints, ingress without address, exhausted MetalLB pool; age-gated, auto-resolving, deduplicated across restarts, ignore-namespaces setting), object links and row pills in the console, `GET …/service-health`; `kubit service install|status|uninstall` (launchd / systemd --user / --system), `master.key` file fallback for hosts without a keyring, SIGTERM drain + WAL checkpoint, Observer card (watcher freshness + last snapshot) and service/foreground indicator; SMTP with STARTTLS / implicit TLS / none via an explicit client. Verified on `lab`: crashloop, unavailable deployment, pending PVC, empty service and pool-exhaustion alerts raised, forwarded to a local webhook and resolved on delete/free; `kubit service install` → launchd running as "service" → uninstall; SIGTERM shutdown; SMTP delivery to a local receiver (plain mode; STARTTLS/465 code paths untested against a real provider). Not exercised: the systemd unit on a real Linux host (rendering is unit-tested); the `master.key` fallback beyond its unit test
+- [x] M10 — Service health & always-on: workload alerts from the API server (`internal/watch/services.go`: crashloop, unavailable workload, pending PVC, service without endpoints, ingress without address, exhausted MetalLB pool; age-gated, auto-resolving, deduplicated across restarts, ignore-namespaces setting), object links and row pills in the console, `GET …/service-health`; `kubit service install|status|uninstall` (launchd / systemd --user / --system; removed 2026-10-04: Kubit runs only in the foreground, see *Running Kubit*), `master.key` file fallback for hosts without a keyring, SIGTERM drain + WAL checkpoint, Observer card (watcher freshness + last snapshot) and service/foreground indicator; SMTP with STARTTLS / implicit TLS / none via an explicit client. Verified on `lab`: crashloop, unavailable deployment, pending PVC, empty service and pool-exhaustion alerts raised, forwarded to a local webhook and resolved on delete/free; `kubit service install` → launchd running as "service" → uninstall; SIGTERM shutdown; SMTP delivery to a local receiver (plain mode; STARTTLS/465 code paths untested against a real provider). Not exercised: the systemd unit on a real Linux host (rendering is unit-tested); the `master.key` fallback beyond its unit test
 - [x] M11 — Off-site & dead-man's switch: `internal/offsite` (directory and S3 targets, atomic dir writes, probe, retention), snapshot copy step + `offsite.failed`/`offsite.ok`, daily sealed Kubit backup upload (`kubit.backup` operation), settings section with test/copy-now/status, Backups tab off-site column, heartbeat summary incl. updates available, Overview update notice; also: sidebar tree and cluster Operations tab removed (Activity has a cluster filter), Overview events limited to alerts + recoveries. Verified: dir target round trip, snapshot copied, three backups pruned to two, heartbeat delivered to the webhook. Not exercised: a real S3 endpoint (minio-go; probe/list/put paths are straightforward but untested against a live bucket)
 - [x] M12 — Product polish: VM-aware design (bare metal first, `control-planes-on-vms`), machine-centric wizard table (model, VM/metal, disk transport, NICs), runbooks on every alert kind, getting-started page with ISO downloads, ⌘K palette, shortcut sheet, theme toggle, loading placeholders, stale alerts reconciled after a daemon restart, `hack/e2e.sh`. Sidebar tree and cluster Operations tab removed; Overview limited to alerts + recoveries
 - [x] M13 — Live everywhere: store change notifier, WebSocket transport with replay/resync, typed live state in the console (clusters, machines, snapshots, audit, settings, acks/resolves), external-writer detection, connection banner. Verified: sidebar pill provisioning → ready without reload, ack in one client clears in another, CLI `discover` and API retire reflected live, daemon stop → banner → reconnect + resync. Also found by the e2e script and fixed: an etcd restore left workers' pods (kube-proxy, MetalLB) with dead watches — restore now recreates every pod on workers

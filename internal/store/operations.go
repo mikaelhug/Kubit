@@ -148,7 +148,14 @@ func (s *Store) LatestOperation(ctx context.Context, cluster, kind, status strin
 }
 
 func (s *Store) ListOperations(ctx context.Context, limit int) ([]OperationRow, error) {
-	return queryAll(ctx, s.db, func(sc scanner) (*OperationRow, error) { return scanOperation(sc) }, `SELECT `+operationCols+` FROM operations ORDER BY id DESC LIMIT ?`, limit)
+	return queryAll(ctx, s.db, func(sc scanner) (*OperationRow, error) {
+		var request string
+		o, err := scanOperation(sc, &request)
+		if err == nil {
+			o.Request = rawOrNull(request, "")
+		}
+		return o, err
+	}, `SELECT `+operationCols+`, COALESCE(request, '') FROM operations ORDER BY id DESC LIMIT ?`, limit)
 }
 
 func rawOrNull(v, fallback string) json.RawMessage {

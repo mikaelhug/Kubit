@@ -3,6 +3,7 @@ package api
 import (
 	"bytes"
 	"encoding/json"
+	"strings"
 	"testing"
 
 	"github.com/mikael/kubit/internal/cluster"
@@ -54,6 +55,18 @@ func TestLabDesignTopology(t *testing.T) {
 	}
 	if len(three.ControlPlanes()) != 3 || len(three.Workers()) != 1 || three.Spec.ControlPlane.VIP == "" {
 		t.Errorf("3-cp design wrong: cps=%d workers=%d vip=%q", len(three.ControlPlanes()), len(three.Workers()), three.Spec.ControlPlane.VIP)
+	}
+	planned, err := labCluster{Name: "lab", ControlPlanes: 1, EphemeralSize: "25GiB"}.apply(one)
+	if err != nil || planned.Spec.Storage.EphemeralSize != "25GiB" {
+		t.Errorf("the plan's /var size reaches cluster.yaml: %v %q", err, planned.Spec.Storage.EphemeralSize)
+	}
+}
+
+func TestLabClusterCarriesTheVarSize(t *testing.T) {
+	s, _, _ := localServer(t)
+	rec := call(t, s, "POST", "/api/v1/machines/aa:bb:cc:dd:ee:ff/labhost", `{"manual":true,"vms":{"count":1,"cpus":2,"memMiB":3072,"diskGiB":60},"cluster":{"name":"lab","controlPlanes":1,"ephemeralSize":"5GiB"}}`)
+	if rec.Code != 400 || !strings.Contains(rec.Body.String(), "at least 10GiB") {
+		t.Errorf("a /var under 10 GiB is refused before the install: %d %s", rec.Code, rec.Body)
 	}
 }
 

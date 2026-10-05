@@ -18,6 +18,7 @@ func (s *Server) labhostRoutes() {
 	r.HandleFunc("POST /api/v1/machines/{mac}/labhost/vms/{name}/{action}", s.handleLabVMAction)
 	r.HandleFunc("PUT /api/v1/machines/{mac}/labhost/vms/{name}", s.handleLabVMResize)
 	r.HandleFunc("DELETE /api/v1/machines/{mac}/labhost/vms/{name}", s.handleLabVMDelete)
+	r.HandleFunc("DELETE /api/v1/machines/{mac}/labhost/pools/{name}", s.handleLabPoolRelease)
 	r.HandleFunc("GET /api/v1/labhost/preseed", s.handleLabPreseed)
 	r.HandleFunc("GET /api/v1/labhost/postinstall", s.handleLabPostInstall)
 	r.HandleFunc("GET /api/v1/labhost/progress", s.handleLabProgress)

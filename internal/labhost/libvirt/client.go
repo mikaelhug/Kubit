@@ -156,16 +156,29 @@ func (c *Client) Capacity(ctx context.Context) (labhost.Capacity, error) {
 }
 
 func (c *Client) readCapacity(ctx context.Context) (labhost.Capacity, error) {
-	out, err := c.Run(ctx, `echo "cpus=$(nproc)"; echo "mem=$(awk '/MemTotal/{print int($2/1024)}' /proc/meminfo)"; mkdir -p `+vmDir+`; echo "diskbytes=$(df -B1 --output=avail `+vmDir+` | tail -1 | tr -dc 0-9)"; echo "kvm=$( [ -c /dev/kvm ] && echo yes || echo no)"; echo "kernel=$(uname -r)"; echo "arch=$(uname -m)"; echo "host=$(hostname)"; echo "libvirt=$(virsh version --daemon 2>/dev/null | awk '/Using library/{print $NF}')"; echo "bridge=$(ip -o link show type bridge | awk -F': ' '{print $2}' | grep -xF br0 || ip -o link show type bridge | awk -F': ' '{print $2}' | head -1)"; echo "ready=$( [ -f /var/lib/kubit/READY ] && echo yes || echo no)"`)
+	out, err := c.Run(ctx, `echo "cpus=$(nproc)"; echo "mem=$(awk '/MemTotal/{print int($2/1024)}' /proc/meminfo)"; mkdir -p `+vmDir+`; echo "diskbytes=$(df -B1 --output=avail `+vmDir+` | tail -1 | tr -dc 0-9)"; echo "kvm=$( [ -c /dev/kvm ] && echo yes || echo no)"; echo "kernel=$(uname -r)"; echo "arch=$(uname -m)"; echo "host=$(hostname)"; echo "libvirt=$(virsh version --daemon 2>/dev/null | awk '/Using library/{print $NF}')"; echo "bridge=$(ip -o link show type bridge | awk -F': ' '{print $2}' | grep -xF br0 || ip -o link show type bridge | awk -F': ' '{print $2}' | head -1)"; echo "ready=$( [ -f /var/lib/kubit/READY ] && echo yes || echo no)"; `+storageScript)
 	if err != nil {
 		return labhost.Capacity{}, err
 	}
-	kv := keyValues(out)
+	head, storage, _ := strings.Cut(out, "@lsblk\n")
+	kv := keyValues(head)
 	cp := labhost.Capacity{Kernel: kv["kernel"], Libvirt: kv["libvirt"], Hostname: kv["host"], Bridge: kv["bridge"], KVM: kv["kvm"] == "yes", Ready: kv["ready"] == "yes", CheckedAt: time.Now().UTC().Format(time.RFC3339)}
 	cp.CPUs, _ = strconv.Atoi(kv["cpus"])
 	cp.MemMiB, _ = strconv.Atoi(kv["mem"])
 	if b, err := strconv.ParseInt(kv["diskbytes"], 10, 64); err == nil {
 		cp.DiskGiB = int(b / (1 << 30))
+	}
+	if storage != "" {
+		cp.Disks, cp.Pools = parseStorage("@lsblk\n" + storage)
+		var free int64
+		for _, p := range cp.Pools {
+			if p.Mounted {
+				free += p.FreeBytes
+			}
+		}
+		if free > 0 {
+			cp.DiskGiB = int(free >> 30)
+		}
 	}
 	switch kv["arch"] {
 	case "x86_64":
@@ -224,4 +237,5 @@ var (
 	_ labhost.Driver  = (*Client)(nil)
 	_ labhost.Updater = (*Client)(nil)
 	_ labhost.Router  = (*Client)(nil)
+	_ labhost.Storage = (*Client)(nil)
 )

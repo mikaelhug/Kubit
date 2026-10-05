@@ -3,6 +3,7 @@ package libvirt
 import (
 	"context"
 	"fmt"
+	"path"
 	"strconv"
 	"strings"
 	"sync"
@@ -19,7 +20,7 @@ func metricsScript(sample bool) string {
 	return `read l1 rest < /proc/loadavg; echo "load1=$l1"
 ` + cpu + `
 awk '/MemTotal/{t=$2}/MemAvailable/{a=$2}END{print "memtotal=" t*1024; print "memavail=" a*1024}' /proc/meminfo
-df -B1 --output=used,size ` + vmDir + ` 2>/dev/null | tail -1 | awk '{print "diskused=" $1; print "disktotal=" $2}'
+set --; for p in ` + poolsDir + `/*; do [ -d "$p" ] && set -- "$@" "$p"; done; df -B1 --output=file,target,used,size ` + vmDir + ` "$@" 2>/dev/null | tail -n +2 | awk '{print "pool=" $1 " " $2 " " $3 " " $4}'
 echo "vms=$(virsh list --name 2>/dev/null | grep -c .)"
 echo "uptime=$(cut -d. -f1 /proc/uptime)"`
 }
@@ -67,6 +68,25 @@ func (c *Client) Metrics(ctx context.Context) (labhost.Metrics, error) {
 	return m, nil
 }
 
+func parsePoolUsage(out string) []labhost.PoolUsage {
+	var pools []labhost.PoolUsage
+	for _, line := range strings.Split(out, "\n") {
+		rest, ok := strings.CutPrefix(strings.TrimSpace(line), "pool=")
+		f := strings.Fields(rest)
+		if !ok || len(f) != 4 {
+			continue
+		}
+		used, _ := strconv.ParseInt(f[2], 10, 64)
+		total, _ := strconv.ParseInt(f[3], 10, 64)
+		p := labhost.PoolUsage{Name: labhost.SystemPool, Used: used, Total: total, Mounted: true}
+		if f[0] != vmDir {
+			p.Name, p.Mounted = path.Base(f[0]), f[1] == f[0]
+		}
+		pools = append(pools, p)
+	}
+	return pools
+}
+
 func parseMetrics(out, prev string, at time.Time) (labhost.Metrics, string) {
 	kv := keyValues(out)
 	m := labhost.Metrics{At: at.UTC().Format(time.RFC3339)}
@@ -78,6 +98,15 @@ func parseMetrics(out, prev string, at time.Time) (labhost.Metrics, string) {
 	}
 	m.DiskUsed, _ = strconv.ParseInt(kv["diskused"], 10, 64)
 	m.DiskTotal, _ = strconv.ParseInt(kv["disktotal"], 10, 64)
+	if pools := parsePoolUsage(out); len(pools) > 0 {
+		m.Pools, m.DiskUsed, m.DiskTotal = pools, 0, 0
+		for _, p := range pools {
+			if p.Mounted {
+				m.DiskUsed += p.Used
+				m.DiskTotal += p.Total
+			}
+		}
+	}
 	m.VMsRunning, _ = strconv.Atoi(kv["vms"])
 	m.UptimeSec, _ = strconv.ParseInt(kv["uptime"], 10, 64)
 	if kv["cpu2"] != "" {

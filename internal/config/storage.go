@@ -59,6 +59,17 @@ func (s Storage) EphemeralBytes() (uint64, error) {
 	return size.Value(), nil
 }
 
+func (s Storage) CheckEphemeral() error {
+	b, err := s.EphemeralBytes()
+	if err != nil {
+		return err
+	}
+	if b < MinEphemeralBytes {
+		return fmt.Errorf("at least 10GiB")
+	}
+	return nil
+}
+
 func (c *Cluster) SharesSystemDisk(n Node) bool {
 	return c.Spec.Storage.SystemDisk && c.Spec.Platform.Longhorn.Enabled && len(n.DataDisks) == 0
 }

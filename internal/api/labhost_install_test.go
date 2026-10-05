@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/mikael/kubit/internal/cluster"
+	"github.com/mikael/kubit/internal/oob"
 	"github.com/mikael/kubit/internal/pxe"
 	"github.com/mikael/kubit/internal/store"
 )
@@ -60,7 +61,7 @@ func TestLabWaitBootPhases(t *testing.T) {
 		}
 	}
 
-	err = s.labWaitBoot(ctx, newPXEWatch(s, mac, sink))
+	err = s.labWaitBoot(ctx, newPXEWatch(s, mac, sink), labBootWait)
 	if err == nil || !strings.Contains(err.Error(), "no network boot request from "+mac) || !strings.Contains(err.Error(), "BIOS boot order") {
 		t.Fatalf("boot phase error: %v", err)
 	}
@@ -71,7 +72,7 @@ func TestLabWaitBootPhases(t *testing.T) {
 		p.Boots = []pxe.Boot{{MAC: mac, Arch: "amd64", Stage: "dhcp", LastSeen: w0.since.Add(time.Second)}}
 		p.Log = []string{"12:00:00 PXE request from " + mac + " (amd64)"}
 	})
-	err = s.labWaitBoot(ctx, w0)
+	err = s.labWaitBoot(ctx, w0, labBootWait)
 	if err == nil || !strings.Contains(err.Error(), "kernel was never fetched") {
 		t.Fatalf("ipxe phase error: %v", err)
 	}
@@ -85,7 +86,7 @@ func TestLabWaitBootPhases(t *testing.T) {
 		p.Boots[0].IP = "192.168.5.204"
 		p.Boots[0].LastSeen = w.since.Add(time.Second)
 	})
-	if err := s.labWaitBoot(ctx, w); err != nil {
+	if err := s.labWaitBoot(ctx, w, labBootWait); err != nil {
 		t.Fatalf("healthy boot: %v", err)
 	}
 	if w.ip != "192.168.5.204" {
@@ -94,7 +95,7 @@ func TestLabWaitBootPhases(t *testing.T) {
 
 	stale := newPXEWatch(s, mac, sink)
 	fake.set(func(p *pxe.Status) { p.Boots[0].LastSeen = stale.since.Add(-time.Hour) })
-	if err := s.labWaitBoot(ctx, stale); err == nil || !strings.Contains(err.Error(), "no network boot request") {
+	if err := s.labWaitBoot(ctx, stale, labBootWait); err == nil || !strings.Contains(err.Error(), "no network boot request") {
 		t.Errorf("stale boot must not satisfy the boot phase: %v", err)
 	}
 }
@@ -139,13 +140,13 @@ func TestLabProgressRoute(t *testing.T) {
 	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "qemu-system-arm") || !strings.Contains(rec.Body.String(), "http://192.168.105.1:8069/labhost/"+mac+"/progress?stage=installer") {
 		t.Errorf("preseed: %d %s", rec.Code, rec.Body.String()[:200])
 	}
-	if body := rec.Body.String(); !strings.Contains(body, "list-devices disk") || strings.Contains(body, "partman-auto/disk string /dev") {
+	if body := rec.Body.String(); !strings.Contains(body, "K='';") || strings.Contains(body, "partman-auto/disk string /dev") {
 		t.Errorf("without a chosen disk the installer picks the largest: %s", body)
 	}
 	_ = st.SetLabHost(ctx, mac, &store.LabHost{State: "installing", Disk: "/dev/nvme1n1"})
 	rec = httptest.NewRecorder()
 	s.ServeHTTP(rec, local(httptest.NewRequest(http.MethodGet, "/api/v1/labhost/preseed?mac="+mac+"&post=http://192.168.105.1:8069/labhost/"+mac+"/postinstall", nil)))
-	if body := rec.Body.String(); rec.Code != http.StatusOK || !strings.Contains(body, "partman-auto/disk string /dev/nvme1n1") || strings.Contains(body, "list-devices disk") || !strings.Contains(body, "progress?stage=partitioning") {
+	if body := rec.Body.String(); rec.Code != http.StatusOK || !strings.Contains(body, "P='/dev/nvme1n1';") || !strings.Contains(body, "K='1';") || !strings.Contains(body, `debconf-set grub-installer/bootdev "$D"`) || !strings.Contains(body, "progress?stage=partitioning") {
 		t.Errorf("preseed with a chosen disk: %d %s", rec.Code, body)
 	}
 	rec = httptest.NewRecorder()
@@ -286,5 +287,11 @@ func TestProvisionRefusedWhilePXEHasNoAddress(t *testing.T) {
 	}
 	if m, _ := st.GetMachine(ctx, mac); m.LabHost != nil || m.Provision {
 		t.Errorf("a refused provision leaves the machine alone: %+v", m.LabHost)
+	}
+}
+
+func TestServersGetALongerBootBudget(t *testing.T) {
+	if labBootBudget(&oob.Config{Type: "redfish"}) != labServerBootWait || labBootBudget(&oob.Config{Type: "amt"}) != labBootWait || labBootBudget(nil) != labBootWait {
+		t.Error("a BMC-managed server posts for minutes; AMT desktops and manual boots keep the short budget")
 	}
 }

@@ -3,6 +3,7 @@ package api
 import (
 	"net/http"
 
+	"github.com/mikael/kubit/internal/labhost"
 	"github.com/mikael/kubit/internal/labhost/libvirt"
 	"github.com/mikael/kubit/internal/store"
 )
@@ -24,13 +25,17 @@ func (s *Server) handleLabPreseed(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, err)
 		return
 	}
-	disk := ""
-	if m.LabHost != nil {
-		disk = m.LabHost.Disk
-	}
-	if inv, ok := inventoryOf(m); disk == "" && ok {
-		if cands := inv.InstallCandidates(); len(cands) > 0 {
-			disk = cands[0].DevPath
+	var disk labhost.DiskRef
+	switch {
+	case m.LabHost != nil && m.LabHost.InstallDisk != nil:
+		disk = *m.LabHost.InstallDisk
+	case m.LabHost != nil && m.LabHost.Disk != "":
+		disk = labhost.DiskRef{Key: m.LabHost.Disk, DevPath: m.LabHost.Disk}
+	default:
+		if inv, ok := inventoryOf(m); ok {
+			if refs := diskRefs(inv); len(refs) > 0 {
+				disk = refs[0]
+			}
 		}
 	}
 	arch := r.URL.Query().Get("arch")

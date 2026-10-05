@@ -1,5 +1,6 @@
 export * from './dialogs'
 export * from './metrics'
 export * from './state'
+export * from './storage'
 export * from './system'
 export * from './vms'

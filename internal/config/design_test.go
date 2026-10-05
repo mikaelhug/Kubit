@@ -182,6 +182,21 @@ func TestDesignWarnsWhenTheSystemDiskIsTooSmallToShare(t *testing.T) {
 	if !found {
 		t.Errorf("a 40 GiB system disk leaves nothing after a 40 GiB /var: %+v", warnings)
 	}
+	for gib, want := range map[uint64]bool{52: true, 53: false} {
+		ms[0].Disks[0].SizeBytes = gib << 30
+		_, warnings := config.Design("one", ms, config.DesignOptions{})
+		if got := slices.ContainsFunc(warnings, func(w config.Warning) bool { return w.Code == "small-system-disk" }); got != want {
+			t.Errorf("%d GiB: small-system-disk %v, want %v (40 GiB /var + 3 GiB Talos + 10 GiB data)", gib, got, want)
+		}
+	}
+}
+
+func TestCheckEphemeral(t *testing.T) {
+	for size, ok := range map[string]bool{"25GiB": true, "10GiB": true, "9GiB": false, "50%": false, "-1GiB": false, "lots": false} {
+		if err := (config.Storage{EphemeralSize: size}).CheckEphemeral(); (err == nil) != ok {
+			t.Errorf("%s: %v", size, err)
+		}
+	}
 }
 
 func TestDesignEncryptsWithNodeIDKey(t *testing.T) {

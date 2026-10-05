@@ -35,9 +35,7 @@
   peer URL on service restart. Not investigated.
 - SMTP forwarding verified only in plain mode against a local receiver; STARTTLS and
   implicit-TLS paths need a run against a real provider (Gmail/Fastmail app password).
-- `kubit service install` on Linux (systemd --user / --system) and the `master.key`
-  fallback have unit tests but no run on a real Linux host yet; do it with the first
-  Linux deployment (an always-on NUC is the intended home for the daemon).
+- The `master.key` fallback has unit tests but no run on a real Linux host yet.
 - Off-site S3 target untested against a real bucket (MinIO in a container would do);
   the directory target is verified. Restoring *from* the off-site copy is manual today
   (download the `.kubitbak`/snapshot and use `kubit restore` / the Backups tab) — a
@@ -181,8 +179,8 @@
   every action button and shows a 403 toast. Hide or disable by `can(role)` per page.
 - Identity: OIDC verified only against the in-process fake provider; run once against
   Keycloak/Entra (groups claim name differs: Entra sends object ids unless configured).
-- Identity: the PXE service needs an API token once accounts exist; `kubit service
-  install --pxe` should mint one instead of relying on `KUBIT_TOKEN` by hand.
+- Identity: `kubit pxe` needs an API token once accounts exist; it should get one
+  without `KUBIT_TOKEN` set by hand.
 - QEMU lab (`hack/qemu`): written on macOS and has not booted a VM yet (OVMF path,
   tap ownership, dnsmasq lease file permissions are the likely first fixes). GitHub
   Actions removed; signed releases would need a new home if ever wanted.
@@ -216,8 +214,6 @@
     `spec.json` has `run: true` from the watcher tick, not only at daemon start.
   - `caffeinate -i` covers `labhost.local` only; the nested `cluster.create` can still be
     interrupted by a lid-close sleep. Laptop sleep during setup is untested.
-  - The daemon under launchd (`kubit service install`) reaching 192.168.105.x is untested
-    (macOS Local Network privacy; see the 2026-09-19 EHOSTUNREACH entry).
   - Memory alert on a Mac: `vm_stat` used (active + wired + compressed) sat at 75 % with
     6 GiB of VMs on a 24 GiB machine; `labhost.memory-pressure` (92 %) may be noisy on a
     busy desktop. Consider macOS's memory-pressure level instead.
@@ -309,6 +305,9 @@
     seen on first contact and refuse a change.
   - JSON handlers accept any Content-Type (hack scripts post with `curl -d`); requiring
     `application/json` would close form-post CSRF from other origins.
+  - Bodiless POSTs (`daemon/stop`, `machines/{mac}/wake`, `events/{id}/ack`) are not
+    covered by a Content-Type rule, and loopback without accounts is admin; check
+    `Origin`/`Sec-Fetch-Site` on non-GET `/api/` requests in `ServeHTTP`.
 - Review follow-ups (phase 2):
   - `platform.argocd` is still parsed as `LegacyArgoCD` and folded into Flux on load;
     dropping the field needs a store migration that rewrites stored specs first.
@@ -459,3 +458,32 @@
   Report it as a warning with a retry hint instead of failing the operation.
 - `checkNodeAdd` (API) and `AddNode` place the new node in the declaration with
   different matching rules (hostname and IP vs hostname or IP). Share one helper.
+- The status-bar uptime keeps ticking from the last `hello` while the daemon is
+  stopped or unreachable; show it only while connected.
+- Lab host storage follow-ups:
+  - Reinstalling Debian while another disk still holds an older `<hostname>-vg` can collide
+    on the volume group name; zero the planned disks in the partman early command or set
+    a unique `partman-auto-lvm/new_vg_name`.
+  - The host's lvm2 may auto-activate LVM a guest wrote on a whole disk, which then
+    blocks its wipe; filter passthrough disks in `lvm.conf` (`global_filter`).
+  - A `labhost.pool-missing` alert for a storage disk in fstab that is not mounted (its
+    VMs do not start).
+  - libvirt re-provision keeps the system image or whole disk; Talos reinstalls over it,
+    but a wipe would match vfkit.
+  - The lab host's Hardware tab still shows the pre-install Talos scan; `capacity.disks`
+    could replace it.
+  - *Scan disks* attaches the inventory to the row of the NIC that PXE-booted; when the
+    BMC reported another NIC's MAC, the dialog never fills in.
+  - `hack/lab/lab.sh` could add a second virtio disk to exercise storage disks (virtio
+    disks without a serial have no by-id link, so they use the device-path key).
+- Lab VM sizing follow-ups:
+  - `tune2fs -m 1` on Debian's root: ext4's 5 % root reserve is lost to VM images (93 GiB
+    on a 2 TB disk); the sizing model assumes it stays.
+  - *Add VMs* plans with a 40 GiB `/var`; it could take `ephemeralSize` from the cluster the
+    VMs will join.
+  - Mixed layouts (some VMs on whole disks, the rest on images) are never suggested.
+  - The 2 GiB host reserve does not grow with the number of VMs (QEMU overhead per guest).
+  - Size from Redfish-reported disks before a scan (sizes only, no device paths).
+  - `hack/lab/lab.sh` still plans 20 GiB disks, which leave no room for `data-system`
+    under a 40 GiB `/var`.
+  - 6 suggested VMs raise the `schedulable-control-planes` info lint.

@@ -23,6 +23,7 @@ func (s *Server) liveRoutes() {
 	r := s.mux
 	r.HandleFunc("GET /api/v1/version", s.handleVersion)
 	r.HandleFunc("GET /api/v1/ws", s.handleLive)
+	r.HandleFunc("POST /api/v1/daemon/stop", s.handleDaemonStop)
 }
 
 type Message struct {
@@ -51,7 +52,6 @@ type Hello struct {
 	Seq       int64  `json:"seq"`
 	Version   string `json:"version"`
 	StartedAt string `json:"startedAt"`
-	Service   bool   `json:"service"`
 	PID       int    `json:"pid"`
 	OS        string `json:"os"`
 }
@@ -92,12 +92,14 @@ type frame struct {
 }
 
 type hub struct {
-	mu   sync.Mutex
-	subs map[chan frame]struct{}
-	seq  int64
-	ring []frame
-	head int
-	n    int
+	mu        sync.Mutex
+	subs      map[chan frame]struct{}
+	seq       int64
+	ring      []frame
+	head      int
+	n         int
+	listeners int
+	closed    bool
 }
 
 const (
@@ -115,9 +117,13 @@ type subscription struct {
 }
 
 func (h *hub) subscribe(since int64) *subscription {
-	sub := &subscription{ch: make(chan frame, subscriberBuffer), replay: true}
 	h.mu.Lock()
 	defer h.mu.Unlock()
+	if h.closed {
+		return nil
+	}
+	h.listeners++
+	sub := &subscription{ch: make(chan frame, subscriberBuffer), replay: true}
 	h.subs[sub.ch] = struct{}{}
 	sub.head = h.seq
 	if since == 0 || since >= sub.head {
@@ -138,7 +144,25 @@ func (h *hub) subscribe(since int64) *subscription {
 func (h *hub) unsubscribe(sub *subscription) {
 	h.mu.Lock()
 	delete(h.subs, sub.ch)
+	h.listeners--
 	h.mu.Unlock()
+}
+
+func (h *hub) shutdown(last Message) {
+	h.publish(last)
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.closed = true
+	for ch := range h.subs {
+		delete(h.subs, ch)
+		close(ch)
+	}
+}
+
+func (h *hub) idle() bool {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.listeners == 0
 }
 
 func (h *hub) publish(m Message) {
@@ -261,6 +285,13 @@ var offsiteKeys = map[string]bool{settingsKey: true, "offsite.lastBackup": true}
 var devOrigins = []string{"localhost:5173", "127.0.0.1:5173"}
 
 func (s *Server) handleLive(w http.ResponseWriter, r *http.Request) {
+	since, _ := strconv.ParseInt(r.URL.Query().Get("since"), 10, 64)
+	sub := s.hub.subscribe(since)
+	if sub == nil {
+		writeErr(w, &statusError{Status: http.StatusServiceUnavailable, Msg: "Kubit is stopping."})
+		return
+	}
+	defer s.hub.unsubscribe(sub)
 	conn, err := websocket.Accept(w, r, &websocket.AcceptOptions{OriginPatterns: devOrigins})
 	if err != nil {
 		return
@@ -278,9 +309,6 @@ func (s *Server) handleLive(w http.ResponseWriter, r *http.Request) {
 		b, _ := json.Marshal(m)
 		return write(b)
 	}
-	since, _ := strconv.ParseInt(r.URL.Query().Get("since"), 10, 64)
-	sub := s.hub.subscribe(since)
-	defer s.hub.unsubscribe(sub)
 	hello := s.hello()
 	hello.Seq = sub.head
 	if err := send(Message{Kind: "hello", Hello: &hello}); err != nil {
@@ -331,9 +359,25 @@ func (s *Server) handleLive(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleVersion(w http.ResponseWriter, _ *http.Request) {
 	h := s.hello()
-	writeJSON(w, http.StatusOK, map[string]any{"kubit": h.Version, "startedAt": h.StartedAt, "service": h.Service, "pid": h.PID, "os": h.OS})
+	writeJSON(w, http.StatusOK, map[string]any{"kubit": h.Version, "startedAt": h.StartedAt, "pid": h.PID, "os": h.OS})
+}
+
+func (s *Server) AttachStop(stop func()) { s.stopDaemon = stop }
+
+func (s *Server) handleDaemonStop(w http.ResponseWriter, r *http.Request) {
+	if s.stopDaemon == nil {
+		writeErr(w, conflict("This daemon cannot be stopped from the console."))
+		return
+	}
+	if s.running() > 0 {
+		writeErr(w, conflict("Operations are running; wait for them or cancel them first."))
+		return
+	}
+	_ = s.store.Audit(r.Context(), "", "kubit.stop", "")
+	w.WriteHeader(http.StatusAccepted)
+	s.stopDaemon()
 }
 
 func (s *Server) hello() Hello {
-	return Hello{Version: s.version, StartedAt: s.started.UTC().Format(time.RFC3339), Service: os.Getenv("KUBIT_SERVICE") != "", PID: os.Getpid(), OS: runtime.GOOS}
+	return Hello{Version: s.version, StartedAt: s.started.UTC().Format(time.RFC3339), PID: os.Getpid(), OS: runtime.GOOS}
 }

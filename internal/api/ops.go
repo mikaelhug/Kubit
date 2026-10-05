@@ -236,14 +236,20 @@ func (s *Server) Drain(timeout time.Duration) {
 		return true
 	})
 	deadline := time.Now().Add(timeout)
-	for time.Now().Before(deadline) {
-		n := 0
-		s.cancels.Range(func(_, _ any) bool { n++; return true })
-		if n == 0 {
-			return
-		}
+	for s.running() > 0 && time.Now().Before(deadline) {
 		time.Sleep(100 * time.Millisecond)
 	}
+	s.hub.shutdown(Message{Kind: "stopped"})
+	deadline = time.Now().Add(2 * time.Second)
+	for !s.hub.idle() && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+func (s *Server) running() int {
+	n := 0
+	s.cancels.Range(func(_, _ any) bool { n++; return true })
+	return n
 }
 
 func (s *Server) cancelOperation(id int64) bool {
