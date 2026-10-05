@@ -5,7 +5,6 @@ import (
 	"context"
 	"database/sql"
 	"path/filepath"
-	"slices"
 	"testing"
 	"time"
 
@@ -25,7 +24,7 @@ func TestNotifierPerTable(t *testing.T) {
 	_ = s.PutCluster(ctx, store.ClusterRow{Name: "c", Spec: []byte("x"), State: "provisioning"})
 	_ = s.SetClusterState(ctx, "c", "ready")
 	_ = s.UpsertNode(ctx, store.NodeRow{IP: "10.0.0.1", MAC: "aa:aa:aa:aa:aa:01", State: "maintenance"})
-	_ = s.SetMachineWOL(ctx, "aa:aa:aa:aa:aa:01", true)
+	_ = s.UpsertNode(ctx, store.NodeRow{IP: "10.0.0.1", MAC: "aa:aa:aa:aa:aa:01", State: "configured"})
 	id, _ := s.AddSnapshot(ctx, store.Snapshot{Cluster: "c", Path: "/x", Status: "ok"})
 	_ = s.SetSnapshotStatus(ctx, id, "corrupt")
 	_ = s.DeleteSnapshot(ctx, id)
@@ -33,7 +32,7 @@ func TestNotifierPerTable(t *testing.T) {
 	_ = s.ResolveEvents(ctx, "c", "n", "node.notready")
 	_ = s.AckEvent(ctx, eid)
 	_ = s.Audit(ctx, "c", "x", "")
-	_ = s.SetValue(ctx, "k", "v")
+	_ = s.PutSettings(ctx, store.DefaultSettings())
 	_ = s.DeleteCluster(ctx, "c")
 	want := []string{"clusters/put", "clusters/put", "machines/put", "machines/put", "snapshots/put", "snapshots/put", "snapshots/delete", "events/resolve", "events/ack", "audit/put", "settings/put", "machines/put", "clusters/delete"}
 	if len(got) != len(want) {
@@ -72,7 +71,7 @@ func TestWatchExternalSeesOtherProcessWrites(t *testing.T) {
 	defer cancel()
 	go a.WatchExternal(ctx, 50*time.Millisecond)
 	time.Sleep(120 * time.Millisecond)
-	if err := b.SetValue(ctx, "from", "cli"); err != nil {
+	if err := b.PutSettings(ctx, store.DefaultSettings()); err != nil {
 		t.Fatal(err)
 	}
 	select {
@@ -80,7 +79,7 @@ func TestWatchExternalSeesOtherProcessWrites(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Fatal("external write not detected")
 	}
-	_ = a.SetValue(ctx, "from", "daemon")
+	_ = a.PutSettings(ctx, store.DefaultSettings())
 	select {
 	case ch := <-seen:
 		t.Fatalf("local write reported as external: %+v", ch)
@@ -115,14 +114,9 @@ func TestOnlyOtherConnectionsCountAsExternal(t *testing.T) {
 	must(s.PutCluster(ctx, store.ClusterRow{Name: "c", Spec: []byte("x"), State: "ready"}))
 	must(s.PutClusterSecrets(ctx, "c", store.ClusterSecrets{SecretsBundle: []byte("b"), Talosconfig: []byte("t")}))
 	must(s.UpsertNode(ctx, store.NodeRow{MAC: "aa:aa:aa:aa:aa:09", IP: "10.0.0.9", State: "maintenance"}))
-	_, err = s.CreateUser(ctx, "ann", "correct horse battery", store.RoleAdmin, "local")
-	must(err)
 	id, err := s.CreateOperation(ctx, "c", "test", nil)
 	must(err)
-	tok, err := s.IssueToken(ctx, "ann", "session", "", time.Hour)
-	must(err)
 	for _, write := range []func() error{
-		func() error { return s.SetTalosconfig(ctx, "c", []byte("t2")) },
 		func() error { return s.AddSamples(ctx, "c", time.Now(), []store.Sample{{CPUMilli: 1}}) },
 		func() error {
 			_, err := s.AddEvent(ctx, store.EventRow{Cluster: "c", Severity: "info", Kind: "k", Message: "m"})
@@ -132,10 +126,6 @@ func TestOnlyOtherConnectionsCountAsExternal(t *testing.T) {
 		func() error { return s.SetOperationSteps(ctx, id, []byte("[]")) },
 		func() error { return s.FinishOperation(ctx, id, "done") },
 		func() error { return s.PutNodeMachineConfig(ctx, "10.0.0.9", []byte("cfg"), false) },
-		func() error {
-			_, _, err := s.ResolveToken(ctx, tok)
-			return err
-		},
 		func() error { return s.Prune(ctx) },
 		func() error { return s.MarkStaleOperations(ctx) },
 		func() error { return s.Checkpoint(ctx) },
@@ -181,7 +171,7 @@ func TestExternalSettingsWriteBesideALocalWriteRefreshesSettings(t *testing.T) {
 	go a.WatchExternal(ctx, 300*time.Millisecond)
 	time.Sleep(100 * time.Millisecond)
 	set, _ := b.GetSettings(ctx)
-	set.WatchIntervalSec = 42
+	set.PXEEnrollment = "closed"
 	if err := b.PutSettings(ctx, set); err != nil {
 		t.Fatal(err)
 	}
@@ -190,55 +180,10 @@ func TestExternalSettingsWriteBesideALocalWriteRefreshesSettings(t *testing.T) {
 	}
 	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
-		if got, _ := a.GetSettings(ctx); got.WatchIntervalSec == 42 {
+		if got, _ := a.GetSettings(ctx); got.PXEEnrollment == "closed" {
 			return
 		}
 		time.Sleep(50 * time.Millisecond)
 	}
 	t.Fatal("cached settings survived an external write")
-}
-
-func TestTokenWritesNotifyUsers(t *testing.T) {
-	c, _ := store.NewCrypto(bytes.Repeat([]byte{5}, 32))
-	s, err := store.Open(t.TempDir(), c)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer s.Close()
-	ctx := t.Context()
-	if _, err := s.CreateUser(ctx, "ann", "correct horse battery", store.RoleAdmin, "local"); err != nil {
-		t.Fatal(err)
-	}
-	var got []string
-	s.OnChange(func(ch store.Change) { got = append(got, ch.Table+"/"+ch.Op+"/"+ch.Key) })
-	token, err := s.IssueToken(ctx, "ann", "api", "ci", 0)
-	if err != nil {
-		t.Fatal(err)
-	}
-	session, err := s.IssueToken(ctx, "ann", "session", "", time.Hour)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, _, err := s.ResolveToken(ctx, token); err != nil {
-		t.Fatal(err)
-	}
-	if _, _, err := s.ResolveToken(ctx, token); err != nil {
-		t.Fatal(err)
-	}
-	if _, _, err := s.ResolveToken(ctx, session); err != nil {
-		t.Fatal(err)
-	}
-	if err := s.RevokeToken(ctx, session); err != nil {
-		t.Fatal(err)
-	}
-	if err := s.RevokeToken(ctx, session); err != nil {
-		t.Fatal(err)
-	}
-	if err := s.DeleteAPIToken(ctx, "ann", "ci"); err != nil {
-		t.Fatal(err)
-	}
-	want := []string{"users/token/ann", "users/token/ann", "users/token/ann", "users/token/", "users/token/ann"}
-	if !slices.Equal(got, want) {
-		t.Errorf("changes %v, want %v", got, want)
-	}
 }

@@ -1,5 +1,5 @@
 import { batch, computed, signal, type ReadonlySignal, type Signal } from '@preact/signals'
-import { api, setUnauthorizedHandler, type AuditEntry, type ClusterRow, type HealthEvent, type Me, type NodeRow, type ObserverState, type Role, type Sample, type Settings, type Snapshot, type Status, type Versions } from './api'
+import { api, type AuditEntry, type ClusterRow, type HealthEvent, type NodeRow, type ObserverState, type Snapshot, type Status, type Versions } from './api'
 import { persist, read } from './local'
 import { editMap, setIn } from './maps'
 
@@ -8,27 +8,9 @@ export const kubitKey = 'kubit'
 export const clusters = signal<ClusterRow[]>([])
 export const machines = signal<Map<string, NodeRow>>(new Map())
 export const machineList = computed(() => [...machines.value.values()].sort((a, b) => a.ip.localeCompare(b.ip, undefined, { numeric: true })))
-export const labHosts = computed(() => machineList.value.filter((m) => m.labhost))
 export const snapshots = signal<Map<string, Snapshot[]>>(new Map())
 export const audit = signal<AuditEntry[]>([])
-export const settings = signal<Settings | null>(null)
 export const versions = signal<Versions | null>(null)
-export const me = signal<Me | null | undefined>(undefined)
-export const authState = signal<{ setup: boolean; users: number; sso?: string }>({ setup: false, users: 0 })
-export async function loadMe() {
-  try {
-    const m = await api.me()
-    me.value = m
-    authState.value = { setup: m.setup, users: m.users, sso: m.sso }
-  } catch (e: any) {
-    me.value = null
-    if (e && typeof e === 'object' && 'body' in e && e.body) authState.value = { setup: !!e.body.setup, users: e.body.users ?? 0, sso: e.body.sso }
-    if (e && typeof e === 'object' && 'status' in e && e.status !== 401) throw e
-  }
-}
-setUnauthorizedHandler(() => { if (me.value !== null) me.value = null })
-const rank: Record<Role, number> = { viewer: 1, operator: 2, admin: 3 }
-export const can = (role: Role) => { const r = me.value?.role; return !!r && rank[r] >= rank[role] }
 export const daemon = signal<{ version: string; startedAt: string; os?: string } | null>(null)
 export const connected = signal(false)
 export const stopped = signal(false)
@@ -40,7 +22,6 @@ export const drawerHeight = signal<number>(read('kubit.drawerHeight', 260))
 export const drawerTab = signal<number | null>(null)
 export const toasts = signal<{ id: number; text: string; tone: 'info' | 'error' | 'good' }[]>([])
 export const statuses = signal<Map<string, Status>>(new Map())
-export const hostSamples = signal<Map<string, Sample>>(new Map())
 export const observer = signal<ObserverState>({ online: true, gaps24h: 0 })
 export const health = signal<Map<string, HealthEvent[]>>(new Map())
 
@@ -134,9 +115,6 @@ export async function loadAudit(cluster?: string) {
   } catch {}
 }
 
-export async function loadSettings() {
-  try { settings.value = await api.settings() } catch {}
-}
 
 let toastSeq = 0
 export function toast(text: string, tone: 'info' | 'error' | 'good' = 'info') {

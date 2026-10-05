@@ -8,8 +8,6 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/mikael/kubit/internal/config"
-	"github.com/mikael/kubit/internal/talos"
 	clientconfig "github.com/siderolabs/talos/pkg/machinery/client/config"
 	"go.yaml.in/yaml/v4"
 )
@@ -115,87 +113,4 @@ func kubeconfigClientCert(kubeconfig []byte) ([]byte, error) {
 		return nil, fmt.Errorf("kubeconfig has no client certificate")
 	}
 	return derFromBase64PEM(kc.Users[0].User.ClientCertificateData)
-}
-
-func (m *Manager) RotateCredential(ctx context.Context, name, which string, sink Sink) error {
-	sink.Plan(Steps("rotate", "Issue a new "+which, "store", "Replace the stored copy")...)
-	c, _, err := m.LoadCluster(ctx, name)
-	if err != nil {
-		return err
-	}
-	sec, err := m.Store.GetClusterSecrets(ctx, name)
-	if err != nil {
-		return err
-	}
-	cps := c.ControlPlanes()
-	if len(cps) == 0 {
-		return fmt.Errorf("no control planes")
-	}
-	var fresh []byte
-	err = sink.Run("rotate", func() error {
-		if which != "talosconfig" && which != "kubeconfig" {
-			return fmt.Errorf("unknown credential %q (talosconfig | kubeconfig)", which)
-		}
-		cp, tc, err := firstControlPlane(ctx, cps, sec.Talosconfig, func(_ config.Node, tc *talos.Client) error {
-			var err error
-			if which == "talosconfig" {
-				fresh, err = generateTalosconfig(ctx, tc, 365*24*time.Hour)
-			} else {
-				fresh, err = adminKubeconfig(ctx, tc, credentialTimeout)
-			}
-			return err
-		})
-		if err != nil {
-			return err
-		}
-		tc.Close()
-		sink.Emit(Info, "rotate", cp.Hostname, "new %s issued, valid one year", which)
-		return nil
-	})
-	if err != nil {
-		return err
-	}
-	return sink.Run("store", func() error {
-		switch which {
-		case "talosconfig":
-			fresh = rewriteTalosconfigEndpoints(fresh, c)
-			if err := m.Store.SetTalosconfig(ctx, name, fresh); err != nil {
-				return err
-			}
-		case "kubeconfig":
-			if err := m.Store.SetKubeconfig(ctx, name, fresh); err != nil {
-				return err
-			}
-		}
-		_ = m.Store.Audit(ctx, name, "cert.rotate", which)
-		sink.Emit(Done, "store", "", "%s replaced; export or download it again where it is used outside Kubit", which)
-		return nil
-	})
-}
-
-func rewriteTalosconfigEndpoints(tc []byte, c *config.Cluster) []byte {
-	cfg, err := clientconfig.FromBytes(tc)
-	if err != nil {
-		return tc
-	}
-	ctxc, ok := cfg.Contexts[cfg.Context]
-	if !ok {
-		return tc
-	}
-	var eps []string
-	for _, cp := range c.ControlPlanes() {
-		eps = append(eps, cp.IP)
-	}
-	ctxc.Endpoints = eps
-	ctxc.Nodes = nil
-	if name := c.Metadata.Name; name != "" && cfg.Context != name {
-		cfg.Contexts[name] = ctxc
-		delete(cfg.Contexts, cfg.Context)
-		cfg.Context = name
-	}
-	out, err := cfg.Bytes()
-	if err != nil {
-		return tc
-	}
-	return out
 }

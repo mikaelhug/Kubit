@@ -17,7 +17,6 @@ import (
 	"github.com/siderolabs/talos/pkg/machinery/resources/runtime"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
-	"google.golang.org/protobuf/types/known/durationpb"
 	"google.golang.org/protobuf/types/known/emptypb"
 )
 
@@ -213,11 +212,6 @@ func (c *Client) AdminKubeconfig(ctx context.Context) ([]byte, error) {
 
 func (c *Client) BootstrapEtcd(ctx context.Context) error {
 	return c.Bootstrap(c.nodeContext(ctx), &machineapi.BootstrapRequest{})
-}
-
-func (c *Client) RestartService(ctx context.Context, id string) error {
-	_, err := c.ServiceRestart(c.nodeContext(ctx), id)
-	return err
 }
 
 func (c *Client) Services(ctx context.Context) ([]*machineapi.ServiceInfo, error) {
@@ -428,17 +422,6 @@ func (c *Client) BootstrapManifests(ctx context.Context) ([]map[string]any, erro
 		}
 	}
 	return out, nil
-}
-
-func (c *Client) GenerateTalosconfig(ctx context.Context, ttl time.Duration) ([]byte, error) {
-	resp, err := c.GenerateClientConfiguration(c.nodeContext(ctx), &machineapi.GenerateClientConfigurationRequest{Roles: []string{"os:admin"}, CrtTtl: durationpb.New(ttl)})
-	if err != nil {
-		return nil, err
-	}
-	if len(resp.Messages) == 0 || len(resp.Messages[0].Talosconfig) == 0 {
-		return nil, errors.New("empty GenerateClientConfiguration response")
-	}
-	return resp.Messages[0].Talosconfig, nil
 }
 
 func (c *Client) VarAvailable(ctx context.Context) (avail, size uint64, err error) {

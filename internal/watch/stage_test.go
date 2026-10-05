@@ -35,7 +35,7 @@ func (p *stagePublished) counts() (int, int, int) {
 
 func stageWatcher(t *testing.T) (*Watcher, chan stageFeed, *stagePublished) {
 	t.Helper()
-	w, _ := labWatcher(t)
+	w := testWatcher(t)
 	ctx := t.Context()
 	if err := w.Store.PutCluster(ctx, store.ClusterRow{Name: "c", Spec: []byte("x"), State: "ready"}); err != nil {
 		t.Fatal(err)
@@ -260,7 +260,9 @@ func TestStageWatchStopsForRemovedNode(t *testing.T) {
 	if f := nextFeeds(t, feeds, 1); f["10.0.0.9"].report == nil {
 		t.Fatal("no watch on the new address")
 	}
-	if err := w.Store.SetTalosconfig(t.Context(), "c", []byte("t2")); err != nil {
+	sec, _ := w.Store.GetClusterSecrets(t.Context(), "c")
+	sec.Talosconfig = []byte("t2")
+	if err := w.Store.PutClusterSecrets(t.Context(), "c", *sec); err != nil {
 		t.Fatal(err)
 	}
 	w.syncStageWatches(t.Context(), "c", moved, false)

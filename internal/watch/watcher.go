@@ -3,7 +3,6 @@ package watch
 import (
 	"context"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"github.com/mikael/kubit/internal/cluster"
@@ -18,14 +17,12 @@ type Watcher struct {
 	OnStatus        func(name string, st *cluster.Status)
 	OnEvent         func(e store.EventRow)
 	OnRefresh       func(name, scope string)
-	OnHostSample    func(mac string, sm store.Sample)
 
 	OnObserver func(o ObserverState)
 
-	interval atomic.Int64
+	interval time.Duration
 
 	mu           sync.Mutex
-	retune       chan struct{}
 	stopping     map[string]chan struct{}
 	last         map[string]*cluster.Status
 	lastServices map[string]*cluster.ServiceHealth
@@ -34,10 +31,8 @@ type Watcher struct {
 	lastTick     map[string]time.Time
 	lastContact  map[string]time.Time
 	running      map[string]*clusterLoop
-	memHigh      map[string]int
 	observer     ObserverState
 	gaps         []time.Time
-	labNoNet     map[string]bool
 	offlineTicks int
 	stages       map[string]map[string]*stageWatch
 	watchStage   stageSource
@@ -50,28 +45,12 @@ func New(m *cluster.Manager, interval time.Duration) *Watcher {
 	if interval <= 0 {
 		interval = 15 * time.Second
 	}
-	w := &Watcher{Manager: m, Store: m.Store, ServiceInterval: 4 * interval, retune: make(chan struct{}), stopping: map[string]chan struct{}{}, last: map[string]*cluster.Status{}, lastServices: map[string]*cluster.ServiceHealth{}, trackers: map[string]*ServiceTracker{}, confirms: map[string]*confirm{}, lastTick: map[string]time.Time{}, lastContact: map[string]time.Time{}, running: map[string]*clusterLoop{}, memHigh: map[string]int{}, labNoNet: map[string]bool{}, kubeSignals: map[string]chan struct{}{}, stages: map[string]map[string]*stageWatch{}, watchStage: talos.WatchStage, observer: ObserverState{Online: true}}
-	w.interval.Store(int64(interval))
+	w := &Watcher{Manager: m, Store: m.Store, ServiceInterval: 4 * interval, stopping: map[string]chan struct{}{}, last: map[string]*cluster.Status{}, lastServices: map[string]*cluster.ServiceHealth{}, trackers: map[string]*ServiceTracker{}, confirms: map[string]*confirm{}, lastTick: map[string]time.Time{}, lastContact: map[string]time.Time{}, running: map[string]*clusterLoop{}, kubeSignals: map[string]chan struct{}{}, stages: map[string]map[string]*stageWatch{}, watchStage: talos.WatchStage, observer: ObserverState{Online: true}}
+	w.interval = interval
 	return w
 }
 
-func (w *Watcher) Interval() time.Duration { return time.Duration(w.interval.Load()) }
-
-func (w *Watcher) SetInterval(d time.Duration) {
-	if d <= 0 || time.Duration(w.interval.Swap(int64(d))) == d {
-		return
-	}
-	w.mu.Lock()
-	close(w.retune)
-	w.retune = make(chan struct{})
-	w.mu.Unlock()
-}
-
-func (w *Watcher) retuned() <-chan struct{} {
-	w.mu.Lock()
-	defer w.mu.Unlock()
-	return w.retune
-}
+func (w *Watcher) Interval() time.Duration { return w.interval }
 
 type clusterLoop struct {
 	cancel context.CancelFunc
@@ -107,20 +86,15 @@ func (w *Watcher) Run(ctx context.Context) {
 		}
 	}
 	reconcile()
-	go w.labLoop(ctx)
 	go w.candidateLoop(ctx)
 	t := time.NewTicker(w.Interval())
 	prune := time.NewTicker(time.Hour)
 	defer t.Stop()
 	defer prune.Stop()
-	retune := w.retuned()
 	for {
 		select {
 		case <-ctx.Done():
 			return
-		case <-retune:
-			retune = w.retuned()
-			t.Reset(w.Interval())
 		case <-t.C:
 			reconcile()
 		case <-prune.C:

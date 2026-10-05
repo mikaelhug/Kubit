@@ -34,8 +34,8 @@ export function Overview({ ctx }: { ctx: ClusterCtx }) {
 
   return (
     <>
-      {updates.length > 0 && <Notice tone="info"><span class="flex items-center gap-2">Update available: {updates.join(' · ')}<a href={`/clusters/${name}/lifecycle`} class="ml-auto text-accent hover:underline text-[12px]">Lifecycle</a></span></Notice>}
-      {behind.length > 0 && <Notice tone="warn"><span class="flex items-center gap-2"><span title={behind.join(', ')}>{behindText(behind.length)}</span><a href={`/clusters/${name}/settings`} class="ml-auto text-accent hover:underline text-[12px]">Settings</a></span></Notice>}
+      {updates.length > 0 && <Notice tone="info">Update available: {updates.join(' · ')}</Notice>}
+      {behind.length > 0 && <Notice tone="warn"><span title={behind.join(', ')}>{behindText(behind.length)}</span></Notice>}
       <Reachability status={status} />
       <AlertGroup id={name} alerts={openAlerts(name)} />
       <div class="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-6 gap-3">
@@ -166,7 +166,7 @@ function BackupsCard({ cluster, status, interval: spec }: { cluster: string; sta
   const interval = parseDuration(status?.snapshotInterval ?? spec)
   const at = latest?.ts ?? status?.lastSnapshotAt
   const late = interval > 0 && (!at || (nowEvery(60_000) - Date.parse(at)) / 1000 > 2 * interval)
-  const sub = interval === 0 ? 'schedule off' : `every ${status?.snapshotInterval ?? spec}${latest ? latest.offsite ? ' · off-site copy' : ' · no off-site copy' : ''}`
+  const sub = interval === 0 ? 'schedule off' : `every ${status?.snapshotInterval ?? spec}`
   return <Tile compact size="lg" label="Backups" tone={!at || late ? 'warn' : 'good'} value={at ? <Ago iso={at} fresh="just now" /> : 'none'} title={at ? fmt.datetime(at) : undefined} sub={late && at ? `behind schedule · ${sub}` : sub} href={`/clusters/${cluster}/backups`} />
 }
 

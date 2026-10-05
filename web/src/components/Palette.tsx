@@ -3,8 +3,8 @@ import { useEffect, useMemo, useRef, useState } from 'preact/hooks'
 import { useLocation } from 'preact-iso'
 import { isTyping, useEscape } from '../keys'
 import { readText, writeText } from '../local'
-import { hostName, kindLabel, vmsOf } from '../machine'
-import { sectionList, settingsPages } from '../routes'
+import { kindLabel } from '../machine'
+import { sectionList } from '../routes'
 import { clusters, machineList } from '../store'
 import { Pill } from './ui'
 
@@ -17,11 +17,9 @@ function paletteItems(): Item[] {
     for (const n of c.spec.spec.nodes) out.push({ label: n.hostname, hint: `${c.name} · ${n.ip} · ${n.pool ?? n.role}`, href: n.mac ? `/machines/${n.mac}` : `/nodes/${n.ip}`, group: 'Nodes' })
   }
   for (const m of machineList.value) {
-    if (m.kind === 'labhost') out.push({ label: hostName(m), hint: `lab host · ${vmsOf(m.labhost).length} VMs · ${m.ip}`, href: `/labhosts/${m.mac}/overview`, group: 'Lab hosts' })
-    else if (m.kind !== 'member') out.push({ label: m.hostname || m.mac, hint: `${kindLabel[m.kind]} · ${m.ip || m.mac}`, href: `/machines/${m.mac}`, group: 'Machines' })
+    if (m.kind !== 'member') out.push({ label: m.hostname || m.mac, hint: `${kindLabel[m.kind]} · ${m.ip || m.mac}`, href: `/machines/${m.mac}`, group: 'Machines' })
   }
-  out.push({ label: 'Home', href: '/', group: 'Kubit' }, { label: 'New cluster', href: '/clusters/new', group: 'Kubit' }, { label: 'Inventory', href: '/fleet/inventory', group: 'Kubit' }, { label: 'Network boot', href: '/fleet/network-boot', group: 'Kubit' }, { label: 'Activity', href: '/operations', group: 'Kubit' })
-  for (const [id, label] of settingsPages) out.push({ label: `Settings › ${label}`, href: `/settings/${id}`, group: 'Kubit' })
+  out.push({ label: 'Home', href: '/', group: 'Kubit' }, { label: 'Discovery', href: '/discovery', group: 'Kubit' }, { label: 'Activity', href: '/operations', group: 'Kubit' })
   return out
 }
 

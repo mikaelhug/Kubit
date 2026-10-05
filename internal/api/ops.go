@@ -14,15 +14,12 @@ import (
 	"time"
 
 	"github.com/mikael/kubit/internal/cluster"
-	"github.com/mikael/kubit/internal/config"
 )
 
 func (s *Server) opRoutes() {
 	r := s.mux
 	r.HandleFunc("GET /api/v1/operations", s.handleOperations)
 	r.HandleFunc("GET /api/v1/operations/{id}", s.handleOperation)
-	r.HandleFunc("DELETE /api/v1/operations/{id}", s.handleOperationCancel)
-	r.HandleFunc("POST /api/v1/operations/{id}/retry", s.handleOperationRetry)
 }
 
 type opFunc func(ctx context.Context, sink cluster.Sink) (artifact any, err error)
@@ -118,11 +115,6 @@ func (t *stepTracker) json() []byte {
 	defer t.mu.Unlock()
 	b, _ := json.Marshal(t.steps)
 	return b
-}
-
-func (s *Server) startOp(w http.ResponseWriter, cluster, kind string, request any, fn opFunc) {
-	id, err := s.runOperation(cluster, kind, request, fn)
-	accepted(w, id, err)
 }
 
 func accepted(w http.ResponseWriter, id int64, err error) {
@@ -252,15 +244,6 @@ func (s *Server) running() int {
 	return n
 }
 
-func (s *Server) cancelOperation(id int64) bool {
-	v, ok := s.cancels.Load(id)
-	if !ok {
-		return false
-	}
-	v.(context.CancelFunc)()
-	return true
-}
-
 func (s *Server) publishOperation(ctx context.Context, id int64) {
 	if op, err := s.store.GetOperationWithoutLog(ctx, id); err == nil {
 		s.hub.publish(Message{Kind: "operation", OperationID: id, Operation: op})
@@ -335,55 +318,4 @@ func (s *Server) handleOperation(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, op)
 }
 
-func (s *Server) handleOperationCancel(w http.ResponseWriter, r *http.Request) {
-	id, _ := strconv.ParseInt(r.PathValue("id"), 10, 64)
-	if !s.cancelOperation(id) {
-		writeErr(w, conflict("operation is not running"))
-		return
-	}
-	w.WriteHeader(http.StatusAccepted)
-}
-
-func (s *Server) handleOperationRetry(w http.ResponseWriter, r *http.Request) {
-	id, _ := strconv.ParseInt(r.PathValue("id"), 10, 64)
-	op, err := s.store.GetOperation(r.Context(), id)
-	if err != nil {
-		writeErr(w, err)
-		return
-	}
-	if op.Status == "running" {
-		writeErr(w, conflict("operation is still running"))
-		return
-	}
-	var newID int64
-	switch op.Kind {
-	case "cluster.create":
-		var req createRequest
-		_ = json.Unmarshal(op.Request, &req)
-		var c *config.Cluster
-		if c, err = config.Parse([]byte(req.YAML)); err != nil {
-			err = invalid(err)
-		} else {
-			newID, err = s.startCreate(c, req.SkipPlatform, req)
-		}
-	case "node.add":
-		var n config.Node
-		_ = json.Unmarshal(op.Request, &n)
-		newID, err = s.startNodeAdd(op.Cluster, n)
-	case "platform.apply", "platform.plan":
-		newID, err = s.runOperation(op.Cluster, op.Kind, nil, func(ctx context.Context, sink cluster.Sink) (any, error) {
-			if op.Kind == "platform.plan" {
-				return s.manager.PlanPlatform(ctx, op.Cluster, sink)
-			}
-			return nil, s.manager.ApplyPlatform(ctx, op.Cluster, sink)
-		})
-	case "discover":
-		var req discoverRequest
-		_ = json.Unmarshal(op.Request, &req)
-		newID, err = s.startDiscover(req.Targets)
-	default:
-		writeErr(w, badRequest("this kind of operation cannot be retried; start it again from its page"))
-		return
-	}
-	accepted(w, newID, err)
-}
+func specLock(name string) string { return "spec:" + name }

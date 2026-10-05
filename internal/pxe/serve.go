@@ -6,7 +6,6 @@ import (
 	"io"
 	"net"
 	"net/http"
-	"net/url"
 	"os"
 	"regexp"
 	"slices"
@@ -14,9 +13,6 @@ import (
 	"time"
 
 	"github.com/mikael/kubit/internal/factory"
-	"github.com/mikael/kubit/internal/httpx"
-	"github.com/mikael/kubit/internal/labhost"
-	"github.com/mikael/kubit/internal/labhost/libvirt"
 	"github.com/pin/tftp/v3"
 )
 
@@ -33,8 +29,6 @@ func (p Profile) serves(schematic, version string) bool {
 var (
 	talosVersion = regexp.MustCompile(`^v\d+\.\d+\.\d+(-[0-9A-Za-z.]+)?$`)
 	talosAsset   = regexp.MustCompile(`^(kernel-(amd64|arm64)|initramfs-(amd64|arm64)\.xz)$`)
-	debianArches = []string{"amd64", "arm64"}
-	debianFiles  = []string{"linux", "initrd.gz"}
 )
 
 type Server struct {
@@ -127,6 +121,17 @@ func archFromIPXE(a string) string {
 	return ""
 }
 
+func serialConsole(arch string) string {
+	if arch == "arm64" {
+		return "console=ttyAMA0"
+	}
+	return "console=ttyS0"
+}
+
+func talosKernelArgs(consoles ...string) []string {
+	return slices.Concat([]string{"talos.platform=metal"}, consoles, []string{"init_on_alloc=1", "slab_nomerge", "pti=on"})
+}
+
 func (s *Server) Handler() http.Handler {
 	s.prepare()
 	mux := http.NewServeMux()
@@ -142,85 +147,18 @@ func (s *Server) Handler() http.Handler {
 		if mac != "" {
 			decision = s.Config.decide(mac)
 		}
-		switch decision {
-		case "debian":
-			base := s.BaseURL()
-			args := libvirt.KernelArgs(fmt.Sprintf("%s/labhost/%s/preseed?arch=%s", base, mac, arch), "")
-			fmt.Fprintf(w, "#!ipxe\nkernel %s/assets/debian/%s/linux initrd=initrd.gz %s\ninitrd %s/assets/debian/%s/initrd.gz\nboot\n", base, arch, args, base, arch)
-			s.track.http(hostOf(r.RemoteAddr), arch, "debian")
-			s.track.logf(fmt.Sprintf("%s (%s) fetched the Debian installer script (lab host)", hostOf(r.RemoteAddr), mac))
-			return
-		case "local":
+		if decision == "local" {
 			fmt.Fprint(w, "#!ipxe\necho Kubit: this machine boots from its own disk\nexit\n")
 			s.track.logf(fmt.Sprintf("%s (%s) boots from its own disk; iPXE exits", hostOf(r.RemoteAddr), mac))
 			return
 		}
 		base := fmt.Sprintf("%s/assets/%s/%s", s.BaseURL(), s.Profile.SchematicID, s.Profile.TalosVersion)
-		args := append(labhost.TalosKernelArgs("console=tty0", labhost.SerialConsole(arch)), s.Profile.ExtraArgs...)
+		args := append(talosKernelArgs("console=tty0", serialConsole(arch)), s.Profile.ExtraArgs...)
 		fmt.Fprintf(w, "#!ipxe\nkernel %s/kernel-%s initrd=initramfs-%s.xz %s\ninitrd %s/initramfs-%s.xz\nboot\n",
 			base, arch, arch, strings.Join(args, " "), base, arch)
 		s.Log.Printf("http: boot script for %s (%s)", r.RemoteAddr, arch)
 		s.track.http(hostOf(r.RemoteAddr), arch, "ipxe")
 		s.track.logf(fmt.Sprintf("iPXE on %s fetched the %s boot script", hostOf(r.RemoteAddr), arch))
-	})
-	mux.HandleFunc("GET /assets/debian/{arch}/{file}", func(w http.ResponseWriter, r *http.Request) {
-		arch, file := r.PathValue("arch"), r.PathValue("file")
-		i := slices.Index(debianFiles, file)
-		if i < 0 || !slices.Contains(debianArches, arch) {
-			http.NotFound(w, r)
-			return
-		}
-		urls := make([]string, len(debianFiles))
-		for j, f := range debianFiles {
-			urls[j] = libvirt.NetbootURL(arch, f)
-		}
-		paths, err := s.Cache.Current(r.Context(), urls, file == "linux")
-		if err != nil {
-			http.Error(w, err.Error(), http.StatusBadGateway)
-			return
-		}
-		if file == "linux" {
-			s.track.http(hostOf(r.RemoteAddr), arch, "kernel")
-		}
-		s.track.logf(fmt.Sprintf("%s downloading Debian %s %s", hostOf(r.RemoteAddr), arch, file))
-		http.ServeFile(w, r, paths[i])
-	})
-	mux.HandleFunc("GET /labhost/{mac}/{file}", func(w http.ResponseWriter, r *http.Request) {
-		mac, file := r.PathValue("mac"), r.PathValue("file")
-		if s.KubitURL == "" || (file != "preseed" && file != "postinstall" && file != "progress") {
-			http.NotFound(w, r)
-			return
-		}
-		base := s.BaseURL()
-		q := url.Values{"mac": {mac}, "post": {base + "/labhost/" + mac + "/postinstall"}, "ip": {hostOf(r.RemoteAddr)}}
-		for _, k := range []string{"arch", "stage"} {
-			if v := r.URL.Query().Get(k); v != "" {
-				q.Set(k, v)
-			}
-		}
-		u := fmt.Sprintf("%s/api/v1/labhost/%s?%s", strings.TrimRight(s.KubitURL, "/"), file, q.Encode())
-		req, err := http.NewRequestWithContext(r.Context(), http.MethodGet, u, nil)
-		if err != nil {
-			http.Error(w, err.Error(), http.StatusBadGateway)
-			return
-		}
-		if s.KubitToken != "" {
-			req.Header.Set("Authorization", "Bearer "+s.KubitToken)
-		}
-		resp, err := httpx.Client.Do(req)
-		if err != nil {
-			http.Error(w, err.Error(), http.StatusBadGateway)
-			return
-		}
-		defer resp.Body.Close()
-		w.Header().Set("Content-Type", "text/plain")
-		w.WriteHeader(resp.StatusCode)
-		_, _ = io.Copy(w, resp.Body)
-		if file == "progress" {
-			s.track.logf(fmt.Sprintf("%s (%s) installer: %s", hostOf(r.RemoteAddr), mac, r.URL.Query().Get("stage")))
-		} else {
-			s.track.logf(fmt.Sprintf("%s fetched %s for %s", hostOf(r.RemoteAddr), file, mac))
-		}
 	})
 	mux.HandleFunc("GET /assets/{schematic}/{version}/{file}", func(w http.ResponseWriter, r *http.Request) {
 		schematic, version, file := r.PathValue("schematic"), r.PathValue("version"), r.PathValue("file")

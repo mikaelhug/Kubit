@@ -11,8 +11,7 @@ import (
 	"time"
 
 	"github.com/mikael/kubit/internal/httpx"
-	"github.com/mikael/kubit/internal/pxe"
-	"github.com/mikael/kubit/internal/store"
+	"github.com/mikael/kubit/internal/netx"
 )
 
 func (s *Server) pxeRoutes() {
@@ -32,10 +31,6 @@ func pxeCommand(host string, httpOnly bool) string {
 		return fmt.Sprintf("%s pxe --http-only --iface en0 --kubit-url http://%s", bin, host)
 	}
 	return fmt.Sprintf("sudo %s pxe --iface en0 --kubit-url http://%s", bin, host)
-}
-
-func pxeDown(w http.ResponseWriter, cmd string) {
-	writeErr(w, &statusError{Status: http.StatusConflict, Msg: "The PXE server is not running, so the machine would find nothing to boot. Start it in a terminal (it can stay open): " + cmd, Code: "pxe-down", Command: cmd})
 }
 
 func (s *Server) pxeFetch(ctx context.Context) (string, []byte, error) {
@@ -60,39 +55,6 @@ func fetchPXE(ctx context.Context, statusURL string) ([]byte, error) {
 		return nil, fmt.Errorf("%s: %s", statusURL, resp.Status)
 	}
 	return io.ReadAll(io.LimitReader(resp.Body, 4<<20))
-}
-
-func (s *Server) pxeStatus(ctx context.Context) (*pxe.Status, error) {
-	_, body, err := s.pxeFetch(ctx)
-	if err != nil {
-		return nil, err
-	}
-	return parsePXE(body)
-}
-
-func parsePXE(body []byte) (*pxe.Status, error) {
-	var st pxe.Status
-	if err := json.Unmarshal(body, &st); err != nil {
-		return nil, err
-	}
-	return &st, nil
-}
-
-func (s *Server) pxeServing(w http.ResponseWriter, r *http.Request, httpOnly bool) (*pxe.Status, bool) {
-	_, body, err := s.pxeFetch(r.Context())
-	var st *pxe.Status
-	if err == nil {
-		st, err = parsePXE(body)
-	}
-	if err != nil {
-		pxeDown(w, pxeCommand(r.Host, httpOnly))
-		return nil, false
-	}
-	if st.IP == "" {
-		writeErr(w, &statusError{Status: http.StatusConflict, Msg: fmt.Sprintf("The PXE server has no address on %s.", st.Interface), Code: "pxe-no-address"})
-		return nil, false
-	}
-	return st, true
 }
 
 type pxeSnapshot struct {
@@ -151,14 +113,7 @@ func (s *Server) pxeDecision(ctx context.Context, mac string) (string, string) {
 		}
 		return "talos", "unknown machine, enrollment open"
 	}
-	if boot, ok := labBoot(m); ok {
-		return boot, "armed as lab host: Debian installer"
-	}
 	switch {
-	case m.Kind() == store.KindLabHost:
-		return "local", "lab host"
-	case m.Provision:
-		return "talos", "armed with Boot into Talos"
 	case m.Cluster != "":
 		return "local", "member of cluster " + m.Cluster
 	default:
@@ -189,3 +144,5 @@ func (s *Server) watchPXE(ctx context.Context) {
 		}
 	}
 }
+
+func queryMAC(r *http.Request) string { return netx.MACKey(r.URL.Query().Get("mac")) }

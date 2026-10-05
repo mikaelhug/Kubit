@@ -23,17 +23,16 @@ const (
 )
 
 type Config struct {
-	onDHCP               func(mac, arch string)
-	onLog                func(line string)
-	onPlainDHCP          func(mac, class string)
-	Decide               func(mac string) string
-	KubitURL, KubitToken string
-	HTTPOnly             bool
-	Interface            string
-	IP                   net.IP
-	HTTPPort             int
-	Log                  *log.Logger
-	addr                 *ifaceAddr
+	onDHCP      func(mac, arch string)
+	onLog       func(line string)
+	onPlainDHCP func(mac, class string)
+	Decide      func(mac string) string
+	HTTPOnly    bool
+	Interface   string
+	IP          net.IP
+	HTTPPort    int
+	Log         *log.Logger
+	addr        *ifaceAddr
 }
 
 func (c *Config) follow() {

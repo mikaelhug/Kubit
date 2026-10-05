@@ -138,7 +138,7 @@ func TestOfflineNeedsConfirmation(t *testing.T) {
 
 func TestOneSuspensionIsOneGap(t *testing.T) {
 	w := &Watcher{observer: ObserverState{Online: true}}
-	w.interval.Store(int64(15 * time.Second))
+	w.interval = 15 * time.Second
 	var seen []ObserverState
 	w.OnObserver = func(o ObserverState) { seen = append(seen, o) }
 	wake := time.Now()

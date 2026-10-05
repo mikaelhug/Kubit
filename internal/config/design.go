@@ -245,25 +245,6 @@ func Lint(c *Cluster, machines []Machine) []Warning {
 	return out
 }
 
-func Overlaps(rangeSpec string, others map[string]string) []string {
-	lo, hi, err := ParseIPRange(rangeSpec)
-	if err != nil {
-		return nil
-	}
-	var out []string
-	for name, r := range others {
-		olo, ohi, err := ParseIPRange(r)
-		if err != nil {
-			continue
-		}
-		if !hi.Less(olo) && !ohi.Less(lo) {
-			out = append(out, name)
-		}
-	}
-	sort.Strings(out)
-	return out
-}
-
 func slash24(ip string) (netip.Prefix, bool) {
 	a, err := netip.ParseAddr(ip)
 	if err != nil || !a.Is4() {

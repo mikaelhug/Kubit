@@ -3,7 +3,6 @@ package api
 import (
 	"encoding/json"
 	"errors"
-	"io"
 	"net/http"
 	"strings"
 
@@ -73,25 +72,4 @@ func spaHandler(root http.FileSystem) http.Handler {
 		r.URL.Path = "/"
 		files.ServeHTTP(w, r)
 	})
-}
-
-func decodeJSON(w http.ResponseWriter, r *http.Request, v any) bool {
-	return decodeBody(w, r, v, false)
-}
-
-func decodeOptionalJSON(w http.ResponseWriter, r *http.Request, v any) bool {
-	return decodeBody(w, r, v, true)
-}
-
-func decodeBody(w http.ResponseWriter, r *http.Request, v any, optional bool) bool {
-	err := json.NewDecoder(r.Body).Decode(v)
-	if err == nil || (optional && errors.Is(err, io.EOF)) {
-		return true
-	}
-	writeErr(w, badRequest("body: "+err.Error()))
-	return false
-}
-
-func unprocessable(err error) error {
-	return &statusError{Status: http.StatusUnprocessableEntity, Msg: err.Error()}
 }

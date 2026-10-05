@@ -5,7 +5,6 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/mikael/kubit/internal/labhost"
 	"github.com/mikael/kubit/internal/store"
 	"github.com/mikael/kubit/internal/talos"
 )
@@ -15,7 +14,6 @@ func (s *Server) nodeTalosRoutes() {
 	r.HandleFunc("GET /api/v1/nodes", s.handleNodes)
 	r.HandleFunc("GET /api/v1/nodes/{ip}/logs", s.handleNodeLogs)
 	r.HandleFunc("GET /api/v1/nodes/{ip}/services", s.handleNodeServices)
-	r.HandleFunc("POST /api/v1/nodes/{ip}/reboot", s.handleNodeRebootNow)
 }
 
 type nodeView struct {
@@ -31,13 +29,6 @@ func machineView(row store.NodeRow) nodeView {
 		v.Inventory = &inv
 	}
 	v.Hardware = nil
-	if v.OOB != nil {
-		c := *v.OOB
-		if c.Password != "" {
-			c.Password = store.Masked
-		}
-		v.OOB = &c
-	}
 	return v
 }
 
@@ -166,36 +157,13 @@ func (s *Server) handleNodeServices(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, out)
 }
 
-func (s *Server) handleNodeRebootNow(w http.ResponseWriter, r *http.Request) {
-	tc, err := s.nodeClient(r)
-	if err != nil {
-		writeErr(w, err)
-		return
-	}
-	defer tc.Close()
-	if err := tc.RebootMachine(r.Context()); err != nil {
-		writeErr(w, err)
-		return
-	}
-	_ = s.store.Audit(r.Context(), "", "node.reboot", r.PathValue("ip"))
-	w.WriteHeader(http.StatusAccepted)
-}
-
 func noTalosReason(m *store.Machine) string {
 	switch m.Kind() {
-	case store.KindLabHost:
-		if m.LabHost != nil && m.LabHost.Driver == labhost.DriverVFKit {
-			return "This Mac runs the lab VMs; it has no Talos API."
-		}
-		return "This machine is a lab host running Debian; it has no Talos API."
 	case store.KindConfigured:
-		return "Runs Talos configured outside Kubit; no credentials to query it."
+		return "Configured outside Kubit; no credentials."
 	case store.KindBooting:
-		return "Waiting for Talos to come up."
+		return "Waiting for Talos."
 	default:
-		if m.IsLabVM() {
-			return "The VM is off; start it from its lab host."
-		}
-		return "Not running Talos right now."
+		return "Not running Talos."
 	}
 }

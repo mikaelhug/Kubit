@@ -26,15 +26,10 @@ func (w *Watcher) loop(ctx context.Context, name string) {
 	t := time.NewTicker(w.Interval())
 	defer t.Stop()
 	every := w.serviceEvery()
-	retune := w.retuned()
 	for i := 1; ; {
 		select {
 		case <-ctx.Done():
 			return
-		case <-retune:
-			retune = w.retuned()
-			t.Reset(w.Interval())
-			every = w.serviceEvery()
 		case <-t.C:
 			w.tick(ctx, name)
 			if i%every == 0 {
@@ -209,7 +204,7 @@ func (w *Watcher) every(ctx context.Context, d time.Duration, tick func(context.
 	}
 }
 
-var disruptive = []string{"cluster.create", "cluster.apply", "etcd.restore", "upgrade.talos", "upgrade.kubernetes", "node.add", "node.remove", "node.reboot", "node.rename", "node.pool", "node.readdress", "node.upgrade", "platform.apply", "labhost.update", "labhost.reboot"}
+var disruptive = []string{"cluster.create", "cluster.apply", "etcd.restore", "upgrade.talos", "upgrade.kubernetes", "node.add", "node.remove", "node.reboot", "node.rename", "node.pool", "node.readdress", "node.upgrade", "platform.apply"}
 
 const quietAfterOperation = 10 * time.Minute
 

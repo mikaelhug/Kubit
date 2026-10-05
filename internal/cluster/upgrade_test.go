@@ -149,29 +149,6 @@ func TestRemoveRefusesTheEndpointHostEvenWithForce(t *testing.T) {
 	}
 }
 
-func TestApplyPlanRejectsAPlanOfAnotherSpec(t *testing.T) {
-	st := testStore(t)
-	ctx := context.Background()
-	if err := st.PutCluster(ctx, store.ClusterRow{Name: "lab", Spec: []byte(threeControlPlanes), State: StateReady}); err != nil {
-		t.Fatal(err)
-	}
-	m := NewManager(st, t.TempDir())
-	err := m.ApplyPlan(ctx, "lab", specHash([]byte("an older spec")), func(Event) {})
-	if !errors.Is(err, errStalePlan) {
-		t.Errorf("a plan of another spec must be stale: %v", err)
-	}
-	err = m.ApplyPlan(ctx, "lab", specHash([]byte(threeControlPlanes)), func(Event) {})
-	if errors.Is(err, errStalePlan) {
-		t.Error("a plan of the current spec is not stale")
-	}
-	if err := st.SetClusterState(ctx, "lab", StateBootstrapped); err != nil {
-		t.Fatal(err)
-	}
-	if err := m.ApplyPlan(ctx, "lab", specHash([]byte(threeControlPlanes)), func(Event) {}); errors.Is(err, errStalePlan) {
-		t.Error("a state change alone must not make the plan stale")
-	}
-}
-
 func TestAddNodeResumesOnlyAnUnfinishedIdenticalNode(t *testing.T) {
 	st := testStore(t)
 	ctx := context.Background()
@@ -267,24 +244,6 @@ func TestRolledKubeletsRecordTheKubernetesVersion(t *testing.T) {
 		t.Errorf("every kubelet on the target must record it: %s", c.Spec.KubernetesVersion)
 	}
 
-}
-
-func TestSchematicDiffersFallsBackToTheDeclaredImage(t *testing.T) {
-	for _, tc := range []struct {
-		name              string
-		cur               nodeImage
-		desired, declared string
-		reimage           bool
-	}{
-		{"installed matches", nodeImage{"v1.14.1", "gpu"}, "gpu", "base", false},
-		{"installed differs", nodeImage{"v1.14.1", "base"}, "gpu", "gpu", true},
-		{"unknown, same declared image", nodeImage{"v1.14.1", ""}, "base", "base", false},
-		{"unknown, other declared image", nodeImage{}, "gpu", "base", true},
-	} {
-		if got := tc.cur.schematicDiffers(tc.desired, tc.declared); got != tc.reimage {
-			t.Errorf("%s: %v, want %v", tc.name, got, tc.reimage)
-		}
-	}
 }
 
 func TestResumedAddNodeValidatesTheResubmittedNode(t *testing.T) {

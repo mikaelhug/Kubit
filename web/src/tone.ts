@@ -11,7 +11,7 @@ export function stateTone(state: string): Tone {
     case 'failed': case 'error': case 'down': case 'offline': return 'bad'
     case 'cancelled': case 'unknown': case 'disabled': return 'muted'
     case 'provisioning': case 'installing': case 'bootstrapped': case 'booting': case 'pending': case 'discovered': case 'setup': case 'updating': case 'degraded': case 'deploying': case 'orphaned': return 'warn'
-    case 'amt': case 'off': case 'labhost': case 'configured': return 'info'
+    case 'off': case 'configured': return 'info'
     default: return 'muted'
   }
 }
@@ -29,6 +29,3 @@ export function severityTone(severity: string): Tone {
   return severity === 'critical' ? 'bad' : severity === 'warn' ? 'warn' : 'good'
 }
 
-export function levelTone(value: number, warn: number, bad: number): Tone | undefined {
-  return value >= bad ? 'bad' : value >= warn ? 'warn' : undefined
-}

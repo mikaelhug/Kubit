@@ -1,13 +1,14 @@
 package store
 
 import (
+	"bytes"
 	"strings"
 	"testing"
 	"time"
 )
 
 func TestHotQueriesUseTheirIndexes(t *testing.T) {
-	s := openLab(t)
+	s := openStore(t)
 	ctx := t.Context()
 	for _, c := range []struct {
 		query string
@@ -41,7 +42,7 @@ func TestHotQueriesUseTheirIndexes(t *testing.T) {
 }
 
 func TestStoreWritesWithNormalSync(t *testing.T) {
-	s := openLab(t)
+	s := openStore(t)
 	var mode int
 	if err := s.db.QueryRowContext(t.Context(), `PRAGMA synchronous`).Scan(&mode); err != nil || mode != 1 {
 		t.Errorf("synchronous = %d (%v), want 1 (NORMAL)", mode, err)
@@ -49,7 +50,7 @@ func TestStoreWritesWithNormalSync(t *testing.T) {
 }
 
 func TestPruneKeepsRecentHistory(t *testing.T) {
-	s := openLab(t)
+	s := openStore(t)
 	ctx := t.Context()
 	old := time.Now().Add(-100 * 24 * time.Hour).UTC().Format(time.RFC3339)
 	recent := time.Now().Add(-time.Hour).UTC().Format(time.RFC3339)
@@ -99,4 +100,15 @@ func TestPruneKeepsRecentHistory(t *testing.T) {
 			t.Errorf("%s = %d, want %d", q, got, want)
 		}
 	}
+}
+
+func openStore(t *testing.T) *Store {
+	t.Helper()
+	c, _ := NewCrypto(bytes.Repeat([]byte{4}, 32))
+	s, err := Open(t.TempDir(), c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { s.Close() })
+	return s
 }

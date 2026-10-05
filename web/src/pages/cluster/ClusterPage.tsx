@@ -10,18 +10,16 @@ import { clusters, loadHealth, statuses } from '../../store'
 import { useLive } from '../../useLive'
 import { Addons } from './Addons'
 import { Backups } from './Backups'
-import { Lifecycle } from './Lifecycle'
+import { Config } from './Config'
 import { Network } from './Network'
 import { Nodes } from './Nodes'
 import { Overview } from './Overview'
-import { PlanReview } from './PlanReview'
-import { Settings } from './Settings'
 import { Storage } from './Storage'
 import { Workloads } from './Workloads'
 
 export interface ClusterCtx { name: string; cluster: ClusterRow; status: Status | null }
 
-export function ClusterPage({ name, section = 'overview', sub }: { name: string; section?: string; sub?: string }) {
+export function ClusterPage({ name, section = 'overview' }: { name: string; section?: string }) {
   const { data: fetched, error } = useLive(() => api.status(name), [name])
   useEffect(() => { loadHealth(name) }, [name])
   const cluster = clusters.value.find((c) => c.name === name)
@@ -46,24 +44,23 @@ export function ClusterPage({ name, section = 'overview', sub }: { name: string;
       </header>
       <div class="p-5 flex flex-col gap-4 max-w-[1300px]">
         <ErrorBox error={statusError} />
-        {renderSection(section as Section | 'operations', sub, ctx)}
+        {renderSection(section as Section | 'operations', ctx)}
       </div>
     </div>
   )
 }
 
-function renderSection(section: Section | 'operations', sub: string | undefined, ctx: ClusterCtx) {
+function renderSection(section: Section | 'operations', ctx: ClusterCtx) {
   switch (section) {
     case 'overview': return <Overview ctx={ctx} />
     case 'nodes': return <Nodes ctx={ctx} />
-    case 'addons': return sub ? <PlanReview ctx={ctx} planId={Number(sub)} /> : <Addons ctx={ctx} />
+    case 'addons': return <Addons ctx={ctx} />
     case 'operations': return <Redirect to={`/operations?cluster=${ctx.name}`} />
-    case 'settings': return <Settings ctx={ctx} />
+    case 'config': return <Config ctx={ctx} />
     case 'workloads': return <Workloads ctx={ctx} />
     case 'network': return <Network ctx={ctx} />
     case 'storage': return <Storage ctx={ctx} />
     case 'backups': return <Backups ctx={ctx} />
-    case 'lifecycle': return <Lifecycle ctx={ctx} />
     default: return <Redirect to={`/clusters/${ctx.name}/overview`} />
   }
 }

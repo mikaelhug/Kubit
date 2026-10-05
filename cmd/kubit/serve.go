@@ -19,13 +19,17 @@ import (
 )
 
 func serveCmd(openConsole bool) *cobra.Command {
-	var addr, token string
+	var addr, token, configPath string
 	var interval, serviceInterval time.Duration
 	var open bool
 	cmd := &cobra.Command{
 		Use:   "serve",
 		Short: "Run the Kubit daemon and web UI",
 		RunE: func(cmd *cobra.Command, _ []string) error {
+			settings, err := loadServeConfig(configPath)
+			if err != nil {
+				return err
+			}
 			home, err := homeDir()
 			if err != nil {
 				return err
@@ -43,6 +47,9 @@ func serveCmd(openConsole bool) *cobra.Command {
 				return err
 			}
 			defer m.Store.Close()
+			if err := m.Store.PutSettings(cmd.Context(), settings); err != nil {
+				return err
+			}
 			ln, err := net.Listen("tcp", addr)
 			if err != nil {
 				return err
@@ -93,6 +100,7 @@ func serveCmd(openConsole bool) *cobra.Command {
 		},
 	}
 	cmd.Flags().StringVar(&addr, "addr", "127.0.0.1:8090", "listen address")
+	cmd.Flags().StringVar(&configPath, "config", "", "YAML file with alert, PXE and factory settings; "+envSMTPPassword+" holds the SMTP password")
 	cmd.Flags().StringVar(&token, "token", "", "API bearer token (generated when binding beyond loopback)")
 	cmd.Flags().DurationVar(&interval, "watch-interval", 15*time.Second, "how often every cluster is polled for health samples and events")
 	cmd.Flags().DurationVar(&serviceInterval, "service-interval", 0, "how often workloads, pods, claims and services are inspected for alerts (default 4× watch-interval)")

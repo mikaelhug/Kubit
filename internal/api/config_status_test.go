@@ -12,7 +12,7 @@ import (
 )
 
 func TestConfigStatusRoute(t *testing.T) {
-	s, st, _ := localServer(t)
+	s, st := localServer(t)
 	ctx := t.Context()
 	c, err := config.Parse([]byte("apiVersion: kubit.dev/v1\nkind: Cluster\nmetadata: {name: c}\nspec:\n  nodes:\n    - {hostname: a, ip: 10.0.0.1, role: controlplane, installDisk: {path: /dev/sda}}\n    - {hostname: b, ip: 10.0.0.2, role: worker, installDisk: {path: /dev/sda}}\n"))
 	if err != nil {

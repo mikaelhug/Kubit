@@ -114,15 +114,3 @@ func (c *Client) host() string {
 func (c *Client) InstallerImage(schematicID, talosVersion string) string {
 	return fmt.Sprintf("%s/metal-installer/%s:%s", c.host(), schematicID, talosVersion)
 }
-
-func (c *Client) ISOURL(schematicID, talosVersion, arch string) string {
-	return fmt.Sprintf("%s/image/%s/%s/metal-%s.iso", c.BaseURL(), schematicID, talosVersion, arch)
-}
-
-func (c *Client) KernelURL(schematicID, talosVersion, arch string) string {
-	return fmt.Sprintf("%s/image/%s/%s/kernel-%s", c.BaseURL(), schematicID, talosVersion, arch)
-}
-
-func (c *Client) InitramfsURL(schematicID, talosVersion, arch string) string {
-	return fmt.Sprintf("%s/image/%s/%s/initramfs-%s.xz", c.BaseURL(), schematicID, talosVersion, arch)
-}

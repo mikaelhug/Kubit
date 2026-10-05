@@ -1,7 +1,7 @@
 import { computed, signal } from '@preact/signals'
 import { api, type Event, type OpRef, type Operation, type Step } from './api'
 import { copyMap, editMap, setIn } from './maps'
-import { connected, drawerTab, setDrawer, toast } from './store'
+import { connected, drawerTab, setDrawer } from './store'
 
 export const operations = signal<Map<number, Operation>>(new Map())
 export const opEvents = signal<Map<number, Event[]>>(new Map())
@@ -34,12 +34,6 @@ export function watch(op: OpRef | number, open = true) {
   if (!operations.value.has(id)) ensureLog(id).catch(() => {})
 }
 
-export function runOp(p: Promise<OpRef>, ok?: string, open = true): Promise<boolean> {
-  return p.then(
-    (r) => { if (ok) toast(ok, 'good'); watch(r, open); return true },
-    (e) => { toast(e.message, 'error'); return false },
-  )
-}
 
 const finalStatus = new Set(['done', 'failed', 'skipped', 'cancelled'])
 const stepRank: Record<string, number> = { pending: 0, running: 1 }

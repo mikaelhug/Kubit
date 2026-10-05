@@ -55,7 +55,6 @@ func (s *Server) Start() {
 	if err := s.store.MarkStaleOperations(s.ctx); err != nil {
 		log.Printf("mark interrupted operations: %v", err)
 	}
-	go s.reconcileLabHosts(s.ctx)
 }
 
 func (s *Server) routes() {
@@ -68,19 +67,16 @@ func (s *Server) routes() {
 	s.nodeRoutes()
 	s.healthRoutes()
 	s.k8sRoutes()
-	s.settingsRoutes()
 	s.alertRoutes()
 	s.pxeRoutes()
 	s.machineRoutes()
 	s.etcdRoutes()
-	s.offsiteRoutes()
-	s.oobRoutes()
-	s.labhostRoutes()
 	s.certRoutes()
 	s.sopsRoutes()
-	s.authRoutes()
-	s.oidcRoutes()
 	s.maintenanceRoutes()
+	s.mux.HandleFunc("/api/", func(w http.ResponseWriter, _ *http.Request) {
+		writeErr(w, &statusError{Status: http.StatusNotFound, Msg: "not found"})
+	})
 	dist, _ := fs.Sub(web.Dist, "dist")
 	s.mux.Handle("/", spaHandler(http.FS(dist)))
 }

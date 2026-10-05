@@ -153,11 +153,6 @@ export function ErrorBox({ error }: { error: string | null | undefined }) {
   return <div class="rounded-[var(--r)] border border-bad/40 bg-bad/10 px-3 py-2 text-[13px] text-bad break-words">{error}</div>
 }
 
-export function MovedNotice({ show, onDiscard }: { show: boolean; onDiscard: () => void }) {
-  if (!show) return null
-  return <Notice tone="warn"><span class="flex items-center gap-3">Changed elsewhere; saving overwrites it.<button class="btn btn-sm ml-auto shrink-0" onClick={onDiscard}>Discard edits</button></span></Notice>
-}
-
 export function Notice({ tone = 'info', children }: { tone?: Tone; children: ComponentChildren }) {
   return <div class={`rounded-[var(--r)] border px-3 py-2 text-[13px] ${toneBorder[tone]}`}>{children}</div>
 }
@@ -232,8 +227,4 @@ export function Action({ title, what, button, disabled, onClick, href, secondary
       </div>
     </div>
   )
-}
-
-export function GroupHeading({ title, help }: { title: string; help: string }) {
-  return <div class="mt-2"><span class="label">{title}</span><p class="text-[12px] text-muted">{help}</p></div>
 }

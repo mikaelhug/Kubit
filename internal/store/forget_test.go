@@ -42,7 +42,7 @@ func TestWipedMemberLosesItsSystemVolumeMark(t *testing.T) {
 	if err := s.UpsertNode(ctx, store.NodeRow{IP: "10.0.0.7", MAC: "aa:00:00:00:00:07", Source: "scan", State: "maintenance"}); err != nil {
 		t.Fatal(err)
 	}
-	if s.NodeSystemSplit(ctx, "10.0.0.7") {
+	if _, split, _ := s.NodeMachineConfigSplit(ctx, "10.0.0.7"); split {
 		t.Error("a node wiped outside Kubit no longer has its system volume")
 	}
 }

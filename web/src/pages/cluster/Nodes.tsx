@@ -1,22 +1,14 @@
 import { useMemo, useState } from 'preact/hooks'
-import { api, fmt, type ClusterRow, type NodeStatus } from '../../api'
+import { fmt, type NodeStatus } from '../../api'
 import { DataTable, type Column } from '../../components/DataTable'
-import { ReaddressDialog } from '../../components/ReaddressDialog'
 import { useConfigStatus } from '../../configStatus'
-import { ConfirmDialog, Pill, Section } from '../../components/ui'
-import { runOp } from '../../ops'
-import { useQueryParam } from '../../query'
-import { AddNodeDialog } from './AddNodeDialog'
+import { Pill, Section } from '../../components/ui'
 import type { ClusterCtx } from './ClusterPage'
 
 const smallAlloc = 768 * 1048576
 
 export function Nodes({ ctx }: { ctx: ClusterCtx }) {
   const { status, cluster, name } = ctx
-  const [adoptIP, setAdoptIP] = useQueryParam('adopt')
-  const [add, setAdd] = useState(false)
-  const [remove, setRemove] = useState<NodeStatus | null>(null)
-  const [readdress, setReaddress] = useState<NodeStatus | null>(null)
   const [pool, setPool] = useState('')
   const specs = cluster.spec.spec.nodes
   const all: NodeStatus[] = status?.nodes ?? specs.map((n) => ({ ...n, role: n.role ?? 'worker', pool: n.pool ?? '', kvm: !!n.kvm, ready: false, unschedulable: false, registered: false, stage: '', talosVersion: '', kubeletVersion: '', cpuMilli: 0, cpuCapMilli: 0, memBytes: 0, memCapBytes: 0, memAllocBytes: 0, pods: 0, podCap: 0, gvisor: false, talosReachable: false, talosError: 'querying' }))
@@ -36,7 +28,7 @@ export function Nodes({ ctx }: { ctx: ClusterCtx }) {
         return (
           <div class="flex flex-col">
             <span>{n.ip} <span class="text-[10px] text-muted">{sp?.network ? (sp.network.vlan ? `static · vlan ${sp.network.vlan}` : 'static') : 'dhcp'}</span></span>
-            {moved && <button class="text-[11px] text-warn hover:underline text-left" title={`Last seen at ${n.seenAt}; declared ${n.ip}`} onClick={() => setReaddress(n)}>seen at {n.seenAt} — update</button>}
+            {moved && <span class="text-[11px] text-warn" title={`Declared ${n.ip}`}>seen at {n.seenAt}</span>}
           </div>
         )
       } },
@@ -48,37 +40,19 @@ export function Nodes({ ctx }: { ctx: ClusterCtx }) {
       { id: 'ram', header: 'RAM used / total', align: 'right', sort: (n) => n.memBytes, cell: (n) => { const small = !!n.memAllocBytes && n.memAllocBytes < smallAlloc; return <span title={n.memAllocBytes ? `${fmt.bytes(n.memAllocBytes)} allocatable for pods${small ? '; too small for the add-ons' : ''}` : undefined}><span class={n.memCapBytes && n.memBytes >= n.memCapBytes * 0.95 ? 'text-bad' : ''}>{fmt.bytes(n.memBytes)}</span><span class={small ? 'text-warn' : 'text-muted'}>/{fmt.bytes(n.memCapBytes)}</span></span> } },
       { id: 'pods', header: 'Pods', align: 'right', sort: (n) => n.pods, cell: (n) => <a href={`/clusters/${name}/workloads?view=pods&node=${encodeURIComponent(n.hostname)}`} class="hover:underline">{n.pods}</a> },
       { id: 'gvisor', header: 'gVisor', sort: (n) => n.gvisor ? 1 : 0, cell: (n) => n.gvisor ? <Pill tone="good">{n.kvm ? 'kvm' : 'runsc'}</Pill> : <span class="text-muted">—</span> },
-      { id: 'actions', header: '', align: 'right', cell: (n) => (
-        <span class="whitespace-nowrap flex gap-1 justify-end">
-          <a href={machineHref(n)} class="btn btn-sm">Open</a>
-          <button class="btn btn-danger btn-sm" title={unreachable(n, apiUp) ? 'Remove without drain or reset' : 'Drain, delete and reset'} onClick={() => setRemove(n)}>Remove</button>
-        </span>
-      ) },
     ]
   }, [specs, apiUp, name, behind])
 
   return (
-    <>
-      <Section title="Nodes"
-        actions={<>
-          {pools.length > 2 || pool ? (
-            <select class="input !py-1 w-auto" value={pool} onChange={(e) => setPool((e.target as HTMLSelectElement).value)} aria-label="Filter by pool">
-              <option value="">All pools</option>
-              {pools.map((p) => <option key={p.name} value={p.name}>{p.name} ({specs.filter((s) => s.pool === p.name).length})</option>)}
-            </select>
-          ) : null}
-          <button class="btn btn-primary" onClick={() => setAdd(true)}>+ Add node</button>
-        </>}>
-        <DataTable id="nodes" columns={columns} rows={rows} rowKey={(n) => n.hostname} defaultSort={{ id: 'pool', dir: 'asc' }} />
-      </Section>
-      {(add || !!adoptIP) && <AddNodeDialog cluster={cluster} preselect={adoptIP || undefined} onClose={() => { setAdd(false); setAdoptIP('') }} />}
-      {readdress && <ReaddressDialog cluster={cluster} n={readdress} spec={specs.find((s) => s.hostname === readdress.hostname)} onClose={() => setReaddress(null)} />}
-      {remove && (
-        <ConfirmDialog title={`Remove ${remove.hostname}`} action={unreachable(remove, apiUp) ? 'Remove anyway' : 'Drain and remove'} tone="danger" cluster={name} onClose={() => setRemove(null)}
-          onConfirm={() => runOp(api.removeNode(name, remove.hostname, unreachable(remove, apiUp))).then((ok) => { if (ok) setRemove(null) })}
-          impact={<RemoveImpact n={remove} cluster={cluster} force={unreachable(remove, apiUp)} />} />
-      )}
-    </>
+    <Section title="Nodes" help="Declared under spec.nodes in cluster.yaml."
+      actions={pools.length > 2 || pool ? (
+        <select class="input !py-1 w-auto" value={pool} onChange={(e) => setPool((e.target as HTMLSelectElement).value)} aria-label="Filter by pool">
+          <option value="">All pools</option>
+          {pools.map((p) => <option key={p.name} value={p.name}>{p.name} ({specs.filter((s) => s.pool === p.name).length})</option>)}
+        </select>
+      ) : undefined}>
+      <DataTable id="nodes" columns={columns} rows={rows} rowKey={(n) => n.hostname} defaultSort={{ id: 'pool', dir: 'asc' }} />
+    </Section>
   )
 }
 
@@ -91,28 +65,11 @@ function NodeHealth({ n, apiReachable, behind }: { n: NodeStatus; apiReachable: 
   else if (!n.ready) pills.push(<Pill key="k8s" tone="warn">NotReady</Pill>)
   else pills.push(<Pill key="k8s" tone="good">Ready</Pill>)
   if (n.unschedulable) pills.push(<Pill key="cordon" tone="warn">cordoned</Pill>)
-  if (behind) pills.push(<Pill key="config" tone="warn" title="Apply node configs in Settings">Config behind</Pill>)
+  if (behind) pills.push(<Pill key="config" tone="warn" title="Run kubit apply">Config behind</Pill>)
   return (
     <div class="flex flex-col gap-0.5">
       <span class="inline-flex flex-wrap gap-1">{pills}</span>
       {!n.talosReachable && n.talosError && <span class="text-[11px] text-muted max-w-[260px] truncate" title={n.talosError}>{n.talosError}</span>}
     </div>
-  )
-}
-
-const unreachable = (n: NodeStatus, apiUp: boolean) => !apiUp || !n.talosReachable
-
-function RemoveImpact({ n, cluster, force }: { n: NodeStatus; cluster: ClusterRow; force: boolean }) {
-  const cps = cluster.spec.spec.nodes.filter((x) => x.role === 'controlplane').length
-  const remaining = n.role === 'controlplane' ? cps - 1 : cps
-  return (
-    <ul class="list-disc pl-5 flex flex-col gap-1">
-      {force
-        ? <li>Skips drain and reset; the machine keeps its disk.{n.role === 'controlplane' ? ' Its etcd member is removed through another control plane.' : ''}</li>
-        : <li>Cordons and drains <b>{n.pods}</b> running pod{n.pods === 1 ? '' : 's'}, deletes the Node object and resets Talos to maintenance mode.</li>}
-      {n.role === 'controlplane' && remaining === 0 && <li class="text-bad">This is the last control plane: Kubit will refuse.</li>}
-      {n.role === 'controlplane' && remaining === 2 && <li class="text-warn">{force ? 'Leaves 2 control planes: no fault tolerance.' : 'Leaves 2 control planes; Kubit refuses unless forced from the CLI.'}</li>}
-      {n.role === 'controlplane' && remaining >= 3 && <li>etcd keeps quorum with {remaining} members.</li>}
-    </ul>
   )
 }

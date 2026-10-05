@@ -5,7 +5,6 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
-	"errors"
 	"fmt"
 	"net"
 	"os"
@@ -147,34 +146,6 @@ func (m *Manager) PlanPlatform(ctx context.Context, name string, sink Sink) (*to
 	}
 	sink.Skip("apply")
 	return diff, nil
-}
-
-var errStalePlan = errors.New("plan is stale: cluster.yaml changed since it was made; plan again")
-
-func (m *Manager) ApplyPlan(ctx context.Context, name, planSpecHash string, sink Sink) error {
-	sink.Plan(platformSteps...)
-	sink.Skip("render")
-	sink.Skip("plan")
-	c, row, err := m.LoadCluster(ctx, name)
-	if err != nil {
-		return err
-	}
-	if planSpecHash != "" && planSpecHash != specHash(row.Spec) {
-		return errStalePlan
-	}
-	dir := m.platformDir(name)
-	if _, err := os.Stat(filepath.Join(dir, "plan.tfplan")); err != nil {
-		return fmt.Errorf("no saved plan for %s; plan first", name)
-	}
-	bin, err := m.tofuBin(ctx)
-	if err != nil {
-		return err
-	}
-	r := &tofu.Runner{Bin: bin, Dir: dir, Log: tofuLogger(sink)}
-	if err := sink.Run("init", func() error { return r.Init(ctx) }); err != nil {
-		return err
-	}
-	return m.applyWith(ctx, c, r, sink)
 }
 
 func (m *Manager) ApplyPlatform(ctx context.Context, name string, sink Sink) error {

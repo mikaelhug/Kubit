@@ -131,7 +131,7 @@ func TestSlowSubscriberIsDisconnected(t *testing.T) {
 }
 
 func TestLiveClosesAnOverflowedConnection(t *testing.T) {
-	s, _, _ := localServer(t)
+	s, _ := localServer(t)
 	ended := make(chan struct{})
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		s.ServeHTTP(w, r)
@@ -195,7 +195,7 @@ func decodeFrame(t *testing.T, f frame) decoded {
 }
 
 func TestLiveAcceptsOnlySameOrigin(t *testing.T) {
-	s, _, _ := localServer(t)
+	s, _ := localServer(t)
 	srv := httptest.NewServer(s)
 	defer srv.Close()
 	u := "ws" + strings.TrimPrefix(srv.URL, "http") + "/api/v1/ws"
@@ -215,7 +215,7 @@ func TestLiveAcceptsOnlySameOrigin(t *testing.T) {
 }
 
 func TestLiveEndsWhenTheClientLeaves(t *testing.T) {
-	s, _, _ := localServer(t)
+	s, _ := localServer(t)
 	ended := make(chan struct{})
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		s.ServeHTTP(w, r)
@@ -274,50 +274,8 @@ func nextKind(t *testing.T, ch chan frame, kind string) (decoded, bool) {
 	}
 }
 
-func TestOffsiteRefreshFollowsTheStore(t *testing.T) {
-	s, st, _ := localServer(t)
-	sub := s.hub.subscribe(0)
-	defer s.hub.unsubscribe(sub)
-	ch := sub.ch
-	ctx := t.Context()
-	for _, c := range []struct {
-		change store.Change
-		want   bool
-	}{
-		{store.Change{Table: "settings", Key: "kubit", Op: "put"}, true},
-		{store.Change{Table: "settings", Key: "offsite.lastBackup", Op: "put"}, true},
-		{store.Change{Table: "settings", Key: "ssh.pub", Op: "put"}, false},
-		{store.Change{Table: "snapshots", Cluster: "c", Key: "7", Op: "delete"}, true},
-	} {
-		s.onChange(ctx, c.change)
-		if got := slices.Contains(drainScopes(t, ch), "/offsite"); got != c.want {
-			t.Errorf("%+v: offsite refresh %v, want %v", c.change, got, c.want)
-		}
-	}
-	if err := st.PutCluster(ctx, store.ClusterRow{Name: "c", Spec: []byte("x"), State: "ready"}); err != nil {
-		t.Fatal(err)
-	}
-	drainScopes(t, ch)
-	id, err := st.AddSnapshot(ctx, store.Snapshot{Cluster: "c", Path: "/x", Source: "manual", Status: "ok"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	key := strconv.FormatInt(id, 10)
-	s.onChange(ctx, store.Change{Table: "snapshots", Key: key, Op: "put"})
-	if slices.Contains(drainScopes(t, ch), "/offsite") {
-		t.Error("a local-only snapshot must not refresh off-site status")
-	}
-	if err := st.SetSnapshotOffsite(ctx, id, "clusters/c/snapshots/x"); err != nil {
-		t.Fatal(err)
-	}
-	s.onChange(ctx, store.Change{Table: "snapshots", Key: key, Op: "put"})
-	if !slices.Contains(drainScopes(t, ch), "/offsite") {
-		t.Error("an off-site copy must refresh off-site status")
-	}
-}
-
 func TestClusterMessageCarriesTheSpec(t *testing.T) {
-	s, st, _ := localServer(t)
+	s, st := localServer(t)
 	sub := s.hub.subscribe(0)
 	defer s.hub.unsubscribe(sub)
 	ch := sub.ch
@@ -337,7 +295,7 @@ func TestClusterMessageCarriesTheSpec(t *testing.T) {
 }
 
 func TestSavingTheDeclarationRefreshesConfigStatus(t *testing.T) {
-	s, st, _ := localServer(t)
+	s, st := localServer(t)
 	sub := s.hub.subscribe(0)
 	defer s.hub.unsubscribe(sub)
 	ctx := t.Context()
@@ -377,7 +335,7 @@ func TestOperationRefreshesTheViewsItChanges(t *testing.T) {
 }
 
 func TestStoreChangesReachTheirViews(t *testing.T) {
-	s, st, _ := localServer(t)
+	s, st := localServer(t)
 	sub := s.hub.subscribe(0)
 	defer s.hub.unsubscribe(sub)
 	ch := sub.ch
@@ -412,7 +370,7 @@ func TestStoreChangesReachTheirViews(t *testing.T) {
 }
 
 func TestAuditMessageCarriesTheWrittenRow(t *testing.T) {
-	s, st, _ := localServer(t)
+	s, st := localServer(t)
 	sub := s.hub.subscribe(0)
 	defer s.hub.unsubscribe(sub)
 	ctx := t.Context()
@@ -431,23 +389,8 @@ func TestAuditMessageCarriesTheWrittenRow(t *testing.T) {
 	}
 }
 
-func TestSettingsMessageOnlyForTheSettingsDocument(t *testing.T) {
-	s, _, _ := localServer(t)
-	sub := s.hub.subscribe(0)
-	defer s.hub.unsubscribe(sub)
-	ctx := t.Context()
-	s.onChange(ctx, store.Change{Table: "settings", Key: "ssh.pub", Op: "put"})
-	if _, ok := nextKind(t, sub.ch, "settings"); ok {
-		t.Error("a side value must not push the settings document")
-	}
-	s.onChange(ctx, store.Change{Table: "settings", Key: "kubit", Op: "put"})
-	if _, ok := nextKind(t, sub.ch, "settings"); !ok {
-		t.Error("settings changes push the settings document")
-	}
-}
-
 func TestForgettingAClusterSendsOneMachinesRefresh(t *testing.T) {
-	s, st, _ := localServer(t)
+	s, st := localServer(t)
 	ctx := t.Context()
 	if err := st.PutCluster(ctx, store.ClusterRow{Name: "c", Spec: []byte("x"), State: "ready"}); err != nil {
 		t.Fatal(err)
@@ -508,7 +451,7 @@ func TestHubShutdownFlushesThenRefuses(t *testing.T) {
 }
 
 func TestDrainTellsLiveClientsKubitStopped(t *testing.T) {
-	s, _, _ := localServer(t)
+	s, _ := localServer(t)
 	srv := httptest.NewServer(s)
 	defer srv.Close()
 	u := "ws" + strings.TrimPrefix(srv.URL, "http") + "/api/v1/ws"
@@ -544,15 +487,16 @@ func TestDrainTellsLiveClientsKubitStopped(t *testing.T) {
 }
 
 func TestDaemonStopWaitsForOperationsAndAudits(t *testing.T) {
-	s, st, _ := localServer(t)
+	s, st := localServer(t)
 	if rec := call(t, s, "POST", "/api/v1/daemon/stop", ""); rec.Code != http.StatusConflict {
 		t.Fatalf("without a stop hook: %d %s", rec.Code, rec.Body)
 	}
 	stops := 0
 	s.AttachStop(func() { stops++ })
+	release := make(chan struct{})
 	id, err := s.runOperation("c", "test.block", nil, func(ctx context.Context, _ cluster.Sink) (any, error) {
-		<-ctx.Done()
-		return nil, ctx.Err()
+		<-release
+		return nil, nil
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -560,7 +504,7 @@ func TestDaemonStopWaitsForOperationsAndAudits(t *testing.T) {
 	if rec := call(t, s, "POST", "/api/v1/daemon/stop", ""); rec.Code != http.StatusConflict || stops != 0 {
 		t.Fatalf("a running operation must hold the stop: %d %s", rec.Code, rec.Body)
 	}
-	s.cancelOperation(id)
+	close(release)
 	waitOp(t, st, id)
 	for deadline := time.Now().Add(5 * time.Second); s.running() > 0; time.Sleep(10 * time.Millisecond) {
 		if time.Now().After(deadline) {

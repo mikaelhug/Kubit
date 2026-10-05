@@ -3,9 +3,7 @@ import { today } from '../clock'
 const kinds: Record<string, string> = {
   'cluster.create': 'Create cluster', 'cluster.apply': 'Apply cluster.yaml', 'platform.plan': 'Plan add-ons', 'platform.apply': 'Apply add-ons',
   'upgrade.talos': 'Upgrade Talos', 'upgrade.kubernetes': 'Upgrade Kubernetes', 'node.add': 'Add node', 'node.remove': 'Remove node', discover: 'Discover nodes',
-  'node.cordon': 'Cordon node', 'node.uncordon': 'Uncordon node', 'node.drain': 'Drain node', 'node.reboot': 'Reboot node', 'node.upgrade': 'Upgrade node',
-  'node.rename': 'Rename node', 'node.pool': 'Move node to pool', 'node.readdress': 'Re-address node', 'machine.power': 'Remote power action', 'kubit.backup': 'Kubit backup off-site', 'labhost.provision': 'Install lab host', 'labhost.local': 'Lab host on this Mac', 'labhost.cluster': 'Lab cluster', 'labhost.vms': 'Add lab VMs', 'labhost.vm.start': 'Start VM', 'labhost.vm.stop': 'Stop VM', 'labhost.vm.kill': 'Force-stop VM', 'labhost.vm.reprovision': 'Re-provision VM', 'labhost.update': 'Update lab host', 'labhost.reboot': 'Reboot lab host',
-  'etcd.snapshot': 'etcd snapshot', 'etcd.restore': 'Restore etcd from snapshot', 'cert.rotate': 'Rotate credential',
+  'etcd.snapshot': 'etcd snapshot', 'etcd.restore': 'Restore etcd from snapshot',
 }
 
 export const splitList = (s: string) => s.split(/[,\s]+/).filter(Boolean)

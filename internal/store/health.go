@@ -6,8 +6,6 @@ import (
 	"errors"
 	"strconv"
 	"time"
-
-	"github.com/mikael/kubit/internal/netx"
 )
 
 type Sample struct {
@@ -25,8 +23,6 @@ type Sample struct {
 }
 
 const KubitKey = "kubit"
-
-func LabHostKey(mac string) string { return "labhost:" + netx.MACKey(mac) }
 
 func (s *Store) AddSamples(ctx context.Context, cluster string, ts time.Time, samples []Sample) error {
 	tx, err := s.db.BeginTx(ctx, nil)
@@ -151,21 +147,6 @@ func b2i(b bool) int {
 		return 1
 	}
 	return 0
-}
-
-func (s *Store) OpenEventSeverity(ctx context.Context, cluster, node, kind string) string {
-	var sev string
-	_ = s.db.QueryRowContext(ctx, `SELECT severity FROM events WHERE cluster = ? AND node = ? AND kind = ? AND acked = 0 ORDER BY id DESC LIMIT 1`, cluster, node, kind).Scan(&sev)
-	return sev
-}
-
-func (s *Store) LastEventAt(ctx context.Context, cluster, kind string) time.Time {
-	var ts string
-	if err := s.db.QueryRowContext(ctx, `SELECT ts FROM events WHERE cluster = ? AND kind = ? ORDER BY id DESC LIMIT 1`, cluster, kind).Scan(&ts); err != nil {
-		return time.Time{}
-	}
-	t, _ := time.Parse(time.RFC3339Nano, ts)
-	return t
 }
 
 func (s *Store) HasOpenEvent(ctx context.Context, cluster, node, kind string) bool {

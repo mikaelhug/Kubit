@@ -2,12 +2,10 @@ import { useState } from 'preact/hooks'
 import { api, splitList } from '../api'
 import { subnet24 } from '../net'
 import { running, watch } from '../ops'
-import { settings } from '../store'
 
 export function ScanBox({ fallbackIp, primary, openDrawer, onError }: { fallbackIp?: string; primary?: boolean; openDrawer?: boolean; onError: (message: string) => void }) {
   const [typed, setTyped] = useState<string | null>(null)
-  const subnets = settings.value?.discoverySubnets ?? []
-  const targets = typed ?? (subnets.length ? subnets.join(', ') : fallbackIp ? subnet24(fallbackIp) : '')
+  const targets = typed ?? (fallbackIp ? subnet24(fallbackIp) : '')
   const scanning = running.value.some((o) => o.kind === 'discover')
   const scan = () => api.discover(splitList(targets)).then((r) => watch(r, !!openDrawer)).catch((e) => onError(e.message))
   return (

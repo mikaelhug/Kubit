@@ -20,4 +20,3 @@ export function updatesFor(talos: string, kubernetes: string, v?: Versions | nul
   return { talos: latest && verLess(talos, latest) ? latest : '', kubernetes: v && verLess(kubernetes, v.kubernetesLatest) ? v.kubernetesLatest : '' }
 }
 
-export const minorAtLeast = (minor: string, base: string) => !verLess(minor, base)

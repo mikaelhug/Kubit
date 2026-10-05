@@ -90,7 +90,7 @@ func TestNodes(t *testing.T) {
 	if err := s.PutCluster(ctx, store.ClusterRow{Name: "dev", Spec: []byte("x")}); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.AssignNode(ctx, "10.0.0.1", "dev", "cp-01", "controlplane"); err != nil {
+	if err := s.UpsertNode(ctx, store.NodeRow{IP: "10.0.0.1", MAC: "aa:bb", Cluster: "dev", Hostname: "cp-01", Role: "controlplane", Source: "scan", State: "maintenance"}); err != nil {
 		t.Fatal(err)
 	}
 	if err := s.UpsertNode(ctx, store.NodeRow{IP: "10.0.0.1", Source: "scan", State: "configured"}); err != nil {
@@ -112,7 +112,7 @@ func TestNodes(t *testing.T) {
 	if err := s.PutNodeMachineConfig(ctx, "10.0.0.1", []byte("cfg2"), false); err != nil {
 		t.Fatal(err)
 	}
-	if !s.NodeSystemSplit(ctx, "10.0.0.1") {
+	if _, split, _ := s.NodeMachineConfigSplit(ctx, "10.0.0.1"); !split {
 		t.Error("a node once installed with a system volume keeps the mark")
 	}
 	if _, err := s.GetNodeMachineConfig(ctx, "10.0.0.2"); !errors.Is(err, store.ErrNotFound) {
@@ -177,38 +177,6 @@ func TestMachineIdentityFollowsMAC(t *testing.T) {
 	}
 }
 
-func TestUpdateLabHostMergesConcurrentWriters(t *testing.T) {
-	s := open(t)
-	defer s.Close()
-	ctx := context.Background()
-	mac := "52:54:00:6b:01:01"
-	if err := s.UpsertNode(ctx, store.NodeRow{IP: "10.0.0.2", MAC: mac, State: "labhost", Source: "labhost"}); err != nil {
-		t.Fatal(err)
-	}
-	if err := s.SetLabHost(ctx, mac, &store.LabHost{State: "ready"}); err != nil {
-		t.Fatal(err)
-	}
-	done := make(chan struct{}, 2)
-	go func() {
-		_ = s.UpdateLabHost(ctx, mac, func(l *store.LabHost) { l.State = "updating" })
-		done <- struct{}{}
-	}()
-	go func() { _ = s.UpdateLabHost(ctx, mac, func(l *store.LabHost) { l.Failures = 7 }); done <- struct{}{} }()
-	<-done
-	<-done
-	m, err := s.GetMachine(ctx, mac)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if m.LabHost.State != "updating" || m.LabHost.Failures != 7 {
-		t.Fatalf("merge lost a field: state=%q failures=%d", m.LabHost.State, m.LabHost.Failures)
-	}
-	_ = s.UpsertNode(ctx, store.NodeRow{IP: "10.0.0.3", MAC: "52:54:00:6b:01:02", State: "maintenance"})
-	if err := s.UpdateLabHost(ctx, "52:54:00:6b:01:02", func(l *store.LabHost) { l.State = "x" }); err != nil {
-		t.Fatalf("update on a non-lab-host must be a no-op: %v", err)
-	}
-}
-
 func TestNotFoundWrapsMissingRows(t *testing.T) {
 	s := open(t)
 	ctx := context.Background()
@@ -220,7 +188,6 @@ func TestNotFoundWrapsMissingRows(t *testing.T) {
 		"config":   func() error { _, err := s.GetNodeMachineConfig(ctx, "10.9.9.9"); return err }(),
 		"op":       func() error { _, err := s.GetOperation(ctx, 999); return err }(),
 		"snapshot": func() error { _, err := s.GetSnapshot(ctx, 999); return err }(),
-		"user":     func() error { _, err := s.GetUser(ctx, "nobody"); return err }(),
 	} {
 		if !errors.Is(err, store.ErrNotFound) {
 			t.Errorf("%s: %v is not ErrNotFound", name, err)
@@ -325,7 +292,7 @@ func TestMachineChangesAreKeyedByMAC(t *testing.T) {
 		}
 	})
 	_ = s.SetNodeState(ctx, "10.0.0.5", "configured")
-	_ = s.AssignNode(ctx, "10.0.0.5", "c", "n1", "worker")
+	_ = s.UpsertNode(ctx, store.NodeRow{IP: "10.0.0.5", Cluster: "c", Hostname: "n1", Role: "worker", State: "configured"})
 	_ = s.UnassignNode(ctx, "10.0.0.5", "maintenance")
 	_ = s.SetNodeState(ctx, "10.9.9.9", "configured")
 	if !slices.Equal(keys, []string{"aa:bb:cc:00:00:01", "aa:bb:cc:00:00:01", "aa:bb:cc:00:00:01"}) {

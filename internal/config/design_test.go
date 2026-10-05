@@ -69,13 +69,6 @@ func TestLintFindings(t *testing.T) {
 	}
 }
 
-func TestOverlaps(t *testing.T) {
-	got := config.Overlaps("10.0.0.200-10.0.0.220", map[string]string{"a": "10.0.0.210-10.0.0.230", "b": "10.0.0.221-10.0.0.240", "c": "bad"})
-	if len(got) != 1 || got[0] != "a" {
-		t.Errorf("got %v", got)
-	}
-}
-
 func TestDesignPrefersBareMetalControlPlanes(t *testing.T) {
 	d := []config.MachineDisk{{DevPath: "/dev/sda", SizeBytes: 256 << 30, Transport: "sata"}}
 	ms := []config.Machine{

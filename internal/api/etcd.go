@@ -16,11 +16,7 @@ import (
 func (s *Server) etcdRoutes() {
 	r := s.mux
 	r.HandleFunc("GET /api/v1/clusters/{name}/snapshots", s.handleSnapshots)
-	r.HandleFunc("POST /api/v1/clusters/{name}/snapshots", s.handleSnapshotTake)
 	r.HandleFunc("GET /api/v1/clusters/{name}/snapshots/{id}", s.handleSnapshotDownload)
-	r.HandleFunc("DELETE /api/v1/clusters/{name}/snapshots/{id}", s.handleSnapshotDelete)
-	r.HandleFunc("POST /api/v1/clusters/{name}/snapshots/{id}/verify", s.handleSnapshotVerify)
-	r.HandleFunc("POST /api/v1/clusters/{name}/snapshots/{id}/restore", s.disruptive(s.handleSnapshotRestore))
 }
 
 const scheduleRetry = 10 * time.Minute
@@ -45,7 +41,6 @@ func (s *Server) maybeScheduleSnapshot(ctx context.Context, name string, st *clu
 		if err == nil {
 			_ = s.store.ResolveEvents(ctx, name, "", "backup.stale")
 		}
-		s.snapshotOffsiteResult(ctx, name, sn, err)
 		return sn, err
 	}); err != nil {
 		log.Printf("snapshot schedule %s: %v", name, err)
@@ -97,24 +92,6 @@ func (s *Server) handleSnapshots(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, list)
 }
 
-func (s *Server) handleSnapshotTake(w http.ResponseWriter, r *http.Request) {
-	name := r.PathValue("name")
-	var req struct {
-		Source string `json:"source"`
-	}
-	if !decodeOptionalJSON(w, r, &req) {
-		return
-	}
-	if req.Source == "" {
-		req.Source = "manual"
-	}
-	s.startOp(w, name, "etcd.snapshot", req, func(ctx context.Context, sink cluster.Sink) (any, error) {
-		sn, err := s.manager.SnapshotEtcd(ctx, name, req.Source, sink)
-		s.snapshotOffsiteResult(ctx, name, sn, err)
-		return sn, err
-	})
-}
-
 func (s *Server) snapshotOf(r *http.Request) (*store.Snapshot, error) {
 	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
 	if err != nil {
@@ -144,53 +121,4 @@ func (s *Server) handleSnapshotDownload(w http.ResponseWriter, r *http.Request) 
 	w.Header().Set("Content-Type", "application/octet-stream")
 	w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="%s-etcd-%s.db"`, sn.Cluster, sn.TS))
 	_, _ = w.Write(plain)
-}
-
-func (s *Server) handleSnapshotDelete(w http.ResponseWriter, r *http.Request) {
-	sn, err := s.snapshotOf(r)
-	if err != nil {
-		writeErr(w, err)
-		return
-	}
-	if err := s.manager.DeleteSnapshot(r.Context(), sn.ID); err != nil {
-		writeErr(w, err)
-		return
-	}
-	_ = s.store.Audit(r.Context(), sn.Cluster, "etcd.snapshot.delete", strconv.FormatInt(sn.ID, 10))
-	w.WriteHeader(http.StatusNoContent)
-}
-
-func (s *Server) handleSnapshotVerify(w http.ResponseWriter, r *http.Request) {
-	sn, err := s.snapshotOf(r)
-	if err != nil {
-		writeErr(w, err)
-		return
-	}
-	sn, verr := s.manager.VerifySnapshot(r.Context(), sn.ID)
-	out := map[string]any{"snapshot": sn, "ok": verr == nil}
-	if verr != nil {
-		out["error"] = verr.Error()
-	}
-	writeJSON(w, http.StatusOK, out)
-}
-
-func (s *Server) handleSnapshotRestore(w http.ResponseWriter, r *http.Request) {
-	sn, err := s.snapshotOf(r)
-	if err != nil {
-		writeErr(w, err)
-		return
-	}
-	var req struct {
-		Confirm string `json:"confirm"`
-	}
-	if !decodeOptionalJSON(w, r, &req) {
-		return
-	}
-	if req.Confirm != sn.Cluster {
-		writeErr(w, badRequest(`body must be {"confirm": "<cluster name>"}: restoring wipes etcd on every control plane`))
-		return
-	}
-	s.startOp(w, sn.Cluster, "etcd.restore", map[string]any{"snapshot": sn.ID}, func(ctx context.Context, sink cluster.Sink) (any, error) {
-		return nil, s.manager.RestoreEtcd(ctx, sn.Cluster, sn.ID, sink)
-	})
 }

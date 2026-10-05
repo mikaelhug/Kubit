@@ -65,7 +65,7 @@ machines land in maintenance mode and show up in 'kubit discover'.`,
 			}
 			logger := log.New(os.Stderr, "", log.LstdFlags)
 			srv := &pxe.Server{
-				Config:  pxe.Config{Interface: iface, IP: ip, HTTPPort: httpPort, Log: logger, Decide: pxeDecider(kubitURL, os.Getenv("KUBIT_TOKEN"), logger), KubitURL: kubitURL, KubitToken: os.Getenv("KUBIT_TOKEN"), HTTPOnly: httpOnly},
+				Config:  pxe.Config{Interface: iface, IP: ip, HTTPPort: httpPort, Log: logger, Decide: pxeDecider(kubitURL, os.Getenv("KUBIT_TOKEN"), logger), HTTPOnly: httpOnly},
 				Profile: pxe.Profile{SchematicID: schematic, TalosVersion: talosVersion},
 				Cache:   pxe.NewCache(cache),
 				Factory: f,
@@ -78,9 +78,9 @@ machines land in maintenance mode and show up in 'kubit discover'.`,
 	cmd.Flags().StringSliceVar(&extensions, "extensions", nil, "system extensions for the default schematic")
 	cmd.Flags().StringVar(&talosVersion, "talos-version", config.MinTalosVersion, "Talos release to boot")
 	cmd.Flags().IntVar(&httpPort, "http-port", 8069, "port for the iPXE script and boot assets")
-	cmd.Flags().StringVar(&advertise, "ip", "", "address to advertise in boot scripts and preseed URLs (default: the interface's current IPv4)")
-	cmd.Flags().BoolVar(&httpOnly, "http-only", false, "serve only HTTP (boot assets, lab-host preseed and progress) on --http-port; no DHCP/TFTP, no root. For machines you boot yourself")
-	cmd.Flags().StringVar(&kubitURL, "kubit-url", "http://127.0.0.1:8090", "daemon to ask whether a MAC should boot Talos or its own disk (cluster members boot locally); KUBIT_TOKEN for its bearer token")
+	cmd.Flags().StringVar(&advertise, "ip", "", "address to advertise in boot scripts (default: the interface's current IPv4)")
+	cmd.Flags().BoolVar(&httpOnly, "http-only", false, "serve only the iPXE script and boot assets on --http-port; no DHCP/TFTP, no root")
+	cmd.Flags().StringVar(&kubitURL, "kubit-url", "http://127.0.0.1:8090", "daemon that decides Talos or local disk per MAC; KUBIT_TOKEN for its bearer token")
 	return cmd
 }
 

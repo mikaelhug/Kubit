@@ -2,8 +2,8 @@ import { fmt, getToken, type Message } from './api'
 import { editMap, setIn } from './maps'
 import { pushEvent, reloadLogs, reloadOfflineLogs, reloadOperations, operations, upsertOp } from './ops'
 import {
-  audit, bumpAllRefreshes, bumpRefresh, clusters, connected, daemon, health, hostSamples, loadAllHealth, loadMachines, loadObserver, loadSettings, loadSnapshots, loadVersions, machineKey, machines, me, observer,
-  reconnectAttempt, reloadClusters, resyncing, settings, snapshots, statuses, stopped, toast, upsertCluster,
+  audit, bumpAllRefreshes, bumpRefresh, clusters, connected, daemon, health, loadAllHealth, loadMachines, loadObserver, loadSnapshots, loadVersions, machineKey, machines, observer,
+  reconnectAttempt, reloadClusters, resyncing, snapshots, statuses, stopped, toast, upsertCluster,
 } from './store'
 
 let ws: WebSocket | null = null
@@ -19,7 +19,7 @@ let resyncDone = 0
 let resyncRun: Promise<void> | null = null
 
 export function connectLive() {
-  if (ws || me.value === null) return
+  if (ws) return
   const t = getToken()
   const proto = location.protocol === 'https:' ? 'wss' : 'ws'
   const q = new URLSearchParams()
@@ -46,13 +46,6 @@ function resume() {
   connectLive()
 }
 
-export function reconnectLive() {
-  everConnected = false
-  lastSeq = 0
-  attempt = 0
-  startedAt = ''
-  resume()
-}
 
 function resync() {
   resyncWanted++
@@ -65,7 +58,7 @@ async function runResync() {
     while (resyncDone < resyncWanted) {
       resyncDone = resyncWanted
       await Promise.all([
-        reloadClusters(), reloadOperations(), reloadLogs(), loadMachines(), loadSettings(), loadObserver(), loadVersions(),
+        reloadClusters(), reloadOperations(), reloadLogs(), loadMachines(), loadObserver(), loadVersions(),
         loadAllHealth([...health.value.keys()]), ...[...snapshots.value.keys()].map(loadSnapshots),
       ])
       bumpAllRefreshes()
@@ -134,9 +127,6 @@ function apply(m: Message) {
     case 'audit':
       if (m.audit && !audit.value.some((a) => a.id === m.audit!.id)) audit.value = [m.audit, ...audit.value].slice(0, 500)
       break
-    case 'settings':
-      if (m.settings) settings.value = m.settings
-      break
     case 'versions':
       loadVersions()
       break
@@ -159,14 +149,11 @@ function apply(m: Message) {
       if (m.health) {
         const h = m.health
         editMap(health, (hm) => hm.set(h.cluster, [h, ...(hm.get(h.cluster) ?? []).filter((e) => e.id !== h.id)].slice(0, 200)))
-        if (h.severity !== 'info' && !h.acked && !replayed) toast(h.cluster.startsWith('labhost:') ? h.message : `${h.cluster}: ${h.message}`, 'error')
+        if (h.severity !== 'info' && !h.acked && !replayed) toast(`${h.cluster}: ${h.message}`, 'error')
       }
       break
     case 'observer':
       if (m.observer) observer.value = m.observer
-      break
-    case 'hostSample':
-      if (m.sample && m.key) setIn(hostSamples, m.key, m.sample)
       break
     case 'healthAck': {
       const c = m.cluster ?? ''

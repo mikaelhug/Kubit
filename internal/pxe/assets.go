@@ -2,10 +2,8 @@ package pxe
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -25,20 +23,12 @@ var ipxeURLs = map[string]string{
 	FileARM64: "https://boot.ipxe.org/arm64-efi/ipxe.efi",
 }
 
-const (
-	currentTTL        = 24 * time.Hour
-	downloadBudget    = 10 * time.Minute
-	staleWait         = 30 * time.Second
-	revalidateBackoff = 10 * time.Minute
-)
+const downloadBudget = 10 * time.Minute
 
 type Cache struct {
-	Dir       string
-	staleWait time.Duration
-	backoff   time.Duration
-	mu        sync.Mutex
-	inflight  map[string]*download
-	retry     map[string]time.Time
+	Dir      string
+	mu       sync.Mutex
+	inflight map[string]*download
 }
 
 type download struct {
@@ -56,7 +46,7 @@ func (d *download) wait(ctx context.Context) error {
 }
 
 func NewCache(dir string) *Cache {
-	return &Cache{Dir: dir, staleWait: staleWait, backoff: revalidateBackoff, inflight: map[string]*download{}, retry: map[string]time.Time{}}
+	return &Cache{Dir: dir, inflight: map[string]*download{}}
 }
 
 func cacheName(url string) string {
@@ -82,47 +72,6 @@ func (c *Cache) Path(ctx context.Context, url string) (string, error) {
 	return path, nil
 }
 
-func (c *Cache) Current(ctx context.Context, urls []string, revalidate bool) ([]string, error) {
-	paths := make([]string, len(urls))
-	for i, u := range urls {
-		paths[i] = c.local(u)
-	}
-	key := strings.Join(paths, "\x00")
-	metas, cached := readMetas(paths)
-	now := time.Now()
-	if cached && (!revalidate || fresh(metas, now) || c.backingOff(key, now)) {
-		return paths, nil
-	}
-	d := c.start(ctx, key, func(ctx context.Context) error { return c.refresh(ctx, urls, paths, metas, cached) })
-	if !cached {
-		if err := d.wait(ctx); err != nil {
-			return nil, err
-		}
-		return paths, nil
-	}
-	timer := time.NewTimer(c.staleWait)
-	defer timer.Stop()
-	select {
-	case <-d.done:
-		if d.err == nil {
-			return paths, nil
-		}
-	case <-timer.C:
-	case <-ctx.Done():
-		return nil, ctx.Err()
-	}
-	c.mu.Lock()
-	c.retry[key] = time.Now().Add(c.backoff)
-	c.mu.Unlock()
-	return paths, nil
-}
-
-func (c *Cache) backingOff(key string, now time.Time) bool {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	return now.Before(c.retry[key])
-}
-
 func (c *Cache) start(ctx context.Context, key string, fetch func(context.Context) error) *download {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -141,96 +90,6 @@ func (c *Cache) start(ctx context.Context, key string, fetch func(context.Contex
 		close(d.done)
 	}()
 	return d
-}
-
-type meta struct {
-	httpx.Validators
-	Checked time.Time `json:"checked"`
-}
-
-func metaPath(path string) string { return path + ".meta" }
-
-func stagePath(path string) string {
-	return filepath.Join(filepath.Dir(path), "."+filepath.Base(path)+".next.part")
-}
-
-func readMetas(paths []string) ([]meta, bool) {
-	metas := make([]meta, len(paths))
-	cached := true
-	for i, p := range paths {
-		if _, err := os.Stat(p); err != nil {
-			cached = false
-			continue
-		}
-		if b, err := os.ReadFile(metaPath(p)); err == nil {
-			_ = json.Unmarshal(b, &metas[i])
-		}
-	}
-	return metas, cached
-}
-
-func fresh(metas []meta, now time.Time) bool {
-	for _, m := range metas {
-		if now.Sub(m.Checked) >= currentTTL || m.Checked.After(now) {
-			return false
-		}
-	}
-	return true
-}
-
-func (c *Cache) refresh(ctx context.Context, urls, paths []string, metas []meta, cached bool) error {
-	if err := os.MkdirAll(c.Dir, 0o700); err != nil {
-		return err
-	}
-	client := httpx.Download
-	if cached {
-		client = httpx.Revalidate
-	}
-	staged := make([]string, len(urls))
-	defer func() {
-		for _, s := range staged {
-			if s != "" {
-				os.Remove(s)
-			}
-		}
-	}()
-	next := slices.Clone(metas)
-	for i, url := range urls {
-		var got httpx.Validators
-		err := fsx.WriteStream(stagePath(paths[i]), 0o644, func(w io.Writer) error {
-			var err error
-			got, err = httpx.FetchIfChanged(ctx, client, url, metas[i].Validators, w)
-			return err
-		})
-		switch {
-		case errors.Is(err, httpx.ErrNotModified):
-		case err != nil:
-			return err
-		default:
-			staged[i], next[i].Validators = stagePath(paths[i]), got
-		}
-	}
-	for i, s := range staged {
-		if s == "" {
-			continue
-		}
-		if err := os.Rename(s, paths[i]); err != nil {
-			return err
-		}
-		staged[i] = ""
-	}
-	now := time.Now()
-	for i, p := range paths {
-		next[i].Checked = now
-		b, err := json.Marshal(next[i])
-		if err != nil {
-			return err
-		}
-		if err := fsx.WriteFile(metaPath(p), b, 0o644); err != nil {
-			return err
-		}
-	}
-	return nil
 }
 
 func (c *Cache) IPXEBinary(ctx context.Context, name string) (string, error) {

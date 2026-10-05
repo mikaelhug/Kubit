@@ -85,7 +85,6 @@ type Disk struct {
 	Serial     string   `json:"serial,omitempty"`
 	WWID       string   `json:"wwid,omitempty"`
 	Links      []string `json:"links,omitempty"`
-	Key        string   `json:"key,omitempty"`
 }
 
 type Link struct {

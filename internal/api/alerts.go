@@ -19,7 +19,6 @@ import (
 
 func (s *Server) alertRoutes() {
 	r := s.mux
-	r.HandleFunc("POST /api/v1/settings/alerts/test", s.handleAlertTest)
 	r.HandleFunc("GET /api/v1/audit", s.handleAudit)
 }
 
@@ -179,30 +178,6 @@ func sendMail(c store.SMTP, e store.EventRow) error {
 		return err
 	}
 	return cl.Quit()
-}
-
-func (s *Server) handleAlertTest(w http.ResponseWriter, r *http.Request) {
-	v, err := s.store.GetSettings(r.Context())
-	if err != nil {
-		writeErr(w, err)
-		return
-	}
-	e := store.EventRow{TS: time.Now().UTC().Format(time.RFC3339), Cluster: "kubit", Severity: "critical", Kind: "test", Message: "Test alert from Kubit settings — forwarding works."}
-	var errs []string
-	if v.Alerts.WebhookURL != "" {
-		if err := postWebhook(v.Alerts.WebhookURL, e); err != nil {
-			errs = append(errs, "webhook: "+err.Error())
-		}
-	}
-	if v.Alerts.SMTP.Host != "" && len(v.Alerts.SMTP.To) > 0 {
-		if err := sendMail(v.Alerts.SMTP, e); err != nil {
-			errs = append(errs, "smtp: "+err.Error())
-		}
-	}
-	if v.Alerts.WebhookURL == "" && v.Alerts.SMTP.Host == "" {
-		errs = append(errs, "no sink configured")
-	}
-	writeJSON(w, http.StatusOK, map[string]any{"ok": len(errs) == 0, "errors": errs})
 }
 
 func (s *Server) handleAudit(w http.ResponseWriter, r *http.Request) {

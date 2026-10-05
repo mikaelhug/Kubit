@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { levelTone, phaseTone, severityTone, stateTone, toneBg, toneBorder, tonePill, toneText } from './tone'
+import { phaseTone, severityTone, stateTone, toneBg, toneBorder, tonePill, toneText } from './tone'
 
 describe('tone maps', () => {
   it('cover every tone', () => {
@@ -27,8 +27,5 @@ describe('tone maps', () => {
     expect(severityTone('critical')).toBe('bad')
     expect(severityTone('warn')).toBe('warn')
     expect(severityTone('info')).toBe('good')
-    expect(levelTone(96, 80, 95)).toBe('bad')
-    expect(levelTone(85, 80, 95)).toBe('warn')
-    expect(levelTone(10, 80, 95)).toBeUndefined()
   })
 })

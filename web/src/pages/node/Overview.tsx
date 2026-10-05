@@ -3,17 +3,15 @@ import { fmt, type ClusterSpec, type Inventory, type NodeDetail, type NodeRow, t
 import { Elapsed } from '../../components/Time'
 import { identityRows } from '../../components/Machine'
 import { KeyValue, Meter, Notice, Pill, Section } from '../../components/ui'
-import { hostName, hostOf, kindDetail, kindLabel, modelOf } from '../../machine'
+import { kindDetail, kindLabel, modelOf } from '../../machine'
 
 type Row = [string, ComponentChildren]
 
 export function OverviewTab({ inv, invErr, k8s, k8sErr, node, spec, storage }: { inv: Inventory | null; invErr: string | null; k8s: NodeDetail | null; k8sErr: string | null; node: NodeRow | null; spec?: NodeSpec; storage?: ClusterSpec['spec']['storage'] }) {
   if (!node) return <div class="text-muted">Loading</div>
-  const host = hostOf(node)
   const rows: Row[] = [
     ['Kind', `${kindLabel[node.kind]}${kindDetail(node) ? ` · ${kindDetail(node)}` : ''}`],
     ['Model', [modelOf(node), inv?.platform].filter(Boolean).join(' · ')],
-    ...(host ? [['Lab host', <a class="text-accent hover:underline" href={`/labhosts/${host.mac}/overview`}>{hostName(host)}</a>] as Row] : []),
     ...identityRows(node),
     ...(spec ? [['Install disk', <span class="mono">{spec.installDisk?.path ?? (spec.installDisk?.selector ? JSON.stringify(spec.installDisk.selector) : 'pool policy')}</span>] as Row] : []),
     ...(spec?.dataDisks?.length ? [['Data disks', <span class="mono">{spec.dataDisks.map((d, i) => `${d} → /var/mnt/data-${i + 1}`).join(' · ')}</span>] as Row] : []),
@@ -25,15 +23,13 @@ export function OverviewTab({ inv, invErr, k8s, k8sErr, node, spec, storage }: {
     </Section>
   )
   if (!node.talos) {
-    const next = node.kind === 'configured' ? 'Runs Talos with a config Kubit did not apply; reset it to maintenance mode to adopt it.'
+    const next = node.kind === 'configured' ? 'Runs Talos with a config Kubit did not apply; reset it to maintenance mode to use it.'
       : node.kind === 'booting' ? 'Waiting for Talos maintenance mode.'
-      : host ? 'The VM is off; start it from the Actions tab.'
-      : node.oobType ? 'Not running Talos; boot into Talos or make it a lab host from the Actions tab.'
-      : 'Not running Talos; boot it into Talos, or configure remote management under Actions.'
+      : 'Not running Talos; boot it from the Talos ISO or with kubit pxe.'
     return (
       <div class="grid grid-cols-1 lg:grid-cols-2 gap-4">
         {identity}
-        <Section title="Next" help="What this machine is waiting for.">
+        <Section title="Next">
           <Notice tone={node.kind === 'booting' ? 'warn' : 'muted'}>{next}</Notice>
         </Section>
       </div>

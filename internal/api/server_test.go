@@ -2,8 +2,6 @@ package api_test
 
 import (
 	"bytes"
-	"encoding/json"
-	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -91,119 +89,6 @@ func TestLoopback(t *testing.T) {
 	}
 }
 
-func TestConfigValidateAndDraft(t *testing.T) {
-	srv, s := newServer(t, "")
-	rec := do(t, srv, "POST", "/api/v1/config/validate", "apiVersion: kubit.dev/v1\nkind: Cluster\nmetadata: {name: x}\nspec:\n  nodes: []\n")
-	if rec.Code != http.StatusUnprocessableEntity {
-		t.Errorf("empty nodes should be 422, got %d: %s", rec.Code, rec.Body)
-	}
-	rec = do(t, srv, "POST", "/api/v1/config/validate", "apiVersion: kubit.dev/v1\nkind: Cluster\nmetadata: {name: x}\nspec:\n  nodes:\n    - {hostname: a, ip: 10.0.0.1, role: controlplane, installDisk: {path: /dev/sda}}\n")
-	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "talosVersion") {
-		t.Errorf("valid: %d %s", rec.Code, rec.Body)
-	}
-
-	for _, n := range []store.NodeRow{
-		{IP: "10.0.0.1", MAC: "aa:aa:aa:aa:aa:aa", Arch: "amd64", State: "maintenance", Hardware: []byte(`{"kvm":true,"disks":[{"devPath":"/dev/nvme0n1","sizeBytes":500000000000,"transport":"nvme"}]}`)},
-		{IP: "10.0.0.2", MAC: "bb:bb:bb:bb:bb:bb", Arch: "amd64", State: "maintenance"},
-		{IP: "10.0.0.3", MAC: "cc:cc:cc:cc:cc:cc", Arch: "amd64", State: "maintenance"},
-	} {
-		if err := s.UpsertNode(t.Context(), n); err != nil {
-			t.Fatal(err)
-		}
-	}
-	rec = do(t, srv, "POST", "/api/v1/config/draft", `{"name":"lab","ips":["10.0.0.1","10.0.0.2","10.0.0.3"]}`)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("draft: %d %s", rec.Code, rec.Body)
-	}
-	var out struct {
-		YAML     string `json:"yaml"`
-		Topology struct{ ControlPlanes, Workers int }
-	}
-	_ = json.Unmarshal(rec.Body.Bytes(), &out)
-	if out.Topology.ControlPlanes != 3 || out.Topology.Workers != 0 {
-		t.Errorf("3 nodes should draft 3 control planes: %+v", out.Topology)
-	}
-	for _, want := range []string{"lab-cp-01", "lab-cp-03", "/dev/nvme0n1", "kvm: true", "10.0.0.200-10.0.0.220", "mac: aa:aa:aa:aa:aa:aa"} {
-		if !strings.Contains(out.YAML, want) {
-			t.Errorf("draft lacks %q:\n%s", want, out.YAML)
-		}
-	}
-}
-
-func TestClusterCreateRejectsBadYAML(t *testing.T) {
-	srv, _ := newServer(t, "")
-	rec := do(t, srv, "POST", "/api/v1/clusters", `{"yaml":"kind: Nope"}`)
-	if rec.Code != http.StatusBadRequest && rec.Code != http.StatusInternalServerError {
-		t.Errorf("got %d", rec.Code)
-	}
-	if rec := do(t, srv, "GET", "/api/v1/clusters", ""); rec.Code != http.StatusOK || strings.TrimSpace(rec.Body.String()) != "[]" {
-		t.Errorf("clusters: %d %s", rec.Code, rec.Body)
-	}
-	if rec := do(t, srv, "GET", "/api/v1/operations", ""); strings.TrimSpace(rec.Body.String()) != "[]" {
-		t.Errorf("operations: %s", rec.Body)
-	}
-}
-
-func TestDesignAndLint(t *testing.T) {
-	srv, s := newServer(t, "")
-	hw := `{"cpus":4,"memoryBytes":8589934592,"kvm":false,"disks":[{"devPath":"/dev/sda","sizeBytes":250000000000}]}`
-	for i, mac := range []string{"aa:aa:aa:aa:aa:01", "aa:aa:aa:aa:aa:02", "aa:aa:aa:aa:aa:03"} {
-		if err := s.UpsertNode(t.Context(), store.NodeRow{IP: "10.0.0.1" + string(rune('0'+i)), MAC: mac, Arch: "amd64", State: "maintenance", Hardware: []byte(hw)}); err != nil {
-			t.Fatal(err)
-		}
-	}
-	rec := do(t, srv, "POST", "/api/v1/config/design", `{"name":"lab","macs":["aa:aa:aa:aa:aa:01","aa:aa:aa:aa:aa:02","aa:aa:aa:aa:aa:03"]}`)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("design: %d %s", rec.Code, rec.Body)
-	}
-	var d struct {
-		YAML     string `json:"yaml"`
-		Topology struct{ ControlPlanes int }
-		Warnings []struct{ Code string }
-	}
-	_ = json.Unmarshal(rec.Body.Bytes(), &d)
-	if d.Topology.ControlPlanes != 3 || !strings.Contains(d.YAML, "pool: controlplane") || !strings.Contains(d.YAML, "vip: 10.0.0.250") {
-		t.Errorf("design: %+v\n%s", d.Topology, d.YAML)
-	}
-	body, _ := json.Marshal(map[string]string{"yaml": strings.Replace(d.YAML, "vip: 10.0.0.250", "", 1)})
-	rec = do(t, srv, "POST", "/api/v1/config/lint", string(body))
-	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "no-vip") {
-		t.Errorf("lint should flag the missing VIP: %d %s", rec.Code, rec.Body)
-	}
-}
-
-func TestDesignAndDraftCarryTPMAndWatchdog(t *testing.T) {
-	srv, s := newServer(t, "")
-	hw := `{"cpus":4,"memoryBytes":8589934592,"kvm":false,"tpm":true,"watchdog":%v,"disks":[{"devPath":"/dev/sda","sizeBytes":250000000000}]}`
-	for i, mac := range []string{"aa:aa:aa:aa:aa:01", "aa:aa:aa:aa:aa:02", "aa:aa:aa:aa:aa:03"} {
-		if err := s.UpsertNode(t.Context(), store.NodeRow{IP: "10.0.0.1" + string(rune('0'+i)), MAC: mac, Arch: "amd64", State: "maintenance", Hardware: []byte(fmt.Sprintf(hw, i == 0))}); err != nil {
-			t.Fatal(err)
-		}
-	}
-	var out struct{ YAML string }
-	for path, body := range map[string]string{
-		"/api/v1/config/design": `{"name":"lab","macs":["aa:aa:aa:aa:aa:01","aa:aa:aa:aa:aa:02","aa:aa:aa:aa:aa:03"]}`,
-		"/api/v1/config/draft":  `{"name":"lab","ips":["10.0.0.10","10.0.0.11","10.0.0.12"]}`,
-	} {
-		rec := do(t, srv, "POST", path, body)
-		if rec.Code != http.StatusOK {
-			t.Fatalf("%s: %d %s", path, rec.Code, rec.Body)
-		}
-		_ = json.Unmarshal(rec.Body.Bytes(), &out)
-		if strings.Count(out.YAML, "tpm: true") != 3 || strings.Count(out.YAML, "watchdog: true") != 1 || !strings.Contains(out.YAML, "encryption: nodeID") {
-			t.Errorf("%s: TPM and watchdog must reach the declaration:\n%s", path, out.YAML)
-		}
-	}
-	if err := s.UpsertNode(t.Context(), store.NodeRow{IP: "10.0.0.12", MAC: "aa:aa:aa:aa:aa:03", Arch: "amd64", State: "maintenance", Hardware: []byte(`{"cpus":4,"memoryBytes":8589934592,"disks":[{"devPath":"/dev/sda","sizeBytes":250000000000}]}`)}); err != nil {
-		t.Fatal(err)
-	}
-	rec := do(t, srv, "POST", "/api/v1/config/draft", `{"name":"lab","ips":["10.0.0.10","10.0.0.11","10.0.0.12"]}`)
-	_ = json.Unmarshal(rec.Body.Bytes(), &out)
-	if rec.Code != http.StatusOK || !strings.Contains(out.YAML, "encryption: nodeID") {
-		t.Errorf("a machine without a TPM still encrypts with the node-ID key: %d\n%s", rec.Code, out.YAML)
-	}
-}
-
 func TestMachinesAndRetire(t *testing.T) {
 	srv, s := newServer(t, "")
 	_ = s.UpsertNode(t.Context(), store.NodeRow{IP: "10.0.0.5", MAC: "aa:aa:aa:aa:aa:05", State: "maintenance"})
@@ -212,22 +97,12 @@ func TestMachinesAndRetire(t *testing.T) {
 	if rec := do(t, srv, "GET", "/api/v1/machines/aa:aa:aa:aa:aa:05", ""); rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"ip":"10.0.0.5"`) {
 		t.Errorf("machine: %d %s", rec.Code, rec.Body)
 	}
-	if rec := do(t, srv, "DELETE", "/api/v1/machines/aa:aa:aa:aa:aa:06", ""); rec.Code != http.StatusConflict {
-		t.Errorf("retiring a member must be refused: %d", rec.Code)
-	}
-	if rec := do(t, srv, "DELETE", "/api/v1/machines/aa:aa:aa:aa:aa:05", ""); rec.Code != http.StatusNoContent {
-		t.Errorf("retire: %d %s", rec.Code, rec.Body)
-	}
-	if rec := do(t, srv, "POST", "/api/v1/machines/aa:aa:aa:aa:aa:06/wake", ""); rec.Code != http.StatusConflict {
-		t.Errorf("wake without WOL enabled must be refused: %d", rec.Code)
-	}
-	if rec := do(t, srv, "PUT", "/api/v1/machines/aa:aa:aa:aa:aa:06/wol", "garbage"); rec.Code != http.StatusBadRequest {
-		t.Errorf("a bad Wake-on-LAN body must be refused, not read as off: %d", rec.Code)
-	}
-	if rec := do(t, srv, "PUT", "/api/v1/machines/aa:aa:aa:aa:aa:06/wol", `{"enabled":true}`); rec.Code != http.StatusNoContent {
-		t.Errorf("enable Wake-on-LAN: %d %s", rec.Code, rec.Body)
-	}
-	if m, _ := s.GetMachine(t.Context(), "aa:aa:aa:aa:aa:06"); !m.WOL {
-		t.Error("Wake-on-LAN not recorded")
+}
+
+func TestUnknownAPIPathIsNotFound(t *testing.T) {
+	srv, _ := newServer(t, "")
+	rec := do(t, srv, "POST", "/api/v1/clusters", `{}`)
+	if rec.Code != http.StatusNotFound || !strings.Contains(rec.Body.String(), `"error"`) {
+		t.Errorf("removed route: %d %s", rec.Code, rec.Body)
 	}
 }

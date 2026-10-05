@@ -29,7 +29,6 @@ export function HardwareTab({ inv: live, invErr, node }: { inv: Inventory | null
   const stored = !live && !!node.inventory
   if (node.talos && !inv && !invErr) return <div class="text-muted">Loading</div>
   const note = invErr ? `${invErr}; showing the record from ${fmt.when(node.lastSeen)}.`
-    : stored && inv?.disks.some((d) => !d.devPath) ? `Reported by the ${node.oobType === 'redfish' ? 'BMC' : 'management engine'}; device names arrive when Talos boots.`
     : stored ? `Recorded ${fmt.when(node.lastSeen)}; not running Talos now.`
     : ''
   if (!inv || (!inv.cpus && inv.disks.length === 0)) {

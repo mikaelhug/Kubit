@@ -18,7 +18,3 @@ export function useQueryParams() {
   return [query as QueryPatch, set] as const
 }
 
-export function useQueryParam(key: string, fallback = ''): [string, (v: string) => void] {
-  const [query, set] = useQueryParams()
-  return [query[key] ?? fallback, (v) => set({ [key]: v === fallback ? undefined : v })]
-}

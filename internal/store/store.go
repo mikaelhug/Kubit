@@ -8,7 +8,6 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
-	"sync"
 
 	_ "modernc.org/sqlite"
 )
@@ -18,25 +17,7 @@ type Store struct {
 	crypto *Crypto
 	n      notifier
 
-	labMu    sync.Mutex
-	labLocks map[string]*sync.Mutex
-
 	settings settingsCache
-	tokenUse tokenUse
-}
-
-func (s *Store) labLock(mac string) *sync.Mutex {
-	s.labMu.Lock()
-	defer s.labMu.Unlock()
-	if s.labLocks == nil {
-		s.labLocks = map[string]*sync.Mutex{}
-	}
-	m, ok := s.labLocks[mac]
-	if !ok {
-		m = &sync.Mutex{}
-		s.labLocks[mac] = m
-	}
-	return m
 }
 
 func (s *Store) Crypto() *Crypto { return s.crypto }
@@ -310,7 +291,7 @@ func (s *Store) migrate(ctx context.Context) error {
 }
 
 func (s *Store) Audit(ctx context.Context, cluster, action, detail string) error {
-	res, err := s.db.ExecContext(ctx, `INSERT INTO audit_log (cluster, action, detail, actor) VALUES (?, ?, ?, ?)`, cluster, action, detail, ActorFrom(ctx))
+	res, err := s.db.ExecContext(ctx, `INSERT INTO audit_log (cluster, action, detail, actor) VALUES (?, ?, ?, ?)`, cluster, action, detail, "")
 	if err != nil {
 		return err
 	}

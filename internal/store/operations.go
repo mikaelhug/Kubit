@@ -141,12 +141,6 @@ func (s *Store) LastFinished(ctx context.Context, cluster string, kinds []string
 	return out
 }
 
-func (s *Store) LatestOperation(ctx context.Context, cluster, kind, status string) int64 {
-	var id int64
-	_ = s.db.QueryRowContext(ctx, `SELECT id FROM operations WHERE cluster = ? AND kind = ? AND status = ? ORDER BY id DESC LIMIT 1`, cluster, kind, status).Scan(&id)
-	return id
-}
-
 func (s *Store) ListOperations(ctx context.Context, limit int) ([]OperationRow, error) {
 	return queryAll(ctx, s.db, func(sc scanner) (*OperationRow, error) {
 		var request string

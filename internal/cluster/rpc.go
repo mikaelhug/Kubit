@@ -8,16 +8,14 @@ import (
 )
 
 const (
-	rpcTimeout        = 30 * time.Second
-	applyTimeout      = 2 * time.Minute
-	readdressTimeout  = time.Minute
-	rebootTimeout     = time.Minute
-	resetTimeout      = 2 * time.Minute
-	credentialTimeout = time.Minute
-	manifestsTimeout  = time.Minute
-	snapshotTimeout   = 10 * time.Minute
-	cleanupTimeout    = 15 * time.Second
-	reachTimeout      = 5 * time.Second
+	rpcTimeout       = 30 * time.Second
+	applyTimeout     = 2 * time.Minute
+	rebootTimeout    = time.Minute
+	resetTimeout     = 2 * time.Minute
+	manifestsTimeout = time.Minute
+	snapshotTimeout  = 10 * time.Minute
+	cleanupTimeout   = 15 * time.Second
+	reachTimeout     = 5 * time.Second
 )
 
 func cleanupCtx(ctx context.Context) (context.Context, context.CancelFunc) {
@@ -72,12 +70,6 @@ func resetEphemeral(ctx context.Context, tc *talos.Client) error {
 	return tc.ResetEphemeral(call)
 }
 
-func restartService(ctx context.Context, tc *talos.Client, id string) error {
-	call, cancel := context.WithTimeout(ctx, rpcTimeout)
-	defer cancel()
-	return tc.RestartService(call, id)
-}
-
 func versionTag(ctx context.Context, tc *talos.Client) (string, error) {
 	call, cancel := context.WithTimeout(ctx, rpcTimeout)
 	defer cancel()
@@ -88,12 +80,6 @@ func installedSchematic(ctx context.Context, tc *talos.Client) (string, error) {
 	call, cancel := context.WithTimeout(ctx, rpcTimeout)
 	defer cancel()
 	return tc.InstalledSchematic(call)
-}
-
-func generateTalosconfig(ctx context.Context, tc *talos.Client, ttl time.Duration) ([]byte, error) {
-	call, cancel := context.WithTimeout(ctx, credentialTimeout)
-	defer cancel()
-	return tc.GenerateTalosconfig(call, ttl)
 }
 
 func adminKubeconfig(ctx context.Context, tc *talos.Client, timeout time.Duration) ([]byte, error) {

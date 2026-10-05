@@ -29,20 +29,19 @@ func TestSettingsCacheInvalidatesAndCopies(t *testing.T) {
 	}
 	got.DiscoverySubnets[0] = "mutated"
 	got.Alerts.IgnoreNamespaces[0] = "mutated"
-	got.Auth.OIDC.AdminGroups = append(got.Auth.OIDC.AdminGroups, "mutated")
 	again, _ := s.GetSettings(ctx)
-	if again.DiscoverySubnets[0] != "10.0.0.0/24" || again.Alerts.IgnoreNamespaces[0] != "kube-system" || len(again.Auth.OIDC.AdminGroups) != 0 {
+	if again.DiscoverySubnets[0] != "10.0.0.0/24" || again.Alerts.IgnoreNamespaces[0] != "kube-system" {
 		t.Fatalf("callers must not reach the cached value: %+v", again)
 	}
-	if again.Auth.OIDC.AdminGroups == nil || again.Alerts.SMTP.To == nil {
+	if again.Alerts.SMTP.To == nil {
 		t.Error("empty lists must stay empty, not null")
 	}
-	again.WatchIntervalSec = 99
+	again.PXEEnrollment = "closed"
 	if err := s.PutSettings(ctx, again); err != nil {
 		t.Fatal(err)
 	}
-	if v, _ := s.GetSettings(ctx); v.WatchIntervalSec != 99 {
-		t.Errorf("second write not seen: %d", v.WatchIntervalSec)
+	if v, _ := s.GetSettings(ctx); v.PXEEnrollment != "closed" {
+		t.Errorf("second write not seen: %s", v.PXEEnrollment)
 	}
 }
 
@@ -97,65 +96,13 @@ func TestOperationLogAppendsAfterLegacyColumn(t *testing.T) {
 	}
 }
 
-func TestTokenLastUsedIsThrottled(t *testing.T) {
-	c, _ := store.NewCrypto(bytes.Repeat([]byte{7}, 32))
-	dir := t.TempDir()
-	s, err := store.Open(dir, c)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer s.Close()
-	ctx := context.Background()
-	if _, err := s.CreateUser(ctx, "ann", "correct horse battery", store.RoleAdmin, "local"); err != nil {
-		t.Fatal(err)
-	}
-	token, err := s.IssueToken(ctx, "ann", "api", "ci", 0)
-	if err != nil {
-		t.Fatal(err)
-	}
-	lastUsed := func() string {
-		list, _ := s.ListTokens(ctx, "ann")
-		return list[0].LastUsed
-	}
-	if _, _, err := s.ResolveToken(ctx, token); err != nil {
-		t.Fatal(err)
-	}
-	if lastUsed() == "" {
-		t.Fatal("first use must be recorded")
-	}
-	db, err := sql.Open("sqlite", filepath.Join(dir, "kubit.db"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer db.Close()
-	if _, err := db.Exec(`UPDATE sessions SET last_used = ''`); err != nil {
-		t.Fatal(err)
-	}
-	for range 5 {
-		if _, _, err := s.ResolveToken(ctx, token); err != nil {
-			t.Fatal(err)
-		}
-	}
-	if got := lastUsed(); got != "" {
-		t.Errorf("uses within a minute must not write again: %q", got)
-	}
-}
-
-func TestLatestOperationAndLastFinishedByKind(t *testing.T) {
+func TestLastFinishedByKind(t *testing.T) {
 	s := open(t)
 	ctx := context.Background()
 	first, _ := s.CreateOperation(ctx, "c", "platform.plan", nil)
 	_ = s.FinishOperation(ctx, first, "done")
-	second, _ := s.CreateOperation(ctx, "c", "platform.plan", nil)
-	_ = s.FinishOperation(ctx, second, "done")
 	failed, _ := s.CreateOperation(ctx, "c", "platform.plan", nil)
 	_ = s.FinishOperation(ctx, failed, "failed")
-	if got := s.LatestOperation(ctx, "c", "platform.plan", "done"); got != second {
-		t.Errorf("latest done plan: %d, want %d", got, second)
-	}
-	if got := s.LatestOperation(ctx, "other", "platform.plan", "done"); got != 0 {
-		t.Errorf("other cluster: %d", got)
-	}
 	if s.LastFinished(ctx, "c", []string{"node.reboot", "platform.plan"}).IsZero() {
 		t.Error("finished plans must count")
 	}

@@ -1,20 +1,12 @@
 package api
 
 import (
-	"bytes"
 	"context"
-	"database/sql"
-	"encoding/json"
-	"net/http"
-	"net/http/httptest"
-	"path/filepath"
-	"strconv"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/mikael/kubit/internal/cluster"
-	"github.com/mikael/kubit/internal/store"
 )
 
 func TestStepTrackerDeclaredSteps(t *testing.T) {
@@ -62,7 +54,7 @@ func TestStepTrackerSkipsPendingOnFailure(t *testing.T) {
 }
 
 func TestOperationPanicFailsTheOperation(t *testing.T) {
-	s, st, _ := localServer(t)
+	s, st := localServer(t)
 	id, err := s.runOperation("c", "test.panic", nil, func(context.Context, cluster.Sink) (any, error) {
 		var m map[string]int
 		m["boom"]++
@@ -100,95 +92,5 @@ func TestLockAllOrdersAndReleases(t *testing.T) {
 		if l.busy(n) {
 			t.Errorf("%s still held", n)
 		}
-	}
-}
-
-func TestCancellingAQueuedOperationFinishesItAsCancelled(t *testing.T) {
-	s, st, _ := localServer(t)
-	if err := s.locks.lockContext(t.Context(), "c"); err != nil {
-		t.Fatal(err)
-	}
-	defer s.locks.unlock("c")
-	ran := make(chan struct{}, 1)
-	id, err := s.runOperation("c", "test.queued", nil, func(context.Context, cluster.Sink) (any, error) {
-		ran <- struct{}{}
-		return nil, nil
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	time.Sleep(50 * time.Millisecond)
-	if !s.cancelOperation(id) {
-		t.Fatal("a queued operation must be cancellable")
-	}
-	done := make(chan *store.OperationRow, 1)
-	go func() {
-		deadline := time.Now().Add(2 * time.Second)
-		for time.Now().Before(deadline) {
-			if op, err := st.GetOperation(context.Background(), id); err == nil && op.Status != "running" {
-				done <- op
-				return
-			}
-			time.Sleep(10 * time.Millisecond)
-		}
-		done <- nil
-	}()
-	op := <-done
-	if op == nil || op.Status != "cancelled" {
-		t.Fatalf("queued operation after cancel: %+v", op)
-	}
-	select {
-	case <-ran:
-		t.Error("a cancelled queued operation must not run")
-	default:
-	}
-	if !s.locks.busy("c") {
-		t.Error("the holder keeps its lock")
-	}
-}
-
-func TestRetryCreateReportsAFailedStart(t *testing.T) {
-	c, _ := store.NewCrypto(bytes.Repeat([]byte{12}, 32))
-	dir := t.TempDir()
-	st, err := store.Open(dir, c)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { st.Close() })
-	s := New("test", cluster.NewManager(st, dir), "", c)
-	ctx := t.Context()
-	failed := func(yaml string) int64 {
-		body, _ := json.Marshal(createRequest{YAML: yaml})
-		id, err := st.CreateOperation(ctx, "c", "cluster.create", body)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if err := st.FinishOperation(ctx, id, "failed"); err != nil {
-			t.Fatal(err)
-		}
-		return id
-	}
-	retry := func(id int64) *httptest.ResponseRecorder {
-		req := httptest.NewRequest(http.MethodPost, "/api/v1/operations/"+strconv.FormatInt(id, 10)+"/retry", nil)
-		req.SetPathValue("id", strconv.FormatInt(id, 10))
-		rec := httptest.NewRecorder()
-		s.handleOperationRetry(rec, req)
-		return rec
-	}
-	if rec := retry(failed("kind: [")); rec.Code == http.StatusAccepted {
-		t.Errorf("an unreadable declaration was accepted: %s", rec.Body)
-	}
-	id := failed("apiVersion: kubit.dev/v1\nkind: Cluster\nmetadata: {name: c}\nspec:\n  nodes:\n    - {hostname: a, ip: 10.0.0.1, role: controlplane, installDisk: {path: /dev/sda}}\n")
-	db, err := sql.Open("sqlite", filepath.Join(dir, "kubit.db"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer db.Close()
-	if _, err := db.ExecContext(ctx, `CREATE TRIGGER refuse BEFORE INSERT ON operations BEGIN SELECT RAISE(ABORT, 'refused'); END`); err != nil {
-		t.Fatal(err)
-	}
-	rec := retry(id)
-	if rec.Code == http.StatusAccepted || !strings.Contains(rec.Body.String(), "refused") {
-		t.Errorf("a failed start must not answer accepted: %d %s", rec.Code, rec.Body)
 	}
 }

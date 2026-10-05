@@ -290,16 +290,6 @@ func (m *Manager) installOne(ctx context.Context, n config.Node, cfg []byte, tal
 		tc.Close()
 		return fmt.Errorf("boot id: %w", err)
 	}
-	if n.MAC != "" {
-		switched, derr := m.labDiskBoot(ctx, n.MAC)
-		if derr != nil {
-			tc.Close()
-			return fmt.Errorf("%s: switch to disk boot: %w", n.Hostname, derr)
-		}
-		if switched {
-			sink.Emit(Info, "install", n.Hostname, "lab VM set to boot from disk")
-		}
-	}
 	err = applyConfig(ctx, tc, cfg, applyTimeout)
 	tc.Close()
 	if err != nil {

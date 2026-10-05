@@ -8,41 +8,14 @@ import (
 	"errors"
 	"slices"
 	"sync"
-
-	"github.com/mikael/kubit/internal/offsite"
-	"github.com/mikael/kubit/internal/oob"
 )
 
 type Settings struct {
-	FactoryURL       string         `json:"factoryUrl"`
-	DiscoverySubnets []string       `json:"discoverySubnets"`
-	WatchIntervalSec int            `json:"watchIntervalSec"`
-	PXEStatusURL     string         `json:"pxeStatusUrl"`
-	DefaultMetalLB   string         `json:"defaultMetalLBRange"`
-	Alerts           Alerts         `json:"alerts"`
-	Offsite          offsite.Target `json:"offsite"`
-	PXEEnrollment    string         `json:"pxeEnrollment"`
-	AMT              oob.Config     `json:"amt"`
-	BMC              oob.Config     `json:"bmc"`
-	Auth             Auth           `json:"auth"`
-}
-
-type Auth struct {
-	OIDC OIDC `json:"oidc"`
-}
-
-type OIDC struct {
-	Enabled        bool     `json:"enabled"`
-	Name           string   `json:"name"`
-	Issuer         string   `json:"issuer"`
-	ClientID       string   `json:"clientId"`
-	ClientSecret   string   `json:"clientSecret"`
-	UsernameClaim  string   `json:"usernameClaim"`
-	GroupsClaim    string   `json:"groupsClaim"`
-	AdminGroups    []string `json:"adminGroups"`
-	OperatorGroups []string `json:"operatorGroups"`
-	ViewerGroups   []string `json:"viewerGroups"`
-	DefaultRole    string   `json:"defaultRole"`
+	FactoryURL       string   `json:"factoryUrl"`
+	DiscoverySubnets []string `json:"discoverySubnets"`
+	PXEStatusURL     string   `json:"pxeStatusUrl"`
+	PXEEnrollment    string   `json:"pxeEnrollment"`
+	Alerts           Alerts   `json:"alerts"`
 }
 
 type Alerts struct {
@@ -50,7 +23,6 @@ type Alerts struct {
 	WebhookURL       string   `json:"webhookUrl"`
 	SMTP             SMTP     `json:"smtp"`
 	IgnoreNamespaces []string `json:"ignoreNamespaces"`
-	HeartbeatHours   int      `json:"heartbeatHours"`
 }
 
 type SMTP struct {
@@ -78,20 +50,17 @@ func (c SMTP) Mode() string {
 const Masked = "•••"
 
 func (v *Settings) Secrets() []*string {
-	return []*string{&v.Alerts.SMTP.Password, &v.Offsite.SecretKey, &v.AMT.Password, &v.BMC.Password, &v.Auth.OIDC.ClientSecret}
+	return []*string{&v.Alerts.SMTP.Password}
 }
 
 func DefaultSettings() Settings {
-	return Settings{FactoryURL: "https://factory.talos.dev", DiscoverySubnets: []string{}, WatchIntervalSec: 15, PXEStatusURL: "http://127.0.0.1:8069/status.json", Alerts: Alerts{MinSeverity: "warn", SMTP: SMTP{Port: 587, StartTLS: true, TLS: "starttls", To: []string{}}, IgnoreNamespaces: []string{}, HeartbeatHours: 24}, Offsite: offsite.Target{KeepBackups: 14}, PXEEnrollment: "open", AMT: oob.Config{Type: "amt", User: "admin"}, BMC: oob.Config{Type: "redfish", User: "root"}, Auth: Auth{OIDC: OIDC{Name: "SSO", UsernameClaim: "preferred_username", GroupsClaim: "groups", AdminGroups: []string{}, OperatorGroups: []string{}, ViewerGroups: []string{}}}}
+	return Settings{FactoryURL: "https://factory.talos.dev", DiscoverySubnets: []string{}, PXEStatusURL: "http://127.0.0.1:8069/status.json", Alerts: Alerts{MinSeverity: "warn", SMTP: SMTP{Port: 587, StartTLS: true, TLS: "starttls", To: []string{}}, IgnoreNamespaces: []string{}}, PXEEnrollment: "open"}
 }
 
 func (v Settings) clone() Settings {
 	v.DiscoverySubnets = slices.Clone(v.DiscoverySubnets)
 	v.Alerts.SMTP.To = slices.Clone(v.Alerts.SMTP.To)
 	v.Alerts.IgnoreNamespaces = slices.Clone(v.Alerts.IgnoreNamespaces)
-	v.Auth.OIDC.AdminGroups = slices.Clone(v.Auth.OIDC.AdminGroups)
-	v.Auth.OIDC.OperatorGroups = slices.Clone(v.Auth.OIDC.OperatorGroups)
-	v.Auth.OIDC.ViewerGroups = slices.Clone(v.Auth.OIDC.ViewerGroups)
 	return v
 }
 
@@ -144,23 +113,6 @@ func (s *Store) readSettings(ctx context.Context) (Settings, error) {
 	for _, p := range out.Secrets() {
 		*p = s.unseal(*p)
 	}
-	if out.BMC.Type == "" {
-		out.BMC.Type, out.BMC.User = "redfish", "root"
-	}
-	if out.Auth.OIDC.UsernameClaim == "" {
-		out.Auth.OIDC.UsernameClaim = "preferred_username"
-	}
-	if out.Auth.OIDC.GroupsClaim == "" {
-		out.Auth.OIDC.GroupsClaim = "groups"
-	}
-	if out.Auth.OIDC.Name == "" {
-		out.Auth.OIDC.Name = "SSO"
-	}
-	for _, g := range []*[]string{&out.Auth.OIDC.AdminGroups, &out.Auth.OIDC.OperatorGroups, &out.Auth.OIDC.ViewerGroups} {
-		if *g == nil {
-			*g = []string{}
-		}
-	}
 	return out, nil
 }
 
@@ -185,17 +137,6 @@ func (s *Store) seal(v string) (string, error) {
 		return "", err
 	}
 	return base64.StdEncoding.EncodeToString(sealed), nil
-}
-
-func (s *Store) GetValue(ctx context.Context, key string) string {
-	var v string
-	_ = s.db.QueryRowContext(ctx, `SELECT value FROM settings WHERE key = ?`, key).Scan(&v)
-	return v
-}
-
-func (s *Store) SetValue(ctx context.Context, key, value string) error {
-	_, err := s.db.ExecContext(ctx, `INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value`, key, value)
-	return s.done(err, Change{Table: "settings", Key: key, Op: "put"})
 }
 
 func (s *Store) PutSettings(ctx context.Context, v Settings) error {

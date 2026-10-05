@@ -24,7 +24,6 @@ const (
 	ScopeFlux      = "flux"
 	ScopeAddons    = "addons"
 	ScopeServices  = "services"
-	ScopeOffsite   = "offsite"
 )
 
 func (c *Client) WatchScopes(ctx context.Context, changed func(scope, namespace string)) {

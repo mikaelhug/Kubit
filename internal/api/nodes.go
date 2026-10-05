@@ -1,10 +1,8 @@
 package api
 
 import (
-	"context"
 	"net/http"
 
-	"github.com/mikael/kubit/internal/cluster"
 	"github.com/mikael/kubit/internal/store"
 )
 
@@ -12,11 +10,6 @@ func (s *Server) nodeRoutes() {
 	r := s.mux
 	r.HandleFunc("GET /api/v1/nodes/{ip}/inventory", s.handleNodeInventory)
 	r.HandleFunc("GET /api/v1/nodes/{ip}/kubernetes", s.handleNodeKubernetes)
-	r.HandleFunc("POST /api/v1/clusters/{name}/nodes/{hostname}/cordon", s.nodeOp("node.cordon", s.manager.CordonNode))
-	r.HandleFunc("POST /api/v1/clusters/{name}/nodes/{hostname}/uncordon", s.nodeOp("node.uncordon", s.manager.UncordonNode))
-	r.HandleFunc("POST /api/v1/clusters/{name}/nodes/{hostname}/drain", s.disruptive(s.nodeOp("node.drain", s.manager.DrainNode)))
-	r.HandleFunc("POST /api/v1/clusters/{name}/nodes/{hostname}/reboot", s.disruptive(s.handleNodeRebootOp))
-	r.HandleFunc("POST /api/v1/clusters/{name}/nodes/{hostname}/upgrade", s.disruptive(s.handleNodeUpgrade))
 }
 
 func (s *Server) handleNodeInventory(w http.ResponseWriter, r *http.Request) {
@@ -58,39 +51,4 @@ func (s *Server) handleNodeKubernetes(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, d)
-}
-
-func (s *Server) nodeOp(kind string, fn func(ctx context.Context, name, hostname string, sink cluster.Sink) error) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		name, hostname := r.PathValue("name"), r.PathValue("hostname")
-		s.startOp(w, name, kind, map[string]string{"hostname": hostname}, func(ctx context.Context, sink cluster.Sink) (any, error) {
-			return nil, fn(ctx, name, hostname, sink)
-		})
-	}
-}
-
-func (s *Server) handleNodeRebootOp(w http.ResponseWriter, r *http.Request) {
-	name, hostname := r.PathValue("name"), r.PathValue("hostname")
-	var req struct {
-		Drain bool `json:"drain"`
-	}
-	if !decodeOptionalJSON(w, r, &req) {
-		return
-	}
-	s.startOp(w, name, "node.reboot", map[string]any{"hostname": hostname, "drain": req.Drain}, func(ctx context.Context, sink cluster.Sink) (any, error) {
-		return nil, s.manager.RebootNode(ctx, name, hostname, req.Drain, sink)
-	})
-}
-
-func (s *Server) handleNodeUpgrade(w http.ResponseWriter, r *http.Request) {
-	name, hostname := r.PathValue("name"), r.PathValue("hostname")
-	var req struct {
-		To string `json:"to"`
-	}
-	if !decodeOptionalJSON(w, r, &req) {
-		return
-	}
-	s.startOp(w, name, "node.upgrade", map[string]any{"hostname": hostname, "to": req.To}, func(ctx context.Context, sink cluster.Sink) (any, error) {
-		return nil, s.manager.UpgradeNode(ctx, name, hostname, req.To, sink)
-	})
 }

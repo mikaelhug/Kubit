@@ -11,7 +11,6 @@ import (
 var resolves = func() map[string]string {
 	m := map[string]string{
 		"talos.back": "talos.unreachable", "node.ready": "node.notready", "node.memory-ok": "node.memory-small", "api.back": "api.unreachable", "etcd.healthy": "etcd.unhealthy", "lb.assigned": "lb.lost",
-		"labhost.back": "labhost.unreachable", "labhost.disk-ok": "labhost.disk-low", "labhost.memory-ok": "labhost.memory-pressure",
 	}
 	maps.Copy(m, serviceResolves)
 	return m

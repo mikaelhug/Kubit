@@ -17,26 +17,18 @@ import (
 	utilversion "k8s.io/apimachinery/pkg/util/version"
 )
 
-func defaultTalosVersion() string { return gendata.VersionTag }
-
 func (s *Server) AttachWatcher(ctx context.Context, w *watch.Watcher) {
 	s.watcher = w
-	if v, err := s.store.GetSettings(ctx); err == nil && v.WatchIntervalSec > 0 {
-		w.SetInterval(time.Duration(v.WatchIntervalSec) * time.Second)
-	}
 	w.OnStatus = func(name string, st *cluster.Status) {
 		s.hub.publish(Message{Kind: "status", Cluster: name, Status: st})
 		s.maybeScheduleSnapshot(ctx, name, st)
 		s.periodic.every(name, time.Hour, func() { s.checkCertificates(ctx, name) })
-		s.maybeOffsiteBackup(ctx)
-		s.maybeHeartbeat(ctx)
 	}
 	w.OnEvent = func(e store.EventRow) {
 		s.hub.publish(Message{Kind: "health", Cluster: e.Cluster, Health: &e})
 		s.forwardEvent(e)
 	}
 	w.OnRefresh = func(name, scope string) { s.refresh(name, scope) }
-	w.OnHostSample = func(mac string, sm store.Sample) { s.hub.publish(Message{Kind: "hostSample", Key: mac, Sample: &sm}) }
 	w.OnObserver = func(o watch.ObserverState) {
 		s.hub.publish(Message{Kind: "observer", Observer: &o})
 		if o.Online {
@@ -237,30 +229,6 @@ func (s *Server) latestStableTalos(ctx context.Context) string {
 	s.latestTalos = latest
 	s.versionsMu.Unlock()
 	return latest
-}
-
-func (s *Server) updatesAvailable(ctx context.Context) []string {
-	latest := s.latestStableTalos(ctx)
-	k8s := "v" + constants.DefaultKubernetesVersion
-	rows, _ := s.store.ListClusters(ctx)
-	var out []string
-	for _, row := range rows {
-		c, err := config.Parse(row.Spec)
-		if err != nil {
-			continue
-		}
-		var parts []string
-		if latest != "" && versionLess(c.Spec.TalosVersion, latest) {
-			parts = append(parts, "Talos "+c.Spec.TalosVersion+" → "+latest)
-		}
-		if versionLess(c.Spec.KubernetesVersion, k8s) {
-			parts = append(parts, "Kubernetes "+c.Spec.KubernetesVersion+" → "+k8s)
-		}
-		if len(parts) > 0 {
-			out = append(out, row.Name+": "+strings.Join(parts, ", "))
-		}
-	}
-	return out
 }
 
 func talosAtLeast(v, min string) bool { return !versionLess(v, min) }

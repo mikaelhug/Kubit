@@ -40,7 +40,6 @@ type Message struct {
 	Machine     *nodeView            `json:"machine,omitempty"`
 	Snapshot    *store.Snapshot      `json:"snapshot,omitempty"`
 	Audit       *store.AuditEntry    `json:"audit,omitempty"`
-	Settings    *store.Settings      `json:"settings,omitempty"`
 	Sample      *store.Sample        `json:"sample,omitempty"`
 	Key         string               `json:"key,omitempty"`
 	Node        string               `json:"node,omitempty"`
@@ -233,37 +232,20 @@ func (s *Server) onChange(ctx context.Context, c store.Change) {
 		id, _ := strconv.ParseInt(c.Key, 10, 64)
 		if c.Op == "delete" {
 			s.hub.publish(Message{Kind: "snapshotRemoved", Cluster: c.Cluster, Key: c.Key})
-			s.refresh("", k8s.ScopeOffsite)
 			return
 		}
 		if sn, err := s.store.GetSnapshot(ctx, id); err == nil {
 			s.hub.publish(Message{Kind: "snapshot", Cluster: sn.Cluster, Snapshot: sn})
-			if sn.Offsite != "" {
-				s.refresh("", k8s.ScopeOffsite)
-			}
 		}
 	case "audit":
 		id, _ := strconv.ParseInt(c.Key, 10, 64)
 		if e, err := s.store.GetAudit(ctx, id); err == nil {
 			s.hub.publish(Message{Kind: "audit", Cluster: e.Cluster, Audit: e})
 		}
-	case "users":
-		s.hub.publish(Message{Kind: "refresh", Scope: "users"})
 	case "secrets":
 		s.refresh(c.Cluster, scopeCertificates)
 	case "sops":
 		s.hub.publish(Message{Kind: "refresh", Cluster: c.Cluster, Scope: "sops"})
-	case "settings":
-		if offsiteKeys[c.Key] {
-			s.refresh("", k8s.ScopeOffsite)
-		}
-		if c.Key != settingsKey {
-			return
-		}
-		if v, err := s.store.GetSettings(ctx); err == nil {
-			v = redactSettings(v)
-			s.hub.publish(Message{Kind: "settings", Settings: &v})
-		}
 	case "events":
 		switch c.Op {
 		case "ack":
@@ -277,10 +259,6 @@ func (s *Server) onChange(ctx context.Context, c store.Change) {
 		}
 	}
 }
-
-const settingsKey = "kubit"
-
-var offsiteKeys = map[string]bool{settingsKey: true, "offsite.lastBackup": true}
 
 var devOrigins = []string{"localhost:5173", "127.0.0.1:5173"}
 

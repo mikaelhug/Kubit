@@ -1,13 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { minorAtLeast, updatesFor } from './versions'
-
-describe('minorAtLeast', () => {
-  it('compares minors numerically', () => {
-    expect(minorAtLeast('1.10', '1.9')).toBe(true)
-    expect(minorAtLeast('1.9', '1.10')).toBe(false)
-    expect(minorAtLeast('1.34', '1.34')).toBe(true)
-  })
-})
+import { updatesFor } from './versions'
 
 describe('updatesFor', () => {
   it('offers newer stable releases only', () => {

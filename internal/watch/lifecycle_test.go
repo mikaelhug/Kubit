@@ -9,30 +9,9 @@ import (
 	"github.com/mikael/kubit/internal/store"
 )
 
-func TestSetIntervalRetunesRunningTickers(t *testing.T) {
-	w, _ := labWatcher(t)
-	ch := w.retuned()
-	w.SetInterval(time.Minute)
-	select {
-	case <-ch:
-	case <-time.After(time.Second):
-		t.Fatal("a changed interval must wake the running tickers")
-	}
-	if w.Interval() != time.Minute {
-		t.Errorf("interval %s", w.Interval())
-	}
-	ch = w.retuned()
-	w.SetInterval(time.Minute)
-	select {
-	case <-ch:
-		t.Error("an unchanged interval must not retune")
-	default:
-	}
-}
-
 func TestStoppedLoopForgetsItsClusterBeforeARestart(t *testing.T) {
-	w, _ := labWatcher(t)
-	w.SetInterval(time.Hour)
+	w := testWatcher(t)
+	w.interval = time.Hour
 	ctx := t.Context()
 	w.mu.Lock()
 	w.startLoop(ctx, "gone")
@@ -64,7 +43,7 @@ func TestStoppedLoopForgetsItsClusterBeforeARestart(t *testing.T) {
 }
 
 func TestKubeconfigWriteSignalsInformers(t *testing.T) {
-	w, _ := labWatcher(t)
+	w := testWatcher(t)
 	ctx := t.Context()
 	w.Store.OnChange(w.onStoreChange)
 	if err := w.Store.PutCluster(ctx, store.ClusterRow{Name: "c", Spec: []byte("x"), State: "ready"}); err != nil {
@@ -93,8 +72,8 @@ func TestKubeconfigWriteSignalsInformers(t *testing.T) {
 }
 
 func TestLoopWaitsForItsPredecessorEvenWhenCancelled(t *testing.T) {
-	w, _ := labWatcher(t)
-	w.SetInterval(time.Hour)
+	w := testWatcher(t)
+	w.interval = time.Hour
 	prev := make(chan struct{})
 	w.mu.Lock()
 	w.stopping["c"] = prev
@@ -130,7 +109,7 @@ current-context: c
 `
 
 func TestUnreachableAPIStopsTheInformers(t *testing.T) {
-	w, _ := labWatcher(t)
+	w := testWatcher(t)
 	kc, err := k8s.New([]byte(unreachableKubeconfig))
 	if err != nil {
 		t.Fatal(err)

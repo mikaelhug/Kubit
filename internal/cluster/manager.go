@@ -12,8 +12,6 @@ import (
 	"github.com/mikael/kubit/internal/config"
 	"github.com/mikael/kubit/internal/factory"
 	"github.com/mikael/kubit/internal/k8s"
-	"github.com/mikael/kubit/internal/labhost"
-	"github.com/mikael/kubit/internal/labhost/vfkit"
 	"github.com/mikael/kubit/internal/store"
 	"github.com/mikael/kubit/internal/talos"
 	"github.com/siderolabs/talos/pkg/machinery/config/generate/secrets"
@@ -53,7 +51,6 @@ type Manager struct {
 	Factory  *factory.Client
 	Timeouts Timeouts
 	Home     string
-	Local    func() (labhost.Driver, error)
 
 	kubeMu sync.Mutex
 	kube   map[string]kubeEntry
@@ -77,7 +74,7 @@ type talosEntry struct {
 }
 
 func NewManager(s *store.Store, home string) *Manager {
-	m := &Manager{Store: s, Factory: factory.New(), Timeouts: defaultTimeouts, Home: home, Local: func() (labhost.Driver, error) { return vfkit.New(home) }}
+	m := &Manager{Store: s, Factory: factory.New(), Timeouts: defaultTimeouts, Home: home}
 	s.OnChange(func(c store.Change) {
 		if c.Table != "clusters" {
 			return
