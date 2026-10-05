@@ -17,6 +17,7 @@ import (
 	"github.com/mikael/kubit/internal/config"
 	"github.com/mikael/kubit/internal/factory"
 	"github.com/mikael/kubit/internal/pxe"
+	"github.com/mikael/kubit/internal/repo"
 	"github.com/spf13/cobra"
 )
 
@@ -28,6 +29,8 @@ func pxeCmd() *cobra.Command {
 		kubitURL                       string
 		httpOnly                       bool
 		advertise                      string
+		repos                          []string
+		closed                         bool
 	)
 	cmd := &cobra.Command{
 		Use:   "pxe",
@@ -64,8 +67,12 @@ machines land in maintenance mode and show up in 'kubit discover'.`,
 				return err
 			}
 			logger := log.New(os.Stderr, "", log.LstdFlags)
+			decide := pxeDecider(kubitURL, os.Getenv("KUBIT_TOKEN"), logger)
+			if len(repos) > 0 {
+				decide = repoDecider(repos, closed, logger)
+			}
 			srv := &pxe.Server{
-				Config:  pxe.Config{Interface: iface, IP: ip, HTTPPort: httpPort, Log: logger, Decide: pxeDecider(kubitURL, os.Getenv("KUBIT_TOKEN"), logger), HTTPOnly: httpOnly},
+				Config:  pxe.Config{Interface: iface, IP: ip, HTTPPort: httpPort, Log: logger, Decide: decide, HTTPOnly: httpOnly},
 				Profile: pxe.Profile{SchematicID: schematic, TalosVersion: talosVersion},
 				Cache:   pxe.NewCache(cache),
 				Factory: f,
@@ -80,6 +87,8 @@ machines land in maintenance mode and show up in 'kubit discover'.`,
 	cmd.Flags().IntVar(&httpPort, "http-port", 8069, "port for the iPXE script and boot assets")
 	cmd.Flags().StringVar(&advertise, "ip", "", "address to advertise in boot scripts (default: the interface's current IPv4)")
 	cmd.Flags().BoolVar(&httpOnly, "http-only", false, "serve only the iPXE script and boot assets on --http-port; no DHCP/TFTP, no root")
+	cmd.Flags().StringSliceVar(&repos, "repo", nil, "cluster repos whose declared MACs boot their own disk (instead of asking the daemon)")
+	cmd.Flags().BoolVar(&closed, "closed", false, "with --repo: machines not declared anywhere get no Talos")
 	cmd.Flags().StringVar(&kubitURL, "kubit-url", "http://127.0.0.1:8090", "daemon that decides Talos or local disk per MAC; KUBIT_TOKEN for its bearer token")
 	return cmd
 }
@@ -116,6 +125,30 @@ func pxeDecider(url, token string, logger *log.Logger) func(string) string {
 		logger.Printf("pxe: %s → %s (%s)", mac, d.Boot, d.Reason)
 		cache.put(mac, d.Boot, time.Now(), decideTTL)
 		return d.Boot
+	}
+}
+
+func repoDecider(dirs []string, closed bool, logger *log.Logger) func(string) string {
+	return func(mac string) string {
+		for _, dir := range dirs {
+			c, _, err := repo.LoadSpec(dir)
+			if err != nil {
+				logger.Printf("pxe: %v; no boot offer for %s", err, mac)
+				return ""
+			}
+			for _, n := range c.Spec.Nodes {
+				if strings.EqualFold(n.MAC, mac) {
+					logger.Printf("pxe: %s → local (%s in %s)", mac, n.Hostname, c.Metadata.Name)
+					return "local"
+				}
+			}
+		}
+		if closed {
+			logger.Printf("pxe: %s → local (not declared, enrollment closed)", mac)
+			return "local"
+		}
+		logger.Printf("pxe: %s → talos (not declared)", mac)
+		return "talos"
 	}
 }
 

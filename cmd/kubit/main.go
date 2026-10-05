@@ -7,6 +7,7 @@ import (
 	"os/signal"
 	"syscall"
 
+	"github.com/mikael/kubit/internal/repo"
 	"github.com/siderolabs/talos/pkg/machinery/constants"
 	"github.com/siderolabs/talos/pkg/machinery/gendata"
 	"github.com/spf13/cobra"
@@ -36,7 +37,9 @@ func rootCmd() *cobra.Command {
 		RunE:          console.RunE,
 	}
 	root.Flags().AddFlagSet(console.Flags())
-	root.AddCommand(versionCmd(), serveCmd(false), configCmd(), discoverCmd(), clusterCmd(), nodeCmd(), platformCmd(), sopsCmd(), upgradeCmd(), etcdCmd(), statusCmd(), backupCmd(), restoreCmd(), keyCmd(), pxeCmd())
+	root.AddCommand(versionCmd(), serveCmd(false), initCmd(),
+		credentialCmd("talosconfig", "Print an admin talosconfig derived from the repo's secrets", (*repo.Repo).Talosconfig),
+		credentialCmd("kubeconfig", "Print an admin kubeconfig derived from the repo's secrets", (*repo.Repo).Kubeconfig), configCmd(), discoverCmd(), clusterCmd(), nodeCmd(), platformCmd(), sopsCmd(), upgradeCmd(), etcdCmd(), statusCmd(), backupCmd(), restoreCmd(), keyCmd(), pxeCmd())
 	return root
 }
 

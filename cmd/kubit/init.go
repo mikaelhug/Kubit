@@ -1,0 +1,147 @@
+package main
+
+import (
+	"errors"
+	"fmt"
+	"io"
+	"os"
+	"path/filepath"
+	"time"
+
+	"filippo.io/age"
+	"github.com/mikael/kubit/internal/config"
+	"github.com/mikael/kubit/internal/repo"
+	"github.com/mikael/kubit/internal/sops"
+	"github.com/mikael/kubit/internal/talos"
+	"github.com/spf13/cobra"
+)
+
+func initCmd() *cobra.Command {
+	var (
+		name         string
+		nodes        []string
+		recipients   []string
+		talosVersion string
+		timeout      time.Duration
+	)
+	cmd := &cobra.Command{
+		Use:   "init <dir>",
+		Short: "Write cluster.yaml and encrypted secrets for a new cluster into a repo directory",
+		Long: `Probes the machines in Talos maintenance mode at --nodes, proposes cluster.yaml for them,
+generates the Talos secrets and writes them SOPS-encrypted to secrets.sops.yaml for the
+age recipients in .sops.yaml (or --age, or your own key). Never overwrites.`,
+		Args: cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			dir := args[0]
+			if name == "" {
+				abs, err := filepath.Abs(dir)
+				if err != nil {
+					return err
+				}
+				name = filepath.Base(abs)
+			}
+			if len(nodes) == 0 {
+				return errors.New("--nodes: give the addresses (or subnets) of the machines in Talos maintenance mode")
+			}
+			addrs, err := talos.ExpandTargets(nodes)
+			if err != nil {
+				return err
+			}
+			var machines []config.Machine
+			for _, r := range talos.Scan(cmd.Context(), addrs, 64, timeout) {
+				if r.Err == nil && r.State == talos.StateMaintenance && r.Inventory != nil {
+					machines = append(machines, repo.Machine(r.IP, r.Inventory))
+				}
+			}
+			if len(machines) == 0 {
+				return fmt.Errorf("no machine in Talos maintenance mode at %v", nodes)
+			}
+			c, warnings := config.Design(name, machines, config.DesignOptions{})
+			if talosVersion != "" {
+				c.Spec.TalosVersion = talosVersion
+			}
+			if len(recipients) == 0 {
+				if recipients, err = ownRecipients(cmd.ErrOrStderr()); err != nil {
+					return err
+				}
+			}
+			r, err := repo.Init(dir, c, recipients)
+			if err != nil {
+				return err
+			}
+			out := cmd.OutOrStdout()
+			fmt.Fprintf(out, "wrote %s with %d node(s), %s, %s\n", filepath.Join(dir, repo.ClusterFile), len(c.Spec.Nodes), repo.SecretsFile, sops.ConfigFile)
+			for _, w := range warnings {
+				fmt.Fprintf(out, "  %s %s: %s\n", w.Level, w.Code, w.Message)
+			}
+			fmt.Fprintf(out, "Flux decrypts app secrets for %s\n", r.Secrets.FluxRecipient())
+			fmt.Fprintln(out, "Review cluster.yaml, commit, then run kubit apply.")
+			return nil
+		},
+	}
+	cmd.Flags().StringVar(&name, "name", "", "cluster name (default: the directory name)")
+	cmd.Flags().StringSliceVar(&nodes, "nodes", nil, "addresses or subnets of the machines in maintenance mode")
+	cmd.Flags().StringSliceVar(&recipients, "age", nil, "age recipients for the secrets (default: .sops.yaml, else your own key)")
+	cmd.Flags().StringVar(&talosVersion, "talos-version", "", "Talos version (default: Kubit's)")
+	cmd.Flags().DurationVar(&timeout, "timeout", 2*time.Second, "per-host connect timeout")
+	return cmd
+}
+
+func ownRecipients(log io.Writer) ([]string, error) {
+	ids, err := sops.Identities()
+	if err != nil {
+		return nil, err
+	}
+	var out []string
+	for _, id := range ids {
+		if r := sops.Recipient(id); r != "" {
+			out = append(out, r)
+		}
+	}
+	if len(out) > 0 {
+		return out, nil
+	}
+	id, err := age.GenerateX25519Identity()
+	if err != nil {
+		return nil, err
+	}
+	path := sops.DefaultKeyFile()
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return nil, err
+	}
+	if err := os.WriteFile(path, sops.KeyFileFor(id, repo.Stamp()), 0o600); err != nil {
+		return nil, err
+	}
+	fmt.Fprintf(log, "created your age key %s; back it up, it opens the cluster secrets\n", path)
+	return []string{id.Recipient().String()}, nil
+}
+
+func credentialCmd(use, short string, derive func(*repo.Repo) ([]byte, error)) *cobra.Command {
+	var out string
+	cmd := &cobra.Command{
+		Use:   use + " [dir]",
+		Short: short,
+		Args:  cobra.MaximumNArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			dir := "."
+			if len(args) == 1 {
+				dir = args[0]
+			}
+			r, err := repo.Load(dir)
+			if err != nil {
+				return err
+			}
+			b, err := derive(r)
+			if err != nil {
+				return err
+			}
+			if out == "" || out == "-" {
+				_, err = cmd.OutOrStdout().Write(b)
+				return err
+			}
+			return os.WriteFile(out, b, 0o600)
+		},
+	}
+	cmd.Flags().StringVarP(&out, "output", "o", "", "file to write (default: stdout)")
+	return cmd
+}

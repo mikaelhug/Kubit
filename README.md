@@ -17,8 +17,8 @@ converge it, and the console only observes. The roadmap is under *Status*.
 | App secrets | SOPS files in the apps repository, one age key per cluster | kustomize-controller decrypts in the cluster |
 | Escape hatch | You | `kubit cluster export`: `infra/talos/` HCL + native artefacts, never run by Kubit |
 
-Today `cluster.yaml` and the cluster secrets live in `~/.kubit` (SQLite, AES-GCM sealed
-with a master key in the macOS Keychain). Phase 2 moves them into the user's repo.
+A cluster lives in a repo directory you choose (*Cluster repo*). `~/.kubit` (SQLite,
+AES-GCM sealed with a master key in the macOS Keychain) holds caches and daemon data.
 
 ## Layout
 
@@ -48,6 +48,32 @@ keys and tfstate, and `TestRepoHoldsNoCredentials` fails on any tracked one.
 `destroy all`. VMs run under `vmnet-run` with isolation off so they share
 192.168.105.0/24 with the host; vfkit's own NAT isolates VMs from each other and breaks
 etcd and the VIP. The Talos API is flaky for about two minutes after boot.
+
+## Cluster repo
+
+```
+lab/
+  cluster.yaml         the declaration; Kubit never writes it after init
+  secrets.sops.yaml    Talos secrets bundle, Flux age key, platform state passphrase
+  .sops.yaml           age recipients for *.sops.yaml
+  state/               OpenTofu state, encrypted by tofu
+  .gitignore           talosconfig, kubeconfig, .terraform/
+```
+
+`kubit init lab --nodes 192.168.1.0/24` probes the machines in maintenance mode,
+proposes `cluster.yaml` for them (`config.Design`: bare-metal control planes first, VIP
+and MetalLB range in their /24, firewall and `nodeID` encryption on) and writes the
+secrets SOPS-encrypted for the recipients in `.sops.yaml`, `--age`, or your own age key
+(created at the sops default path when you have none; back it up). It never overwrites.
+
+Kubit reads and writes SOPS files itself (`internal/sops`: AES-256-GCM values, age-wrapped
+data key, MAC), compatible with the `sops` CLI both ways, so `sops lab/secrets.sops.yaml`
+edits the same file. Keys come from `SOPS_AGE_KEY`, `SOPS_AGE_KEY_FILE` or the sops
+default `keys.txt`.
+
+Credentials are derived, never stored: `kubit talosconfig lab` signs a one-year admin
+client certificate with the bundle's OS CA, `kubit kubeconfig lab` one for
+`system:masters` with the Kubernetes CA (`-o file` to write it, 0600).
 
 ## cluster.yaml
 
@@ -276,8 +302,9 @@ The SMTP password comes from `KUBIT_SMTP_PASSWORD`, never the file.
 `sudo kubit pxe --iface en0 [--talos-version …] [--schematic …]` is a proxyDHCP (the
 LAN's DHCP keeps assigning addresses) with TFTP for iPXE and an HTTP iPXE script on
 :8069 that boots the Talos kernel and initramfs into maintenance mode. Assets come from
-the Image Factory through `~/.kubit/cache`. It asks the daemon per MAC: cluster members
-boot their own disk, unknown machines get Talos while enrollment is open.
+the Image Factory through `~/.kubit/cache`. With `--repo lab` (repeatable) a MAC declared
+in any cluster.yaml boots its own disk and every other MAC gets Talos (`--closed`: none);
+without it the daemon decides.
 `--http-only` serves only the script and assets. Needs root and the machines' L2
 segment.
 
@@ -329,7 +356,8 @@ Roadmap (2026-10-05):
 - [x] 1 — cut: lab hosts, AMT/Redfish, inventory and create wizard, node-edit forms,
   accounts/OIDC, off-site and heartbeat, settings pages; console read-only; Discovery
   page; `serve --config`
-- [ ] 2 — repo as source of truth: `kubit init`, `secrets.sops.yaml`, derived credentials
+- [x] 2 — repo as source of truth: `kubit init`, SOPS-compatible `secrets.sops.yaml`,
+  derived talosconfig/kubeconfig, `kubit pxe --repo`; state in the repo lands with apply
 - [ ] 3 — `kubit plan` / `kubit apply` converge
 - [ ] 4 — `kubit serve <dirs…>`, status, discovery polish, secrets editor
 - [ ] 5 — talos-backup add-on, off by default
