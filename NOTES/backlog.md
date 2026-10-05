@@ -487,3 +487,7 @@
   - `hack/lab/lab.sh` still plans 20 GiB disks, which leave no room for `data-system`
     under a 40 GiB `/var`.
   - 6 suggested VMs raise the `schedulable-control-planes` info lint.
+- Credentials default to the current directory: `cluster kubeconfig|talosconfig` (`./kubeconfig`),
+  `cluster export` (plaintext `secrets.yaml`), `config render` (`./out`), `sops export`
+  (`keys.txt`), `backup`. With the repo direction they belong in the cluster repo's ignored
+  directory, or stdout.
