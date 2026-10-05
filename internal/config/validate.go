@@ -8,8 +8,8 @@ import (
 	"net/url"
 	"regexp"
 	"strings"
-	"time"
 
+	"filippo.io/age"
 	talosconfig "github.com/siderolabs/talos/pkg/machinery/config"
 )
 
@@ -39,13 +39,26 @@ func (c *Cluster) validateHeader() []error {
 
 func (c *Cluster) validateBackup() []error {
 	var errs []error
-	if iv := c.Spec.Backup.Etcd.Interval; iv != "" && iv != "0" {
-		if d, err := time.ParseDuration(iv); err != nil || d < 5*time.Minute {
-			errs = append(errs, fmt.Errorf("backup.etcd.interval %q: a Go duration of at least 5m, or 0 to disable", iv))
+	if b := c.Spec.Backup; b.Enabled() {
+		if f := strings.Fields(b.Schedule); len(f) != 5 && !(len(f) == 1 && strings.HasPrefix(f[0], "@")) {
+			errs = append(errs, fmt.Errorf("backup.schedule %q: a cron schedule such as \"0 */6 * * *\"", b.Schedule))
 		}
-	}
-	if c.Spec.Backup.Etcd.Keep < 1 {
-		errs = append(errs, fmt.Errorf("backup.etcd.keep must be at least 1"))
+		if b.S3.Bucket == "" {
+			errs = append(errs, fmt.Errorf("backup.s3.bucket is required"))
+		}
+		if b.S3.Endpoint != "" {
+			if u, err := url.Parse(b.S3.Endpoint); err != nil || (u.Scheme != "https" && u.Scheme != "http") || u.Host == "" {
+				errs = append(errs, fmt.Errorf("backup.s3.endpoint %q: an http(s) URL", b.S3.Endpoint))
+			}
+		}
+		if len(b.AgeRecipients) == 0 {
+			errs = append(errs, fmt.Errorf("backup.ageRecipients: at least one age public key, so the snapshots are encrypted"))
+		}
+		for _, r := range b.AgeRecipients {
+			if _, err := age.ParseX25519Recipient(r); err != nil {
+				errs = append(errs, fmt.Errorf("backup.ageRecipients: %q is not an age public key", r))
+			}
+		}
 	}
 	if err := c.Spec.Maintenance.Validate(); err != nil {
 		errs = append(errs, err)

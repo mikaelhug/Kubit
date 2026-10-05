@@ -59,6 +59,7 @@ type Runner struct {
 	Dir          string
 	StatePath    string
 	Passphrase   string
+	Env          []string
 	Log          func(Line)
 	lastWarnings []string
 }
@@ -135,7 +136,7 @@ func (r *Runner) env() []string {
 	if r.Passphrase != "" {
 		env = append(env, "TF_ENCRYPTION="+Encryption(r.Passphrase))
 	}
-	return env
+	return append(env, r.Env...)
 }
 
 func Encryption(passphrase string) string {
@@ -158,7 +159,7 @@ plan {
 `, passphrase)
 }
 
-var secretEnv = []string{"KUBIT_MASTER_KEY", "KUBIT_TOKEN", "TF_ENCRYPTION", "SOPS_AGE_KEY", "KUBIT_SMTP_PASSWORD"}
+var secretEnv = []string{"KUBIT_MASTER_KEY", "KUBIT_TOKEN", "TF_ENCRYPTION", "SOPS_AGE_KEY", "KUBIT_SMTP_PASSWORD", "TF_VAR_backup_access_key_id", "TF_VAR_backup_secret_access_key"}
 
 func childEnv() []string {
 	var out []string

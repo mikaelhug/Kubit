@@ -1,11 +1,9 @@
 import { useEffect, useMemo, useState } from 'preact/hooks'
 import { api, fmt, type Sample, type ServiceHealth, type Status } from '../../api'
-import { nowEvery } from '../../clock'
 import { AlertGroup, EventRow } from '../../components/Alerts'
 import { behindText, useConfigStatus } from '../../configStatus'
 import { useNamespaces } from '../../components/NamespaceScope'
 import { RangeButtons, Sparkline, spanOf } from '../../components/Sparkline'
-import { Ago } from '../../components/Time'
 import { Notice, Pill, Section, SeenAgo, StatusDot, Tile } from '../../components/ui'
 import { opsFor } from '../../ops'
 import { health, loadSnapshots, openAlerts, snapshots, versions } from '../../store'
@@ -44,7 +42,7 @@ export function Overview({ ctx }: { ctx: ClusterCtx }) {
         <Tile compact size="lg" label="Nodes Ready" tone={!t ? 'muted' : t.nodesReady === t.nodes ? 'good' : t.nodesReady === 0 ? 'bad' : 'warn'} value={t ? `${t.nodesReady}/${t.nodes}` : '—'} sub={`${workers} worker${workers === 1 ? '' : 's'}`} />
         <WorkloadsCard cluster={name} pods={t?.pods} service={service} unreachable={down} />
         <Tile compact size="lg" label="Load balancer" tone={down ? 'muted' : status?.platform?.outputs?.ingress_ip ? 'good' : spec.platform.metallb.enabled ? 'warn' : 'muted'} value={status?.platform?.outputs?.ingress_ip ?? (spec.platform.metallb.enabled ? 'pending' : 'off')} sub={spec.platform.metallb.enabled ? `pool ${spec.platform.metallb.range}` : 'MetalLB disabled'} href={`/clusters/${name}/network`} />
-        <BackupsCard cluster={name} status={status} interval={spec.backup?.etcd.interval ?? '6h'} />
+        <BackupsCard cluster={name} status={status} schedule={spec.backup?.schedule} />
       </div>
       <div class="grid grid-cols-1 lg:grid-cols-2 gap-4">
         <CapacityTrend name={name} status={status} />
@@ -160,18 +158,8 @@ function WorkloadsCard({ cluster, pods, service, unreachable }: { cluster: strin
   return <Tile compact size="lg" label="Workloads" tone={tone} value={value} sub={sub} href={`/clusters/${cluster}/workloads?view=pods&scope=${scope}`} />
 }
 
-function BackupsCard({ cluster, status, interval: spec }: { cluster: string; status?: { lastSnapshotAt?: string; snapshotInterval?: string } | null; interval: string }) {
+function BackupsCard({ cluster, status, schedule }: { cluster: string; status?: { lastSnapshotAt?: string } | null; schedule?: string }) {
   useEffect(() => { if (!snapshots.value.has(cluster)) loadSnapshots(cluster) }, [cluster])
-  const latest = (snapshots.value.get(cluster) ?? []).find((s) => s.status === 'ok')
-  const interval = parseDuration(status?.snapshotInterval ?? spec)
-  const at = latest?.ts ?? status?.lastSnapshotAt
-  const late = interval > 0 && (!at || (nowEvery(60_000) - Date.parse(at)) / 1000 > 2 * interval)
-  const sub = interval === 0 ? 'schedule off' : `every ${status?.snapshotInterval ?? spec}`
-  return <Tile compact size="lg" label="Backups" tone={!at || late ? 'warn' : 'good'} value={at ? <Ago iso={at} fresh="just now" /> : 'none'} title={at ? fmt.datetime(at) : undefined} sub={late && at ? `behind schedule · ${sub}` : sub} href={`/clusters/${cluster}/backups`} />
-}
-
-function parseDuration(s: string): number {
-  const m = /^(\d+(?:\.\d+)?)(h|m|s)$/.exec(s.trim())
-  if (!m) return s === '0' ? 0 : 6 * 3600
-  return Number(m[1]) * ({ h: 3600, m: 60, s: 1 }[m[2]] ?? 1)
+  const at = (snapshots.value.get(cluster) ?? []).find((s) => s.status === 'ok')?.ts ?? status?.lastSnapshotAt
+  return <Tile compact size="lg" label="Backups" tone={schedule ? 'good' : 'muted'} value={schedule ? 'talos-backup' : 'off'} title={at ? `last local snapshot ${fmt.datetime(at)}` : undefined} sub={schedule ? `cron ${schedule}` : 'declare spec.backup'} href={`/clusters/${cluster}/backups`} />
 }

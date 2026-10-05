@@ -21,7 +21,6 @@ func (s *Server) AttachWatcher(ctx context.Context, w *watch.Watcher) {
 	s.watcher = w
 	w.OnStatus = func(name string, st *cluster.Status) {
 		s.hub.publish(Message{Kind: "status", Cluster: name, Status: st})
-		s.maybeScheduleSnapshot(ctx, name, st)
 		s.periodic.every(name, time.Hour, func() { s.checkCertificates(ctx, name) })
 	}
 	w.OnEvent = func(e store.EventRow) {

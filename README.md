@@ -54,7 +54,7 @@ etcd and the VIP. The Talos API is flaky for about two minutes after boot.
 ```
 lab/
   cluster.yaml         the declaration; Kubit never writes it after init
-  secrets.sops.yaml    Talos secrets bundle, Flux age key, platform state passphrase
+  secrets.sops.yaml    Talos secrets bundle, Flux age key, state passphrase, backup S3 keys
   .sops.yaml           age recipients for *.sops.yaml
   state/               OpenTofu state, encrypted by tofu
   .gitignore           talosconfig, kubeconfig, .terraform/
@@ -127,8 +127,10 @@ spec:
       ip: 192.168.64.150
       pool: gpu
       network: { addresses: [192.168.64.150/24], gateway: 192.168.64.1, vlan: 0 }
-  backup:
-    etcd: { interval: 6h, keep: 28 }
+  backup:                          # absent = off
+    schedule: "0 */6 * * *"
+    s3: { bucket: talos-backups, region: eu-north-1, endpoint: "https://s3.example.com", prefix: lab, pathStyle: true }
+    ageRecipients: [age1…]         # who can open the snapshots
   maintenance: { window: "Sat,Sun 02:00-06:00", timezone: Europe/Stockholm }
   platform:
     metallb: { enabled: true, range: 192.168.64.200-192.168.64.220 }
@@ -365,7 +367,7 @@ segment.
 `kubit serve` polls every ready cluster (15 s, `--watch-interval`), stores samples (24 h
 full, 30 d hourly) and raises events: `talos.unreachable`, `node.notready`,
 `api.unreachable`, `etcd.unhealthy`, `etcd.members`, `lb.lost`, `node.memory-small`,
-`cert.expiring`, `backup.stale`, with recoveries that resolve them. Reachability alerts
+`cert.expiring`, with recoveries that resolve them. Reachability alerts
 need three consecutive ticks without a gap; a laptop that slept re-baselines instead of
 alerting. When the gateway is unreachable too, the observer is offline and cluster
 alerts pause. Every 60 s it also derives workload alerts (`workload.unavailable`,
@@ -373,14 +375,24 @@ alerts pause. Every 60 s it also derives workload alerts (`workload.unavailable`
 `lb.pool-exhausted`, `flux.not-ready`), raised after two bad and cleared after three
 good collections. Alerts at or above `alerts.minSeverity` go to the webhook and SMTP.
 
-## etcd snapshots
+## Backups
 
-`kubit etcd snapshot|list|download|restore <cluster>`. A snapshot is verified (bbolt,
-key count, sha256), gzipped and sealed under `~/.kubit/clusters/<name>/snapshots/`.
-The daemon takes one every `backup.etcd.interval` while the cluster is healthy and idle
-and prunes scheduled ones to `keep`. Restore wipes EPHEMERAL on every control plane and
-rebuilds etcd from the snapshot (`--yes` required). Phase 5 replaces scheduled snapshots
-with an opt-in talos-backup add-on.
+Off until `spec.backup` is declared. Then `kubit apply` gives every control plane Talos
+API access for the `os:etcd:backup` role from namespace `talos-backup` (a config change,
+no reboot) and installs [talos-backup](https://github.com/siderolabs/talos-backup)
+(`ghcr.io/siderolabs/talos-backup:v0.1.0-beta.2`): a Talos `ServiceAccount`, a Secret with
+the S3 credentials and a CronJob on `schedule` that streams an etcd snapshot, encrypts it
+for `ageRecipients` and uploads it to `s3://bucket/prefix` (prefix defaults to the cluster
+name; `compression` adds zstd). The S3 credentials live in the repo's secrets, never in
+cluster.yaml: add `backup.accessKeyID` and `backup.secretAccessKey` with
+`sops lab/secrets.sops.yaml`; `kubit plan` refuses a declared backup without them.
+Kubit no longer takes scheduled snapshots itself. Not yet run against a bucket.
+
+For disaster recovery, `kubit etcd snapshot|list|download|restore <cluster>` stays: a
+snapshot is verified (bbolt, key count, sha256), gzipped and sealed under
+`~/.kubit/clusters/<name>/snapshots/`; restore wipes EPHEMERAL on every control plane and
+rebuilds etcd from it (`--yes` required). A talos-backup snapshot restores the same way
+once decrypted with `age -d` (`talosctl bootstrap --recover-from`).
 
 ## Running Kubit
 
@@ -417,5 +429,6 @@ Roadmap (2026-10-05):
 - [x] 4 — `kubit serve <dirs…>` (adopt, watch, reload), `kubit status [dir] --watch`,
   discovery scans served subnets every minute, console secrets editor (verified against
   the sops CLI and live external edits)
-- [ ] 5 — talos-backup add-on, off by default
+- [x] 5 — `spec.backup` → talos-backup add-on, off by default; the daemon's snapshot
+  schedule, retention and `backup.stale` are gone
 - [ ] 6 — migration: `kubit export --repo`

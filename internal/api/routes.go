@@ -16,34 +16,32 @@ import (
 )
 
 type Server struct {
-	mux             *http.ServeMux
-	version         string
-	manager         *cluster.Manager
-	store           *store.Store
-	hub             *hub
-	locks           clusterLocks
-	cancels         sync.Map
-	started         time.Time
-	watcher         *watch.Watcher
-	periodic        throttle
-	versionsMu      sync.Mutex
-	versionsAt      time.Time
-	latestTalos     string
-	talosList       talosList
-	pxeMu           sync.Mutex
-	pxeLast         pxeSnapshot
-	scheduleMu      sync.Mutex
-	scheduleAttempt map[string]time.Time
-	crypto          *store.Crypto
-	ctx             context.Context
-	stop            context.CancelFunc
-	stopDaemon      func()
-	token           string
-	repos           repoSet
+	mux         *http.ServeMux
+	version     string
+	manager     *cluster.Manager
+	store       *store.Store
+	hub         *hub
+	locks       clusterLocks
+	cancels     sync.Map
+	started     time.Time
+	watcher     *watch.Watcher
+	periodic    throttle
+	versionsMu  sync.Mutex
+	versionsAt  time.Time
+	latestTalos string
+	talosList   talosList
+	pxeMu       sync.Mutex
+	pxeLast     pxeSnapshot
+	crypto      *store.Crypto
+	ctx         context.Context
+	stop        context.CancelFunc
+	stopDaemon  func()
+	token       string
+	repos       repoSet
 }
 
 func New(version string, m *cluster.Manager, token string, crypto *store.Crypto) *Server {
-	s := &Server{mux: http.NewServeMux(), version: version, manager: m, store: m.Store, hub: newHub(), token: token, crypto: crypto, started: time.Now(), scheduleAttempt: map[string]time.Time{}}
+	s := &Server{mux: http.NewServeMux(), version: version, manager: m, store: m.Store, hub: newHub(), token: token, crypto: crypto, started: time.Now()}
 	s.ctx, s.stop = context.WithCancel(context.Background())
 	s.routes()
 	return s

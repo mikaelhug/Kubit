@@ -9,7 +9,7 @@ export function Backups({ ctx }: { ctx: ClusterCtx }) {
   const { name, cluster } = ctx
   const rows = snapshots.value.get(name) ?? []
   const loaded = snapshots.value.has(name)
-  const etcd = cluster.spec.spec.backup?.etcd
+  const b = cluster.spec.spec.backup
   useEffect(() => { loadSnapshots(name) }, [name])
   const latest = rows.find((r) => r.status === 'ok')
   const columns = useMemo<Column<Snapshot>[]>(() => [
@@ -23,10 +23,10 @@ export function Backups({ ctx }: { ctx: ClusterCtx }) {
     { id: 'download', header: '', align: 'right', cell: (s) => <a class="btn btn-sm" href={snapshotUrl(name, s.id)} download>Download</a> },
   ], [name])
   return (
-    <Section title="etcd snapshots" help="Sealed snapshots of the cluster state.">
+    <Section title="etcd snapshots" help="talos-backup writes encrypted snapshots to S3; the list below holds local ones taken with kubit etcd snapshot.">
       <div class="grid grid-cols-1 md:grid-cols-3 gap-3">
         <Tile size="xl" label="Latest snapshot" value={latest ? fmt.when(latest.ts) : 'none'} sub={latest ? `${fmt.int(latest.keys)} keys · ${fmt.bytes(latest.sizeBytes)}` : undefined} tone={latest ? undefined : 'warn'} />
-        <Tile size="xl" label="Schedule" value={etcd?.interval === '0' ? 'off' : `every ${etcd?.interval ?? '6h'}`} sub={`keep ${etcd?.keep ?? 28}`} />
+        <Tile size="xl" label="talos-backup" value={b?.schedule ? b.schedule : 'off'} sub={b?.schedule ? `s3://${b.s3?.bucket}/${b.s3?.prefix || cluster.name}` : 'declare spec.backup'} tone={b?.schedule ? undefined : 'muted'} />
         <Tile size="xl" label="Stored" value={String(rows.length)} sub={fmt.bytes(rows.reduce((a, r) => a + r.sizeBytes, 0))} />
       </div>
       <DataTable loading={!loaded} id="snapshots" columns={columns} rows={rows} rowKey={(s) => String(s.id)} defaultSort={{ id: 'ts', dir: 'desc' }} empty="No snapshots yet." />

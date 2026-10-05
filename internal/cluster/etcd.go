@@ -10,7 +10,6 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"sort"
 	"time"
 
 	"github.com/mikael/kubit/internal/config"
@@ -42,7 +41,7 @@ func (m *Manager) snapshotDir(name string) string {
 }
 
 func (m *Manager) SnapshotEtcd(ctx context.Context, name, source string, sink Sink) (*store.Snapshot, error) {
-	sink.Plan(Steps("pick", "Find a healthy control plane", "snapshot", "Stream the etcd snapshot", "verify", "Verify and seal", "prune", "Apply retention")...)
+	sink.Plan(Steps("pick", "Find a healthy control plane", "snapshot", "Stream the etcd snapshot", "verify", "Verify and seal")...)
 	c, _, err := m.LoadCluster(ctx, name)
 	if err != nil {
 		return nil, err
@@ -93,23 +92,8 @@ func (m *Manager) SnapshotEtcd(ctx context.Context, name, source string, sink Si
 		return nil, err
 	}
 	sn.TS = ts.Format(time.RFC3339)
-	err = sink.Run("prune", func() error {
-		removed, err := m.pruneSnapshots(ctx, name, c.Spec.Backup.Etcd.Keep)
-		if err != nil {
-			return err
-		}
-		if removed > 0 {
-			sink.Emit(Info, "prune", "", "removed %d scheduled snapshot(s) beyond keep=%d", removed, c.Spec.Backup.Etcd.Keep)
-		} else {
-			sink.Skip("prune")
-		}
-		return nil
-	})
-	if err != nil {
-		return nil, err
-	}
 	_ = m.Store.Audit(ctx, name, "etcd.snapshot", fmt.Sprintf("%d from %s (%s)", sn.ID, cp.Hostname, source))
-	sink.Emit(Done, "prune", "", "snapshot #%d stored", sn.ID)
+	sink.Emit(Done, "verify", "", "snapshot #%d stored", sn.ID)
 	return &sn, nil
 }
 
@@ -168,28 +152,6 @@ func (m *Manager) sealSnapshot(plainPath string, sn *store.Snapshot, sink Sink) 
 	}
 	sink.Emit(Info, "verify", "", "%d keys; %s on disk, sealed to %s", keys, HumanBytes(uint64(len(sealed))), filepath.Base(sn.Path))
 	return nil
-}
-
-func (m *Manager) pruneSnapshots(ctx context.Context, name string, keep int) (int, error) {
-	all, err := m.Store.ListSnapshots(ctx, name)
-	if err != nil {
-		return 0, err
-	}
-	var scheduled []store.Snapshot
-	for _, s := range all {
-		if s.Source == "schedule" {
-			scheduled = append(scheduled, s)
-		}
-	}
-	sort.Slice(scheduled, func(i, j int) bool { return scheduled[i].TS > scheduled[j].TS })
-	removed := 0
-	for i := keep; i < len(scheduled); i++ {
-		if err := m.DeleteSnapshot(ctx, scheduled[i].ID); err != nil {
-			return removed, err
-		}
-		removed++
-	}
-	return removed, nil
 }
 
 func (m *Manager) DeleteSnapshot(ctx context.Context, id int64) error {
@@ -261,36 +223,6 @@ func (m *Manager) VerifySnapshot(ctx context.Context, id int64) (*store.Snapshot
 		return sn, err
 	}
 	return sn, nil
-}
-
-func (m *Manager) SnapshotAge(ctx context.Context, name string) (age time.Duration, ok bool) {
-	last, err := m.Store.LatestSnapshotTS(ctx, name)
-	if err != nil || last == "" {
-		return 0, false
-	}
-	t, err := time.Parse(time.RFC3339Nano, last)
-	if err != nil {
-		return 0, false
-	}
-	return time.Since(t), true
-}
-
-func (m *Manager) SnapshotDue(ctx context.Context, c *config.Cluster) bool {
-	iv := c.Spec.Backup.Etcd.IntervalDuration()
-	if iv == 0 {
-		return false
-	}
-	age, ok := m.SnapshotAge(ctx, c.Metadata.Name)
-	return !ok || age >= iv
-}
-
-func (m *Manager) SnapshotStale(ctx context.Context, c *config.Cluster) bool {
-	iv := c.Spec.Backup.Etcd.IntervalDuration()
-	if iv == 0 {
-		return false
-	}
-	age, ok := m.SnapshotAge(ctx, c.Metadata.Name)
-	return ok && age >= 2*iv
 }
 
 func (m *Manager) RestoreEtcd(ctx context.Context, name string, snapshotID int64, sink Sink) error {

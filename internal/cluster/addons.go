@@ -32,6 +32,7 @@ var addonMeta = []struct{ key, tofu, namespace string }{
 	{"flux", "flux", "flux-system"},
 	{"longhorn", "longhorn", "longhorn-system"},
 	{"builds", "builds", "kubit-builds"},
+	{"backup", "talos-backup", ""},
 }
 
 func addonOf(ns string) (string, bool) {
@@ -49,6 +50,8 @@ func PlatformNamespace(ns string) (string, bool) {
 		return "kubernetes", true
 	case "ingress-nginx":
 		return "traefik", true
+	case config.BackupNamespace:
+		return "backup", true
 	}
 	return addonOf(ns)
 }
@@ -58,8 +61,11 @@ func AddonNamespace(ns string) bool {
 	return ok
 }
 
-func addonSpec(p config.Platform, key string) (bool, map[string]any) {
+func addonSpec(c *config.Cluster, key string) (bool, map[string]any) {
+	p := c.Spec.Platform
 	switch key {
+	case "backup":
+		return c.Spec.Backup.Enabled(), nil
 	case "metallb":
 		return p.MetalLB.Enabled, p.MetalLB.Values
 	case "traefik":
@@ -96,7 +102,7 @@ func (m *Manager) Addons(ctx context.Context, name string) ([]AddonStatus, error
 	out := make([]AddonStatus, len(addonMeta))
 	var wg sync.WaitGroup
 	for i, meta := range addonMeta {
-		enabled, values := addonSpec(c.Spec.Platform, meta.key)
+		enabled, values := addonSpec(c, meta.key)
 		st := &out[i]
 		pin := tofu.ChartVersions[meta.tofu]
 		*st = AddonStatus{Key: meta.key, Enabled: enabled, Values: values, Pinned: pin}

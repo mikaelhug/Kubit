@@ -19,6 +19,7 @@ import (
 	"github.com/siderolabs/talos/pkg/machinery/config/config"
 	"github.com/siderolabs/talos/pkg/machinery/config/container"
 	"github.com/siderolabs/talos/pkg/machinery/config/generate"
+	"github.com/siderolabs/talos/pkg/machinery/config/types/v1alpha1"
 	"github.com/siderolabs/talos/pkg/machinery/config/generate/secrets"
 	"github.com/siderolabs/talos/pkg/machinery/config/machine"
 	"github.com/siderolabs/talos/pkg/machinery/config/types/block"
@@ -140,6 +141,20 @@ func generateNode(c *Cluster, in *generate.Input, n Node, installerImage string)
 	if authn := c.Spec.Auth.AuthenticationConfig(); authn != nil && n.Role == RoleControlPlane {
 		auth := findOrAppend(&docs, k8s.DefaultAuthenticationConfig)
 		auth.AuthConfig = meta.Unstructured{Object: withJWT(auth.AuthConfig.Object, authn["jwt"])}
+	}
+	if c.Spec.Backup.Enabled() && n.Role == RoleControlPlane {
+		for _, d := range docs {
+			if v1, ok := d.(*v1alpha1.Config); ok {
+				if v1.MachineConfig.MachineFeatures == nil {
+					v1.MachineConfig.MachineFeatures = &v1alpha1.FeaturesConfig{}
+				}
+				v1.MachineConfig.MachineFeatures.KubernetesTalosAPIAccessConfig = &v1alpha1.KubernetesTalosAPIAccessConfig{
+					AccessEnabled:                     new(true),
+					AccessAllowedRoles:                []string{"os:etcd:backup"},
+					AccessAllowedKubernetesNamespaces: []string{BackupNamespace},
+				}
+			}
+		}
 	}
 	if c.PoliciesOn() {
 		for _, d := range docs {

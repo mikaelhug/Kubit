@@ -66,7 +66,7 @@ func TestRenderWritesModuleAndVars(t *testing.T) {
 		"metrics_server": `{"enabled":false,"values":{"resources":{"requests":{"cpu":"20m","memory":"48Mi"}}}}`,
 		"cert_manager":   `{"enabled":true,"values":{"prometheus":{"enabled":false},"replicaCount":2}}`,
 		"flux":           `{"enabled":true,"values":{},"repository":{"url":"https://github.com/mikaelhug/kubit-apps.git","branch":"main","path":"./apps","interval":"5m"}}`,
-		"chart_versions": `{"cert_manager":"v1.21.2","flux":"2.19.1","gateway_api":"v1.6.1","longhorn":"1.10.1","metallb":"0.16.1","metrics_server":"3.14.0","traefik":"41.6.1"}`,
+		"chart_versions": `{"cert_manager":"v1.21.2","flux":"2.19.1","gateway_api":"v1.6.1","longhorn":"1.10.1","metallb":"0.16.1","metrics_server":"3.14.0","talos_backup":"v0.1.0-beta.2","traefik":"41.6.1"}`,
 	}
 	for k, w := range want {
 		var got, exp any

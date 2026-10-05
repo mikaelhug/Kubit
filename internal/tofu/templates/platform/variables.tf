@@ -61,3 +61,31 @@ variable "oidc_admin_group" {
 variable "chart_versions" {
   type = map(string)
 }
+
+variable "backup" {
+  type = object({
+    enabled        = bool
+    schedule       = optional(string, "")
+    bucket         = optional(string, "")
+    region         = optional(string, "")
+    endpoint       = optional(string, "")
+    prefix         = optional(string, "")
+    path_style     = optional(bool, false)
+    compression    = optional(bool, false)
+    age_recipients = optional(list(string), [])
+    cluster        = optional(string, "")
+  })
+  default = { enabled = false }
+}
+
+variable "backup_access_key_id" {
+  type      = string
+  default   = ""
+  sensitive = true
+}
+
+variable "backup_secret_access_key" {
+  type      = string
+  default   = ""
+  sensitive = true
+}

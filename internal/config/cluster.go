@@ -55,7 +55,7 @@ type Spec struct {
 	Pools             []Pool           `yaml:"pools,omitempty" json:"pools,omitempty"`
 	Nodes             []Node           `yaml:"nodes" json:"nodes"`
 	Platform          Platform         `yaml:"platform" json:"platform"`
-	Backup            Backup           `yaml:"backup" json:"backup"`
+	Backup            Backup           `yaml:"backup,omitempty" json:"backup"`
 	Maintenance       Maintenance      `yaml:"maintenance,omitempty" json:"maintenance,omitempty"`
 	Auth              ClusterAuth      `yaml:"auth,omitempty" json:"auth,omitempty"`
 	Storage           Storage          `yaml:"storage,omitempty" json:"storage,omitempty"`
@@ -116,21 +116,30 @@ func (a ClusterAuth) AuthenticationConfig() map[string]any {
 }
 
 type Backup struct {
-	Etcd EtcdBackup `yaml:"etcd" json:"etcd"`
+	Schedule      string   `yaml:"schedule,omitempty" json:"schedule,omitempty"`
+	S3            BackupS3 `yaml:"s3,omitempty" json:"s3,omitempty"`
+	AgeRecipients []string `yaml:"ageRecipients,omitempty" json:"ageRecipients,omitempty"`
+	Compression   bool     `yaml:"compression,omitempty" json:"compression,omitempty"`
+
+	LegacyEtcd *struct {
+		Interval string `yaml:"interval,omitempty"`
+		Keep     int    `yaml:"keep,omitempty"`
+	} `yaml:"etcd,omitempty" json:"-"`
 }
 
-type EtcdBackup struct {
-	Interval string `yaml:"interval,omitempty" json:"interval,omitempty"`
-	Keep     int    `yaml:"keep,omitempty" json:"keep,omitempty"`
+type BackupS3 struct {
+	Bucket    string `yaml:"bucket,omitempty" json:"bucket,omitempty"`
+	Region    string `yaml:"region,omitempty" json:"region,omitempty"`
+	Endpoint  string `yaml:"endpoint,omitempty" json:"endpoint,omitempty"`
+	Prefix    string `yaml:"prefix,omitempty" json:"prefix,omitempty"`
+	PathStyle bool   `yaml:"pathStyle,omitempty" json:"pathStyle,omitempty"`
 }
 
-func (b EtcdBackup) IntervalDuration() time.Duration {
-	d, err := time.ParseDuration(b.Interval)
-	if err != nil || d <= 0 {
-		return 0
-	}
-	return d
+func (b Backup) Enabled() bool {
+	return b.Schedule != "" || b.S3.Bucket != "" || len(b.AgeRecipients) > 0
 }
+
+const BackupNamespace = "talos-backup"
 
 type Pool struct {
 	Name        string            `yaml:"name" json:"name"`
@@ -281,11 +290,9 @@ func (c *Cluster) applyDefaults() {
 	if c.Spec.TalosVersion == "" {
 		c.Spec.TalosVersion = gendata.VersionTag
 	}
-	if c.Spec.Backup.Etcd.Interval == "" {
-		c.Spec.Backup.Etcd.Interval = "6h"
-	}
-	if c.Spec.Backup.Etcd.Keep == 0 {
-		c.Spec.Backup.Etcd.Keep = 28
+	c.Spec.Backup.LegacyEtcd = nil
+	if c.Spec.Backup.Enabled() && c.Spec.Backup.S3.Region == "" {
+		c.Spec.Backup.S3.Region = "us-east-1"
 	}
 	if c.Spec.KubernetesVersion == "" {
 		c.Spec.KubernetesVersion = "v" + constants.DefaultKubernetesVersion

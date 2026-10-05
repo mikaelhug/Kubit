@@ -30,6 +30,16 @@ type Desired struct {
 	FluxKey     string
 	StatePath   string
 	Passphrase  string
+	BackupKey   string
+	BackupSec   string
+}
+
+func (d *Desired) platform() PlatformState {
+	st := PlatformState{Path: d.StatePath, Passphrase: d.Passphrase}
+	if d.BackupKey != "" || d.BackupSec != "" {
+		st.Env = []string{"TF_VAR_backup_access_key_id=" + d.BackupKey, "TF_VAR_backup_secret_access_key=" + d.BackupSec}
+	}
+	return st
 }
 
 const (
@@ -93,6 +103,10 @@ func (m *Manager) Plan(ctx context.Context, d *Desired, opts ConvergeOptions) (*
 	p := &Plan{Cluster: name, Changes: []Change{}}
 	if err := CheckDeclaration(c, d.Bundle); err != nil {
 		p.Problems = append(p.Problems, "cluster.yaml: "+err.Error())
+		return p, nil
+	}
+	if c.Spec.Backup.Enabled() && (d.BackupKey == "" || d.BackupSec == "") {
+		p.Problems = append(p.Problems, "backup is declared but secrets.sops.yaml has no backup.accessKeyID and backup.secretAccessKey; add them with sops")
 		return p, nil
 	}
 	ls := m.observe(ctx, d)
@@ -470,7 +484,7 @@ func (m *Manager) Converge(ctx context.Context, d *Desired, p *Plan, opts Conver
 	}
 	c := d.Cluster
 	name := c.Metadata.Name
-	m.UsePlatformState(name, d.StatePath, d.Passphrase)
+	m.UsePlatformState(name, d.platform())
 	if p.has(ActCreate) {
 		if err := m.Create(ctx, p.target, d.Bundle, sink); err != nil {
 			return err
@@ -523,7 +537,7 @@ func (m *Manager) Track(ctx context.Context, d *Desired) (bool, error) {
 		return false, err
 	}
 	name := d.Cluster.Metadata.Name
-	m.UsePlatformState(name, d.StatePath, d.Passphrase)
+	m.UsePlatformState(name, d.platform())
 	if row, err := m.Store.GetCluster(ctx, name); err == nil && Observable(row.State) {
 		return true, m.cacheSecrets(ctx, d)
 	}

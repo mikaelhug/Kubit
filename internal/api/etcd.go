@@ -1,15 +1,10 @@
 package api
 
 import (
-	"context"
 	"fmt"
-	"log"
 	"net/http"
 	"strconv"
-	"time"
 
-	"github.com/mikael/kubit/internal/cluster"
-	"github.com/mikael/kubit/internal/config"
 	"github.com/mikael/kubit/internal/store"
 )
 
@@ -17,70 +12,6 @@ func (s *Server) etcdRoutes() {
 	r := s.mux
 	r.HandleFunc("GET /api/v1/clusters/{name}/snapshots", s.handleSnapshots)
 	r.HandleFunc("GET /api/v1/clusters/{name}/snapshots/{id}", s.handleSnapshotDownload)
-}
-
-const scheduleRetry = 10 * time.Minute
-
-func (s *Server) maybeScheduleSnapshot(ctx context.Context, name string, st *cluster.Status) {
-	if st.State != cluster.StateReady || !st.APIReachable || !st.Etcd.Healthy || st.Health == cluster.HealthUnknown || st.Observer == cluster.ObserverOffline || s.locks.busy(name) {
-		return
-	}
-	if !s.scheduleDue(name) {
-		return
-	}
-	c, _, err := s.manager.LoadCluster(ctx, name)
-	if err != nil || !s.manager.SnapshotDue(ctx, c) || !s.claimSchedule(name) {
-		return
-	}
-	if s.manager.SnapshotStale(ctx, c) && s.observedSince(ctx, c) && !s.store.HasOpenEvent(ctx, name, "", "backup.stale") {
-		age, _ := s.manager.SnapshotAge(ctx, name)
-		s.raiseEvent(ctx, store.EventRow{Cluster: name, Severity: "warn", Kind: "backup.stale", Message: fmt.Sprintf("Last etcd snapshot is %s old; schedule is every %s. Check the Backups tab for failed snapshot operations.", age.Round(time.Minute), c.Spec.Backup.Etcd.Interval)})
-	}
-	if _, err := s.runOperation(name, "etcd.snapshot", map[string]string{"source": "schedule"}, func(ctx context.Context, sink cluster.Sink) (any, error) {
-		sn, err := s.manager.SnapshotEtcd(ctx, name, "schedule", sink)
-		if err == nil {
-			_ = s.store.ResolveEvents(ctx, name, "", "backup.stale")
-		}
-		return sn, err
-	}); err != nil {
-		log.Printf("snapshot schedule %s: %v", name, err)
-	}
-}
-
-func (s *Server) scheduleDue(name string) bool {
-	s.scheduleMu.Lock()
-	defer s.scheduleMu.Unlock()
-	return time.Since(s.scheduleAttempt[name]) >= scheduleRetry
-}
-
-func (s *Server) claimSchedule(name string) bool {
-	s.scheduleMu.Lock()
-	defer s.scheduleMu.Unlock()
-	if time.Since(s.scheduleAttempt[name]) < scheduleRetry {
-		return false
-	}
-	s.scheduleAttempt[name] = time.Now()
-	return true
-}
-
-func (s *Server) observedSince(ctx context.Context, c *config.Cluster) bool {
-	if s.watcher == nil {
-		return true
-	}
-	age, ok := s.manager.SnapshotAge(ctx, c.Metadata.Name)
-	if !ok {
-		return true
-	}
-	due := time.Now().Add(-age).Add(c.Spec.Backup.Etcd.IntervalDuration())
-	if s.started.After(due) {
-		return false
-	}
-	if o := s.watcher.Observer(); o.LastGapAt != "" {
-		if gap, err := time.Parse(time.RFC3339, o.LastGapAt); err == nil && gap.After(due) {
-			return false
-		}
-	}
-	return true
 }
 
 func (s *Server) handleSnapshots(w http.ResponseWriter, r *http.Request) {

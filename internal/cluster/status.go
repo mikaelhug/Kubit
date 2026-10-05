@@ -37,7 +37,6 @@ type Status struct {
 	OpenAlerts        int                   `json:"openAlerts,omitempty"`
 	ObservedAt        string                `json:"observedAt"`
 	LastSnapshotAt    string                `json:"lastSnapshotAt,omitempty"`
-	SnapshotInterval  string                `json:"snapshotInterval,omitempty"`
 	Observer          string                `json:"observer,omitempty"`
 	ObserverError     string                `json:"observerError,omitempty"`
 	LastContactAt     string                `json:"lastContactAt,omitempty"`
@@ -170,7 +169,6 @@ func (m *Manager) Status(ctx context.Context, name string) (*Status, error) {
 	}
 	st.ObservedAt = time.Now().UTC().Format(time.RFC3339)
 	st.LastSnapshotAt, _ = m.Store.LatestSnapshotTS(ctx, name)
-	st.SnapshotInterval = c.Spec.Backup.Etcd.Interval
 	return st, nil
 }
 

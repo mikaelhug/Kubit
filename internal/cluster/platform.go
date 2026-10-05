@@ -47,29 +47,30 @@ func (m *Manager) writeKubeconfig(name string, kubeconfig []byte) (string, error
 	return path, os.WriteFile(path, kubeconfig, 0o600)
 }
 
-type platformState struct {
-	path, passphrase string
+type PlatformState struct {
+	Path, Passphrase string
+	Env              []string
 }
 
-func (m *Manager) UsePlatformState(name, path, passphrase string) {
+func (m *Manager) UsePlatformState(name string, st PlatformState) {
 	m.statesMu.Lock()
 	defer m.statesMu.Unlock()
 	if m.states == nil {
-		m.states = map[string]platformState{}
+		m.states = map[string]PlatformState{}
 	}
-	m.states[name] = platformState{path: path, passphrase: passphrase}
+	m.states[name] = st
 }
 
 func (m *Manager) tofuRunner(name, bin string, log func(tofu.Line)) *tofu.Runner {
 	m.statesMu.Lock()
 	st := m.states[name]
 	m.statesMu.Unlock()
-	return &tofu.Runner{Bin: bin, Dir: m.platformDir(name), StatePath: st.path, Passphrase: st.passphrase, Log: log}
+	return &tofu.Runner{Bin: bin, Dir: m.platformDir(name), StatePath: st.Path, Passphrase: st.Passphrase, Env: st.Env, Log: log}
 }
 
 func (m *Manager) planPlatformFor(ctx context.Context, d *Desired, applied *config.Cluster) (*tofu.PlanDiff, error) {
 	name := d.Cluster.Metadata.Name
-	m.UsePlatformState(name, d.StatePath, d.Passphrase)
+	m.UsePlatformState(name, d.platform())
 	kubeconfig, err := m.writeKubeconfig(name, d.Kubeconfig)
 	if err != nil {
 		return nil, err

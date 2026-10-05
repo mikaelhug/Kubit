@@ -59,10 +59,6 @@ export function runbookFor(kind: string, c: Ctx): Runbook | null {
       return { title: 'Machine moved to a new address', steps: [
         { text: 'Update its ip in cluster.yaml, or pin a static address.', link: nodes },
       ] }
-    case 'backup.stale':
-      return { title: 'etcd snapshots are behind schedule', steps: [
-        { text: 'Take one: kubit etcd snapshot.', link: backups },
-      ] }
     case 'cert.expiring':
       return { title: 'Credential expiring', steps: [
         { text: 'Renew it before it expires.', link: { label: 'Config', href: `/clusters/${c.cluster}/config` } },

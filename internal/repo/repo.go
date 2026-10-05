@@ -41,12 +41,20 @@ type Secrets struct {
 	BundleYAML      []byte
 	FluxKey         string
 	StatePassphrase string
+	BackupKeyID     string
+	BackupSecret    string
 }
 
 type secretsDoc struct {
 	Talos    yaml.Node `yaml:"talos"`
 	Flux     fluxDoc   `yaml:"flux"`
 	Platform stateDoc  `yaml:"platform"`
+	Backup   backupDoc `yaml:"backup,omitempty"`
+}
+
+type backupDoc struct {
+	AccessKeyID     string `yaml:"accessKeyID,omitempty"`
+	SecretAccessKey string `yaml:"secretAccessKey,omitempty"`
 }
 
 type fluxDoc struct {
@@ -119,7 +127,7 @@ func parseSecrets(plain []byte) (*Secrets, error) {
 	if b.Cluster == nil || b.Certs == nil || b.Certs.OS == nil || b.Certs.K8s == nil {
 		return nil, errors.New("incomplete talos secrets bundle")
 	}
-	return &Secrets{Bundle: b, BundleYAML: raw, FluxKey: doc.Flux.AgeKey, StatePassphrase: doc.Platform.StatePassphrase}, nil
+	return &Secrets{Bundle: b, BundleYAML: raw, FluxKey: doc.Flux.AgeKey, StatePassphrase: doc.Platform.StatePassphrase, BackupKeyID: doc.Backup.AccessKeyID, BackupSecret: doc.Backup.SecretAccessKey}, nil
 }
 
 func NewSecrets(talosVersion string) (*Secrets, error) {
@@ -155,6 +163,7 @@ func (s *Secrets) plain() ([]byte, error) {
 		doc.Talos = *doc.Talos.Content[0]
 	}
 	doc.Flux.AgeKey, doc.Platform.StatePassphrase = s.FluxKey, s.StatePassphrase
+	doc.Backup = backupDoc{AccessKeyID: s.BackupKeyID, SecretAccessKey: s.BackupSecret}
 	return yaml.Marshal(&doc)
 }
 

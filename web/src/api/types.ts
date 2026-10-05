@@ -47,7 +47,7 @@ export interface ClusterSpec {
     pools?: Pool[]
     nodes: NodeSpec[]
     platform: PlatformSpec
-    backup?: { etcd: { interval?: string; keep?: number } }
+    backup?: { schedule?: string; s3?: { bucket?: string; region?: string; endpoint?: string; prefix?: string; pathStyle?: boolean }; ageRecipients?: string[]; compression?: boolean }
     maintenance?: { window?: string; timezone?: string }
     storage?: { systemDisk?: boolean; ephemeralSize?: string; encryption?: 'tpm' | 'nodeID' }
     patches?: Record<string, unknown>[]
@@ -84,7 +84,7 @@ export interface Status {
   etcd: { members: number; expected: number; healthy: boolean; leader?: string; alarms?: string[] }
   totals: { cpuMilli: number; cpuCapMilli: number; memBytes: number; memCapBytes: number; pods: number; podCap: number; nodesReady: number; nodes: number }
   platform?: { appliedAt?: string; outputs?: Record<string, string>; error?: string }
-  observedAt?: string; lastSnapshotAt?: string; snapshotInterval?: string
+  observedAt?: string; lastSnapshotAt?: string
 }
 export interface Service { id: string; state: string; healthy: boolean; unknown?: boolean; last: string }
 

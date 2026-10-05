@@ -85,6 +85,31 @@ type fluxVars struct {
 	Repository *config.FluxRepository `json:"repository"`
 }
 
+type backupVars struct {
+	Enabled       bool     `json:"enabled"`
+	Schedule      string   `json:"schedule,omitempty"`
+	Bucket        string   `json:"bucket,omitempty"`
+	Region        string   `json:"region,omitempty"`
+	Endpoint      string   `json:"endpoint,omitempty"`
+	Prefix        string   `json:"prefix,omitempty"`
+	PathStyle     bool     `json:"path_style"`
+	Compression   bool     `json:"compression"`
+	AgeRecipients []string `json:"age_recipients"`
+	Cluster       string   `json:"cluster,omitempty"`
+}
+
+func backupVarsOf(c *config.Cluster) backupVars {
+	b := c.Spec.Backup
+	if !b.Enabled() {
+		return backupVars{AgeRecipients: []string{}}
+	}
+	prefix := b.S3.Prefix
+	if prefix == "" {
+		prefix = c.Metadata.Name
+	}
+	return backupVars{Enabled: true, Schedule: b.Schedule, Bucket: b.S3.Bucket, Region: b.S3.Region, Endpoint: b.S3.Endpoint, Prefix: prefix, PathStyle: b.S3.PathStyle, Compression: b.Compression, AgeRecipients: b.AgeRecipients, Cluster: c.Metadata.Name}
+}
+
 type buildsVars struct {
 	Enabled bool   `json:"enabled"`
 	IP      string `json:"ip"`
@@ -153,6 +178,7 @@ var ChartVersions = map[string]string{
 	"cert-manager":   "v1.21.2",
 	"flux":           "2.19.1",
 	"longhorn":       "1.10.1",
+	"talos-backup":   "v0.1.0-beta.2",
 }
 
 func chartVersionVars() map[string]string {
@@ -189,6 +215,7 @@ func Vars(c *config.Cluster, kubeconfigPath, ingressIP string) map[string]any {
 		"flux":             fluxVars{Enabled: p.Flux.Enabled, Values: vals(p.Flux.Values), Repository: p.Flux.Repository},
 		"longhorn":         longhornVars{Enabled: p.Longhorn.Enabled, Values: vals(p.Longhorn.Values), Replicas: c.LonghornReplicas()},
 		"oidc_admin_group": c.Spec.Auth.AdminGroupSubject(),
+		"backup":           backupVarsOf(c),
 		"chart_versions":   chartVersionVars(),
 	}
 }
