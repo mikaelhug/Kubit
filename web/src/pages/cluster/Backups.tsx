@@ -1,8 +1,9 @@
 import { useEffect, useMemo } from 'preact/hooks'
-import { fmt, snapshotUrl, type Snapshot } from '../../api'
+import { api, fmt, snapshotUrl, type Snapshot } from '../../api'
 import { DataTable, type Column } from '../../components/DataTable'
 import { Code, Pill, Section, Tile } from '../../components/ui'
 import { loadSnapshots, snapshots } from '../../store'
+import { useLive } from '../../useLive'
 import type { ClusterCtx } from './ClusterPage'
 
 export function Backups({ ctx }: { ctx: ClusterCtx }) {
@@ -11,6 +12,8 @@ export function Backups({ ctx }: { ctx: ClusterCtx }) {
   const loaded = snapshots.value.has(name)
   const b = cluster.spec.spec.backup
   useEffect(() => { loadSnapshots(name) }, [name])
+  const { data: repo } = useLive(() => api.clusterYaml(name), [name], [['', 'secrets']], { onError: 'silent' })
+  const dir = repo?.dir ?? name
   const latest = rows.find((r) => r.status === 'ok')
   const columns = useMemo<Column<Snapshot>[]>(() => [
     { id: 'ts', header: 'Taken', sort: (s) => s.ts, cell: (s) => fmt.datetime(s.ts) },
@@ -31,8 +34,8 @@ export function Backups({ ctx }: { ctx: ClusterCtx }) {
       </div>
       <DataTable loading={!loaded} id="snapshots" columns={columns} rows={rows} rowKey={(s) => String(s.id)} defaultSort={{ id: 'ts', dir: 'desc' }} empty="No snapshots yet." />
       <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
-        <div class="flex flex-col gap-1"><span class="label">Take one</span><Code text={`kubit etcd snapshot ${name}`} /></div>
-        <div class="flex flex-col gap-1"><span class="label">Restore</span><Code text={`kubit etcd restore ${name} <id>`} /></div>
+        <div class="flex flex-col gap-1"><span class="label">Take one</span><Code text={`kubit etcd snapshot ${dir}`} /></div>
+        <div class="flex flex-col gap-1"><span class="label">Restore</span><Code text={`kubit etcd restore ${dir} <id>`} /></div>
       </div>
     </Section>
   )

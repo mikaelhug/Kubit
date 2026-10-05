@@ -75,7 +75,6 @@ func (m *Manager) Create(ctx context.Context, c *config.Cluster, bundle *secrets
 				return err
 			}
 		}
-		_ = m.Store.Audit(ctx, name, "cluster.create", marshalJSON(c.Spec.Nodes))
 		sink.Emit(Info, "secrets", "", "cluster secrets and %d machine configs stored", len(gen.Nodes))
 		return nil
 	}); err != nil {

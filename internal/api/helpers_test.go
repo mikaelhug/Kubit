@@ -11,14 +11,6 @@ import (
 	"github.com/mikael/kubit/internal/store"
 )
 
-func TestAcceptedWritesTheError(t *testing.T) {
-	rec := httptest.NewRecorder()
-	accepted(rec, 0, conflict("busy"))
-	if rec.Code != http.StatusConflict || !strings.Contains(rec.Body.String(), "busy") {
-		t.Errorf("error reply: %d %s", rec.Code, rec.Body)
-	}
-}
-
 func TestErrorStatusesAreExplicit(t *testing.T) {
 	for _, c := range []struct {
 		err    error

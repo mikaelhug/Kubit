@@ -30,6 +30,8 @@ func (w *Watcher) candidateTick(ctx context.Context) {
 			cancel()
 			if res.Err == nil {
 				_ = w.Store.UpsertNode(ctx, cluster.RowFromScan(res))
+			} else if ctx.Err() == nil {
+				_ = w.Store.SetNodeState(ctx, m.IP, "offline")
 			}
 		}
 	}

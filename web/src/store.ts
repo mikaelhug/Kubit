@@ -1,6 +1,5 @@
 import { batch, computed, signal, type ReadonlySignal, type Signal } from '@preact/signals'
-import { api, type AuditEntry, type ClusterRow, type HealthEvent, type NodeRow, type ObserverState, type Snapshot, type Status, type Versions } from './api'
-import { persist, read } from './local'
+import { api, type ClusterRow, type HealthEvent, type NodeRow, type ObserverState, type Snapshot, type Status, type Versions } from './api'
 import { editMap, setIn } from './maps'
 
 export const kubitKey = 'kubit'
@@ -9,7 +8,6 @@ export const clusters = signal<ClusterRow[]>([])
 export const machines = signal<Map<string, NodeRow>>(new Map())
 export const machineList = computed(() => [...machines.value.values()].sort((a, b) => a.ip.localeCompare(b.ip, undefined, { numeric: true })))
 export const snapshots = signal<Map<string, Snapshot[]>>(new Map())
-export const audit = signal<AuditEntry[]>([])
 export const versions = signal<Versions | null>(null)
 export const daemon = signal<{ version: string; startedAt: string; os?: string } | null>(null)
 export const connected = signal(false)
@@ -17,9 +15,6 @@ export const stopped = signal(false)
 export const resyncing = signal(false)
 export const live = computed(() => connected.value && !resyncing.value)
 export const reconnectAttempt = signal(0)
-export const drawerOpen = signal<boolean>(read('kubit.drawer', false))
-export const drawerHeight = signal<number>(read('kubit.drawerHeight', 260))
-export const drawerTab = signal<number | null>(null)
 export const toasts = signal<{ id: number; text: string; tone: 'info' | 'error' | 'good' }[]>([])
 export const statuses = signal<Map<string, Status>>(new Map())
 export const observer = signal<ObserverState>({ online: true, gaps24h: 0 })
@@ -40,10 +35,6 @@ export function bumpAllRefreshes() {
   })
 }
 
-export function setDrawer(open: boolean) {
-  drawerOpen.value = open
-  persist('kubit.drawer', open)
-}
 
 export async function loadObserver() {
   try { observer.value = await api.observer() } catch {}
@@ -105,15 +96,6 @@ export async function loadSnapshots(name: string) {
   try { setIn(snapshots, name, await api.snapshots(name)) } catch {}
 }
 
-export async function loadAudit(cluster?: string) {
-  try {
-    const rows = await api.audit(cluster)
-    if (cluster) {
-      const others = audit.value.filter((a) => a.cluster !== cluster)
-      audit.value = [...rows, ...others].sort((a, b) => b.id - a.id)
-    } else audit.value = rows
-  } catch {}
-}
 
 
 let toastSeq = 0

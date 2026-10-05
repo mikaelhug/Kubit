@@ -6,12 +6,11 @@ import (
 	"text/tabwriter"
 
 	"github.com/mikael/kubit/internal/cluster"
-	"github.com/mikael/kubit/internal/fsx"
 	"github.com/spf13/cobra"
 )
 
 func etcdCmd() *cobra.Command {
-	cmd := &cobra.Command{Use: "etcd", Short: "etcd snapshots: take, list, verify, download, restore"}
+	cmd := &cobra.Command{Use: "etcd", Short: "Local etcd snapshots for disaster recovery: take, list, restore"}
 	snapshot := &cobra.Command{
 		Use:   "snapshot <dir|cluster>",
 		Short: "Take and store a verified, sealed etcd snapshot now",
@@ -50,34 +49,6 @@ func etcdCmd() *cobra.Command {
 			return tw.Flush()
 		}),
 	}
-	var out string
-	download := &cobra.Command{
-		Use:   "download <dir|cluster> <id>",
-		Short: "Write the plain snapshot to a file (for talosctl bootstrap --recover-from or etcdutl)",
-		Args:  cobra.ExactArgs(2),
-		RunE: withManager(func(cmd *cobra.Command, args []string, m *cluster.Manager) error {
-			name, err := nameOf(args[0])
-			if err != nil {
-				return err
-			}
-			id, err := strconv.ParseInt(args[1], 10, 64)
-			if err != nil {
-				return err
-			}
-			sn, plain, err := m.OpenSnapshot(cmd.Context(), id)
-			if err != nil {
-				return err
-			}
-			if sn.Cluster != name {
-				return fmt.Errorf("snapshot %d belongs to %s", id, sn.Cluster)
-			}
-			if out == "" {
-				out = fmt.Sprintf("%s-etcd-%d.db", sn.Cluster, sn.ID)
-			}
-			return fsx.WriteOut(out, 0o600, fsx.Bytes(plain))
-		}),
-	}
-	download.Flags().StringVarP(&out, "out", "o", "", "output file")
 	var yes bool
 	restore := &cobra.Command{
 		Use:   "restore <dir|cluster> <id>",
@@ -99,6 +70,6 @@ func etcdCmd() *cobra.Command {
 		}),
 	}
 	restore.Flags().BoolVar(&yes, "yes", false, "confirm the destructive restore")
-	cmd.AddCommand(snapshot, list, download, restore)
+	cmd.AddCommand(snapshot, list, restore)
 	return cmd
 }

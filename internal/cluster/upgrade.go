@@ -105,7 +105,6 @@ func (m *Manager) UpgradeTalos(ctx context.Context, name, version string, sink S
 	if err := sink.Run("snapshot", func() error { return m.preUpgradeSnapshot(ctx, name, sink) }); err != nil {
 		return err
 	}
-	_ = m.Store.Audit(ctx, name, "upgrade.talos", version)
 
 	for _, n := range nodes {
 		step := nodeStep(n)
@@ -202,7 +201,6 @@ func (m *Manager) UpgradeKubernetes(ctx context.Context, name, version string, s
 	if err := sink.Run("snapshot", func() error { return m.preUpgradeSnapshot(ctx, name, sink) }); err != nil {
 		return err
 	}
-	_ = m.Store.Audit(ctx, name, "upgrade.kubernetes", version)
 	next := *c
 	next.Spec.KubernetesVersion = version
 	if err := m.ApplyConfigs(ctx, &next, version, sink); err != nil {

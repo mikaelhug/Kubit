@@ -13,7 +13,6 @@ import (
 	"time"
 
 	"github.com/coder/websocket"
-	"github.com/mikael/kubit/internal/cluster"
 	"github.com/mikael/kubit/internal/store"
 )
 
@@ -308,32 +307,6 @@ func TestSavingTheDeclarationRefreshesConfigStatus(t *testing.T) {
 	}
 }
 
-func TestOperationRefreshesTheViewsItChanges(t *testing.T) {
-	for _, c := range []struct {
-		kind string
-		want []string
-	}{
-		{"cluster.create", []string{"nodes", "addons", "network", "flux", "certificates", "sops", "config"}},
-		{"platform.apply", []string{"addons", "network", "flux"}},
-		{"cert.rotate", []string{"certificates"}},
-		{"cluster.apply", []string{"nodes", "config"}},
-		{"node.add", []string{"nodes", "config"}},
-		{"node.remove", []string{"nodes", "config"}},
-		{"node.rename", []string{"nodes", "config"}},
-		{"node.pool", []string{"nodes", "config"}},
-		{"node.readdress", []string{"nodes", "config"}},
-		{"node.reboot", []string{"nodes"}},
-		{"upgrade.talos", []string{"nodes", "config"}},
-		{"upgrade.kubernetes", []string{"nodes", "config"}},
-		{"etcd.snapshot", []string{"nodes"}},
-		{"discover", nil},
-	} {
-		if got := scopesForKind(c.kind); !slices.Equal(got, c.want) {
-			t.Errorf("%s: %v, want %v", c.kind, got, c.want)
-		}
-	}
-}
-
 func TestStoreChangesReachTheirViews(t *testing.T) {
 	s, st := localServer(t)
 	sub := s.hub.subscribe(0)
@@ -366,26 +339,6 @@ func TestStoreChangesReachTheirViews(t *testing.T) {
 	}
 	if m.Cluster != "c" || m.Key != strconv.FormatInt(id, 10) {
 		t.Errorf("ack message: %+v", m)
-	}
-}
-
-func TestAuditMessageCarriesTheWrittenRow(t *testing.T) {
-	s, st := localServer(t)
-	sub := s.hub.subscribe(0)
-	defer s.hub.unsubscribe(sub)
-	ctx := t.Context()
-	var keys []string
-	st.OnChange(func(c store.Change) {
-		if c.Table == "audit" {
-			keys = append(keys, c.Key)
-		}
-	})
-	_ = st.Audit(ctx, "a", "first", "")
-	_ = st.Audit(ctx, "b", "second", "")
-	s.onChange(ctx, store.Change{Table: "audit", Cluster: "a", Key: keys[0], Op: "put"})
-	m, ok := nextKind(t, sub.ch, "audit")
-	if !ok || m.Cluster != "a" || !strings.Contains(m.raw, `"action":"first"`) {
-		t.Errorf("audit message %+v", m)
 	}
 }
 
@@ -450,7 +403,7 @@ func TestHubShutdownFlushesThenRefuses(t *testing.T) {
 	}
 }
 
-func TestDrainTellsLiveClientsKubitStopped(t *testing.T) {
+func TestCloseTellsLiveClientsKubitStopped(t *testing.T) {
 	s, _ := localServer(t)
 	srv := httptest.NewServer(s)
 	defer srv.Close()
@@ -463,7 +416,7 @@ func TestDrainTellsLiveClientsKubitStopped(t *testing.T) {
 	if _, _, err := conn.Read(t.Context()); err != nil {
 		t.Fatal(err)
 	}
-	s.Drain(time.Second)
+	s.Close()
 	ctx, cancel := context.WithTimeout(t.Context(), 3*time.Second)
 	defer cancel()
 	for {
@@ -483,42 +436,5 @@ func TestDrainTellsLiveClientsKubitStopped(t *testing.T) {
 	}
 	if !s.hub.idle() {
 		t.Error("listeners left after the drain")
-	}
-}
-
-func TestDaemonStopWaitsForOperationsAndAudits(t *testing.T) {
-	s, st := localServer(t)
-	if rec := call(t, s, "POST", "/api/v1/daemon/stop", ""); rec.Code != http.StatusConflict {
-		t.Fatalf("without a stop hook: %d %s", rec.Code, rec.Body)
-	}
-	stops := 0
-	s.AttachStop(func() { stops++ })
-	release := make(chan struct{})
-	id, err := s.runOperation("c", "test.block", nil, func(ctx context.Context, _ cluster.Sink) (any, error) {
-		<-release
-		return nil, nil
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if rec := call(t, s, "POST", "/api/v1/daemon/stop", ""); rec.Code != http.StatusConflict || stops != 0 {
-		t.Fatalf("a running operation must hold the stop: %d %s", rec.Code, rec.Body)
-	}
-	close(release)
-	waitOp(t, st, id)
-	for deadline := time.Now().Add(5 * time.Second); s.running() > 0; time.Sleep(10 * time.Millisecond) {
-		if time.Now().After(deadline) {
-			t.Fatal("the cancelled operation is still registered")
-		}
-	}
-	if rec := call(t, s, "POST", "/api/v1/daemon/stop", ""); rec.Code != http.StatusAccepted || stops != 1 {
-		t.Fatalf("stop: %d %s, hook called %d times", rec.Code, rec.Body, stops)
-	}
-	entries, err := st.ListAudit(t.Context(), "", 10)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !slices.ContainsFunc(entries, func(e store.AuditEntry) bool { return e.Action == "kubit.stop" }) {
-		t.Errorf("stop not audited: %+v", entries)
 	}
 }

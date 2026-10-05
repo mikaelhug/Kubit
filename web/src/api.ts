@@ -1,5 +1,5 @@
 import { authedUrl, req } from './api/http'
-import type { AddonStatus, AuditEntry, Build, CertInfo, ClusterRow, ConfigStatus, FluxObject, HealthEvent, ImageStatus, Inventory, MaintenanceState, Namespace, NetworkView, NodeDetail, NodeRow, ObserverState, OpRef, Operation, PodEvent, PodSummary, PxeStatus, SecretRepo, SOPSKey, Sample, Service, ServiceHealth, Snapshot, Status, StorageView, Versions, Workload } from './api/types'
+import type { AddonStatus, Build, CertInfo, ClusterRow, ConfigStatus, FluxObject, HealthEvent, ImageStatus, Inventory, Namespace, NetworkView, NodeDetail, NodeRow, ObserverState, PodEvent, PodSummary, PxeStatus, SecretRepo, SOPSKey, Sample, Service, ServiceHealth, Snapshot, Status, StorageView, Versions, Workload } from './api/types'
 
 export type * from './api/types'
 export { authedUrl, getToken } from './api/http'
@@ -16,8 +16,6 @@ export const api = {
   versions: () => req<Versions>('GET', '/versions'),
   serviceHealth: (name: string) => req<{ latest: ServiceHealth | null; alerts: HealthEvent[] }>('GET', `/clusters/${name}/service-health`),
   certificates: (cluster: string) => req<CertInfo[]>('GET', `/clusters/${cluster}/certificates`),
-  maintenance: (cluster: string) => req<MaintenanceState>('GET', `/clusters/${cluster}/maintenance`),
-  audit: (cluster?: string) => req<AuditEntry[]>('GET', '/audit' + (cluster ? `?cluster=${cluster}` : '')),
   snapshots: (cluster: string) => req<Snapshot[]>('GET', `/clusters/${cluster}/snapshots`),
   stopDaemon: () => req<void>('POST', '/daemon/stop'),
   pxe: () => req<PxeStatus>('GET', '/pxe'),
@@ -33,14 +31,12 @@ export const api = {
   podEvents: (name: string, ns: string, pod: string) => req<PodEvent[]>('GET', `/clusters/${name}/pods/${ns}/${pod}/events`),
   network: (name: string) => req<NetworkView>('GET', `/clusters/${name}/network`),
   storage: (name: string) => req<StorageView>('GET', `/clusters/${name}/storage`),
-  clusterYaml: (name: string) => req<string>('GET', `/clusters/${name}/yaml`),
+  clusterYaml: (name: string) => req<{ dir: string; yaml: string }>('GET', `/clusters/${name}/yaml`),
   nodes: (cluster?: string) => req<NodeRow[]>('GET', '/nodes' + (cluster ? `?cluster=${cluster}` : '')),
-  discover: (targets: string[]) => req<OpRef>('POST', '/discover', { targets }),
+  discover: (targets: string[]) => req<{ found: number }>('POST', '/discover', { targets }),
   services: (ip: string) => req<Service[]>('GET', `/nodes/${ip}/services`),
   inventory: (ip: string) => req<Inventory>('GET', `/nodes/${ip}/inventory`),
   nodeKubernetes: (ip: string) => req<NodeDetail>('GET', `/nodes/${ip}/kubernetes`),
-  operations: () => req<Operation[]>('GET', '/operations'),
-  operation: (id: number) => req<Operation>('GET', `/operations/${id}`),
   secrets: () => req<SecretRepo[]>('GET', '/secrets'),
   secretValue: (repo: number, file: string, key: string[]) => req<{ value: string }>('GET', `/secrets/value?${secretQuery(repo, file, key)}`),
   setSecret: (repo: number, file: string, key: string[], value: string) => req<void>('PUT', '/secrets/value', { repo, file, key, value }),

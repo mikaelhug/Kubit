@@ -148,8 +148,15 @@ func TestConvergeRefusesRemovalWithoutPermission(t *testing.T) {
 }
 
 func TestApplyLeaseSerialisesApplies(t *testing.T) {
-	m := NewManager(testStore(t), t.TempDir())
+	st := testStore(t)
+	m := NewManager(st, t.TempDir())
 	kubeconfig := kubeconfigFor("https://10.0.0.10:6443")
+	if err := st.PutCluster(context.Background(), store.ClusterRow{Name: "lab", Spec: []byte(convergeSpec), State: StateReady}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.PutClusterSecrets(context.Background(), "lab", store.ClusterSecrets{SecretsBundle: []byte("b"), Talosconfig: []byte("t"), Kubeconfig: kubeconfig}); err != nil {
+		t.Fatal(err)
+	}
 	cs := fake.NewClientset()
 	m.kube = map[string]kubeEntry{"lab": {sum: sha256.Sum256(kubeconfig), kc: &k8s.Client{Interface: cs}}}
 	d, _ := config.Parse([]byte(convergeSpec))
@@ -168,9 +175,15 @@ func TestApplyLeaseSerialisesApplies(t *testing.T) {
 		t.Fatalf("after release: %v", err)
 	}
 	unlock2()
+	if !m.ApplyQuiet(ctx, "lab", time.Minute) {
+		t.Error("alerts stay quiet right after an apply")
+	}
+	if m.ApplyQuiet(ctx, "lab", 0) {
+		t.Error("a finished apply quiets nothing once the window passed")
+	}
 	stale := metav1.NewMicroTime(time.Now().Add(-2 * applyLeaseTime))
 	secs, holder := int32(60), "crashed"
-	if _, err := cs.CoordinationV1().Leases("kube-system").Create(ctx, &coordinationv1.Lease{ObjectMeta: metav1.ObjectMeta{Name: applyLease}, Spec: coordinationv1.LeaseSpec{HolderIdentity: &holder, LeaseDurationSeconds: &secs, AcquireTime: &stale, RenewTime: &stale}}, metav1.CreateOptions{}); err != nil {
+	if _, err := cs.CoordinationV1().Leases("kube-system").Update(ctx, &coordinationv1.Lease{ObjectMeta: metav1.ObjectMeta{Name: applyLease, Namespace: "kube-system"}, Spec: coordinationv1.LeaseSpec{HolderIdentity: &holder, LeaseDurationSeconds: &secs, AcquireTime: &stale, RenewTime: &stale}}, metav1.UpdateOptions{}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := m.LockApply(ctx, desired, "ci-3"); err != nil {

@@ -16,11 +16,11 @@ func TestNodeEndpointsRefuseNonTalosKinds(t *testing.T) {
 	ctx := context.Background()
 	_ = s.UpsertNode(ctx, store.NodeRow{MAC: "aa:aa:aa:aa:aa:12", Source: "pxe", State: "unknown"})
 	_ = s.UpsertNode(ctx, store.NodeRow{MAC: "aa:aa:aa:aa:aa:13", IP: "10.0.0.13", Source: "scan", State: "configured"})
-	_ = s.UpsertNode(ctx, store.NodeRow{MAC: "aa:aa:aa:aa:aa:14", IP: "10.0.0.14", Source: "pxe", State: "booting"})
+	_ = s.UpsertNode(ctx, store.NodeRow{MAC: "aa:aa:aa:aa:aa:14", IP: "10.0.0.14", Source: "scan", State: "offline"})
 	cases := map[string]string{
 		"aa:aa:aa:aa:aa:12": "No address is known",
 		"10.0.0.13":         "Configured outside Kubit",
-		"10.0.0.14":         "Waiting for Talos",
+		"10.0.0.14":         "Not answering",
 	}
 	for addr, want := range cases {
 		for _, ep := range []struct{ method, path string }{{"GET", "/inventory"}, {"GET", "/services"}, {"GET", "/logs"}} {
@@ -51,21 +51,12 @@ func TestMachineJSONCarriesKind(t *testing.T) {
 	ctx := context.Background()
 	_ = s.UpsertNode(ctx, store.NodeRow{MAC: "aa:aa:aa:aa:aa:30", IP: "10.0.0.30", Source: "scan", State: "maintenance"})
 	_ = s.UpsertNode(ctx, store.NodeRow{MAC: "aa:aa:aa:aa:aa:31", IP: "10.0.0.31", Source: "scan", State: "configured"})
-	var one struct {
-		Kind  string `json:"kind"`
-		Talos bool   `json:"talos"`
-	}
-	rec := do(t, srv, "GET", "/api/v1/machines/aa:aa:aa:aa:aa:31", "")
-	_ = json.Unmarshal(rec.Body.Bytes(), &one)
-	if rec.Code != http.StatusOK || one.Kind != "configured" || one.Talos {
-		t.Errorf("machine: %d %s", rec.Code, rec.Body.String())
-	}
 	var all []struct {
 		MAC   string `json:"mac"`
 		Kind  string `json:"kind"`
 		Talos bool   `json:"talos"`
 	}
-	rec = do(t, srv, "GET", "/api/v1/machines", "")
+	rec := do(t, srv, "GET", "/api/v1/nodes", "")
 	_ = json.Unmarshal(rec.Body.Bytes(), &all)
 	kinds := map[string]string{}
 	for _, m := range all {

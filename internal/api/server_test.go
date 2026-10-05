@@ -21,7 +21,7 @@ func newServer(t *testing.T, token string) (*api.Server, *store.Store) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { s.Close() })
-	return api.New("test", cluster.NewManager(s, dir), token, c), s
+	return api.New("test", cluster.NewManager(s, dir), token), s
 }
 
 func do(t *testing.T, h http.Handler, method, path string, body string, headers ...string) *httptest.ResponseRecorder {
@@ -34,29 +34,6 @@ func do(t *testing.T, h http.Handler, method, path string, body string, headers 
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 	return rec
-}
-
-func TestStartMarksInterruptedOperations(t *testing.T) {
-	c, _ := store.NewCrypto(bytes.Repeat([]byte{3}, 32))
-	dir := t.TempDir()
-	st, err := store.Open(dir, c)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { st.Close() })
-	ctx := t.Context()
-	id, err := st.CreateOperation(ctx, "lab", "cluster.apply", nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	srv := api.New("test", cluster.NewManager(st, dir), "", c)
-	if op, _ := st.GetOperation(ctx, id); op.Status != "running" {
-		t.Fatalf("New must not touch operations: %s", op.Status)
-	}
-	srv.Start()
-	if op, _ := st.GetOperation(ctx, id); op.Status != "failed" {
-		t.Errorf("Start must fail interrupted operations: %s", op.Status)
-	}
 }
 
 func TestTokenGuardsAPIOnly(t *testing.T) {
@@ -86,16 +63,6 @@ func TestLoopback(t *testing.T) {
 		if got := api.Loopback(addr); got != want {
 			t.Errorf("Loopback(%q) = %v", addr, got)
 		}
-	}
-}
-
-func TestMachinesAndRetire(t *testing.T) {
-	srv, s := newServer(t, "")
-	_ = s.UpsertNode(t.Context(), store.NodeRow{IP: "10.0.0.5", MAC: "aa:aa:aa:aa:aa:05", State: "maintenance"})
-	_ = s.PutCluster(t.Context(), store.ClusterRow{Name: "c", Spec: []byte("x")})
-	_ = s.UpsertNode(t.Context(), store.NodeRow{IP: "10.0.0.6", MAC: "aa:aa:aa:aa:aa:06", Cluster: "c", Hostname: "n", State: "ready"})
-	if rec := do(t, srv, "GET", "/api/v1/machines/aa:aa:aa:aa:aa:05", ""); rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"ip":"10.0.0.5"`) {
-		t.Errorf("machine: %d %s", rec.Code, rec.Body)
 	}
 }
 

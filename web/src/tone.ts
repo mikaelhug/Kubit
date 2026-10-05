@@ -7,11 +7,11 @@ export const toneBorder: Record<Tone, string> = { good: 'border-good/40 bg-good/
 
 export function stateTone(state: string): Tone {
   switch (state) {
-    case 'ready': case 'done': case 'running': case 'maintenance': case 'joined': case 'succeeded': return 'good'
-    case 'failed': case 'error': case 'down': case 'offline': return 'bad'
-    case 'cancelled': case 'unknown': case 'disabled': return 'muted'
-    case 'provisioning': case 'installing': case 'bootstrapped': case 'booting': case 'pending': case 'discovered': case 'setup': case 'updating': case 'degraded': case 'deploying': case 'orphaned': return 'warn'
-    case 'off': case 'configured': return 'info'
+    case 'ready': case 'running': case 'maintenance': case 'succeeded': return 'good'
+    case 'failed': case 'error': case 'down': return 'bad'
+    case 'disabled': case 'offline': return 'muted'
+    case 'provisioning': case 'bootstrapped': case 'pending': case 'degraded': case 'deploying': case 'orphaned': return 'warn'
+    case 'configured': return 'info'
     default: return 'muted'
   }
 }

@@ -225,7 +225,6 @@ func (m *Manager) recordPlatform(ctx context.Context, name string, r *tofu.Runne
 	if err := m.Store.SetClusterState(ctx, name, StateReady); err != nil {
 		return err
 	}
-	_ = m.Store.Audit(ctx, name, "platform.apply", sum.String())
 	for k, v := range outputs {
 		if v != "" {
 			sink.Emit(Info, "apply", "", "%s = %s", k, v)

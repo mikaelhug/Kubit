@@ -4,8 +4,6 @@ export const isTyping = (t: EventTarget | null) => t instanceof HTMLInputElement
 
 const overlays: object[] = []
 
-export const overlayOpen = () => overlays.length > 0
-
 export function useEscape(onClose: () => void) {
   const close = useRef(onClose)
   close.current = onClose

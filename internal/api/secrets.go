@@ -95,11 +95,10 @@ func (s *Server) handleSecretGet(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, conflict(err.Error()))
 		return
 	}
-	_ = s.store.Audit(r.Context(), "", "secret.read", ref.File+"#"+strings.Join(ref.Key, "."))
 	writeJSON(w, http.StatusOK, map[string]string{"value": v})
 }
 
-func (s *Server) editSecret(w http.ResponseWriter, r *http.Request, ref secretRef, action string, edit func(*yaml.Node) error) {
+func (s *Server) editSecret(w http.ResponseWriter, ref secretRef, edit func(*yaml.Node) error) {
 	_, path, err := s.secretFile(ref)
 	if err != nil {
 		writeErr(w, err)
@@ -128,7 +127,6 @@ func (s *Server) editSecret(w http.ResponseWriter, r *http.Request, ref secretRe
 		writeErr(w, err)
 		return
 	}
-	_ = s.store.Audit(r.Context(), "", action, ref.File+"#"+strings.Join(ref.Key, "."))
 	s.refresh("", "secrets")
 	w.WriteHeader(http.StatusNoContent)
 }
@@ -139,12 +137,12 @@ func (s *Server) handleSecretPut(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, badRequest("body must be {repo, file, key, value}"))
 		return
 	}
-	s.editSecret(w, r, ref, "secret.write", func(root *yaml.Node) error { return sops.Set(root, ref.Key, ref.Value) })
+	s.editSecret(w, ref, func(root *yaml.Node) error { return sops.Set(root, ref.Key, ref.Value) })
 }
 
 func (s *Server) handleSecretDelete(w http.ResponseWriter, r *http.Request) {
 	ref := refFromQuery(r)
-	s.editSecret(w, r, ref, "secret.delete", func(root *yaml.Node) error { return sops.Delete(root, ref.Key) })
+	s.editSecret(w, ref, func(root *yaml.Node) error { return sops.Delete(root, ref.Key) })
 }
 
 type newSecret struct {
@@ -174,7 +172,6 @@ func (s *Server) handleSecretFile(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, err)
 		return
 	}
-	_ = s.store.Audit(r.Context(), "", "secret.create", req.File)
 	s.refresh("", "secrets")
 	w.WriteHeader(http.StatusCreated)
 }

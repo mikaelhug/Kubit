@@ -43,7 +43,7 @@ func serveCmd(openConsole bool) *cobra.Command {
 				return err
 			}
 			defer lock.Release()
-			m, crypto, err := openManagerCrypto()
+			m, err := openManager()
 			if err != nil {
 				return err
 			}
@@ -65,7 +65,7 @@ func serveCmd(openConsole bool) *cobra.Command {
 				}
 				fmt.Fprintf(cmd.OutOrStdout(), "non-loopback bind: API requires Authorization: Bearer %s\n", token)
 			}
-			srv := api.New(version, m, token, crypto)
+			srv := api.New(version, m, token)
 			srv.Start()
 			ctx, stop := context.WithCancel(cmd.Context())
 			defer stop()
@@ -93,7 +93,7 @@ func serveCmd(openConsole bool) *cobra.Command {
 			case <-ctx.Done():
 			}
 			fmt.Fprintln(cmd.OutOrStdout(), "kubit: shutting down")
-			srv.Drain(10 * time.Second)
+			srv.Close()
 			shutdown, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancel()
 			_ = hs.Shutdown(shutdown)

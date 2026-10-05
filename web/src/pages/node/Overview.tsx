@@ -3,14 +3,14 @@ import { fmt, type ClusterSpec, type Inventory, type NodeDetail, type NodeRow, t
 import { Elapsed } from '../../components/Time'
 import { identityRows } from '../../components/Machine'
 import { KeyValue, Meter, Notice, Pill, Section } from '../../components/ui'
-import { kindDetail, kindLabel, modelOf } from '../../machine'
+import { kindLabel, modelOf } from '../../machine'
 
 type Row = [string, ComponentChildren]
 
 export function OverviewTab({ inv, invErr, k8s, k8sErr, node, spec, storage }: { inv: Inventory | null; invErr: string | null; k8s: NodeDetail | null; k8sErr: string | null; node: NodeRow | null; spec?: NodeSpec; storage?: ClusterSpec['spec']['storage'] }) {
   if (!node) return <div class="text-muted">Loading</div>
   const rows: Row[] = [
-    ['Kind', `${kindLabel[node.kind]}${kindDetail(node) ? ` · ${kindDetail(node)}` : ''}`],
+    ['Kind', kindLabel[node.kind]],
     ['Model', [modelOf(node), inv?.platform].filter(Boolean).join(' · ')],
     ...identityRows(node),
     ...(spec ? [['Install disk', <span class="mono">{spec.installDisk?.path ?? (spec.installDisk?.selector ? JSON.stringify(spec.installDisk.selector) : 'pool policy')}</span>] as Row] : []),
@@ -24,13 +24,12 @@ export function OverviewTab({ inv, invErr, k8s, k8sErr, node, spec, storage }: {
   )
   if (!node.talos) {
     const next = node.kind === 'configured' ? 'Runs Talos with a config Kubit did not apply; reset it to maintenance mode to use it.'
-      : node.kind === 'booting' ? 'Waiting for Talos maintenance mode.'
-      : 'Not running Talos; boot it from the Talos ISO or with kubit pxe.'
+      : 'Not answering; boot it into Talos from the ISO or with kubit pxe.'
     return (
       <div class="grid grid-cols-1 lg:grid-cols-2 gap-4">
         {identity}
         <Section title="Next">
-          <Notice tone={node.kind === 'booting' ? 'warn' : 'muted'}>{next}</Notice>
+          <Notice tone="muted">{next}</Notice>
         </Section>
       </div>
     )

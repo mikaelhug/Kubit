@@ -13,9 +13,8 @@ func TestMachineKind(t *testing.T) {
 		{"installing member", Machine{Cluster: "lab", State: "installing"}, KindMember, true},
 		{"maintenance", Machine{State: "maintenance"}, KindMaintenance, true},
 		{"configured", Machine{State: "configured"}, KindConfigured, false},
-		{"booting", Machine{State: "booting"}, KindBooting, false},
-		{"unknown", Machine{State: "unknown"}, KindUnbooted, false},
-		{"empty", Machine{}, KindUnbooted, false},
+		{"offline", Machine{State: "offline"}, KindOffline, false},
+		{"empty", Machine{}, KindOffline, false},
 	}
 	for _, c := range cases {
 		if got := c.m.Kind(); got != c.want {

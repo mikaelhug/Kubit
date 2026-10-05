@@ -31,10 +31,9 @@ func TestNotifierPerTable(t *testing.T) {
 	eid, _ := s.AddEvent(ctx, store.EventRow{Cluster: "c", Node: "n", Kind: "node.notready", Severity: "warn"})
 	_ = s.ResolveEvents(ctx, "c", "n", "node.notready")
 	_ = s.AckEvent(ctx, eid)
-	_ = s.Audit(ctx, "c", "x", "")
 	_ = s.PutSettings(ctx, store.DefaultSettings())
 	_ = s.DeleteCluster(ctx, "c")
-	want := []string{"clusters/put", "clusters/put", "machines/put", "machines/put", "snapshots/put", "snapshots/put", "snapshots/delete", "events/resolve", "events/ack", "audit/put", "settings/put", "machines/put", "clusters/delete"}
+	want := []string{"clusters/put", "clusters/put", "machines/put", "machines/put", "snapshots/put", "snapshots/put", "snapshots/delete", "events/resolve", "events/ack", "settings/put", "machines/put", "clusters/delete"}
 	if len(got) != len(want) {
 		t.Fatalf("got %d changes, want %d: %+v", len(got), len(want), got)
 	}
@@ -114,20 +113,14 @@ func TestOnlyOtherConnectionsCountAsExternal(t *testing.T) {
 	must(s.PutCluster(ctx, store.ClusterRow{Name: "c", Spec: []byte("x"), State: "ready"}))
 	must(s.PutClusterSecrets(ctx, "c", store.ClusterSecrets{SecretsBundle: []byte("b"), Talosconfig: []byte("t")}))
 	must(s.UpsertNode(ctx, store.NodeRow{MAC: "aa:aa:aa:aa:aa:09", IP: "10.0.0.9", State: "maintenance"}))
-	id, err := s.CreateOperation(ctx, "c", "test", nil)
-	must(err)
 	for _, write := range []func() error{
 		func() error { return s.AddSamples(ctx, "c", time.Now(), []store.Sample{{CPUMilli: 1}}) },
 		func() error {
 			_, err := s.AddEvent(ctx, store.EventRow{Cluster: "c", Severity: "info", Kind: "k", Message: "m"})
 			return err
 		},
-		func() error { return s.AppendOperationLog(ctx, id, "line") },
-		func() error { return s.SetOperationSteps(ctx, id, []byte("[]")) },
-		func() error { return s.FinishOperation(ctx, id, "done") },
 		func() error { return s.PutNodeMachineConfig(ctx, "10.0.0.9", []byte("cfg"), false) },
 		func() error { return s.Prune(ctx) },
-		func() error { return s.MarkStaleOperations(ctx) },
 		func() error { return s.Checkpoint(ctx) },
 	} {
 		must(write())
@@ -171,7 +164,7 @@ func TestExternalSettingsWriteBesideALocalWriteRefreshesSettings(t *testing.T) {
 	go a.WatchExternal(ctx, 300*time.Millisecond)
 	time.Sleep(100 * time.Millisecond)
 	set, _ := b.GetSettings(ctx)
-	set.PXEEnrollment = "closed"
+	set.FactoryURL = "https://factory.example"
 	if err := b.PutSettings(ctx, set); err != nil {
 		t.Fatal(err)
 	}
@@ -180,7 +173,7 @@ func TestExternalSettingsWriteBesideALocalWriteRefreshesSettings(t *testing.T) {
 	}
 	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
-		if got, _ := a.GetSettings(ctx); got.PXEEnrollment == "closed" {
+		if got, _ := a.GetSettings(ctx); got.FactoryURL == "https://factory.example" {
 			return
 		}
 		time.Sleep(50 * time.Millisecond)

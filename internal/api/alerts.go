@@ -17,11 +17,6 @@ import (
 	"github.com/mikael/kubit/internal/store"
 )
 
-func (s *Server) alertRoutes() {
-	r := s.mux
-	r.HandleFunc("GET /api/v1/audit", s.handleAudit)
-}
-
 func (s *Server) forwardEvent(e store.EventRow) {
 	v, err := s.store.GetSettings(context.Background())
 	if err != nil {
@@ -178,13 +173,4 @@ func sendMail(c store.SMTP, e store.EventRow) error {
 		return err
 	}
 	return cl.Quit()
-}
-
-func (s *Server) handleAudit(w http.ResponseWriter, r *http.Request) {
-	list, err := s.store.ListAudit(r.Context(), r.URL.Query().Get("cluster"), 1000)
-	if err != nil {
-		writeErr(w, err)
-		return
-	}
-	writeJSON(w, http.StatusOK, list)
 }

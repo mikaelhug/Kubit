@@ -1,10 +1,5 @@
 import { today } from '../clock'
 
-const kinds: Record<string, string> = {
-  'cluster.create': 'Create cluster', 'cluster.apply': 'Apply cluster.yaml', 'platform.plan': 'Plan add-ons', 'platform.apply': 'Apply add-ons',
-  'upgrade.talos': 'Upgrade Talos', 'upgrade.kubernetes': 'Upgrade Kubernetes', 'node.add': 'Add node', 'node.remove': 'Remove node', discover: 'Discover nodes',
-  'etcd.snapshot': 'etcd snapshot', 'etcd.restore': 'Restore etcd from snapshot',
-}
 
 export const splitList = (s: string) => s.split(/[,\s]+/).filter(Boolean)
 
@@ -50,5 +45,4 @@ export const fmt = {
     if (s < 86400) return `${Math.round(s / 3600)} h`
     return `${Math.round(s / 86400)} d`
   },
-  kind(kind: string) { return kinds[kind] || kind },
 }

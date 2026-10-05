@@ -33,11 +33,4 @@ func TestWithManagerOpensAndClosesTheStore(t *testing.T) {
 	if _, err := kept.Store.ListClusters(t.Context()); err == nil {
 		t.Error("the store must be closed after the command")
 	}
-	var seen *store.Store
-	if err := withStore(func(_ *cobra.Command, _ []string, s *store.Store) error { seen = s; return nil })(&cobra.Command{}, nil); err != nil || seen == nil {
-		t.Fatalf("withStore: %v", err)
-	}
-	if _, err := seen.ListClusters(t.Context()); err == nil {
-		t.Error("withStore must close the store")
-	}
 }

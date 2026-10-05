@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"strconv"
 
 	_ "modernc.org/sqlite"
 )
@@ -20,8 +19,6 @@ type Store struct {
 	settings settingsCache
 	held     held
 }
-
-func (s *Store) Crypto() *Crypto { return s.crypto }
 
 func Open(dir string, crypto *Crypto) (*Store, error) {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
@@ -242,6 +239,20 @@ var migrations = []string{
 	);`,
 	`CREATE INDEX IF NOT EXISTS events_open ON events (cluster, kind, node) WHERE acked = 0;
 	 CREATE INDEX IF NOT EXISTS operations_kind ON operations (kind, cluster, id);`,
+	`DROP INDEX IF EXISTS operations_kind;
+	 DROP TABLE IF EXISTS operation_log;
+	 DROP TABLE IF EXISTS operations;
+	 DROP TABLE IF EXISTS audit_log;
+	 DROP TABLE IF EXISTS sessions;
+	 DROP TABLE IF EXISTS users;
+	 ALTER TABLE machines DROP COLUMN wol;
+	 ALTER TABLE machines DROP COLUMN oob;
+	 ALTER TABLE machines DROP COLUMN provision;
+	 ALTER TABLE machines DROP COLUMN labhost;
+	 ALTER TABLE machines DROP COLUMN host;
+	 ALTER TABLE machines DROP COLUMN provision_kind;
+	 ALTER TABLE snapshots DROP COLUMN offsite;
+	 DELETE FROM settings WHERE key <> 'kubit';`,
 }
 
 var alreadyApplied = map[int]string{
@@ -289,48 +300,4 @@ func (s *Store) migrate(ctx context.Context) error {
 		}
 	}
 	return nil
-}
-
-func (s *Store) Audit(ctx context.Context, cluster, action, detail string) error {
-	res, err := s.db.ExecContext(ctx, `INSERT INTO audit_log (cluster, action, detail, actor) VALUES (?, ?, ?, ?)`, cluster, action, detail, "")
-	if err != nil {
-		return err
-	}
-	id, _ := res.LastInsertId()
-	s.notify(Change{Table: "audit", Cluster: cluster, Key: strconv.FormatInt(id, 10), Op: "put"})
-	return nil
-}
-
-type AuditEntry struct {
-	ID      int64  `json:"id"`
-	At      string `json:"at"`
-	Cluster string `json:"cluster"`
-	Action  string `json:"action"`
-	Detail  string `json:"detail"`
-	Actor   string `json:"actor,omitempty"`
-}
-
-const auditCols = `id, at, cluster, action, detail, actor`
-
-func scanAudit(sc scanner) (*AuditEntry, error) {
-	var e AuditEntry
-	if err := sc.Scan(&e.ID, &e.At, &e.Cluster, &e.Action, &e.Detail, &e.Actor); err != nil {
-		return nil, err
-	}
-	return &e, nil
-}
-
-func (s *Store) GetAudit(ctx context.Context, id int64) (*AuditEntry, error) {
-	e, err := scanAudit(s.db.QueryRowContext(ctx, `SELECT `+auditCols+` FROM audit_log WHERE id = ?`, id))
-	return e, notFound(err, "audit entry %d", id)
-}
-
-func (s *Store) ListAudit(ctx context.Context, cluster string, limit int) ([]AuditEntry, error) {
-	if limit <= 0 || limit > 5000 {
-		limit = 500
-	}
-	if cluster != "" {
-		return queryAll(ctx, s.db, scanAudit, `SELECT `+auditCols+` FROM audit_log WHERE cluster = ? ORDER BY id DESC LIMIT ?`, cluster, limit)
-	}
-	return queryAll(ctx, s.db, scanAudit, `SELECT `+auditCols+` FROM audit_log ORDER BY id DESC LIMIT ?`, limit)
 }

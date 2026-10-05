@@ -2,11 +2,9 @@ import type { ComponentChildren } from 'preact'
 import { useEffect } from 'preact/hooks'
 import { fmt } from '../api'
 import { AlertGroup } from '../components/Alerts'
-import { Elapsed } from '../components/Time'
-import { ClusterPill, Code, Notice, Pill, Section, StatusDot, Tile } from '../components/ui'
-import { opList } from '../ops'
+import { ClusterPill, Code, Notice, Pill, Section, Tile } from '../components/ui'
 import { clusters, kubitKey, loadAllHealth, machineList, observer, openAlerts, statuses, versions } from '../store'
-import { stateTone, type Tone } from '../tone'
+import { type Tone } from '../tone'
 import { defaultTalos, talosIso, updatesFor } from '../versions'
 
 const factory = 'https://factory.talos.dev'
@@ -57,35 +55,10 @@ export function Home() {
         </div>
       </Section>
 
-      <Section title="Activity" actions={<a href="/operations" class="btn">All activity</a>}>
-        <ActivityList />
-      </Section>
     </div>
   )
 }
 
-function ActivityList() {
-  const ops = [...opList.value].sort((a, b) => b.id - a.id)
-  const shown = [...ops.filter((o) => o.status === 'running'), ...ops.filter((o) => o.status !== 'running').slice(0, 5)]
-  return (
-    <div class="panel divide-y divide-border/60">
-      {shown.length === 0 && <div class="p-4 text-[13px] text-muted">Nothing yet.</div>}
-      {shown.map((o) => {
-        const step = (o.steps ?? []).find((s) => s.status === 'running')
-        return (
-          <a key={o.id} href={`/operations/${o.id}`} class="flex items-center gap-3 px-4 py-2 text-[13px] hover:bg-panel-2">
-            <StatusDot tone={stateTone(o.status)} pulse={o.status === 'running'} />
-            <span class="font-medium">{fmt.kind(o.kind)}</span>
-            {o.cluster && <span class="text-muted">{o.cluster}</span>}
-            {step && <span class="text-muted truncate">{step.title}</span>}
-            <span class="ml-auto text-muted">{o.status === 'running' ? <Elapsed from={o.startedAt} /> : fmt.when(o.startedAt)}</span>
-            <Pill tone={stateTone(o.status)}>{o.status}</Pill>
-          </a>
-        )
-      })}
-    </div>
-  )
-}
 
 function ClusterCard({ name, state, talos, k8s, update, alerts }: { name: string; state: string; talos: string; k8s: string; update: boolean; alerts: number }) {
   const st = statuses.value.get(name)

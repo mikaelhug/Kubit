@@ -1,11 +1,10 @@
 import type { ComponentChildren } from 'preact'
 import { fmt, type NodeRow } from '../api'
-import { kindDetail, kindLabel, kindTone, lastSeenOf, typeOf } from '../machine'
+import { kindLabel, kindTone, lastSeenOf, typeOf } from '../machine'
 import { Pill } from './ui'
 
 export function KindPill({ m }: { m: NodeRow }) {
-  const detail = kindDetail(m)
-  return <Pill tone={kindTone(m)} title={`state ${m.state}`}>{kindLabel[m.kind]}{detail && detail !== m.kind ? ` · ${detail}` : ''}</Pill>
+  return <Pill tone={kindTone(m)}>{kindLabel[m.kind]}</Pill>
 }
 
 export function TypePill({ m }: { m?: NodeRow | null }) {

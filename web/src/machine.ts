@@ -1,22 +1,20 @@
 import { type MachineKind, type NodeRow } from './api'
 import { statuses } from './store'
 import { later } from './time'
-import { stateTone, type Tone } from './tone'
+import { type Tone } from './tone'
 
 export const kindLabel: Record<MachineKind, string> = {
   member: 'cluster member',
   maintenance: 'maintenance',
   configured: 'Talos, not managed here',
-  booting: 'booting',
-  unbooted: 'not running Talos',
+  offline: 'offline',
 }
 
 export function kindTone(m: NodeRow): Tone {
   switch (m.kind) {
     case 'member': case 'maintenance': return 'good'
-    case 'booting': return 'warn'
     case 'configured': return 'info'
-    default: return stateTone(m.state)
+    default: return 'muted'
   }
 }
 
@@ -42,7 +40,7 @@ export function installCandidates(m?: NodeRow | null) {
   return (m?.inventory?.disks ?? []).filter((d) => d.devPath && !d.readonly && !d.cdrom && d.transport !== 'usb').sort((a, b) => b.sizeBytes - a.sizeBytes)
 }
 
-export function kindDetail(m: NodeRow) { return m.kind === 'unbooted' && m.state !== 'unknown' ? m.state : '' }
+
 
 export function nodeEntry(m: NodeRow, hostname = '') {
   const inv = m.inventory

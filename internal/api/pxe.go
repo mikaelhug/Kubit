@@ -11,13 +11,11 @@ import (
 	"time"
 
 	"github.com/mikael/kubit/internal/httpx"
-	"github.com/mikael/kubit/internal/netx"
 )
 
 func (s *Server) pxeRoutes() {
 	r := s.mux
 	r.HandleFunc("GET /api/v1/pxe", s.handlePXEStatus)
-	r.HandleFunc("GET /api/v1/pxe/decide", s.handlePXEDecide)
 }
 
 const pxeStatusWait = 2 * time.Second
@@ -98,29 +96,6 @@ func (s *Server) handlePXEStatus(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, st)
 }
 
-func (s *Server) handlePXEDecide(w http.ResponseWriter, r *http.Request) {
-	mac := queryMAC(r)
-	boot, reason := s.pxeDecision(r.Context(), mac)
-	writeJSON(w, http.StatusOK, map[string]string{"boot": boot, "reason": reason})
-}
-
-func (s *Server) pxeDecision(ctx context.Context, mac string) (string, string) {
-	m, err := s.store.GetMachine(ctx, mac)
-	if err != nil {
-		v, _ := s.store.GetSettings(ctx)
-		if v.PXEEnrollment == "closed" {
-			return "local", "unknown machine and enrollment is closed"
-		}
-		return "talos", "unknown machine, enrollment open"
-	}
-	switch {
-	case m.Cluster != "":
-		return "local", "member of cluster " + m.Cluster
-	default:
-		return "talos", "known, unassigned machine"
-	}
-}
-
 func (s *Server) watchPXE(ctx context.Context) {
 	var last string
 	t := time.NewTicker(5 * time.Second)
@@ -144,5 +119,3 @@ func (s *Server) watchPXE(ctx context.Context) {
 		}
 	}
 }
-
-func queryMAC(r *http.Request) string { return netx.MACKey(r.URL.Query().Get("mac")) }

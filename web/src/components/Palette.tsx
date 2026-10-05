@@ -19,7 +19,7 @@ function paletteItems(): Item[] {
   for (const m of machineList.value) {
     if (m.kind !== 'member') out.push({ label: m.hostname || m.mac, hint: `${kindLabel[m.kind]} · ${m.ip || m.mac}`, href: `/machines/${m.mac}`, group: 'Machines' })
   }
-  out.push({ label: 'Home', href: '/', group: 'Kubit' }, { label: 'Discovery', href: '/discovery', group: 'Kubit' }, { label: 'Secrets', href: '/secrets', group: 'Kubit' }, { label: 'Activity', href: '/operations', group: 'Kubit' })
+  out.push({ label: 'Home', href: '/', group: 'Kubit' }, { label: 'Discovery', href: '/discovery', group: 'Kubit' }, { label: 'Secrets', href: '/secrets', group: 'Kubit' })
   return out
 }
 
@@ -76,7 +76,7 @@ function PaletteDialog({ onClose }: { onClose: () => void }) {
   )
 }
 
-const shortcuts: [string, string][] = [['⌘K / Ctrl+K', 'Jump to a cluster, node or page'], ['a', 'Toggle the Activity drawer'], ['/', 'Focus the table filter'], ['?', 'This sheet'], ['Esc', 'Close dialogs and drawers']]
+const shortcuts: [string, string][] = [['⌘K / Ctrl+K', 'Jump to a cluster, node or page'], ['/', 'Focus the table filter'], ['?', 'This sheet'], ['Esc', 'Close dialogs']]
 
 export function Shortcuts() {
   const [open, setOpen] = useState(false)

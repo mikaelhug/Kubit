@@ -8,13 +8,11 @@ import (
 	"os"
 	"runtime"
 	"strconv"
-	"strings"
 	"sync"
 	"time"
 
 	"github.com/coder/websocket"
 	"github.com/mikael/kubit/internal/cluster"
-	"github.com/mikael/kubit/internal/k8s"
 	"github.com/mikael/kubit/internal/store"
 	"github.com/mikael/kubit/internal/watch"
 )
@@ -27,24 +25,20 @@ func (s *Server) liveRoutes() {
 }
 
 type Message struct {
-	Seq         int64                `json:"seq,omitempty"`
-	Kind        string               `json:"kind"`
-	OperationID int64                `json:"operationId,omitempty"`
-	Event       *cluster.Event       `json:"event,omitempty"`
-	Operation   *store.OperationRow  `json:"operation,omitempty"`
-	Cluster     string               `json:"cluster,omitempty"`
-	Status      *cluster.Status      `json:"status,omitempty"`
-	Health      *store.EventRow      `json:"health,omitempty"`
-	Scope       string               `json:"scope,omitempty"`
-	ClusterRow  *clusterSummary      `json:"clusterRow,omitempty"`
-	Machine     *nodeView            `json:"machine,omitempty"`
-	Snapshot    *store.Snapshot      `json:"snapshot,omitempty"`
-	Audit       *store.AuditEntry    `json:"audit,omitempty"`
-	Sample      *store.Sample        `json:"sample,omitempty"`
-	Key         string               `json:"key,omitempty"`
-	Node        string               `json:"node,omitempty"`
-	Hello       *Hello               `json:"hello,omitempty"`
-	Observer    *watch.ObserverState `json:"observer,omitempty"`
+	Seq        int64                `json:"seq,omitempty"`
+	Kind       string               `json:"kind"`
+	Cluster    string               `json:"cluster,omitempty"`
+	Status     *cluster.Status      `json:"status,omitempty"`
+	Health     *store.EventRow      `json:"health,omitempty"`
+	Scope      string               `json:"scope,omitempty"`
+	ClusterRow *clusterSummary      `json:"clusterRow,omitempty"`
+	Machine    *nodeView            `json:"machine,omitempty"`
+	Snapshot   *store.Snapshot      `json:"snapshot,omitempty"`
+	Sample     *store.Sample        `json:"sample,omitempty"`
+	Key        string               `json:"key,omitempty"`
+	Node       string               `json:"node,omitempty"`
+	Hello      *Hello               `json:"hello,omitempty"`
+	Observer   *watch.ObserverState `json:"observer,omitempty"`
 }
 
 type Hello struct {
@@ -66,24 +60,6 @@ const (
 	scopeMachines     = "machines"
 	scopeConfig       = "config"
 )
-
-var configKinds = map[string]bool{"cluster.apply": true, "node.add": true, "node.remove": true, "node.rename": true, "node.pool": true, "node.readdress": true, "upgrade.talos": true, "upgrade.kubernetes": true}
-
-func scopesForKind(kind string) []string {
-	switch {
-	case kind == "cluster.create":
-		return []string{k8s.ScopeNodes, k8s.ScopeAddons, k8s.ScopeNetwork, k8s.ScopeFlux, scopeCertificates, "sops", scopeConfig}
-	case strings.HasPrefix(kind, "platform."):
-		return []string{k8s.ScopeAddons, k8s.ScopeNetwork, k8s.ScopeFlux}
-	case kind == "cert.rotate":
-		return []string{scopeCertificates}
-	case configKinds[kind]:
-		return []string{k8s.ScopeNodes, scopeConfig}
-	case strings.HasPrefix(kind, "etcd."), strings.HasPrefix(kind, "node."), strings.HasPrefix(kind, "cluster."), strings.HasPrefix(kind, "upgrade."):
-		return []string{k8s.ScopeNodes}
-	}
-	return nil
-}
 
 type frame struct {
 	seq  int64
@@ -237,11 +213,6 @@ func (s *Server) onChange(ctx context.Context, c store.Change) {
 		if sn, err := s.store.GetSnapshot(ctx, id); err == nil {
 			s.hub.publish(Message{Kind: "snapshot", Cluster: sn.Cluster, Snapshot: sn})
 		}
-	case "audit":
-		id, _ := strconv.ParseInt(c.Key, 10, 64)
-		if e, err := s.store.GetAudit(ctx, id); err == nil {
-			s.hub.publish(Message{Kind: "audit", Cluster: e.Cluster, Audit: e})
-		}
 	case "secrets":
 		s.refresh(c.Cluster, scopeCertificates)
 	case "sops":
@@ -252,10 +223,6 @@ func (s *Server) onChange(ctx context.Context, c store.Change) {
 			s.hub.publish(Message{Kind: "healthAck", Cluster: c.Cluster, Key: c.Key})
 		case "resolve":
 			s.hub.publish(Message{Kind: "healthResolved", Cluster: c.Cluster, Key: c.Key, Node: c.Node})
-		}
-	case "operations":
-		if id, err := strconv.ParseInt(c.Key, 10, 64); err == nil {
-			s.publishOperation(ctx, id)
 		}
 	}
 }
@@ -347,15 +314,19 @@ func (s *Server) handleDaemonStop(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, conflict("This daemon cannot be stopped from the console."))
 		return
 	}
-	if s.running() > 0 {
-		writeErr(w, conflict("Operations are running; wait for them or cancel them first."))
-		return
-	}
-	_ = s.store.Audit(r.Context(), "", "kubit.stop", "")
 	w.WriteHeader(http.StatusAccepted)
 	s.stopDaemon()
 }
 
 func (s *Server) hello() Hello {
 	return Hello{Version: s.version, StartedAt: s.started.UTC().Format(time.RFC3339), PID: os.Getpid(), OS: runtime.GOOS}
+}
+
+func (s *Server) Close() {
+	s.stop()
+	s.hub.shutdown(Message{Kind: "stopped"})
+	deadline := time.Now().Add(2 * time.Second)
+	for !s.hub.idle() && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
 }

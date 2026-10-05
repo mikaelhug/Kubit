@@ -23,6 +23,6 @@ log "credentials derive from the repo"
 KUBECONFIG="$dir/kubeconfig" kubectl get nodes -o wide
 
 log "etcd snapshot"
-"$kubit" etcd snapshot e2e
+"$kubit" etcd snapshot "$dir"
 
 log "done: $dir"

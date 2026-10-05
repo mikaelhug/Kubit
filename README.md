@@ -15,7 +15,7 @@ converge it, and the console only observes. The roadmap is under *Status*.
 | Platform add-ons: MetalLB, Traefik, gVisor, metrics-server, cert-manager, Longhorn, Flux, Builds | OpenTofu (`infra/platform/`), run by Kubit with a pinned binary | `hashicorp/helm`, `alekc/kubectl` |
 | User workloads | Flux (headless), syncing an apps repository you own | GitRepository + Kustomization `flux-system/flux-system` from `platform.flux.repository` |
 | App secrets | SOPS files in the apps repository, one age key per cluster | kustomize-controller decrypts in the cluster |
-| Escape hatch | You | `kubit cluster export`: `infra/talos/` HCL + native artefacts, never run by Kubit |
+| Escape hatch | You | `sops -d secrets.sops.yaml` plus `kubit talosconfig`/`kubeconfig`: plain talosctl and kubectl work without Kubit |
 
 A cluster lives in a repo directory you choose (*Cluster repo*). `~/.kubit` (SQLite,
 AES-GCM sealed with a master key in the macOS Keychain) holds caches and daemon data;
@@ -140,7 +140,6 @@ spec:
     schedule: "0 */6 * * *"
     s3: { bucket: talos-backups, region: eu-north-1, endpoint: "https://s3.example.com", prefix: lab, pathStyle: true }
     ageRecipients: [age1…]         # who can open the snapshots
-  maintenance: { window: "Sat,Sun 02:00-06:00", timezone: Europe/Stockholm }
   platform:
     metallb: { enabled: true, range: 192.168.64.200-192.168.64.220 }
     traefik: { enabled: true }
@@ -196,25 +195,25 @@ Cluster subnets are each node's static prefixes, else the /24 of its IP.
 `~/.kubit/kubit.db` (SQLite, WAL). Applied node configs, the SMTP password and the
 secrets of clusters not yet moved into a repo are AES-256-GCM sealed with a 32-byte master key from the macOS Keychain
 (`kubit` / `master-key`), `KUBIT_MASTER_KEY` (base64), or a `master.key` file (0600) in
-`$KUBIT_HOME` when no keyring is reachable. `kubit key export` prints it.
+`$KUBIT_HOME` when no keyring is reachable.
 
 **App secrets (SOPS + age).** Each cluster has an age identity in its
 `secrets.sops.yaml` (`flux.ageKey`), so a rebuild from the repo decrypts again. Every
 platform apply with Flux installs it as `flux-system/sops-age`, and the root
 Kustomization decrypts with it. Encrypt app secrets to your own key plus the cluster's
-recipient (`kubit recipient lab`).
+recipient, shown with *Copy* on the Add-ons tab's Flux card.
 
 ## Discovery
 
-`kubit discover <cidr|ip>…` (or Discovery → Scan) probes :50000 and reads the insecure
+Discovery → Scan probes :50000 and reads the insecure
 maintenance API: MAC of the uplink, arch, CPUs, RAM, disks, KVM, TPM, watchdog, SMBIOS
 UUID and serial. Machines are keyed by MAC, so a new DHCP lease keeps the row and raises
 `machine.ip-changed` for members. Kinds are derived: **member** (in a cluster),
 **maintenance**, **configured** (Talos with a config Kubit did not apply), **booting**,
 **unbooted**. Every minute the daemon scans `discoverySubnets` plus the /24 of every
 node declared in a served repo for new maintenance-mode machines, reprobes the known
-ones, and pushes changes to the console, where *Copy node entry* gives the cluster.yaml
-lines for a machine.
+ones (marking those that stop answering `offline`), and pushes changes to the console,
+where *Copy node entry* gives the cluster.yaml lines for a machine.
 
 ## Plan and apply
 
@@ -294,12 +293,6 @@ so commit it after an apply. Charts are pinned in `internal/tofu/render.go`. Not
 
 `platform.<addon>.values` is passed to Helm only when set.
 
-## Export
-
-`kubit cluster export <name> -o dir` writes `secrets.yaml`, talosconfig, machine
-configs, kubeconfig and `infra/talos/` for the `siderolabs/talos` provider (`tofu apply`
-is a no-op on a live cluster). A re-export removes only files it wrote.
-
 ## Console and API
 
 `kubit lab apps` runs the daemon in the foreground for those repos and opens the console;
@@ -308,40 +301,37 @@ cluster repo: Kubit decrypts it with your age key, adopts the cluster into its c
 when its nodes answer (so health, alerts and add-on state follow the repo), and watches
 the files (fsnotify) to reload on change. A dir without one only feeds the secrets
 editor. It binds `127.0.0.1:8090`; a non-loopback bind requires a bearer token
-(`--token` / `KUBIT_TOKEN`). `kubit status lab --watch` gives the same health in a
-terminal.
+(`--token` / `KUBIT_TOKEN`).
 
 The console is read-only apart from Discovery's scan, alert acknowledgement, the secrets
 editor and *Stop Kubit*:
 
 | route | shows |
 |---|---|
-| `/` | open alerts, notices, clusters, machine counts, recent activity |
+| `/` | open alerts, notices, clusters, machine counts |
 | `/clusters/<name>/…` | Overview, Nodes, Workloads, Network, Storage, Add-ons, Backups, Config (cluster.yaml, kubeconfig, certificates) |
 | `/machines/<mac>` | Overview, Hardware, Kubernetes, Services, Logs |
 | `/discovery` | machines in maintenance mode with *Copy node entry*, scan, PXE state |
 | `/secrets` | the SOPS files of the served repos: keys, values on demand, add, edit, delete, new Secret |
-| `/operations` | operations and audit log |
 
 Everything is live over one WebSocket (`/api/v1/ws`): store changes, watcher status,
-health events, operation events and `refresh {cluster, scope}` from Kubernetes
-informers; reconnects replay from `?since=`. Nothing polls; the only UI timer is
+health events and `refresh {cluster, scope}` from Kubernetes informers and the repo
+watcher; reconnects replay from `?since=`. Nothing polls; the only UI timer is
 `web/src/clock.ts`.
 
-Endpoints (all `GET` unless noted): `clusters`, `clusters/{n}[/status|yaml|kubeconfig|
-config|image|addons|flux|builds|sops|certificates|maintenance|snapshots[/{id}]|events|
-samples|service-health|workloads|pods|namespaces|network|storage]`, `nodes`,
-`nodes/{ip}/inventory|services|logs|kubernetes`, `machines[/{mac}]`, `operations[/{id}]`,
-`audit`, `observer`, `versions`, `pxe`, `pxe/decide`, `version`, `ws`; `POST discover`,
+Endpoints (all `GET` unless noted): `clusters`, `clusters/{n}/status|yaml|kubeconfig|
+config|image|addons|flux|builds|sops|certificates|snapshots[/{id}]|events|samples|
+service-health|workloads|pods|namespaces|network|storage`, `nodes`,
+`nodes/{ip}/inventory|services|logs|kubernetes`, `observer`, `versions`, `pxe`,
+`version`, `ws`; `POST discover` (scans and answers `{found}`),
 `POST events/{id}/ack`, `POST clusters/{n}/events/ack`, `POST daemon/stop`,
 `GET secrets`, `GET|PUT|DELETE secrets/value`, `POST secrets/files`. Unknown `/api/`
 paths answer 404 JSON.
 
 **Secrets editor.** Lists every `*.sops.yaml` under the served repos (not the repo's own
 `secrets.sops.yaml`, nor `.git`, `state/`, `.terraform/`) with its keys and recipients,
-read from the file without decrypting. A value is decrypted only when shown (audited as
-`secret.read`). An edit decrypts the file with your age key, changes the one value and
-re-encrypts it for the same recipients and rules (`secret.write`); a new Secret takes its
+read from the file without decrypting. A value is decrypted only when shown. An edit decrypts the file with your age key,
+changes the one value and re-encrypts it for the same recipients and rules; a new Secret takes its
 recipients from the repo's `.sops.yaml` and encrypts only `data`/`stringData`. Kubit never
 commits. Encrypted comments are dropped on a write.
 
@@ -350,7 +340,6 @@ commits. Encrypted comments are dropped on a write.
 ```yaml
 factoryUrl: https://factory.talos.dev
 pxeStatusUrl: http://127.0.0.1:8069/status.json
-pxeEnrollment: open          # closed: unknown MACs get no Talos
 alerts:
   minSeverity: warn
   webhookUrl: https://hooks.slack.com/…
@@ -362,12 +351,11 @@ The SMTP password comes from `KUBIT_SMTP_PASSWORD`, never the file.
 
 ## PXE
 
-`sudo kubit pxe --iface en0 [--talos-version …] [--schematic …]` is a proxyDHCP (the
-LAN's DHCP keeps assigning addresses) with TFTP for iPXE and an HTTP iPXE script on
-:8069 that boots the Talos kernel and initramfs into maintenance mode. Assets come from
-the Image Factory through `~/.kubit/cache`. With `--repo lab` (repeatable) a MAC declared
-in any cluster.yaml boots its own disk and every other MAC gets Talos (`--closed`: none);
-without it the daemon decides.
+`sudo kubit pxe lab [more repos…] --iface en0 [--talos-version …] [--schematic …]` is a
+proxyDHCP (the LAN's DHCP keeps assigning addresses) with TFTP for iPXE and an HTTP iPXE
+script on :8069 that boots the Talos kernel and initramfs into maintenance mode. Assets
+come from the Image Factory through `~/.kubit/cache`. A MAC declared in any of the
+repos' cluster.yaml boots its own disk; every other MAC gets Talos (`--closed`: none).
 `--http-only` serves only the script and assets. Needs root and the machines' L2
 segment.
 
@@ -382,7 +370,9 @@ alerting. When the gateway is unreachable too, the observer is offline and clust
 alerts pause. Every 60 s it also derives workload alerts (`workload.unavailable`,
 `pod.crashloop`, `pvc.pending`, `service.no-endpoints`, `ingress.no-address`,
 `lb.pool-exhausted`, `flux.not-ready`), raised after two bad and cleared after three
-good collections. Alerts at or above `alerts.minSeverity` go to the webhook and SMTP.
+good collections, and stay quiet while a `kubit apply` holds the cluster's
+`kube-system/kubit-apply` Lease and for 10 minutes after it releases it, wherever the
+apply ran. Alerts at or above `alerts.minSeverity` go to the webhook and SMTP.
 
 ## Backups
 
@@ -397,7 +387,7 @@ cluster.yaml: add `backup.accessKeyID` and `backup.secretAccessKey` with
 `sops lab/secrets.sops.yaml`; `kubit plan` refuses a declared backup without them.
 Kubit no longer takes scheduled snapshots itself. Not yet run against a bucket.
 
-For disaster recovery, `kubit etcd snapshot|list|download|restore <cluster>` stays: a
+For disaster recovery, `kubit etcd snapshot|list|restore <dir>` stays: a
 snapshot is verified (bbolt, key count, sha256), gzipped and sealed under
 `~/.kubit/clusters/<name>/snapshots/`; restore wipes EPHEMERAL on every control plane and
 rebuilds etcd from it (`--yes` required). A talos-backup snapshot restores the same way
@@ -407,13 +397,18 @@ once decrypted with `age -d` (`talosctl bootstrap --recover-from`).
 
 Kubit runs only when you start it. `kubit` (or `kubit serve`) holds `serve.lock` in
 `KUBIT_HOME`, so a second daemon refuses to start; Ctrl-C or *Stop Kubit* stops it
-cleanly (refused while operations run). Clusters never depend on Kubit: while it is
-stopped, alerts, discovery and scheduled snapshots pause. Start it from a terminal that
+cleanly. Clusters never depend on Kubit: while it is
+stopped, alerts and discovery pause. Start it from a terminal that
 stays open: on macOS a daemon started by an app that has quit loses local-network
 access. Under `sudo` (`kubit pxe`) Kubit uses the invoking user's `~/.kubit`.
 
-`kubit backup -o file.kubitbak` writes a sealed tar.gz of `~/.kubit`; `kubit restore`
-unpacks it into an empty home and needs the same master key.
+`~/.kubit` is a cache; losing it loses alert history and samples, nothing else of a
+repo cluster.
+
+**Commands:** `kubit [dirs…]` (daemon and console), `serve`, `init`, `plan`, `apply`,
+`talosconfig`, `kubeconfig`, `pxe`, `etcd snapshot|list|restore`, `export` (one-off move
+of a cluster from `~/.kubit` into a repo), `version`. Everything else is talosctl or
+kubectl with the derived credentials.
 
 ## Status
 
@@ -430,19 +425,21 @@ Roadmap (2026-10-05):
   accounts/OIDC, off-site and heartbeat, settings pages; console read-only; Discovery
   page; `serve --config`
 - [x] 2 — repo as source of truth: `kubit init`, SOPS-compatible `secrets.sops.yaml`,
-  derived talosconfig/kubeconfig, `kubit pxe --repo`; state in the repo lands with apply
+  derived talosconfig/kubeconfig, PXE decides from the repos; state in the repo lands with apply
 - [x] 3 — `kubit plan` / `kubit apply` converge (create, add, config, upgrades, guarded
   removal, platform), Lease lock, exit codes, encrypted tofu state in the repo;
   `cluster create|apply`, `node add|remove`, `upgrade`, `platform`, `sops` commands
   removed. Unit-tested; not yet run against a cluster
-- [x] 4 — `kubit serve <dirs…>` (adopt, watch, reload), `kubit status [dir] --watch`,
-  discovery scans served subnets every minute, console secrets editor (verified against
+- [x] 4 — `kubit serve <dirs…>` (adopt, watch, reload), discovery scans served subnets every minute, console secrets editor (verified against
   the sops CLI and live external edits)
 - [x] 5 — `spec.backup` → talos-backup add-on, off by default; the daemon's snapshot
   schedule, retention and `backup.stale` are gone
 - [x] 6 — migration: `kubit export <cluster> --repo <dir>` (spec, secrets, Flux key,
   encrypted state); repo clusters' secrets held in memory and dropped from SQLite;
-  `etcd`, `status`, `cluster export` and `node --cluster` take a repo dir
+  `etcd` takes a repo dir
+- [x] Cleanup — CLI down to the commands above; operations/Activity, audit log,
+  maintenance windows, the daemon's PXE decision and AMT/lab machine kinds removed;
+  apply quiets alerts through its Lease; dead tables and columns dropped
 
 Next: run the roadmap against `lab` (export, plan with no changes, an upgrade, a node
 add and removal, a talos-backup run) before merging `iac` into `main`.

@@ -94,7 +94,6 @@ func (m *Manager) RemoveNode(ctx context.Context, name, hostname string, opts Re
 		if err := m.Store.UnassignMachine(ctx, n.MAC, n.IP, state); err != nil {
 			return err
 		}
-		_ = m.Store.Audit(ctx, name, "node.remove", marshalJSON(n))
 		sink.Emit(Done, "forget", hostname, "removed from cluster %s", name)
 		return nil
 	})

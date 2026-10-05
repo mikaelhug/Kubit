@@ -1,11 +1,5 @@
-export type Level = 'info' | 'warn' | 'error' | 'done'
-export type StepStatus = 'pending' | 'running' | 'done' | 'failed' | 'skipped' | 'cancelled'
 
-export interface Step { id: string; title: string; status: StepStatus; node?: string; startedAt?: string; finishedAt?: string }
-export interface Event { seq?: number; time: string; clock?: string; kind?: 'log' | 'steps' | 'step'; level: Level; step: string; node?: string; message: string; steps?: Step[]; status?: StepStatus }
-export type OpStatus = 'running' | 'done' | 'failed' | 'cancelled'
-export interface Operation { id: number; cluster: string; kind: string; status: OpStatus; log?: string; startedAt: string; finishedAt?: string; steps: Step[]; artifact?: unknown; request?: unknown }
-export interface Message { seq?: number; kind: 'hello' | 'stopped' | 'resync' | 'event' | 'operation' | 'status' | 'health' | 'refresh' | 'cluster' | 'clusterRemoved' | 'machine' | 'machineRemoved' | 'snapshot' | 'snapshotRemoved' | 'audit' | 'healthAck' | 'healthResolved' | 'versions' | 'observer'; observer?: ObserverState; operationId?: number; event?: Event; operation?: Operation; cluster?: string; status?: Status; health?: HealthEvent; scope?: string; clusterRow?: ClusterRow; machine?: NodeRow; snapshot?: Snapshot; audit?: AuditEntry; key?: string; node?: string; hello?: { seq: number; version: string; startedAt: string; pid: number; os?: string } }
+export interface Message { seq?: number; kind: 'hello' | 'stopped' | 'resync' | 'status' | 'health' | 'refresh' | 'cluster' | 'clusterRemoved' | 'machine' | 'machineRemoved' | 'snapshot' | 'snapshotRemoved' | 'healthAck' | 'healthResolved' | 'versions' | 'observer'; observer?: ObserverState; cluster?: string; status?: Status; health?: HealthEvent; scope?: string; clusterRow?: ClusterRow; machine?: NodeRow; snapshot?: Snapshot; key?: string; node?: string; hello?: { seq: number; version: string; startedAt: string; pid: number; os?: string } }
 export interface ObserverState { online: boolean; since?: string; error?: string; gaps24h: number; lastGapAt?: string }
 export interface HealthEvent { id: number; ts: string; cluster: string; node?: string; severity: 'info' | 'warn' | 'critical'; kind: string; message: string; acked: boolean }
 export interface ServiceHealth { collectedAt: string; metallb: boolean; workloads?: { kind: string; namespace: string; name: string; ready: number; desired: number; available: boolean; ageSec: number }[]; pods?: { namespace: string; name: string; node?: string; owner?: string; phase: string; restarts: number; ageSec: number }[]; claims?: { namespace: string; name: string; phase: string; ageSec: number }[]; services?: { namespace: string; name: string; type: string; hasSelector: boolean; endpoints: number; ageSec: number }[]; ingresses?: { namespace: string; name: string; hasAddress: boolean; ageSec: number }[]; pool?: { range: string; total: number; allocated: number } }
@@ -48,14 +42,11 @@ export interface ClusterSpec {
     nodes: NodeSpec[]
     platform: PlatformSpec
     backup?: { schedule?: string; s3?: { bucket?: string; region?: string; endpoint?: string; prefix?: string; pathStyle?: boolean }; ageRecipients?: string[]; compression?: boolean }
-    maintenance?: { window?: string; timezone?: string }
     storage?: { systemDisk?: boolean; ephemeralSize?: string; encryption?: 'tpm' | 'nodeID' }
     patches?: Record<string, unknown>[]
   }
 }
 export interface CertInfo { name: string; subject: string; issuer?: string; notBefore: string; notAfter: string; daysLeft: number; rotatable: boolean; error?: string }
-export interface AuditEntry { id: number; at: string; cluster: string; action: string; detail: string; actor?: string }
-export interface MaintenanceState { window: string; timezone: string; open: boolean; next?: string; closes?: string }
 export interface ClusterRow { name: string; state: string; schematicId: string; createdAt: string; updatedAt: string; spec: ClusterSpec }
 
 export interface Inventory {
@@ -73,7 +64,7 @@ export interface NodeDetail {
   conditions: { type: string; status: string; reason?: string; message?: string; since?: string }[] | null
   taints: string[] | null; labels: Record<string, string> | null; capacity: Resources; allocatable: Resources; requests: Resources; pods: PodSummary[] | null
 }
-export type MachineKind = 'member' | 'maintenance' | 'configured' | 'booting' | 'unbooted'
+export type MachineKind = 'member' | 'maintenance' | 'configured' | 'offline'
 export interface NodeRow { ip: string; mac: string; uuid?: string; serial?: string; ipsSeen?: string[]; cluster: string; hostname: string; pool: string; arch: string; role: string; source: string; state: string; kind: MachineKind; talos: boolean; talosVersion: string; firstSeen: string; lastSeen: string; inventory?: Inventory }
 
 export interface NodeStatus { hostname: string; ip: string; role: string; pool: string; seenAt?: string; arch: string; kvm: boolean; talosVersion: string; kubeletVersion: string; ready: boolean; unschedulable: boolean; talosReachable: boolean; talosError?: string; talosReach?: string; registered: boolean; stage: string; cpuMilli: number; cpuCapMilli: number; memBytes: number; memCapBytes: number; memAllocBytes: number; pods: number; podCap: number; gvisor: boolean }
@@ -88,7 +79,6 @@ export interface Status {
 }
 export interface Service { id: string; state: string; healthy: boolean; unknown?: boolean; last: string }
 
-export type OpRef = { operationId: number }
 export interface SecretKey { path: string[]; encrypted: boolean; list?: boolean }
 export interface SecretFile { path: string; recipients: string[]; keys: SecretKey[]; kind?: string; name?: string; namespace?: string; error?: string }
 export interface SecretRepo { index: number; dir: string; name: string; cluster?: string; error?: string; files: SecretFile[] }

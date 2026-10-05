@@ -4,11 +4,10 @@ import { AlertGroup, EventRow } from '../../components/Alerts'
 import { behindText, useConfigStatus } from '../../configStatus'
 import { useNamespaces } from '../../components/NamespaceScope'
 import { RangeButtons, Sparkline, spanOf } from '../../components/Sparkline'
-import { Notice, Pill, Section, SeenAgo, StatusDot, Tile } from '../../components/ui'
-import { opsFor } from '../../ops'
+import { Notice, Section, SeenAgo, StatusDot, Tile } from '../../components/ui'
 import { health, loadSnapshots, openAlerts, snapshots, versions } from '../../store'
 import { appendWithin } from '../../time'
-import { stateTone, type Tone } from '../../tone'
+import { type Tone } from '../../tone'
 import { useLive } from '../../useLive'
 import { updatesFor } from '../../versions'
 import type { ClusterCtx } from './ClusterPage'
@@ -53,9 +52,6 @@ export function Overview({ ctx }: { ctx: ClusterCtx }) {
               {notable.slice(0, 30).map((e) => <EventRow key={e.id} e={e} />)}
             </div>
           </Section>
-          <Section title="Recent operations" actions={<a href={`/operations?cluster=${name}`} class="text-[12px] text-accent hover:underline">All activity →</a>}>
-            <RecentOperations name={name} />
-          </Section>
         </div>
       </div>
     </>
@@ -91,23 +87,6 @@ function CapacityTrend({ name, status }: { name: string; status: Status | null }
   )
 }
 
-function RecentOperations({ name }: { name: string }) {
-  const recent = [...opsFor(name)].sort((a, b) => b.id - a.id).slice(0, 5)
-  return (
-    <div class="panel divide-y divide-border/60">
-      {recent.length === 0 && <div class="p-4 text-[13px] text-muted">Nothing yet.</div>}
-      {recent.map((o) => (
-        <a key={o.id} href={`/operations/${o.id}`} class="flex items-center gap-3 px-4 py-2 text-[13px] hover:bg-panel-2">
-          <StatusDot tone={stateTone(o.status)} pulse={o.status === 'running'} />
-          <span class="font-medium">{fmt.kind(o.kind)}</span>
-          <span class="text-muted">#{o.id}</span>
-          <span class="ml-auto text-muted">{fmt.datetime(o.startedAt)}</span>
-          <Pill tone={stateTone(o.status)}>{o.status}</Pill>
-        </a>
-      ))}
-    </div>
-  )
-}
 
 function Reachability({ status }: { status: Status | null }) {
   if (!status) return null

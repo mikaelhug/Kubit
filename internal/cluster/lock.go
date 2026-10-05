@@ -47,12 +47,33 @@ func (m *Manager) LockApply(ctx context.Context, d *Desired, holder string) (fun
 	return func() {
 		release, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
 		defer cancel()
-		_ = leases.Delete(release, applyLease, metav1.DeleteOptions{})
+		cur, err := leases.Get(release, applyLease, metav1.GetOptions{})
+		if err != nil || deref(cur.Spec.HolderIdentity) != holder {
+			return
+		}
+		ended := metav1.NewMicroTime(time.Now())
+		cur.Spec.HolderIdentity, cur.Spec.RenewTime = nil, &ended
+		_, _ = leases.Update(release, cur, metav1.UpdateOptions{})
 	}, nil
 }
 
+func (m *Manager) ApplyQuiet(ctx context.Context, name string, after time.Duration) bool {
+	kc, err := m.KubeClient(ctx, name)
+	if err != nil {
+		return false
+	}
+	call, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	l, err := kc.CoordinationV1().Leases("kube-system").Get(call, applyLease, metav1.GetOptions{})
+	if err != nil || l.Spec.RenewTime == nil {
+		return false
+	}
+	now := time.Now()
+	return held(l, now) || (deref(l.Spec.HolderIdentity) == "" && now.Sub(l.Spec.RenewTime.Time) < after)
+}
+
 func held(l *coordinationv1.Lease, now time.Time) bool {
-	if l.Spec.RenewTime == nil || l.Spec.LeaseDurationSeconds == nil {
+	if deref(l.Spec.HolderIdentity) == "" || l.Spec.RenewTime == nil || l.Spec.LeaseDurationSeconds == nil {
 		return false
 	}
 	return now.Before(l.Spec.RenewTime.Add(time.Duration(*l.Spec.LeaseDurationSeconds) * time.Second))

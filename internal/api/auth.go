@@ -28,7 +28,7 @@ func loopbackPeer(r *http.Request) bool {
 }
 
 func openPath(p string) bool {
-	return p == "/api/v1/version" || p == "/api/v1/pxe/decide"
+	return p == "/api/v1/version"
 }
 
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {

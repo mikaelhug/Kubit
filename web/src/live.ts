@@ -1,8 +1,7 @@
-import { fmt, getToken, type Message } from './api'
+import { getToken, type Message } from './api'
 import { editMap, setIn } from './maps'
-import { pushEvent, reloadLogs, reloadOfflineLogs, reloadOperations, operations, upsertOp } from './ops'
 import {
-  audit, bumpAllRefreshes, bumpRefresh, clusters, connected, daemon, health, loadAllHealth, loadMachines, loadObserver, loadSnapshots, loadVersions, machineKey, machines, observer,
+  bumpAllRefreshes, bumpRefresh, clusters, connected, daemon, health, loadAllHealth, loadMachines, loadObserver, loadSnapshots, loadVersions, machineKey, machines, observer,
   reconnectAttempt, reloadClusters, resyncing, snapshots, statuses, stopped, toast, upsertCluster,
 } from './store'
 
@@ -13,7 +12,6 @@ let startedAt = ''
 let attempt = 0
 let everConnected = false
 let resyncedAtHello = false
-let replaySkip = new Set<number>()
 let resyncWanted = 0
 let resyncDone = 0
 let resyncRun: Promise<void> | null = null
@@ -58,7 +56,7 @@ async function runResync() {
     while (resyncDone < resyncWanted) {
       resyncDone = resyncWanted
       await Promise.all([
-        reloadClusters(), reloadOperations(), reloadLogs(), loadMachines(), loadObserver(), loadVersions(),
+        reloadClusters(), loadMachines(), loadObserver(), loadVersions(),
         loadAllHealth([...health.value.keys()]), ...[...snapshots.value.keys()].map(loadSnapshots),
       ])
       bumpAllRefreshes()
@@ -80,7 +78,6 @@ function hello(m: Message) {
   startedAt = h.startedAt
   helloSeq = h.seq
   resyncedAtHello = !everConnected || restarted
-  replaySkip = resyncedAtHello ? new Set() : reloadOfflineLogs()
   if (resyncedAtHello) { everConnected = true; lastSeq = helloSeq; resync() }
 }
 
@@ -124,23 +121,8 @@ function apply(m: Message) {
     case 'snapshotRemoved':
       editMap(snapshots, (sm) => { for (const [c, list] of sm) sm.set(c, list.filter((s) => String(s.id) !== m.key)) })
       break
-    case 'audit':
-      if (m.audit && !audit.value.some((a) => a.id === m.audit!.id)) audit.value = [m.audit, ...audit.value].slice(0, 500)
-      break
     case 'versions':
       loadVersions()
-      break
-    case 'operation':
-      if (m.operation) {
-        const prev = operations.value.get(m.operation.id)
-        upsertOp(m.operation)
-        if (m.operation.status !== 'running' && prev?.status === 'running' && !replayed) {
-          toast(`${fmt.kind(m.operation.kind)}${m.operation.cluster ? ' · ' + m.operation.cluster : ''}: ${m.operation.status}`, m.operation.status === 'done' ? 'good' : 'error')
-        }
-      }
-      break
-    case 'event':
-      if (m.event && m.operationId !== undefined && !(replayed && replaySkip.has(m.operationId))) pushEvent(m.operationId, m.event)
       break
     case 'status':
       if (m.status && m.cluster) setIn(statuses, m.cluster, m.status)

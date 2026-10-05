@@ -1,12 +1,10 @@
 import { Fragment, type ComponentChildren } from 'preact'
-import { memo } from 'preact/compat'
-import { useEffect, useRef, useState } from 'preact/hooks'
-import { api, fmt, type Event, type Level } from '../api'
+import { useRef, useState } from 'preact/hooks'
+import { fmt } from '../api'
 import { now } from '../clock'
 import { useEscape } from '../keys'
-import { clusters, toast } from '../store'
+import { toast } from '../store'
 import { severityTone, stateTone, toneBg, toneBorder, tonePill, toneText, type Tone } from '../tone'
-import { useLive } from '../useLive'
 
 export function Pill({ tone, children, title }: { tone: Tone; children: ComponentChildren; title?: string }) {
   return <span class={`pill ${tonePill[tone]}`} title={title}>{children}</span>
@@ -48,18 +46,6 @@ export function Meter({ label, used, cap, format, color }: { label: string; used
   )
 }
 
-const levelColor: Record<Level, string> = { info: 'text-text', warn: 'text-warn', error: 'text-bad', done: 'text-good' }
-
-export const EventLine = memo(function EventLine({ e, showStep = true }: { e: Event; showStep?: boolean }) {
-  return (
-    <div class={`flex gap-2 leading-5 ${levelColor[e.level] ?? 'text-text'}`}>
-      {(e.time || e.clock) && <span class="text-muted shrink-0 select-none">{e.clock ?? fmt.when(e.time)}</span>}
-      {showStep && e.step && <span class="text-muted shrink-0">[{e.step}]</span>}
-      {e.node && <span class="shrink-0 text-accent">{e.node}</span>}
-      <span class="min-w-0 break-words whitespace-pre-wrap">{e.message}</span>
-    </div>
-  )
-})
 
 export function Dialog({ title, onClose, children, width = 'max-w-lg', footer }: { title: string; onClose: () => void; children: ComponentChildren; width?: string; footer?: ComponentChildren }) {
   useEscape(onClose)
@@ -78,7 +64,7 @@ export function Dialog({ title, onClose, children, width = 'max-w-lg', footer }:
   )
 }
 
-export function ConfirmDialog({ title, impact, action, tone = 'primary', onConfirm, onClose, typed, cluster }: { title: string; impact: ComponentChildren; action: string; tone?: 'primary' | 'danger'; onConfirm: () => void | Promise<unknown>; onClose: () => void; typed?: string; cluster?: string }) {
+export function ConfirmDialog({ title, impact, action, tone = 'primary', onConfirm, onClose, typed }: { title: string; impact: ComponentChildren; action: string; tone?: 'primary' | 'danger'; onConfirm: () => void | Promise<unknown>; onClose: () => void; typed?: string }) {
   const [busy, setBusy] = useState(false)
   const [value, setValue] = useState('')
   const confirm = () => {
@@ -97,22 +83,12 @@ export function ConfirmDialog({ title, impact, action, tone = 'primary', onConfi
         <button class={`btn ${tone === 'danger' ? 'btn-danger' : 'btn-primary'}`} disabled={blocked || busy} onClick={confirm}>{busy ? 'Working' : action}</button>
       </>
     }>
-      {cluster && <MaintenanceNotice cluster={cluster} />}
       <div class="text-[13px] flex flex-col gap-2">{impact}</div>
       {typed && <Field label="To confirm, type"><input class="input mono" placeholder={typed} value={value} onInput={(e) => setValue((e.target as HTMLInputElement).value)} /></Field>}
     </Dialog>
   )
 }
 
-export function MaintenanceNotice({ cluster }: { cluster: string }) {
-  const updatedAt = clusters.value.find((c) => c.name === cluster)?.updatedAt
-  const { data: state, reload } = useLive(() => api.maintenance(cluster), [cluster], [], { onError: 'silent', refresh: [updatedAt] })
-  const edge = state?.open ? state.closes : state?.next
-  const due = !!edge && now.value >= Date.parse(edge)
-  useEffect(() => { if (due) reload() }, [due])
-  if (!state || !state.window || state.open) return null
-  return <Notice tone="warn">Outside the maintenance window <span class="mono">{state.window}{state.timezone ? ` ${state.timezone}` : ''}</span>{state.next ? `; next opens ${fmt.datetime(state.next)}` : ''}. Confirming runs it anyway.</Notice>
-}
 
 export function AlertPill({ e }: { e?: { severity: string; message: string; kind: string } }) {
   if (!e) return null
@@ -214,17 +190,3 @@ export function Tile({ label, value, sub, tone, href, title, size = '2xl', compa
   return href ? <a href={href} class={cls}>{body}</a> : <div class={cls}>{body}</div>
 }
 
-export function Action({ title, what, button, disabled, onClick, href, secondary }: { title: string; what: string; button: string; disabled?: boolean; onClick?: () => void; href?: string; secondary?: { label: string; onClick: () => void } }) {
-  return (
-    <div class="panel p-3 flex items-center gap-4">
-      <div class="flex-1 min-w-0">
-        <div class="font-medium">{title}</div>
-        <p class="text-[12.5px] text-muted">{what}</p>
-      </div>
-      <div class="flex gap-2 shrink-0">
-        {secondary && <button class="btn" disabled={disabled} onClick={secondary.onClick}>{secondary.label}</button>}
-        {href ? <a href={href} class="btn">{button}</a> : <button class="btn btn-primary" disabled={disabled} onClick={onClick}>{button}</button>}
-      </div>
-    </div>
-  )
-}

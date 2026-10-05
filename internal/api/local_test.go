@@ -2,13 +2,11 @@ package api
 
 import (
 	"bytes"
-	"context"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/mikael/kubit/internal/cluster"
 	"github.com/mikael/kubit/internal/store"
@@ -37,7 +35,7 @@ func localServer(t *testing.T) (*Server, *store.Store) {
 	t.Cleanup(factory.Close)
 	m := cluster.NewManager(st, dir)
 	m.Factory.SetBaseURL(factory.URL)
-	return New("test", m, "", c), st
+	return New("test", m, ""), st
 }
 
 func call(t *testing.T, s *Server, method, path, body string) *httptest.ResponseRecorder {
@@ -47,19 +45,4 @@ func call(t *testing.T, s *Server, method, path, body string) *httptest.Response
 	rec := httptest.NewRecorder()
 	s.ServeHTTP(rec, req)
 	return rec
-}
-
-func waitOp(t *testing.T, st *store.Store, id int64) *store.OperationRow {
-	t.Helper()
-	deadline := time.Now().Add(30 * time.Second)
-	for time.Now().Before(deadline) {
-		op, err := st.GetOperation(context.Background(), id)
-		if err == nil && op.Status != "running" {
-			return op
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
-	op, _ := st.GetOperation(context.Background(), id)
-	t.Fatalf("operation %d still running: %s", id, op.Log)
-	return nil
 }

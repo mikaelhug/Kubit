@@ -3,7 +3,6 @@ package cluster
 import (
 	"context"
 	"crypto/sha256"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"sync"
@@ -386,11 +385,6 @@ func (m *Manager) recordNode(ctx context.Context, c *config.Cluster, n config.No
 		return m.Store.PutNodeMachineConfig(ctx, n.IP, cfg, config.HasSystemVolume(cfg))
 	}
 	return nil
-}
-
-func marshalJSON(v any) string {
-	b, _ := json.Marshal(v)
-	return string(b)
 }
 
 func (m *Manager) installedLayout(ctx context.Context, c *config.Cluster) (installed, split map[string]bool) {

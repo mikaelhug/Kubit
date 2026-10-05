@@ -60,9 +60,6 @@ func (c *Cluster) validateBackup() []error {
 			}
 		}
 	}
-	if err := c.Spec.Maintenance.Validate(); err != nil {
-		errs = append(errs, err)
-	}
 	return errs
 }
 

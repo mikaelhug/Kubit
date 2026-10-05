@@ -1,10 +1,7 @@
 package store_test
 
 import (
-	"bytes"
 	"context"
-	"database/sql"
-	"path/filepath"
 	"testing"
 
 	"github.com/mikael/kubit/internal/store"
@@ -36,78 +33,12 @@ func TestSettingsCacheInvalidatesAndCopies(t *testing.T) {
 	if again.Alerts.SMTP.To == nil {
 		t.Error("empty lists must stay empty, not null")
 	}
-	again.PXEEnrollment = "closed"
+	again.FactoryURL = "https://factory.example"
 	if err := s.PutSettings(ctx, again); err != nil {
 		t.Fatal(err)
 	}
-	if v, _ := s.GetSettings(ctx); v.PXEEnrollment != "closed" {
-		t.Errorf("second write not seen: %s", v.PXEEnrollment)
-	}
-}
-
-func TestOperationLogAppendsAfterLegacyColumn(t *testing.T) {
-	c, _ := store.NewCrypto(bytes.Repeat([]byte{7}, 32))
-	dir := t.TempDir()
-	s, err := store.Open(dir, c)
-	if err != nil {
-		t.Fatal(err)
-	}
-	ctx := context.Background()
-	legacy, _ := s.CreateOperation(ctx, "", "old.op", nil)
-	fresh, _ := s.CreateOperation(ctx, "", "new.op", nil)
-	s.Close()
-	db, err := sql.Open("sqlite", filepath.Join(dir, "kubit.db"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, q := range []string{`DROP TABLE operation_log`, `DELETE FROM schema_version WHERE version >= 17`, `UPDATE operations SET log = 'one' || char(10) || 'two' || char(10) WHERE kind = 'old.op'`} {
-		if _, err := db.Exec(q); err != nil {
-			t.Fatal(err)
-		}
-	}
-	db.Close()
-	s, err = store.Open(dir, c)
-	if err != nil {
-		t.Fatalf("migration on an existing database: %v", err)
-	}
-	defer s.Close()
-	for _, line := range []string{"three", "four"} {
-		if err := s.AppendOperationLog(ctx, legacy, line); err != nil {
-			t.Fatal(err)
-		}
-	}
-	_ = s.AppendOperationLog(ctx, fresh, "a")
-	_ = s.AppendOperationLog(ctx, fresh, "b")
-	if op, _ := s.GetOperation(ctx, legacy); op.Log != "one\ntwo\nthree\nfour\n" {
-		t.Errorf("legacy log: %q", op.Log)
-	}
-	if op, _ := s.GetOperation(ctx, fresh); op.Log != "a\nb\n" {
-		t.Errorf("new log: %q", op.Log)
-	}
-	if op, _ := s.GetOperationWithoutLog(ctx, fresh); op.Log != "" || op.Kind != "new.op" {
-		t.Errorf("without log: %+v", op)
-	}
-	if err := s.MarkStaleOperations(ctx); err != nil {
-		t.Fatal(err)
-	}
-	op, _ := s.GetOperation(ctx, legacy)
-	if op.Status != "failed" || op.Log != "one\ntwo\nthree\nfour\nkubit restarted while this operation was running\n" {
-		t.Errorf("stale: %s %q", op.Status, op.Log)
-	}
-}
-
-func TestLastFinishedByKind(t *testing.T) {
-	s := open(t)
-	ctx := context.Background()
-	first, _ := s.CreateOperation(ctx, "c", "platform.plan", nil)
-	_ = s.FinishOperation(ctx, first, "done")
-	failed, _ := s.CreateOperation(ctx, "c", "platform.plan", nil)
-	_ = s.FinishOperation(ctx, failed, "failed")
-	if s.LastFinished(ctx, "c", []string{"node.reboot", "platform.plan"}).IsZero() {
-		t.Error("finished plans must count")
-	}
-	if !s.LastFinished(ctx, "c", nil).IsZero() {
-		t.Error("no kinds, no time")
+	if v, _ := s.GetSettings(ctx); v.FactoryURL != "https://factory.example" {
+		t.Errorf("second write not seen: %s", v.FactoryURL)
 	}
 }
 

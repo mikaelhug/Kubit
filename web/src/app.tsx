@@ -1,9 +1,7 @@
 import type { ComponentChildren } from 'preact'
-import { computed } from '@preact/signals'
 import { LocationProvider, Route, Router, useLocation } from 'preact-iso'
 import { useEffect, useState } from 'preact/hooks'
 import { api, fmt } from './api'
-import { ActivityDrawer } from './components/ActivityDrawer'
 import { Palette, Shortcuts, ThemeToggle } from './components/Palette'
 import { Elapsed } from './components/Time'
 import { Toasts } from './components/Toasts'
@@ -13,10 +11,8 @@ import { ClusterPage } from './pages/cluster/ClusterPage'
 import { Discovery } from './pages/Discovery'
 import { Home } from './pages/Home'
 import { NodePage } from './pages/node/NodePage'
-import { Operations } from './pages/Operations'
 import { Secrets } from './pages/Secrets'
-import { runningCount } from './ops'
-import { clusters, connected, daemon, drawerHeight, drawerOpen, machineList, reconnectAttempt, resyncing, statuses, stopped, toast } from './store'
+import { clusters, connected, daemon, machineList, reconnectAttempt, resyncing, statuses, stopped, toast } from './store'
 
 export function App() {
   useEffect(() => { connectLive() }, [])
@@ -31,7 +27,6 @@ export function App() {
 }
 
 const redirects: Record<string, string> = { '/start': '/', '/fleet/inventory': '/discovery', '/fleet/network-boot': '/discovery', '/fleet/pxe': '/discovery' }
-const mainPad = computed(() => `padding-bottom:${drawerOpen.value ? drawerHeight.value : 0}px`)
 
 function Shell() {
   const { path, route } = useLocation()
@@ -51,7 +46,6 @@ function Shell() {
         <div class="px-4 pt-5 pb-1 label">Kubit</div>
         <NavLink href="/discovery" path={path}>Discovery <DiscoveryBadge /></NavLink>
         <NavLink href="/secrets" path={path}>Secrets</NavLink>
-        <NavLink href="/operations" path={path}>Activity <RunningBadge /></NavLink>
         <StopKubit />
         <div class="px-4 py-2.5 text-[11px] text-muted border-t border-border flex items-center gap-2">
           <ConnectionDot />
@@ -59,7 +53,7 @@ function Shell() {
           <span class="ml-auto flex items-center gap-2"><ThemeToggle /><button class="hover:text-text" title="Jump to (⌘K)" onClick={() => window.dispatchEvent(new KeyboardEvent('keydown', { key: 'k', metaKey: true }))}>⌘K</button><button class="hover:text-text" title="Keyboard shortcuts" onClick={() => window.dispatchEvent(new KeyboardEvent('keydown', { key: '?' }))}>?</button></span>
         </div>
       </nav>
-      <main class="flex-1 min-w-0 overflow-auto" style={mainPad}>
+      <main class="flex-1 min-w-0 overflow-auto">
         <ReconnectBanner />
         <Router>
           <Route path="/clusters/:name" component={ClusterPage} />
@@ -69,13 +63,10 @@ function Shell() {
           <Route path="/machines/:mac" component={NodePage} />
           <Route path="/discovery" component={Discovery} />
           <Route path="/secrets" component={Secrets} />
-          <Route path="/operations" component={Operations} />
-          <Route path="/operations/:id" component={Operations} />
           <Route path="/" component={Home} />
           <Route default component={Home} />
         </Router>
       </main>
-      <ActivityDrawer />
     </div>
   )
 }
@@ -106,16 +97,12 @@ function DiscoveryBadge() {
   return n > 0 ? <Pill tone="good">{n}</Pill> : null
 }
 
-function RunningBadge() {
-  return runningCount.value > 0 ? <Pill tone="warn">{runningCount.value}</Pill> : null
-}
 
 function StopKubit() {
   const [confirm, setConfirm] = useState(false)
-  const busy = runningCount.value > 0
   return (
     <div class="mt-auto px-4 py-2 border-t border-border">
-      <button class="text-[12px] text-muted hover:text-bad disabled:opacity-50" disabled={!connected.value || busy} title={busy ? 'Operations are running' : ''} onClick={() => setConfirm(true)}>Stop Kubit</button>
+      <button class="text-[12px] text-muted hover:text-bad disabled:opacity-50" disabled={!connected.value} onClick={() => setConfirm(true)}>Stop Kubit</button>
       {confirm && <ConfirmDialog title="Stop Kubit" action="Stop Kubit" tone="danger" onClose={() => setConfirm(false)}
         onConfirm={() => api.stopDaemon().then(() => { stopped.value = true; setConfirm(false) }).catch((e) => toast(e.message, 'error'))}
         impact={<p>Alerts and discovery pause until you run <span class="mono">kubit</span> again.</p>} />}

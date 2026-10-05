@@ -39,8 +39,7 @@ const (
 	KindMember      Kind = "member"
 	KindMaintenance Kind = "maintenance"
 	KindConfigured  Kind = "configured"
-	KindBooting     Kind = "booting"
-	KindUnbooted    Kind = "unbooted"
+	KindOffline     Kind = "offline"
 )
 
 func (m *Machine) Kind() Kind {
@@ -51,10 +50,8 @@ func (m *Machine) Kind() Kind {
 		return KindMaintenance
 	case m.State == "configured":
 		return KindConfigured
-	case m.State == "booting", m.State == "installing":
-		return KindBooting
 	default:
-		return KindUnbooted
+		return KindOffline
 	}
 }
 

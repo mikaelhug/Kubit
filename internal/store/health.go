@@ -54,12 +54,7 @@ func (s *Store) Samples(ctx context.Context, cluster, node string, since time.Ti
 	return queryAll(ctx, s.db, scanSample, `SELECT ts, node, cpu_milli, cpu_cap, mem, mem_cap, pods, ready, reachable, disk, disk_cap FROM samples WHERE cluster = ? AND node = ? AND ts >= ? ORDER BY ts`, cluster, node, since.UTC().Format(time.RFC3339))
 }
 
-const (
-	eventRetention     = 90 * 24 * time.Hour
-	operationRetention = 90 * 24 * time.Hour
-	operationsKept     = 500
-	auditRetention     = 365 * 24 * time.Hour
-)
+const eventRetention = 90 * 24 * time.Hour
 
 func (s *Store) Prune(ctx context.Context) error {
 	now := time.Now()
@@ -71,8 +66,6 @@ func (s *Store) Prune(ctx context.Context) error {
 		{`DELETE FROM samples WHERE ts < ? AND strftime('%M', ts) != '00'`, []any{before(24 * time.Hour)}},
 		{`DELETE FROM samples WHERE ts < ?`, []any{before(30 * 24 * time.Hour)}},
 		{`DELETE FROM events WHERE acked = 1 AND ts < ?`, []any{before(eventRetention)}},
-		{`DELETE FROM operations WHERE finished_at IS NOT NULL AND finished_at < ? AND id NOT IN (SELECT id FROM (SELECT id, ROW_NUMBER() OVER (PARTITION BY cluster ORDER BY id DESC) AS n FROM operations) WHERE n <= ?)`, []any{before(operationRetention), operationsKept}},
-		{`DELETE FROM audit_log WHERE at < ?`, []any{before(auditRetention)}},
 	} {
 		if _, err := s.db.ExecContext(ctx, p.query, p.args...); err != nil {
 			return err

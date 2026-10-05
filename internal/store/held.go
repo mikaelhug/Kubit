@@ -37,7 +37,6 @@ func (s *Store) HoldSOPSKey(name string, identity []byte, recipient string) {
 	s.notify(Change{Table: "sops", Cluster: name, Key: name, Op: "put"})
 }
 
-
 func (s *Store) heldSecrets(name string, update func(*ClusterSecrets)) (*ClusterSecrets, bool) {
 	s.held.mu.Lock()
 	defer s.held.mu.Unlock()

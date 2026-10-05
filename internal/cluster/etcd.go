@@ -92,7 +92,6 @@ func (m *Manager) SnapshotEtcd(ctx context.Context, name, source string, sink Si
 		return nil, err
 	}
 	sn.TS = ts.Format(time.RFC3339)
-	_ = m.Store.Audit(ctx, name, "etcd.snapshot", fmt.Sprintf("%d from %s (%s)", sn.ID, cp.Hostname, source))
 	sink.Emit(Done, "verify", "", "snapshot #%d stored", sn.ID)
 	return &sn, nil
 }
@@ -269,7 +268,6 @@ func (m *Manager) RestoreEtcd(ctx context.Context, name string, snapshotID int64
 	} else if err := sink.Run("workers", func() error { return m.restartWorkerPods(ctx, name, c.Workers(), sink) }); err != nil {
 		return fail(err)
 	}
-	_ = m.Store.Audit(ctx, name, "etcd.restore", fmt.Sprintf("snapshot %d", snapshotID))
 	sink.Emit(Done, "workers", "", "cluster %s restored from snapshot #%d (%s)", name, sn.ID, sn.TS)
 	return nil
 }

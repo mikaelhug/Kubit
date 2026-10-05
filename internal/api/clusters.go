@@ -2,6 +2,8 @@ package api
 
 import (
 	"net/http"
+	"os"
+	"path/filepath"
 
 	"github.com/mikael/kubit/internal/config"
 	"github.com/mikael/kubit/internal/store"
@@ -10,7 +12,6 @@ import (
 func (s *Server) clusterRoutes() {
 	r := s.mux
 	r.HandleFunc("GET /api/v1/clusters", s.handleClusters)
-	r.HandleFunc("GET /api/v1/clusters/{name}", s.handleCluster)
 	r.HandleFunc("GET /api/v1/clusters/{name}/status", s.handleClusterStatus)
 	r.HandleFunc("GET /api/v1/clusters/{name}/yaml", s.handleClusterYAML)
 	r.HandleFunc("GET /api/v1/clusters/{name}/kubeconfig", s.handleClusterKubeconfig)
@@ -41,15 +42,6 @@ func (s *Server) handleClusters(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, out)
 }
 
-func (s *Server) handleCluster(w http.ResponseWriter, r *http.Request) {
-	row, err := s.store.GetCluster(r.Context(), r.PathValue("name"))
-	if err != nil {
-		writeErr(w, err)
-		return
-	}
-	writeJSON(w, http.StatusOK, summarize(*row))
-}
-
 func (s *Server) handleClusterStatus(w http.ResponseWriter, r *http.Request) {
 	if s.watcher != nil && r.URL.Query().Get("fresh") != "true" {
 		if st := s.watcher.Latest(r.PathValue("name")); st != nil {
@@ -66,13 +58,20 @@ func (s *Server) handleClusterStatus(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleClusterYAML(w http.ResponseWriter, r *http.Request) {
-	row, err := s.store.GetCluster(r.Context(), r.PathValue("name"))
-	if err != nil {
-		writeErr(w, err)
+	name := r.PathValue("name")
+	for _, repo := range s.servedRepos() {
+		if repo.Cluster != name {
+			continue
+		}
+		b, err := os.ReadFile(filepath.Join(repo.Dir, "cluster.yaml"))
+		if err != nil {
+			writeErr(w, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]string{"dir": repo.Dir, "yaml": string(b)})
 		return
 	}
-	w.Header().Set("Content-Type", "application/yaml")
-	w.Write(row.Spec)
+	writeErr(w, &statusError{Status: http.StatusNotFound, Msg: "not served from a repo; start Kubit with the cluster's repo dir"})
 }
 
 func (s *Server) handleClusterKubeconfig(w http.ResponseWriter, r *http.Request) {

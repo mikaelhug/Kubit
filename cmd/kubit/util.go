@@ -25,20 +25,15 @@ func openStore() (*store.Store, error) {
 }
 
 func openManager() (*cluster.Manager, error) {
-	m, _, err := openManagerCrypto()
-	return m, err
-}
-
-func openManagerCrypto() (*cluster.Manager, *store.Crypto, error) {
 	dir, err := homeDir()
 	if err != nil {
-		return nil, nil, err
+		return nil, err
 	}
 	s, err := openStore()
 	if err != nil {
-		return nil, nil, err
+		return nil, err
 	}
-	return cluster.NewManager(s, dir), s.Crypto(), nil
+	return cluster.NewManager(s, dir), nil
 }
 
 func withManager(fn func(cmd *cobra.Command, args []string, m *cluster.Manager) error) func(*cobra.Command, []string) error {
@@ -49,17 +44,6 @@ func withManager(fn func(cmd *cobra.Command, args []string, m *cluster.Manager) 
 		}
 		defer m.Store.Close()
 		return fn(cmd, args, m)
-	}
-}
-
-func withStore(fn func(cmd *cobra.Command, args []string, s *store.Store) error) func(*cobra.Command, []string) error {
-	return func(cmd *cobra.Command, args []string) error {
-		s, err := openStore()
-		if err != nil {
-			return err
-		}
-		defer s.Close()
-		return fn(cmd, args, s)
 	}
 }
 

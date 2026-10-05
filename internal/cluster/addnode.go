@@ -88,7 +88,6 @@ func (m *Manager) AddNode(ctx context.Context, name string, n config.Node, sink 
 		if err := m.saveExisting(ctx, c); err != nil {
 			return err
 		}
-		_ = m.Store.Audit(ctx, name, "node.add", marshalJSON(n))
 		sink.Emit(Info, "secrets", n.Hostname, "machine config generated with cluster %s secrets", name)
 		return nil
 	})

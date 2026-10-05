@@ -21,8 +21,8 @@ func TestServeConfig(t *testing.T) {
 		}
 		return p
 	}
-	v, err = loadServeConfig(write("pxeEnrollment: closed\nalerts:\n  webhookUrl: https://hooks.example/x\n  smtp: {host: mail, to: [ops@example.com]}\n"))
-	if err != nil || v.PXEEnrollment != "closed" || v.Alerts.WebhookURL != "https://hooks.example/x" || v.Alerts.SMTP.Port != 587 || v.Alerts.MinSeverity != "warn" {
+	v, err = loadServeConfig(write("factoryUrl: https://factory.example\nalerts:\n  webhookUrl: https://hooks.example/x\n  smtp: {host: mail, to: [ops@example.com]}\n"))
+	if err != nil || v.FactoryURL != "https://factory.example" || v.Alerts.WebhookURL != "https://hooks.example/x" || v.Alerts.SMTP.Port != 587 || v.Alerts.MinSeverity != "warn" {
 		t.Fatalf("file over defaults: %+v %v", v, err)
 	}
 	if _, err := loadServeConfig(write("alerts: {webhok: x}\n")); err == nil {

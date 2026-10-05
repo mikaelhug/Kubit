@@ -10,7 +10,7 @@ import (
 	"github.com/mikael/kubit/internal/store"
 )
 
-func TestReleasedLabHostsMigrateToUnknown(t *testing.T) {
+func TestRemovedFeaturesLeaveNoSchema(t *testing.T) {
 	ctx := context.Background()
 	c, _ := store.NewCrypto(bytes.Repeat([]byte{7}, 32))
 	dir := t.TempDir()
@@ -18,25 +18,25 @@ func TestReleasedLabHostsMigrateToUnknown(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_ = s.UpsertNode(ctx, store.NodeRow{MAC: "aa:aa:aa:aa:aa:01", IP: "10.0.0.1", Source: "labhost", State: "configured"})
-	_ = s.UpsertNode(ctx, store.NodeRow{MAC: "aa:aa:aa:aa:aa:02", IP: "10.0.0.2", Source: "scan", State: "configured"})
+	if err := s.UpsertNode(ctx, store.NodeRow{MAC: "aa:aa:aa:aa:aa:01", IP: "10.0.0.1", Source: "scan", State: "maintenance"}); err != nil {
+		t.Fatal(err)
+	}
 	s.Close()
 	db, err := sql.Open("sqlite", filepath.Join(dir, "kubit.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := db.Exec(`DELETE FROM schema_version WHERE version >= 12`); err != nil {
-		t.Fatal(err)
+	defer db.Close()
+	for _, table := range []string{"users", "sessions", "operations", "operation_log", "audit_log"} {
+		var n int
+		if err := db.QueryRow(`SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = ?`, table).Scan(&n); err != nil || n != 0 {
+			t.Errorf("table %s still exists (%v)", table, err)
+		}
 	}
-	db.Close()
-	s, err = store.Open(dir, c)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer s.Close()
-	released, _ := s.GetMachine(ctx, "aa:aa:aa:aa:aa:01")
-	foreign, _ := s.GetMachine(ctx, "aa:aa:aa:aa:aa:02")
-	if released.State != "unknown" || foreign.State != "configured" {
-		t.Errorf("released %s, foreign %s", released.State, foreign.State)
+	for _, col := range []string{"wol", "oob", "provision", "labhost", "host", "provision_kind"} {
+		var n int
+		if err := db.QueryRow(`SELECT COUNT(*) FROM pragma_table_info('machines') WHERE name = ?`, col).Scan(&n); err != nil || n != 0 {
+			t.Errorf("machines.%s still exists (%v)", col, err)
+		}
 	}
 }

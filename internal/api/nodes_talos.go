@@ -158,12 +158,8 @@ func (s *Server) handleNodeServices(w http.ResponseWriter, r *http.Request) {
 }
 
 func noTalosReason(m *store.Machine) string {
-	switch m.Kind() {
-	case store.KindConfigured:
+	if m.Kind() == store.KindConfigured {
 		return "Configured outside Kubit; no credentials."
-	case store.KindBooting:
-		return "Waiting for Talos."
-	default:
-		return "Not running Talos."
 	}
+	return "Not answering on the Talos API."
 }

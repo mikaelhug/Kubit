@@ -14,7 +14,6 @@ type Settings struct {
 	FactoryURL       string   `json:"factoryUrl"`
 	DiscoverySubnets []string `json:"discoverySubnets"`
 	PXEStatusURL     string   `json:"pxeStatusUrl"`
-	PXEEnrollment    string   `json:"pxeEnrollment"`
 	Alerts           Alerts   `json:"alerts"`
 }
 
@@ -54,7 +53,7 @@ func (v *Settings) Secrets() []*string {
 }
 
 func DefaultSettings() Settings {
-	return Settings{FactoryURL: "https://factory.talos.dev", DiscoverySubnets: []string{}, PXEStatusURL: "http://127.0.0.1:8069/status.json", Alerts: Alerts{MinSeverity: "warn", SMTP: SMTP{Port: 587, StartTLS: true, TLS: "starttls", To: []string{}}, IgnoreNamespaces: []string{}}, PXEEnrollment: "open"}
+	return Settings{FactoryURL: "https://factory.talos.dev", DiscoverySubnets: []string{}, PXEStatusURL: "http://127.0.0.1:8069/status.json", Alerts: Alerts{MinSeverity: "warn", SMTP: SMTP{Port: 587, StartTLS: true, TLS: "starttls", To: []string{}}, IgnoreNamespaces: []string{}}}
 }
 
 func (v Settings) clone() Settings {

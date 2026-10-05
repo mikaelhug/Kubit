@@ -56,7 +56,7 @@ type Spec struct {
 	Nodes             []Node           `yaml:"nodes" json:"nodes"`
 	Platform          Platform         `yaml:"platform" json:"platform"`
 	Backup            Backup           `yaml:"backup,omitempty" json:"backup"`
-	Maintenance       Maintenance      `yaml:"maintenance,omitempty" json:"maintenance,omitempty"`
+	LegacyMaintenance any              `yaml:"maintenance,omitempty" json:"-"`
 	Auth              ClusterAuth      `yaml:"auth,omitempty" json:"auth,omitempty"`
 	Storage           Storage          `yaml:"storage,omitempty" json:"storage,omitempty"`
 	Patches           []map[string]any `yaml:"patches,omitempty" json:"patches,omitempty"`
@@ -291,6 +291,7 @@ func (c *Cluster) applyDefaults() {
 		c.Spec.TalosVersion = gendata.VersionTag
 	}
 	c.Spec.Backup.LegacyEtcd = nil
+	c.Spec.LegacyMaintenance = nil
 	if c.Spec.Backup.Enabled() && c.Spec.Backup.S3.Region == "" {
 		c.Spec.Backup.S3.Region = "us-east-1"
 	}

@@ -1,10 +1,9 @@
 import { useEffect, useState } from 'preact/hooks'
-import { api, fmt, type Inventory, type NodeRow, type NodeSpec } from '../../api'
+import { api, type Inventory, type NodeRow, type NodeSpec } from '../../api'
 import { Tabs } from '../../components/Tabs'
 import { Breadcrumbs, CopyButton, ErrorBox, Pill, SeenAgo } from '../../components/ui'
 import { KindPill, TypePill } from '../../components/Machine'
 import { nodeEntry } from '../../machine'
-import { running } from '../../ops'
 import { clusters, live, machineList, machines, statuses } from '../../store'
 import { useLive } from '../../useLive'
 import { HardwareTab } from './Hardware'
@@ -30,7 +29,6 @@ export function NodePage({ ip: ipParam, mac }: { ip?: string; mac?: string }) {
   const cluster = node?.cluster ? clusters.value.find((c) => c.name === node.cluster) : undefined
   const spec: NodeSpec | undefined = cluster?.spec.spec.nodes.find((n) => (node?.mac && n.mac === node.mac) || n.hostname === node?.hostname)
   const title = node?.hostname || ip || mac || ''
-  const ops = running.value.filter((o) => { const r = o.request as { hostname?: string; mac?: string } | undefined; return (o.cluster === node?.cluster && r?.hostname === node?.hostname) || r?.mac === node?.mac })
   const tabs: { id: TabId; label: string; badge?: number }[] = [
     { id: 'overview', label: 'Overview' }, { id: 'hardware', label: 'Hardware' },
     ...(node?.kind === 'member' ? [{ id: 'kubernetes' as TabId, label: 'Kubernetes', badge: k8s?.pods?.length }] : []),
@@ -49,7 +47,6 @@ export function NodePage({ ip: ipParam, mac }: { ip?: string; mac?: string }) {
           {node?.talos && <ReachPill node={node} inv={inv} invErr={invErr} />}
           {k8s ? <Pill tone={k8s.ready ? 'good' : 'warn'}>{k8s.ready ? 'Ready' : 'NotReady'}</Pill> : null}
           {k8s?.unschedulable && <Pill tone="warn">cordoned</Pill>}
-          {ops.map((o) => <Pill key={o.id} tone="warn">{fmt.kind(o.kind)} running</Pill>)}
           {node?.kind === 'maintenance' && <span class="ml-auto"><CopyButton className="btn btn-primary btn-sm" label="Copy node entry" text={() => nodeEntry(node)} /></span>}
         </div>
         <Tabs active={shown} onSelect={(t) => setTab(t as TabId)} tabs={tabs} />

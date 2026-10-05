@@ -204,8 +204,6 @@ func (w *Watcher) every(ctx context.Context, d time.Duration, tick func(context.
 	}
 }
 
-var disruptive = []string{"cluster.create", "cluster.apply", "etcd.restore", "upgrade.talos", "upgrade.kubernetes", "node.add", "node.remove", "node.reboot", "node.rename", "node.pool", "node.readdress", "node.upgrade", "platform.apply"}
-
 const quietAfterOperation = 10 * time.Minute
 
 const serviceTickTimeout = 45 * time.Second
@@ -228,7 +226,7 @@ func (w *Watcher) serviceTick(ctx context.Context, name string) {
 	if changed {
 		w.refresh(name, k8s.ScopeServices)
 	}
-	if last := w.Store.LastFinished(ctx, name, disruptive); time.Since(last) < quietAfterOperation {
+	if w.Manager.ApplyQuiet(ctx, name, quietAfterOperation) {
 		return
 	}
 	w.mu.Lock()

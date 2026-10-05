@@ -64,6 +64,7 @@ type Plan struct {
 	Problems []string `json:"problems,omitempty"`
 	applied  *config.Cluster
 	target   *config.Cluster
+	recreate bool
 	adds     []config.Node
 	removes  []string
 }
@@ -125,9 +126,10 @@ func (m *Manager) Plan(ctx context.Context, d *Desired, opts ConvergeOptions) (*
 			p.Problems = append(p.Problems, "not in maintenance mode: "+strings.Join(missing, "; "))
 			return p, nil
 		}
+		detail := fmt.Sprintf("%d control plane(s), %d worker(s), Talos %s, Kubernetes %s", len(c.ControlPlanes()), len(c.Workers()), c.Spec.TalosVersion, c.Spec.KubernetesVersion)
 		if _, err := m.Store.GetCluster(ctx, name); err == nil {
-			p.Problems = append(p.Problems, fmt.Sprintf("every node is in maintenance mode but ~/.kubit still knows %s; run kubit cluster forget %s to create it again", name, name))
-			return p, nil
+			detail = "again: every node is back in maintenance mode"
+			p.recreate = true
 		}
 		p.target = c.Clone()
 		for i, n := range p.target.Spec.Nodes {
@@ -136,7 +138,7 @@ func (m *Manager) Plan(ctx context.Context, d *Desired, opts ConvergeOptions) (*
 		if len(p.Problems) > 0 {
 			return p, nil
 		}
-		p.Changes = append(p.Changes, Change{Action: ActCreate, Target: name, Detail: fmt.Sprintf("%d control plane(s), %d worker(s), Talos %s, Kubernetes %s", len(c.ControlPlanes()), len(c.Workers()), c.Spec.TalosVersion, c.Spec.KubernetesVersion)})
+		p.Changes = append(p.Changes, Change{Action: ActCreate, Target: name, Detail: detail})
 		if c.Spec.Platform.AddOns() {
 			p.Changes = append(p.Changes, Change{Action: ActPlatform, Detail: "install the add-ons"})
 		}
@@ -466,7 +468,7 @@ func (m *Manager) checkCachedSecrets(ctx context.Context, d *Desired) error {
 		return nil
 	}
 	if !sameBundle(sec.SecretsBundle, d.Bundle) {
-		return fmt.Errorf("~/.kubit knows another cluster named %s with other secrets; run kubit cluster forget %s, or kubit export --repo to move it", name, name)
+		return fmt.Errorf("~/.kubit holds another cluster named %s with other secrets; move it with kubit export %s --repo <dir>, or rename this one", name, name)
 	}
 	return nil
 }
@@ -484,6 +486,11 @@ func (m *Manager) Converge(ctx context.Context, d *Desired, p *Plan, opts Conver
 	name := c.Metadata.Name
 	m.UsePlatformState(name, d.platform())
 	if p.has(ActCreate) {
+		if p.recreate {
+			if err := m.Store.DeleteCluster(ctx, name); err != nil {
+				return err
+			}
+		}
 		if err := m.cacheSecrets(ctx, d); err != nil {
 			return err
 		}

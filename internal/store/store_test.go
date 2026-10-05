@@ -5,7 +5,6 @@ import (
 	"context"
 	"errors"
 	"slices"
-	"strconv"
 	"testing"
 
 	"github.com/mikael/kubit/internal/store"
@@ -186,7 +185,6 @@ func TestNotFoundWrapsMissingRows(t *testing.T) {
 		"machine":  func() error { _, err := s.GetMachine(ctx, "52:54:00:00:00:99"); return err }(),
 		"node":     func() error { _, err := s.GetNode(ctx, "10.9.9.9"); return err }(),
 		"config":   func() error { _, err := s.GetNodeMachineConfig(ctx, "10.9.9.9"); return err }(),
-		"op":       func() error { _, err := s.GetOperation(ctx, 999); return err }(),
 		"snapshot": func() error { _, err := s.GetSnapshot(ctx, 999); return err }(),
 	} {
 		if !errors.Is(err, store.ErrNotFound) {
@@ -195,29 +193,6 @@ func TestNotFoundWrapsMissingRows(t *testing.T) {
 	}
 	if _, err := s.GetCluster(ctx, "nope"); err == nil || err.Error() != `cluster "nope": not found` {
 		t.Errorf("message: %v", err)
-	}
-}
-
-func TestOperationRoundTrip(t *testing.T) {
-	s := open(t)
-	ctx := context.Background()
-	id, err := s.CreateOperation(ctx, "", "test.op", []byte(`{"a":1}`))
-	if err != nil {
-		t.Fatal(err)
-	}
-	_ = s.AppendOperationLog(ctx, id, "line")
-	_ = s.SetOperationSteps(ctx, id, []byte(`[{"id":"x"}]`))
-	_ = s.FinishOperation(ctx, id, "done")
-	op, err := s.GetOperation(ctx, id)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if op.Kind != "test.op" || op.Status != "done" || op.Log != "line\n" || string(op.Request) != `{"a":1}` || string(op.Steps) != `[{"id":"x"}]` || op.FinishedAt == "" || op.Artifact != nil {
-		t.Errorf("get: %+v", op)
-	}
-	list, err := s.ListOperations(ctx, 10)
-	if err != nil || len(list) != 1 || list[0].ID != id || list[0].Log != "" || string(list[0].Steps) != `[{"id":"x"}]` {
-		t.Errorf("list: %+v %v", list, err)
 	}
 }
 
@@ -244,35 +219,13 @@ func TestOpenAlertsIgnoreInfoAndLimits(t *testing.T) {
 	}
 }
 
-func TestGetAuditReadsTheRow(t *testing.T) {
-	s := open(t)
-	ctx := t.Context()
-	var ids []string
-	s.OnChange(func(c store.Change) {
-		if c.Table == "audit" {
-			ids = append(ids, c.Key)
-		}
-	})
-	_ = s.Audit(ctx, "a", "first", "1")
-	_ = s.Audit(ctx, "b", "second", "2")
-	id, _ := strconv.ParseInt(ids[0], 10, 64)
-	e, err := s.GetAudit(ctx, id)
-	if err != nil || e.Action != "first" || e.Cluster != "a" {
-		t.Errorf("audit %d: %+v %v", id, e, err)
-	}
-	if _, err := s.GetAudit(ctx, 999); !errors.Is(err, store.ErrNotFound) {
-		t.Errorf("missing entry: %v", err)
-	}
-}
-
 func TestListsAreEmptyNotNil(t *testing.T) {
 	s := open(t)
 	ctx := t.Context()
 	clusters, _ := s.ListClusters(ctx)
 	nodes, _ := s.ListNodes(ctx, "")
-	ops, _ := s.ListOperations(ctx, 10)
-	if clusters == nil || nodes == nil || ops == nil {
-		t.Errorf("empty lists must be [] not null: %v %v %v", clusters == nil, nodes == nil, ops == nil)
+	if clusters == nil || nodes == nil {
+		t.Errorf("empty lists must be [] not null: %v %v", clusters == nil, nodes == nil)
 	}
 }
 

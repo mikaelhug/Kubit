@@ -2,7 +2,6 @@ package fsx
 
 import (
 	"bytes"
-	"fmt"
 	"io"
 	"io/fs"
 	"os"
@@ -20,35 +19,6 @@ func Bytes(data []byte) func(io.Writer) error {
 		_, err := io.Copy(w, bytes.NewReader(data))
 		return err
 	}
-}
-
-func WriteOut(path string, perm os.FileMode, write func(io.Writer) error) error {
-	if fi, err := os.Stat(path); err == nil && !fi.Mode().IsRegular() {
-		if fi.IsDir() {
-			return fmt.Errorf("%s is a directory", path)
-		}
-		return writeInPlace(path, write)
-	}
-	if fi, err := os.Lstat(path); err == nil && fi.Mode()&os.ModeSymlink != 0 {
-		target, err := filepath.EvalSymlinks(path)
-		if err != nil {
-			return err
-		}
-		path = target
-	}
-	return WriteStream(path, perm, write)
-}
-
-func writeInPlace(path string, write func(io.Writer) error) error {
-	f, err := os.OpenFile(path, os.O_WRONLY, 0)
-	if err != nil {
-		return err
-	}
-	if err := write(f); err != nil {
-		f.Close()
-		return err
-	}
-	return f.Close()
 }
 
 func WriteStream(path string, perm os.FileMode, write func(io.Writer) error) error {
