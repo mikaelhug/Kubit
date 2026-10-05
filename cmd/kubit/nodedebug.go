@@ -7,6 +7,7 @@ import (
 	"io"
 	"text/tabwriter"
 
+	"github.com/mikael/kubit/internal/repo"
 	"github.com/mikael/kubit/internal/store"
 	"github.com/mikael/kubit/internal/talos"
 	"github.com/siderolabs/talos/pkg/machinery/api/common"
@@ -46,8 +47,7 @@ func nodeServicesCmd() *cobra.Command {
 			return tw.Flush()
 		}),
 	}
-	cmd.Flags().StringVar(&clusterName, "cluster", "", "cluster the node belongs to")
-	_ = cmd.MarkFlagRequired("cluster")
+	cmd.Flags().StringVar(&clusterName, "cluster", "", "repo dir or cluster the node belongs to (default: the repo here)")
 	return cmd
 }
 
@@ -76,15 +76,28 @@ func nodeLogsCmd() *cobra.Command {
 			return drain(cmd.OutOrStdout(), st)
 		}),
 	}
-	cmd.Flags().StringVar(&clusterName, "cluster", "", "cluster the node belongs to")
+	cmd.Flags().StringVar(&clusterName, "cluster", "", "repo dir or cluster the node belongs to (default: the repo here)")
 	cmd.Flags().StringVar(&service, "service", "", "Talos service id (kubelet, etcd, apid, ...); empty = dmesg")
 	cmd.Flags().Int32Var(&tail, "tail", 200, "lines of service log")
-	_ = cmd.MarkFlagRequired("cluster")
 	return cmd
 }
 
-func dialNode(ctx context.Context, s *store.Store, clusterName, ip string) (*talos.Client, error) {
-	sec, err := s.GetClusterSecrets(ctx, clusterName)
+func dialNode(ctx context.Context, s *store.Store, ref, ip string) (*talos.Client, error) {
+	if ref == "" {
+		ref = "."
+	}
+	if isRepo(ref) {
+		r, err := repo.Load(ref)
+		if err != nil {
+			return nil, err
+		}
+		tc, err := r.Talosconfig()
+		if err != nil {
+			return nil, err
+		}
+		return talos.Dial(ctx, ip, tc)
+	}
+	sec, err := s.GetClusterSecrets(ctx, ref)
 	if err != nil {
 		return nil, err
 	}

@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 
 	"go.yaml.in/yaml/v4"
 )
@@ -129,6 +130,10 @@ func (s *Store) DeleteCluster(ctx context.Context, name string) error {
 }
 
 func (s *Store) PutClusterSecrets(ctx context.Context, name string, sec ClusterSecrets) error {
+	if _, ok := s.heldSecrets(name, func(h *ClusterSecrets) { *h = cloneSecrets(sec) }); ok {
+		s.notify(Change{Table: "secrets", Cluster: name, Key: name, Op: "put"})
+		return nil
+	}
 	bundle, err := s.crypto.Seal(sec.SecretsBundle)
 	if err != nil {
 		return err
@@ -152,6 +157,10 @@ func (s *Store) PutClusterSecrets(ctx context.Context, name string, sec ClusterS
 }
 
 func (s *Store) SetKubeconfig(ctx context.Context, name string, kubeconfig []byte) error {
+	if _, ok := s.heldSecrets(name, func(h *ClusterSecrets) { h.Kubeconfig = slices.Clone(kubeconfig) }); ok {
+		s.notify(Change{Table: "secrets", Cluster: name, Key: name, Op: "put"})
+		return nil
+	}
 	kc, err := s.crypto.Seal(kubeconfig)
 	if err != nil {
 		return err
@@ -168,6 +177,9 @@ func (s *Store) SetKubeconfig(ctx context.Context, name string, kubeconfig []byt
 }
 
 func (s *Store) GetClusterSecrets(ctx context.Context, name string) (*ClusterSecrets, error) {
+	if sec, ok := s.heldSecrets(name, nil); ok {
+		return sec, nil
+	}
 	var bundle, tc, kc []byte
 	err := s.db.QueryRowContext(ctx, `SELECT secrets_bundle, talosconfig, kubeconfig FROM cluster_secrets WHERE cluster = ?`, name).Scan(&bundle, &tc, &kc)
 	if err := notFound(err, "secrets for cluster %q", name); err != nil {

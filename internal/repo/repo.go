@@ -130,6 +130,14 @@ func parseSecrets(plain []byte) (*Secrets, error) {
 	return &Secrets{Bundle: b, BundleYAML: raw, FluxKey: doc.Flux.AgeKey, StatePassphrase: doc.Platform.StatePassphrase, BackupKeyID: doc.Backup.AccessKeyID, BackupSecret: doc.Backup.SecretAccessKey}, nil
 }
 
+func NewPassphrase() (string, error) {
+	pass := make([]byte, 32)
+	if _, err := rand.Read(pass); err != nil {
+		return "", err
+	}
+	return base64.RawURLEncoding.EncodeToString(pass), nil
+}
+
 func NewSecrets(talosVersion string) (*Secrets, error) {
 	contract, err := talosconfig.ParseContractFromVersion(talosVersion)
 	if err != nil {
@@ -147,11 +155,11 @@ func NewSecrets(talosVersion string) (*Secrets, error) {
 	if err != nil {
 		return nil, err
 	}
-	pass := make([]byte, 32)
-	if _, err := rand.Read(pass); err != nil {
+	pass, err := NewPassphrase()
+	if err != nil {
 		return nil, err
 	}
-	return &Secrets{Bundle: b, BundleYAML: raw, FluxKey: id.String(), StatePassphrase: base64.RawURLEncoding.EncodeToString(pass)}, nil
+	return &Secrets{Bundle: b, BundleYAML: raw, FluxKey: id.String(), StatePassphrase: pass}, nil
 }
 
 func (s *Secrets) plain() ([]byte, error) {
@@ -176,6 +184,14 @@ func (s *Secrets) FluxRecipient() string {
 }
 
 func Init(dir string, c *config.Cluster, recipients []string) (*Repo, error) {
+	s, err := NewSecrets(c.Spec.TalosVersion)
+	if err != nil {
+		return nil, err
+	}
+	return Write(dir, c, s, recipients)
+}
+
+func Write(dir string, c *config.Cluster, s *Secrets, recipients []string) (*Repo, error) {
 	for _, f := range []string{ClusterFile, SecretsFile} {
 		if _, err := os.Stat(filepath.Join(dir, f)); err == nil {
 			return nil, fmt.Errorf("%s already exists; kubit init never overwrites it", filepath.Join(dir, f))
@@ -185,10 +201,6 @@ func Init(dir string, c *config.Cluster, recipients []string) (*Repo, error) {
 		return nil, err
 	}
 	rule, err := sopsRule(dir, recipients)
-	if err != nil {
-		return nil, err
-	}
-	s, err := NewSecrets(c.Spec.TalosVersion)
 	if err != nil {
 		return nil, err
 	}

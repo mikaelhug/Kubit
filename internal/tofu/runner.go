@@ -88,6 +88,11 @@ func (r *Runner) Init(ctx context.Context) error {
 	return err
 }
 
+func (r *Runner) PushState(ctx context.Context, file string) error {
+	_, err := r.output(ctx, "state", "push", file)
+	return err
+}
+
 func (r *Runner) Plan(ctx context.Context) (Summary, error) {
 	return r.run(ctx, "plan", "-input=false", "-json", "-out=plan.tfplan")
 }

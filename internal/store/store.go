@@ -18,6 +18,7 @@ type Store struct {
 	n      notifier
 
 	settings settingsCache
+	held     held
 }
 
 func (s *Store) Crypto() *Crypto { return s.crypto }

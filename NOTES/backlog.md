@@ -220,10 +220,8 @@
   different matching rules (hostname and IP vs hostname or IP). Share one helper.
 - The status-bar uptime keeps ticking from the last `hello` while the daemon is
   stopped or unreachable; show it only while connected.
-- Credentials default to the current directory: `cluster kubeconfig|talosconfig` (`./kubeconfig`),
-  `cluster export` (plaintext `secrets.yaml`), `config render` (`./out`), `sops export`
-  (`keys.txt`), `backup`. With the repo direction they belong in the cluster repo's ignored
-  directory, or stdout.
+- `cluster export` still writes a plaintext `secrets.yaml` into `./export-<name>`; with
+  the repo holding the secrets it should write into the repo's ignored files or stdout.
 - Security: JSON handlers accept any Content-Type, and bodiless POSTs (`daemon/stop`,
   `events/{id}/ack`) have no CSRF guard while loopback needs no token; check
   `Origin`/`Sec-Fetch-Site` on non-GET `/api/` requests in `ServeHTTP`.

@@ -18,7 +18,8 @@ converge it, and the console only observes. The roadmap is under *Status*.
 | Escape hatch | You | `kubit cluster export`: `infra/talos/` HCL + native artefacts, never run by Kubit |
 
 A cluster lives in a repo directory you choose (*Cluster repo*). `~/.kubit` (SQLite,
-AES-GCM sealed with a master key in the macOS Keychain) holds caches and daemon data.
+AES-GCM sealed with a master key in the macOS Keychain) holds caches and daemon data;
+a repo cluster's secrets are never written there.
 
 ## Layout
 
@@ -70,6 +71,14 @@ Kubit reads and writes SOPS files itself (`internal/sops`: AES-256-GCM values, a
 data key, MAC), compatible with the `sops` CLI both ways, so `sops lab/secrets.sops.yaml`
 edits the same file. Keys come from `SOPS_AGE_KEY`, `SOPS_AGE_KEY_FILE` or the sops
 default `keys.txt`.
+
+**Moving a cluster in.** `kubit export lab --repo ~/lab` writes a cluster kept in
+`~/.kubit` (the old way) into a repo: its cluster.yaml without the derived schematic IDs,
+its Talos secrets and Flux key encrypted for your age key, and its OpenTofu state, pushed
+into `state/platform.tfstate` encrypted (the old file stays as `terraform.tfstate.moved`).
+`kubit plan ~/lab` should then find nothing to do. From the first `kubit apply` or
+`kubit ~/lab` on, the cluster's secrets live only in the repo and in memory: Kubit drops
+them from SQLite and never writes them there again.
 
 Credentials are derived, never stored: `kubit talosconfig lab` signs a one-year admin
 client certificate with the bundle's OS CA, `kubit kubeconfig lab` one for
@@ -184,8 +193,8 @@ Cluster subnets are each node's static prefixes, else the /24 of its IP.
 
 ## Secrets
 
-`~/.kubit/kubit.db` (SQLite, WAL). Secrets bundle, talosconfig, kubeconfig and node
-configs are AES-256-GCM sealed with a 32-byte master key from the macOS Keychain
+`~/.kubit/kubit.db` (SQLite, WAL). Applied node configs, the SMTP password and the
+secrets of clusters not yet moved into a repo are AES-256-GCM sealed with a 32-byte master key from the macOS Keychain
 (`kubit` / `master-key`), `KUBIT_MASTER_KEY` (base64), or a `master.key` file (0600) in
 `$KUBIT_HOME` when no keyring is reachable. `kubit key export` prints it.
 
@@ -431,4 +440,9 @@ Roadmap (2026-10-05):
   the sops CLI and live external edits)
 - [x] 5 — `spec.backup` → talos-backup add-on, off by default; the daemon's snapshot
   schedule, retention and `backup.stale` are gone
-- [ ] 6 — migration: `kubit export --repo`
+- [x] 6 — migration: `kubit export <cluster> --repo <dir>` (spec, secrets, Flux key,
+  encrypted state); repo clusters' secrets held in memory and dropped from SQLite;
+  `etcd`, `status`, `cluster export` and `node --cluster` take a repo dir
+
+Next: run the roadmap against `lab` (export, plan with no changes, an upgrade, a node
+add and removal, a talos-backup run) before merging `iac` into `main`.

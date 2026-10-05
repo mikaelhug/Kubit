@@ -6,14 +6,13 @@ import (
 
 	"github.com/mikael/kubit/internal/cluster"
 	"github.com/mikael/kubit/internal/config"
-	"github.com/mikael/kubit/internal/fsx"
 	"github.com/mikael/kubit/internal/store"
 	"github.com/spf13/cobra"
 )
 
 func clusterCmd() *cobra.Command {
 	cmd := &cobra.Command{Use: "cluster", Short: "Inspect clusters cached in ~/.kubit"}
-	cmd.AddCommand(clusterListCmd(), clusterGetCmd(), clusterCredsCmd("kubeconfig"), clusterCredsCmd("talosconfig"), clusterForgetCmd(), clusterExportCmd())
+	cmd.AddCommand(clusterListCmd(), clusterGetCmd(), clusterForgetCmd(), clusterExportCmd())
 	return cmd
 }
 
@@ -57,38 +56,6 @@ func clusterGetCmd() *cobra.Command {
 	}
 }
 
-func clusterCredsCmd(kind string) *cobra.Command {
-	var out string
-	cmd := &cobra.Command{
-		Use:   kind + " <name>",
-		Short: "Write the cluster's " + kind + " to a file (or stdout with -o -)",
-		Args:  cobra.ExactArgs(1),
-		RunE: withStore(func(cmd *cobra.Command, args []string, s *store.Store) error {
-			sec, err := s.GetClusterSecrets(cmd.Context(), args[0])
-			if err != nil {
-				return err
-			}
-			data := sec.Talosconfig
-			if kind == "kubeconfig" {
-				data = sec.Kubeconfig
-			}
-			if data == nil {
-				return fmt.Errorf("cluster %s has no %s yet", args[0], kind)
-			}
-			if out == "-" {
-				_, err = cmd.OutOrStdout().Write(data)
-				return err
-			}
-			if out == "" {
-				out = kind
-			}
-			return fsx.WriteOut(out, 0o600, fsx.Bytes(data))
-		}),
-	}
-	cmd.Flags().StringVarP(&out, "out", "o", "", "output file (default ./"+kind+"; - for stdout)")
-	return cmd
-}
-
 func clusterForgetCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "forget <name>",
@@ -107,17 +74,21 @@ func clusterForgetCmd() *cobra.Command {
 func clusterExportCmd() *cobra.Command {
 	var out string
 	cmd := &cobra.Command{
-		Use:   "export <name>",
+		Use:   "export <dir|cluster>",
 		Short: "Write native Talos artefacts and an OpenTofu (siderolabs/talos) root for the cluster",
 		Args:  cobra.ExactArgs(1),
 		RunE: withManager(func(cmd *cobra.Command, args []string, m *cluster.Manager) error {
-			if out == "" {
-				out = "export-" + args[0]
-			}
-			if err := m.Export(cmd.Context(), args[0], out); err != nil {
+			name, err := useCluster(cmd, m, args[0])
+			if err != nil {
 				return err
 			}
-			fmt.Fprintf(cmd.OutOrStdout(), "exported cluster %s to %s\n", args[0], out)
+			if out == "" {
+				out = "export-" + name
+			}
+			if err := m.Export(cmd.Context(), name, out); err != nil {
+				return err
+			}
+			fmt.Fprintf(cmd.OutOrStdout(), "exported cluster %s to %s\n", name, out)
 			return nil
 		}),
 	}

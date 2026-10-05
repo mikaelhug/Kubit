@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"fmt"
+	"slices"
 )
 
 type SOPSKey struct {
@@ -13,6 +14,9 @@ type SOPSKey struct {
 }
 
 func (s *Store) GetSOPSKey(ctx context.Context, cluster string) (*SOPSKey, error) {
+	if k, ok := s.heldSOPS(cluster, nil); ok {
+		return k, nil
+	}
 	k := SOPSKey{Cluster: cluster}
 	var sealed []byte
 	err := s.db.QueryRowContext(ctx, `SELECT identity, recipient, created_at FROM sops_keys WHERE cluster = ?`, cluster).Scan(&sealed, &k.Recipient, &k.CreatedAt)
@@ -26,6 +30,10 @@ func (s *Store) GetSOPSKey(ctx context.Context, cluster string) (*SOPSKey, error
 }
 
 func (s *Store) PutSOPSKey(ctx context.Context, cluster string, identity []byte, recipient string) error {
+	if _, ok := s.heldSOPS(cluster, func(k *SOPSKey) { k.Identity, k.Recipient = slices.Clone(identity), recipient }); ok {
+		s.notify(Change{Table: "sops", Cluster: cluster, Key: cluster, Op: "put"})
+		return nil
+	}
 	sealed, err := s.crypto.Seal(identity)
 	if err != nil {
 		return err
@@ -39,6 +47,9 @@ func (s *Store) PutSOPSKey(ctx context.Context, cluster string, identity []byte,
 }
 
 func (s *Store) CreateSOPSKey(ctx context.Context, cluster string, identity []byte, recipient string) error {
+	if _, ok := s.heldSOPS(cluster, nil); ok {
+		return nil
+	}
 	sealed, err := s.crypto.Seal(identity)
 	if err != nil {
 		return err

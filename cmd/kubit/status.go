@@ -2,16 +2,12 @@ package main
 
 import (
 	"encoding/json"
-	"errors"
 	"fmt"
-	"os"
-	"path/filepath"
 	"strings"
 	"text/tabwriter"
 	"time"
 
 	"github.com/mikael/kubit/internal/cluster"
-	"github.com/mikael/kubit/internal/repo"
 	"github.com/spf13/cobra"
 )
 
@@ -24,7 +20,7 @@ func statusCmd() *cobra.Command {
 		Args:  cobra.MaximumNArgs(1),
 		RunE: withManager(func(cmd *cobra.Command, args []string, m *cluster.Manager) error {
 			ctx := cmd.Context()
-			name, err := statusTarget(cmd, m, dirArg(args))
+			name, err := useCluster(cmd, m, dirArg(args))
 			if err != nil {
 				return err
 			}
@@ -69,31 +65,6 @@ func statusCmd() *cobra.Command {
 	cmd.Flags().BoolVarP(&watch, "watch", "w", false, "redraw until interrupted")
 	cmd.Flags().DurationVar(&every, "interval", 5*time.Second, "redraw interval with --watch")
 	return cmd
-}
-
-func statusTarget(cmd *cobra.Command, m *cluster.Manager, arg string) (string, error) {
-	if _, err := os.Stat(filepath.Join(arg, repo.ClusterFile)); err != nil {
-		if arg == "." {
-			return "", errors.New("no cluster.yaml here; give a repo dir or a cluster name")
-		}
-		return arg, nil
-	}
-	r, err := repo.Load(arg)
-	if err != nil {
-		return "", err
-	}
-	d, err := cluster.FromRepo(r)
-	if err != nil {
-		return "", err
-	}
-	tracked, err := m.Track(cmd.Context(), d)
-	if err != nil {
-		return "", err
-	}
-	if !tracked {
-		return "", fmt.Errorf("%s is not created yet; run kubit apply", r.Cluster.Metadata.Name)
-	}
-	return r.Cluster.Metadata.Name, nil
 }
 
 func printStatus(cmd *cobra.Command, st *cluster.Status, gvisor bool) {

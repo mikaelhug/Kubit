@@ -43,7 +43,7 @@ func rootCmd() *cobra.Command {
 		RunE:          console.RunE,
 	}
 	root.Flags().AddFlagSet(console.Flags())
-	root.AddCommand(versionCmd(), serveCmd(false), initCmd(), planCmd(), applyCmd(),
+	root.AddCommand(versionCmd(), serveCmd(false), initCmd(), planCmd(), applyCmd(), exportCmd(),
 		credentialCmd("talosconfig", "Print an admin talosconfig derived from the repo's secrets", (*repo.Repo).Talosconfig),
 		credentialCmd("kubeconfig", "Print an admin kubeconfig derived from the repo's secrets", (*repo.Repo).Kubeconfig), configCmd(), discoverCmd(), clusterCmd(), nodeCmd(), recipientCmd(), etcdCmd(), statusCmd(), backupCmd(), restoreCmd(), keyCmd(), pxeCmd())
 	return root

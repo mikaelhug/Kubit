@@ -1,7 +1,6 @@
 package cluster
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -463,11 +462,10 @@ func (m *Manager) checkCachedSecrets(ctx context.Context, d *Desired) error {
 	if err != nil {
 		return err
 	}
-	stored, err := config.ParseSecrets(sec.SecretsBundle)
-	if err != nil || stored.Cluster == nil {
+	if stored, err := config.ParseSecrets(sec.SecretsBundle); err != nil || stored.Cluster == nil {
 		return nil
 	}
-	if stored.Cluster.ID != d.Bundle.Cluster.ID || stored.Cluster.Secret != d.Bundle.Cluster.Secret {
+	if !sameBundle(sec.SecretsBundle, d.Bundle) {
 		return fmt.Errorf("~/.kubit knows another cluster named %s with other secrets; run kubit cluster forget %s, or kubit export --repo to move it", name, name)
 	}
 	return nil
@@ -486,10 +484,10 @@ func (m *Manager) Converge(ctx context.Context, d *Desired, p *Plan, opts Conver
 	name := c.Metadata.Name
 	m.UsePlatformState(name, d.platform())
 	if p.has(ActCreate) {
-		if err := m.Create(ctx, p.target, d.Bundle, sink); err != nil {
+		if err := m.cacheSecrets(ctx, d); err != nil {
 			return err
 		}
-		if err := m.cacheSecrets(ctx, d); err != nil {
+		if err := m.Create(ctx, p.target, d.Bundle, sink); err != nil {
 			return err
 		}
 		return m.ApplyPlatform(ctx, name, sink)
@@ -582,26 +580,26 @@ func (m *Manager) adopt(ctx context.Context, d *Desired, applied *config.Cluster
 
 func (m *Manager) cacheSecrets(ctx context.Context, d *Desired) error {
 	name := d.Cluster.Metadata.Name
-	sec, err := m.Store.GetClusterSecrets(ctx, name)
-	if err != nil && !errors.Is(err, store.ErrNotFound) {
-		return err
+	sec := store.ClusterSecrets{SecretsBundle: d.BundleYAML, Talosconfig: d.Talosconfig, Kubeconfig: d.Kubeconfig}
+	if cur, err := m.Store.GetClusterSecrets(ctx, name); err == nil && cur.Talosconfig != nil && cur.Kubeconfig != nil && sameBundle(cur.SecretsBundle, d.Bundle) {
+		sec.Talosconfig, sec.Kubeconfig = cur.Talosconfig, cur.Kubeconfig
 	}
-	if err != nil || !bytes.Equal(sec.SecretsBundle, d.BundleYAML) || sec.Talosconfig == nil || sec.Kubeconfig == nil {
-		if err := m.Store.PutClusterSecrets(ctx, name, store.ClusterSecrets{SecretsBundle: d.BundleYAML, Talosconfig: d.Talosconfig, Kubeconfig: d.Kubeconfig}); err != nil {
-			return err
+	m.Store.HoldClusterSecrets(name, sec)
+	recipient := ""
+	if d.FluxKey != "" {
+		id, err := age.ParseX25519Identity(d.FluxKey)
+		if err != nil {
+			return fmt.Errorf("flux age key: %w", err)
 		}
+		recipient = id.Recipient().String()
+		m.Store.HoldSOPSKey(name, keysFile(id), recipient)
 	}
-	if d.FluxKey == "" {
-		return nil
-	}
-	id, err := age.ParseX25519Identity(d.FluxKey)
-	if err != nil {
-		return fmt.Errorf("flux age key: %w", err)
-	}
-	if k, err := m.Store.GetSOPSKey(ctx, name); err == nil && k.Recipient == id.Recipient().String() {
-		return nil
-	}
-	return m.Store.PutSOPSKey(ctx, name, keysFile(id), id.Recipient().String())
+	return m.Store.DropStoredSecrets(ctx, name, recipient)
+}
+
+func sameBundle(raw []byte, b *secrets.Bundle) bool {
+	stored, err := config.ParseSecrets(raw)
+	return err == nil && stored.Cluster != nil && b != nil && b.Cluster != nil && stored.Cluster.ID == b.Cluster.ID && stored.Cluster.Secret == b.Cluster.Secret
 }
 
 func (m *Manager) settle(ctx context.Context, d *Desired) error {

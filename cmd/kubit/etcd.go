@@ -13,11 +13,15 @@ import (
 func etcdCmd() *cobra.Command {
 	cmd := &cobra.Command{Use: "etcd", Short: "etcd snapshots: take, list, verify, download, restore"}
 	snapshot := &cobra.Command{
-		Use:   "snapshot <cluster>",
+		Use:   "snapshot <dir|cluster>",
 		Short: "Take and store a verified, sealed etcd snapshot now",
 		Args:  cobra.ExactArgs(1),
 		RunE: withManager(func(cmd *cobra.Command, args []string, m *cluster.Manager) error {
-			sn, err := m.SnapshotEtcd(cmd.Context(), args[0], "manual", printEvents(cmd))
+			name, err := useCluster(cmd, m, args[0])
+			if err != nil {
+				return err
+			}
+			sn, err := m.SnapshotEtcd(cmd.Context(), name, "manual", printEvents(cmd))
 			if err != nil {
 				return err
 			}
@@ -26,11 +30,15 @@ func etcdCmd() *cobra.Command {
 		}),
 	}
 	list := &cobra.Command{
-		Use:   "list <cluster>",
+		Use:   "list <dir|cluster>",
 		Short: "List stored snapshots",
 		Args:  cobra.ExactArgs(1),
 		RunE: withManager(func(cmd *cobra.Command, args []string, m *cluster.Manager) error {
-			list, err := m.Store.ListSnapshots(cmd.Context(), args[0])
+			name, err := nameOf(args[0])
+			if err != nil {
+				return err
+			}
+			list, err := m.Store.ListSnapshots(cmd.Context(), name)
 			if err != nil {
 				return err
 			}
@@ -44,10 +52,14 @@ func etcdCmd() *cobra.Command {
 	}
 	var out string
 	download := &cobra.Command{
-		Use:   "download <cluster> <id>",
+		Use:   "download <dir|cluster> <id>",
 		Short: "Write the plain snapshot to a file (for talosctl bootstrap --recover-from or etcdutl)",
 		Args:  cobra.ExactArgs(2),
 		RunE: withManager(func(cmd *cobra.Command, args []string, m *cluster.Manager) error {
+			name, err := nameOf(args[0])
+			if err != nil {
+				return err
+			}
 			id, err := strconv.ParseInt(args[1], 10, 64)
 			if err != nil {
 				return err
@@ -56,7 +68,7 @@ func etcdCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			if sn.Cluster != args[0] {
+			if sn.Cluster != name {
 				return fmt.Errorf("snapshot %d belongs to %s", id, sn.Cluster)
 			}
 			if out == "" {
@@ -68,7 +80,7 @@ func etcdCmd() *cobra.Command {
 	download.Flags().StringVarP(&out, "out", "o", "", "output file")
 	var yes bool
 	restore := &cobra.Command{
-		Use:   "restore <cluster> <id>",
+		Use:   "restore <dir|cluster> <id>",
 		Short: "DESTRUCTIVE: wipe etcd on every control plane and rebuild it from the snapshot",
 		Args:  cobra.ExactArgs(2),
 		RunE: withManager(func(cmd *cobra.Command, args []string, m *cluster.Manager) error {
@@ -79,7 +91,11 @@ func etcdCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			return m.RestoreEtcd(cmd.Context(), args[0], id, printEvents(cmd))
+			name, err := useCluster(cmd, m, args[0])
+			if err != nil {
+				return err
+			}
+			return m.RestoreEtcd(cmd.Context(), name, id, printEvents(cmd))
 		}),
 	}
 	restore.Flags().BoolVar(&yes, "yes", false, "confirm the destructive restore")
