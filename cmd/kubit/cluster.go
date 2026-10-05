@@ -12,36 +12,8 @@ import (
 )
 
 func clusterCmd() *cobra.Command {
-	cmd := &cobra.Command{Use: "cluster", Short: "Create and inspect clusters"}
-	cmd.AddCommand(clusterCreateCmd(), clusterListCmd(), clusterGetCmd(), clusterCredsCmd("kubeconfig"), clusterCredsCmd("talosconfig"), clusterForgetCmd(), clusterApplyCmd(), clusterExportCmd())
-	return cmd
-}
-
-func clusterCreateCmd() *cobra.Command {
-	var file string
-	var skipPlatform bool
-	cmd := &cobra.Command{
-		Use:   "create",
-		Short: "Provision a cluster from cluster.yaml on nodes in maintenance mode",
-		RunE: withManager(func(cmd *cobra.Command, _ []string, m *cluster.Manager) error {
-			c, err := config.Load(file)
-			if err != nil {
-				return err
-			}
-			if err := m.CheckCluster(cmd.Context(), c); err != nil {
-				return err
-			}
-			if err := m.Create(cmd.Context(), c, printEvents(cmd)); err != nil {
-				return err
-			}
-			if skipPlatform {
-				return nil
-			}
-			return m.ApplyPlatform(cmd.Context(), c.Metadata.Name, printEvents(cmd))
-		}),
-	}
-	cmd.Flags().StringVarP(&file, "file", "f", "cluster.yaml", "cluster declaration")
-	cmd.Flags().BoolVar(&skipPlatform, "skip-platform", false, "stop after the Kubernetes API is up; do not apply platform add-ons")
+	cmd := &cobra.Command{Use: "cluster", Short: "Inspect clusters cached in ~/.kubit"}
+	cmd.AddCommand(clusterListCmd(), clusterGetCmd(), clusterCredsCmd("kubeconfig"), clusterCredsCmd("talosconfig"), clusterForgetCmd(), clusterExportCmd())
 	return cmd
 }
 
@@ -130,44 +102,6 @@ func clusterForgetCmd() *cobra.Command {
 			return s.DeleteCluster(cmd.Context(), args[0])
 		}),
 	}
-}
-
-func clusterApplyCmd() *cobra.Command {
-	var file string
-	cmd := &cobra.Command{
-		Use:   "apply <name>",
-		Short: "Re-apply machine configs regenerated from the stored cluster.yaml (or -f to update it first)",
-		Args:  cobra.ExactArgs(1),
-		RunE: withManager(func(cmd *cobra.Command, args []string, m *cluster.Manager) error {
-			c, _, err := m.LoadCluster(cmd.Context(), args[0])
-			if err != nil {
-				return err
-			}
-			if file != "" {
-				updated, err := config.Load(file)
-				if err != nil {
-					return err
-				}
-				if updated.Metadata.Name != c.Metadata.Name {
-					return fmt.Errorf("%s declares cluster %q, not %q", file, updated.Metadata.Name, c.Metadata.Name)
-				}
-				updated.Spec.SchematicID = c.Spec.SchematicID
-				if err := m.CheckCluster(cmd.Context(), updated); err != nil {
-					return err
-				}
-				if err := m.SaveCluster(cmd.Context(), updated, ""); err != nil {
-					return err
-				}
-				c = updated
-			}
-			if err := m.ApplyConfigs(cmd.Context(), c, "", printEvents(cmd)); err != nil {
-				return err
-			}
-			return m.ApplyPlatform(cmd.Context(), c.Metadata.Name, printEvents(cmd))
-		}),
-	}
-	cmd.Flags().StringVarP(&file, "file", "f", "", "updated cluster.yaml to store before applying")
-	return cmd
 }
 
 func clusterExportCmd() *cobra.Command {

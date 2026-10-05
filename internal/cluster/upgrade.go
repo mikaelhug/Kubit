@@ -130,7 +130,7 @@ func (m *Manager) UpgradeTalos(ctx context.Context, name, version string, sink S
 		return err
 	}
 	if err := m.syncManifestsStep(ctx, &next, kc, sink); err != nil {
-		return fmt.Errorf("all nodes on Talos %s; %w; apply node configs to sync them", version, err)
+		return fmt.Errorf("all nodes on Talos %s; %w; run kubit apply again to sync them", version, err)
 	}
 	sink.Emit(Done, manifestsStep.ID, "", "all nodes on Talos %s", version)
 	return nil

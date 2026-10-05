@@ -23,3 +23,4 @@ master.key
 *.tfstate
 *.tfstate.*
 .env
+/kubit

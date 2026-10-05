@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"slices"
 	"strings"
 	"time"
@@ -56,6 +57,8 @@ func (s Summary) String() string {
 type Runner struct {
 	Bin          string
 	Dir          string
+	StatePath    string
+	Passphrase   string
 	Log          func(Line)
 	lastWarnings []string
 }
@@ -73,7 +76,14 @@ func (r *Runner) Warnings() []string {
 }
 
 func (r *Runner) Init(ctx context.Context) error {
-	_, err := r.run(ctx, "init", "-input=false", "-no-color")
+	args := []string{"init", "-input=false", "-no-color", "-reconfigure"}
+	if r.StatePath != "" {
+		if err := os.MkdirAll(filepath.Dir(r.StatePath), 0o755); err != nil {
+			return err
+		}
+		args = append(args, "-backend-config=path="+r.StatePath)
+	}
+	_, err := r.run(ctx, args...)
 	return err
 }
 
@@ -121,10 +131,34 @@ func (r *Runner) output(ctx context.Context, args ...string) ([]byte, error) {
 }
 
 func (r *Runner) env() []string {
-	return append(childEnv(), "TF_IN_AUTOMATION=1", "TF_INPUT=0")
+	env := append(childEnv(), "TF_IN_AUTOMATION=1", "TF_INPUT=0")
+	if r.Passphrase != "" {
+		env = append(env, "TF_ENCRYPTION="+Encryption(r.Passphrase))
+	}
+	return env
 }
 
-var secretEnv = []string{"KUBIT_MASTER_KEY", "KUBIT_TOKEN"}
+func Encryption(passphrase string) string {
+	return fmt.Sprintf(`key_provider "pbkdf2" "kubit" {
+  passphrase = %q
+}
+method "aes_gcm" "kubit" {
+  keys = key_provider.pbkdf2.kubit
+}
+method "unencrypted" "migrate" {}
+state {
+  method = method.aes_gcm.kubit
+  fallback {
+    method = method.unencrypted.migrate
+  }
+}
+plan {
+  method = method.aes_gcm.kubit
+}
+`, passphrase)
+}
+
+var secretEnv = []string{"KUBIT_MASTER_KEY", "KUBIT_TOKEN", "TF_ENCRYPTION", "SOPS_AGE_KEY", "KUBIT_SMTP_PASSWORD"}
 
 func childEnv() []string {
 	var out []string

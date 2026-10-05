@@ -21,7 +21,7 @@ func (r *Repo) Talosconfig() ([]byte, error) {
 	}
 	var endpoints []string
 	for _, n := range r.Cluster.ControlPlanes() {
-		endpoints = append(endpoints, n.IP)
+		endpoints = append(endpoints, n.TargetIP())
 	}
 	cfg := config.NewConfig(r.Cluster.Metadata.Name, endpoints, r.Secrets.Bundle.Certs.OS.Crt, cert)
 	return cfg.Bytes()

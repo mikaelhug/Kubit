@@ -187,12 +187,11 @@ configs are AES-256-GCM sealed with a 32-byte master key from the macOS Keychain
 (`kubit` / `master-key`), `KUBIT_MASTER_KEY` (base64), or a `master.key` file (0600) in
 `$KUBIT_HOME` when no keyring is reachable. `kubit key export` prints it.
 
-**App secrets (SOPS + age).** One age identity per cluster, generated on first use and
-sealed in `sops_keys`; it outlives the cluster, so a rebuild under the same name
-decrypts again. Every platform apply with Flux installs it as `flux-system/sops-age`,
-and the root Kustomization decrypts with it. Encrypt files to your own key plus each
-cluster's recipient (`kubit sops recipient <cluster>`). `kubit sops export|import` move
-the key.
+**App secrets (SOPS + age).** Each cluster has an age identity in its
+`secrets.sops.yaml` (`flux.ageKey`), so a rebuild from the repo decrypts again. Every
+platform apply with Flux installs it as `flux-system/sops-age`, and the root
+Kustomization decrypts with it. Encrypt app secrets to your own key plus the cluster's
+recipient (`kubit recipient lab`).
 
 ## Discovery
 
@@ -204,31 +203,67 @@ UUID and serial. Machines are keyed by MAC, so a new DHCP lease keeps the row an
 **unbooted**. The daemon reprobes maintenance and configured machines in the background
 and pushes changes to the console.
 
-## Cluster lifecycle
+## Plan and apply
 
-`kubit cluster create -f cluster.yaml`: preflight → schematic → secrets and node configs
-→ apply in parallel → wait for the install reboot → bootstrap etcd → kubeconfig → nodes
-Ready → platform apply. Re-running it resumes. `cluster apply` regenerates and applies
-every node config, control planes first, then syncs the bootstrap manifests and the
-platform. `node add`, `node remove` (drain → delete → reset; refuses to drop below one
-control plane, or to two without `--force`), `upgrade talos|kubernetes`, `status`,
-`cluster export`.
+`kubit plan lab` compares the repo with the live cluster and prints what `kubit apply lab`
+would do:
 
-**Upgrades** run per node, control planes first: pull the installer, stage it,
-check etcd health (never with exactly two members), drain (5 min, PDBs respected),
+```
++ add                w-03: worker at 192.168.1.23
+~ config             w-01
+      ~ machine.network.nameservers …
+~ upgrade talos      v1.14.0 → v1.14.2
+- remove             w-09: drain, delete and reset (needs --allow-removal)
+~ platform           traefik: 1 to update
+lab: 5 change(s).
+```
+
+It validates every generated node config with Talos's metal-mode rules, then observes:
+each declared node over the Talos API with the repo's credentials (member) or the
+insecure maintenance API (to join; found by MAC when its lease moved), the Kubernetes
+nodes, the installed Talos version and schematic, a Talos **dry-run apply** of each
+member's regenerated config (the diff is Talos's own), and `tofu plan` of the add-ons.
+Nothing is changed. `--detailed-exitcode` exits 2 when there are changes; problems
+(unreachable nodes, a declared address that moved, the API down) exit 1.
+
+`kubit apply` takes a Kubernetes Lease `kube-system/kubit-apply` (one apply per cluster
+at a time, expires after an hour), plans again, asks (or `--yes`), then converges in
+this order:
+
+1. **create** when no node is a member yet: preflight → schematic → configs from the
+   repo's secrets → install in parallel → bootstrap etcd → nodes Ready. Re-running
+   resumes an interrupted create.
+2. **add** each declared machine in maintenance mode (widening the firewall on the
+   others first when it brings a new subnet).
+3. **config**: dry-run first, apply only where Talos reports a diff, wait for Ready.
+4. **upgrade talos**, then **upgrade kubernetes**, node by node, control planes first.
+5. **remove** members no longer declared, only with `--allow-removal` (drain → delete →
+   graceful reset; refuses the last control plane, the no-VIP endpoint, or two left).
+6. **platform**: `tofu apply` of the add-ons, state in `lab/state/` (below).
+
+A second `kubit apply` right after finds nothing to do. `~/.kubit` is only a cache: Kubit
+rebuilds its view of a cluster from the repo and the live nodes on every run, so a fresh
+machine with the repo and the age key plans the same way. A cluster cached in `~/.kubit`
+with other secrets is refused.
+
+**Upgrades** run per node, control planes first: pull the installer, stage it, check etcd health (never with exactly two members), drain (5 min, PDBs respected),
 reboot, wait for Ready and the etcd member count, uncordon. A changed extension set
 re-images even at the same version. Every upgrade starts with prechecks (API, etcd,
 nodes Ready, free `/var`, published target, supported version pair, deprecated API use)
 and a `pre-upgrade` etcd snapshot.
 
-**Config freshness.** Kubit compares each node's applied config with what the
-declaration generates now; `GET /clusters/{name}/config` lists nodes that are behind.
+CI: a workflow can run `kubit plan --detailed-exitcode` on pull requests and
+`kubit apply --yes` on merge, with the age key in `SOPS_AGE_KEY` and a runner on the
+cluster's network. `hack/e2e.sh <subnet>` runs init → apply → a second, empty plan.
 
 ## Platform layer (OpenTofu)
 
 `~/.kubit/clusters/<name>/infra/platform/` is rendered from embedded templates plus
 `terraform.tfvars.json`, then `tofu init/plan/apply` with a pinned, checksum-verified
-binary. Charts are pinned in `internal/tofu/render.go`. Notes:
+binary. The state lives in the repo at `state/platform.tfstate`, encrypted by OpenTofu
+(`TF_ENCRYPTION`: pbkdf2 key from `platform.statePassphrase` in the repo's secrets,
+AES-GCM for state and plan; an unencrypted state is read once and rewritten encrypted),
+so commit it after an apply. Charts are pinned in `internal/tofu/render.go`. Notes:
 
 - `metallb-system` and `longhorn-system` are `privileged`; MetalLB is layer-2 only (FRR
   off); control planes keep LoadBalancer announcements when they run workloads.
@@ -237,8 +272,8 @@ binary. Charts are pinned in `internal/tofu/render.go`. Notes:
   compatibility class `nginx`, Gateway API CRDs v1.6.1 shipped with Kubit. The old
   ingress address is pinned during the migration.
 - **Longhorn** runs only on data disks or `data-system` (labelled at machine-config
-  time), reserve 5 %, replicas = min(3, storage nodes). Enabling it needs the
-  iscsi/util-linux extensions: upgrade Talos first.
+  time), reserve 5 %, replicas = min(3, storage nodes). Enabling it adds the
+  iscsi/util-linux extensions; `kubit apply` re-images the nodes before the platform.
 - **Builds**: in-cluster `registry:3` + rootful BuildKit in `kubit-builds`; nodes pull
   `registry.kubit/<app>` through a fixed ClusterIP mirror. Needs Longhorn.
 - **Flux**, headless (source, kustomize, helm, notification). One Flux Kustomization
@@ -358,7 +393,10 @@ Roadmap (2026-10-05):
   page; `serve --config`
 - [x] 2 — repo as source of truth: `kubit init`, SOPS-compatible `secrets.sops.yaml`,
   derived talosconfig/kubeconfig, `kubit pxe --repo`; state in the repo lands with apply
-- [ ] 3 — `kubit plan` / `kubit apply` converge
+- [x] 3 — `kubit plan` / `kubit apply` converge (create, add, config, upgrades, guarded
+  removal, platform), Lease lock, exit codes, encrypted tofu state in the repo;
+  `cluster create|apply`, `node add|remove`, `upgrade`, `platform`, `sops` commands
+  removed. Unit-tested; not yet run against a cluster
 - [ ] 4 — `kubit serve <dirs…>`, status, discovery polish, secrets editor
 - [ ] 5 — talos-backup add-on, off by default
 - [ ] 6 — migration: `kubit export --repo`

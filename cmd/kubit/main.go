@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/signal"
@@ -21,6 +22,10 @@ func main() {
 	context.AfterFunc(ctx, stop)
 	err := rootCmd().ExecuteContext(ctx)
 	stop()
+	var code exitCode
+	if errors.As(err, &code) {
+		os.Exit(int(code))
+	}
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)
 		os.Exit(1)
@@ -37,9 +42,9 @@ func rootCmd() *cobra.Command {
 		RunE:          console.RunE,
 	}
 	root.Flags().AddFlagSet(console.Flags())
-	root.AddCommand(versionCmd(), serveCmd(false), initCmd(),
+	root.AddCommand(versionCmd(), serveCmd(false), initCmd(), planCmd(), applyCmd(),
 		credentialCmd("talosconfig", "Print an admin talosconfig derived from the repo's secrets", (*repo.Repo).Talosconfig),
-		credentialCmd("kubeconfig", "Print an admin kubeconfig derived from the repo's secrets", (*repo.Repo).Kubeconfig), configCmd(), discoverCmd(), clusterCmd(), nodeCmd(), platformCmd(), sopsCmd(), upgradeCmd(), etcdCmd(), statusCmd(), backupCmd(), restoreCmd(), keyCmd(), pxeCmd())
+		credentialCmd("kubeconfig", "Print an admin kubeconfig derived from the repo's secrets", (*repo.Repo).Kubeconfig), configCmd(), discoverCmd(), clusterCmd(), nodeCmd(), recipientCmd(), etcdCmd(), statusCmd(), backupCmd(), restoreCmd(), keyCmd(), pxeCmd())
 	return root
 }
 

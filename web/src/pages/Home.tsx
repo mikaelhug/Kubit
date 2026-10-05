@@ -121,11 +121,11 @@ function Welcome() {
         <span class="text-muted mt-1">Or over the network:</span>
         <Code text="sudo kubit pxe" />
       </Step>
-      <Step n={2} title="Find them">
-        <a class="btn mt-1 self-start" href="/discovery">Discovery</a>
+      <Step n={2} title="Declare the cluster in a repo">
+        <Code text="kubit init lab --nodes 192.168.1.0/24" />
       </Step>
-      <Step n={3} title="Declare and apply">
-        <Code text="kubit cluster create -f cluster.yaml" />
+      <Step n={3} title="Apply it">
+        <Code text="kubit apply lab" />
       </Step>
     </div>
   )

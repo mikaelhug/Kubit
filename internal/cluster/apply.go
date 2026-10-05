@@ -91,6 +91,11 @@ func (m *Manager) applyNodeConfig(ctx context.Context, n config.Node, cfg []byte
 		tc.Close()
 		return false, fmt.Errorf("dry run: %w", err)
 	}
+	if configDiff(details) == "" {
+		tc.Close()
+		sink.Emit(Info, step, n.Hostname, "unchanged")
+		return false, m.Store.PutNodeMachineConfig(ctx, n.IP, cfg, config.HasSystemVolume(cfg))
+	}
 	bootID, err := readBootID(ctx, tc)
 	if err != nil {
 		tc.Close()

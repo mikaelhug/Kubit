@@ -1,7 +1,6 @@
 package cluster
 
 import (
-	"bytes"
 	"context"
 	"encoding/base64"
 	"errors"
@@ -29,27 +28,6 @@ func (m *Manager) SOPSKey(ctx context.Context, name string) (*store.SOPSKey, err
 		return nil, err
 	}
 	if err := m.Store.CreateSOPSKey(ctx, name, keysFile(id), id.Recipient().String()); err != nil {
-		return nil, err
-	}
-	return m.Store.GetSOPSKey(ctx, name)
-}
-
-func (m *Manager) ImportSOPSKey(ctx context.Context, name string, keys []byte) (*store.SOPSKey, error) {
-	if _, err := m.Store.GetCluster(ctx, name); err != nil {
-		return nil, err
-	}
-	ids, err := age.ParseIdentities(bytes.NewReader(keys))
-	if err != nil {
-		return nil, fmt.Errorf("not an age key file: %w", err)
-	}
-	if len(ids) != 1 {
-		return nil, fmt.Errorf("the key file holds %d keys; import exactly one", len(ids))
-	}
-	id, ok := ids[0].(*age.X25519Identity)
-	if !ok {
-		return nil, fmt.Errorf("only X25519 age keys (AGE-SECRET-KEY-1…) are supported")
-	}
-	if err := m.Store.PutSOPSKey(ctx, name, keysFile(id), id.Recipient().String()); err != nil {
 		return nil, err
 	}
 	return m.Store.GetSOPSKey(ctx, name)

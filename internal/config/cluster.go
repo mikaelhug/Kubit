@@ -265,6 +265,18 @@ func Parse(b []byte) (*Cluster, error) {
 
 func (c *Cluster) Marshal() ([]byte, error) { return yaml.Marshal(c) }
 
+func (c *Cluster) Clone() *Cluster {
+	b, err := c.Marshal()
+	if err != nil {
+		panic(err)
+	}
+	var out Cluster
+	if err := yaml.Unmarshal(b, &out); err != nil {
+		panic(err)
+	}
+	return &out
+}
+
 func (c *Cluster) applyDefaults() {
 	if c.Spec.TalosVersion == "" {
 		c.Spec.TalosVersion = gendata.VersionTag
@@ -344,7 +356,7 @@ func (c *Cluster) applyDefaults() {
 		host := c.Spec.ControlPlane.VIP
 		if host == "" {
 			if cps := c.ControlPlanes(); len(cps) > 0 {
-				host = cps[0].IP
+				host = cps[0].TargetIP()
 			}
 		}
 		if host != "" {

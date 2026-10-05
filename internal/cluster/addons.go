@@ -87,7 +87,7 @@ func (m *Manager) Addons(ctx context.Context, name string) ([]AddonStatus, error
 	}
 	var releases []tofu.Release
 	if bin, err := m.tofuBin(ctx); err == nil {
-		releases, err = (&tofu.Runner{Bin: bin, Dir: m.platformDir(name)}).Releases(ctx)
+		releases, err = m.tofuRunner(name, bin, nil).Releases(ctx)
 		if m.addonErrorChanged(name, err) {
 			log.Printf("add-ons %s: %v", name, err)
 		}

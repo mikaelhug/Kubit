@@ -11,10 +11,11 @@ import (
 	"github.com/mikael/kubit/internal/config"
 	"github.com/mikael/kubit/internal/store"
 	"github.com/mikael/kubit/internal/talos"
+	"github.com/siderolabs/talos/pkg/machinery/config/generate/secrets"
 	"go.yaml.in/yaml/v4"
 )
 
-func (m *Manager) Create(ctx context.Context, c *config.Cluster, sink Sink) error {
+func (m *Manager) Create(ctx context.Context, c *config.Cluster, bundle *secrets.Bundle, sink Sink) error {
 	name := c.Metadata.Name
 	sink.Plan(createSteps...)
 	if row, err := m.Store.GetCluster(ctx, name); err == nil {
@@ -51,11 +52,11 @@ func (m *Manager) Create(ctx context.Context, c *config.Cluster, sink Sink) erro
 	}
 
 	if err := sink.Run("secrets", func() error {
-		gen, err := config.Generate(c, nil, m.installer(c))
+		gen, err := config.Generate(c, bundle, m.installer(c))
 		if err != nil {
 			return err
 		}
-		bundle, err := yaml.Marshal(gen.Secrets)
+		raw, err := yaml.Marshal(gen.Secrets)
 		if err != nil {
 			return err
 		}
@@ -66,7 +67,7 @@ func (m *Manager) Create(ctx context.Context, c *config.Cluster, sink Sink) erro
 		if err := m.SaveCluster(ctx, c, StateProvisioning); err != nil {
 			return err
 		}
-		if err := m.Store.PutClusterSecrets(ctx, name, store.ClusterSecrets{SecretsBundle: bundle, Talosconfig: talosconfig}); err != nil {
+		if err := m.Store.PutClusterSecrets(ctx, name, store.ClusterSecrets{SecretsBundle: raw, Talosconfig: talosconfig}); err != nil {
 			return err
 		}
 		for _, n := range c.Spec.Nodes {

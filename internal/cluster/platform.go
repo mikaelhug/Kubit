@@ -3,8 +3,6 @@ package cluster
 import (
 	"bytes"
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"fmt"
 	"net"
 	"os"
@@ -37,29 +35,71 @@ func (m *Manager) writeCredentials(ctx context.Context, name string) (kubeconfig
 	if sec.Kubeconfig == nil {
 		return "", fmt.Errorf("cluster %s has no kubeconfig yet", name)
 	}
+	return m.writeKubeconfig(name, sec.Kubeconfig)
+}
+
+func (m *Manager) writeKubeconfig(name string, kubeconfig []byte) (string, error) {
 	dir := m.ClusterDir(name)
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return "", err
 	}
-	kubeconfigPath = filepath.Join(dir, "kubeconfig")
-	if err := os.WriteFile(kubeconfigPath, sec.Kubeconfig, 0o600); err != nil {
-		return "", err
+	path := filepath.Join(dir, "kubeconfig")
+	return path, os.WriteFile(path, kubeconfig, 0o600)
+}
+
+type platformState struct {
+	path, passphrase string
+}
+
+func (m *Manager) UsePlatformState(name, path, passphrase string) {
+	m.statesMu.Lock()
+	defer m.statesMu.Unlock()
+	if m.states == nil {
+		m.states = map[string]platformState{}
 	}
-	if err := os.WriteFile(filepath.Join(dir, "talosconfig"), sec.Talosconfig, 0o600); err != nil {
-		return "", err
+	m.states[name] = platformState{path: path, passphrase: passphrase}
+}
+
+func (m *Manager) tofuRunner(name, bin string, log func(tofu.Line)) *tofu.Runner {
+	m.statesMu.Lock()
+	st := m.states[name]
+	m.statesMu.Unlock()
+	return &tofu.Runner{Bin: bin, Dir: m.platformDir(name), StatePath: st.path, Passphrase: st.passphrase, Log: log}
+}
+
+func (m *Manager) planPlatformFor(ctx context.Context, d *Desired, applied *config.Cluster) (*tofu.PlanDiff, error) {
+	name := d.Cluster.Metadata.Name
+	m.UsePlatformState(name, d.StatePath, d.Passphrase)
+	kubeconfig, err := m.writeKubeconfig(name, d.Kubeconfig)
+	if err != nil {
+		return nil, err
 	}
-	return kubeconfigPath, nil
+	var ingressIP string
+	if p, err := m.Store.GetPlatformStatus(ctx, name); err == nil {
+		ingressIP = p.Outputs["ingress_ip"]
+	}
+	c := d.Cluster.Clone()
+	c.Spec.Nodes = applied.Spec.Nodes
+	if err := tofu.Render(m.platformDir(name), c, kubeconfig, ingressIP); err != nil {
+		return nil, err
+	}
+	bin, err := m.tofuBin(ctx)
+	if err != nil {
+		return nil, err
+	}
+	r := m.tofuRunner(name, bin, nil)
+	if err := r.Init(ctx); err != nil {
+		return nil, err
+	}
+	if _, err := r.Plan(ctx); err != nil {
+		return nil, err
+	}
+	return r.ShowPlan(ctx, r.Warnings())
 }
 
 type platformRun struct {
 	*tofu.Runner
-	cluster  *config.Cluster
-	specHash string
-}
-
-func specHash(spec []byte) string {
-	sum := sha256.Sum256(spec)
-	return hex.EncodeToString(sum[:])
+	cluster *config.Cluster
 }
 
 func (m *Manager) platformRunner(ctx context.Context, name string, sink Sink) (*platformRun, error) {
@@ -76,12 +116,12 @@ func (m *Manager) platformRunner(ctx context.Context, name string, sink Sink) (*
 		if id, pools, err := m.desiredSchematics(ctx, c); err != nil {
 			sink.Emit(Warn, "render", "", "could not check the node image for Longhorn's extensions: %v", err)
 		} else if imageOutdated(c, id, pools) {
-			return nil, fmt.Errorf("Longhorn needs the Talos extensions %s on every node first: upgrade Talos (Lifecycle), then plan again", strings.Join(config.LonghornExtensions, " and "))
+			return nil, fmt.Errorf("Longhorn needs the Talos extensions %s on every node; kubit apply re-images the nodes first", strings.Join(config.LonghornExtensions, " and "))
 		}
 	}
 	if c.Spec.Platform.Builds.Enabled {
 		if host := m.registryMirrorMissing(ctx, c); host != "" {
-			return nil, fmt.Errorf("Builds needs the registry mirror in every node config (%s has none): apply node configs (Settings), then plan again", host)
+			return nil, fmt.Errorf("Builds needs the registry mirror in every node config (%s has none); kubit apply updates the node configs first", host)
 		}
 	}
 	kubeconfig, err := m.writeCredentials(ctx, name)
@@ -109,11 +149,11 @@ func (m *Manager) platformRunner(ctx context.Context, name string, sink Sink) (*
 		sink.Emit(Info, "render", "", "SOPS key %s goes to %s/%s on apply", k.Recipient, tofu.SOPSNamespace, tofu.SOPSSecret)
 	}
 	sink.End("render")
-	r := &tofu.Runner{Bin: bin, Dir: dir, Log: tofuLogger(sink)}
+	r := m.tofuRunner(name, bin, tofuLogger(sink))
 	if err := sink.Run("init", func() error { return r.Init(ctx) }); err != nil {
 		return nil, err
 	}
-	return &platformRun{Runner: r, cluster: c, specHash: specHash(row.Spec)}, nil
+	return &platformRun{Runner: r, cluster: c}, nil
 }
 
 var platformSteps = Steps(
@@ -122,31 +162,6 @@ var platformSteps = Steps(
 	"plan", "tofu plan",
 	"apply", "tofu apply",
 )
-
-func (m *Manager) PlanPlatform(ctx context.Context, name string, sink Sink) (*tofu.PlanDiff, error) {
-	r, err := m.platformRunner(ctx, name, sink)
-	if err != nil {
-		return nil, err
-	}
-	var diff *tofu.PlanDiff
-	err = sink.Run("plan", func() error {
-		sum, err := r.Plan(ctx)
-		if err != nil {
-			return err
-		}
-		if diff, err = r.ShowPlan(ctx, r.Warnings()); err != nil {
-			return err
-		}
-		diff.SpecHash = r.specHash
-		sink.Emit(Info, "plan", "", "%s", sum)
-		return nil
-	})
-	if err != nil {
-		return nil, err
-	}
-	sink.Skip("apply")
-	return diff, nil
-}
 
 func (m *Manager) ApplyPlatform(ctx context.Context, name string, sink Sink) error {
 	r, err := m.platformRunner(ctx, name, sink)

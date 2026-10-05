@@ -1,15 +1,11 @@
 package cluster
 
 import (
-	"context"
 	"errors"
 	"fmt"
 	"strings"
-	"sync"
 
 	"github.com/mikael/kubit/internal/config"
-	"github.com/mikael/kubit/internal/store"
-	talosconfig "github.com/siderolabs/talos/pkg/machinery/config"
 	"github.com/siderolabs/talos/pkg/machinery/config/configloader"
 	"github.com/siderolabs/talos/pkg/machinery/config/generate/secrets"
 )
@@ -20,23 +16,8 @@ func (metalMode) String() string        { return "metal" }
 func (metalMode) RequiresInstall() bool { return true }
 func (metalMode) InContainer() bool     { return false }
 
-func (m *Manager) CheckCluster(ctx context.Context, declared *config.Cluster) error {
-	b, err := declared.Marshal()
-	if err != nil {
-		return err
-	}
-	c, err := config.Parse(b)
-	if err != nil {
-		return err
-	}
-	_, bundle, err := m.loadSecrets(ctx, c.Metadata.Name)
-	if errors.Is(err, store.ErrNotFound) {
-		bundle, err = trialBundle(c.Spec.TalosVersion)
-	}
-	if err != nil {
-		return err
-	}
-	gen, err := config.Generate(c, bundle, m.installer(c))
+func CheckDeclaration(c *config.Cluster, bundle *secrets.Bundle) error {
+	gen, err := config.Generate(c, bundle, config.FixedInstaller("ghcr.io/siderolabs/installer:"+c.Spec.TalosVersion))
 	if err != nil {
 		return err
 	}
@@ -63,17 +44,4 @@ func flatten(err error) string {
 		msgs = append(msgs, e.Error())
 	}
 	return strings.Join(msgs, "; ")
-}
-
-var trialBundles sync.Map
-
-func trialBundle(talosVersion string) (*secrets.Bundle, error) {
-	once, _ := trialBundles.LoadOrStore(talosVersion, sync.OnceValues(func() (*secrets.Bundle, error) {
-		contract, err := talosconfig.ParseContractFromVersion(talosVersion)
-		if err != nil {
-			return nil, err
-		}
-		return secrets.NewBundle(secrets.NewClock(), contract)
-	}))
-	return once.(func() (*secrets.Bundle, error))()
 }

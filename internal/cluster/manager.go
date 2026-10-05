@@ -61,6 +61,9 @@ type Manager struct {
 
 	addonErrMu sync.Mutex
 	addonErr   map[string]string
+
+	statesMu sync.Mutex
+	states   map[string]platformState
 }
 
 type kubeEntry struct {

@@ -1,22 +1,14 @@
 package cluster
 
 import (
-	"bytes"
 	"strings"
 	"testing"
 
 	"github.com/mikael/kubit/internal/config"
-	"github.com/mikael/kubit/internal/store"
 )
 
 func TestControlPlaneOnlyPatchRejectedOnWorker(t *testing.T) {
-	crypto, _ := store.NewCrypto(bytes.Repeat([]byte{5}, 32))
-	st, err := store.Open(t.TempDir(), crypto)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer st.Close()
-	m := NewManager(st, t.TempDir())
+	b := bundle(t)
 	decl := "apiVersion: kubit.dev/v1\nkind: Cluster\nmetadata: {name: c}\nspec:\n%s  nodes:\n" +
 		"    - {hostname: cp, ip: 10.0.0.1, role: controlplane, installDisk: {path: /dev/sda}}\n" +
 		"    - {hostname: w, ip: 10.0.0.2, role: worker, installDisk: {path: /dev/sda}}\n"
@@ -27,10 +19,10 @@ func TestControlPlaneOnlyPatchRejectedOnWorker(t *testing.T) {
 		}
 		return c
 	}
-	if err := m.CheckCluster(t.Context(), parse("")); err != nil {
+	if err := CheckDeclaration(parse(""), b); err != nil {
 		t.Fatalf("a plain cluster checks: %v", err)
 	}
-	err = m.CheckCluster(t.Context(), parse("  patches: [ { apiVersion: v1alpha1, kind: KubeAPIServerConfig, extraArgs: { audit-log-maxage: \"7\" } } ]\n"))
+	err := CheckDeclaration(parse("  patches: [ { apiVersion: v1alpha1, kind: KubeAPIServerConfig, extraArgs: { audit-log-maxage: \"7\" } } ]\n"), b)
 	if err == nil {
 		t.Fatal("a control-plane document patched onto every node must fail")
 	}
@@ -38,7 +30,7 @@ func TestControlPlaneOnlyPatchRejectedOnWorker(t *testing.T) {
 		t.Errorf("error = %v", err)
 	}
 	cpOnly := "  pools: [ { name: controlplane, role: controlplane, patches: [ { apiVersion: v1alpha1, kind: KubeAPIServerConfig, extraArgs: { audit-log-maxage: \"7\" } } ] }, { name: worker, role: worker } ]\n"
-	if err := m.CheckCluster(t.Context(), parse(cpOnly)); err != nil {
+	if err := CheckDeclaration(parse(cpOnly), b); err != nil {
 		t.Errorf("the same patch on the control-plane pool checks: %v", err)
 	}
 }
