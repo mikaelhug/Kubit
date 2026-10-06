@@ -2,6 +2,7 @@ import { useEffect, useState } from 'preact/hooks'
 import { useLocation } from 'preact-iso'
 import { api, fmt, type DesignNode, type DesignRequest, type DesignView, type NodeRow } from '../api'
 import { modelOf, roleLabel, specsOf } from '../machine'
+import { addressOf } from '../net'
 import { clusters, toast, upsertCluster } from '../store'
 import { Dialog, ErrorBox, Field, Notice, Pill } from './ui'
 import { DnsFields, dnsList, dnsPair, type DnsPair } from './DnsFields'
@@ -76,7 +77,7 @@ function AddDialog({ machines, onClose }: { machines: NodeRow[]; onClose: (done:
   useEffect(() => { if (recheck > 0) review() }, [recheck])
   const setStatic = (n: DesignNode, on: boolean) => {
     const next = { ...addr }
-    if (on) next[n.mac] = n.network?.addresses[0] ?? n.live.address ?? `${n.ip}/24`
+    if (on) next[n.mac] = addressOf(n.network?.addresses[0] ?? n.live.address ?? n.ip)
     else delete next[n.mac]
     setAddr(next)
     if (on && !gateway) setGateway(n.live.gateway ?? '')

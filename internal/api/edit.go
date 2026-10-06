@@ -412,7 +412,17 @@ type nodeNetworkView struct {
 	Endpoint        string              `json:"endpoint"`
 	EndpointFollows bool                `json:"endpointFollows"`
 	ClusterDNS      []string            `json:"clusterNameservers,omitempty"`
+	Prefix          int                 `json:"prefix"`
 	Hash            string              `json:"hash"`
+}
+
+func prefixOf(cidrs ...string) int {
+	for _, c := range cidrs {
+		if p, err := netip.ParsePrefix(c); err == nil {
+			return p.Bits()
+		}
+	}
+	return 24
 }
 
 type nodeSpec struct {
@@ -462,6 +472,11 @@ func (s *Server) handleNodeNetwork(w http.ResponseWriter, r *http.Request) {
 			tc.Close()
 		}
 	}
+	declared := ""
+	if n.Network != nil && len(n.Network.Addresses) > 0 {
+		declared = n.Network.Addresses[0]
+	}
+	v.Prefix = prefixOf(declared, v.Live.Address)
 	writeJSON(w, http.StatusOK, v)
 }
 

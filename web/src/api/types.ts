@@ -120,7 +120,7 @@ export interface MachineChoice {
 
 export interface LiveNet { address?: string; gateway?: string; nameservers?: string[] }
 
-export interface NodeNetworkView { hash: string; hostname: string; role: string; ip: string; declared?: NodeNetwork; live: LiveNet; endpoint: string; endpointFollows: boolean; clusterNameservers?: string[] }
+export interface NodeNetworkView { hash: string; prefix: number; hostname: string; role: string; ip: string; declared?: NodeNetwork; live: LiveNet; endpoint: string; endpointFollows: boolean; clusterNameservers?: string[] }
 
 export interface DesignRequest {
   dir?: string

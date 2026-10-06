@@ -1,6 +1,7 @@
 import type { ComponentChildren } from 'preact'
 import { useEffect, useState } from 'preact/hooks'
 import { api, type NodeNetworkView } from '../api'
+import { addressOf } from '../net'
 import { toast } from '../store'
 import { DnsFields, dnsList, dnsPair, type DnsPair } from './DnsFields'
 import { Dialog, ErrorBox, Field } from './ui'
@@ -27,7 +28,7 @@ function AddressDialog({ cluster, hostname, onClose }: { cluster: string; hostna
     api.nodeNetwork(cluster, hostname).then((v) => {
       setView(v)
       setMode(v.declared ? 'static' : 'dhcp')
-      setAddress(v.declared?.addresses[0] ?? v.live.address ?? `${v.ip}/24`)
+      setAddress(addressOf(v.declared?.addresses[0] ?? v.live.address ?? v.ip))
       setGateway(v.declared?.gateway ?? v.live.gateway ?? '')
       setDns(dnsPair(v.declared?.nameservers ?? (v.clusterNameservers?.length ? [] : v.live.nameservers)))
     }).catch((e) => setError(e.message))
@@ -37,7 +38,7 @@ function AddressDialog({ cluster, hostname, onClose }: { cluster: string; hostna
   const save = () => {
     setBusy(true)
     setError(null)
-    api.setNodeNetwork(cluster, hostname, isStatic ? { static: true, address: address.trim(), gateway: gateway.trim(), nameservers: dnsList(dns), hash: view!.hash } : { static: false, hash: view!.hash })
+    api.setNodeNetwork(cluster, hostname, isStatic ? { static: true, address: address.includes('/') ? address.trim() : `${address.trim()}/${view!.prefix}`, gateway: gateway.trim(), nameservers: dnsList(dns), hash: view!.hash } : { static: false, hash: view!.hash })
       .then(() => { toast('cluster.yaml updated', 'good'); onClose() })
       .catch((e) => setError(e.message))
       .finally(() => setBusy(false))
@@ -58,7 +59,7 @@ function AddressDialog({ cluster, hostname, onClose }: { cluster: string; hostna
                 <option value="dhcp">DHCP</option>
                 <option value="static">Static</option>
               </select>
-              <input class="input mono" value={isStatic ? address : view.ip} disabled={!isStatic} autofocus placeholder="192.168.5.51/24" aria-label="Address" onInput={(e) => setAddress((e.target as HTMLInputElement).value)} />
+              <input class="input mono" value={isStatic ? address : view.ip} disabled={!isStatic} autofocus placeholder="192.168.5.51" aria-label="Address" onInput={(e) => setAddress((e.target as HTMLInputElement).value)} />
             </span>
           </Field>
           {isStatic && (
