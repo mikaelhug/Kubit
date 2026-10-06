@@ -1,5 +1,5 @@
 import { authedUrl, req } from './api/http'
-import type { AddonStatus, Build, CertInfo, ApplyRun, ClusterRow, ConfigStatus, DesignRequest, DesignView, DiscoverState, FluxObject, HealthEvent, ImageStatus, Inventory, Namespace, NetworkView, NodeDetail, NodeNetworkView, NodeRow, PodEvent, Plan, PlanSummary, PodSummary, PxeStatus, RepoView, SecretEntry, SecretIndex, SecretSpec, ClusterSecrets, SOPSKey, Sample, Service, Snapshot, Status, StorageView, Versions, Workload } from './api/types'
+import type { AddonStatus, Build, CertInfo, ApplyRun, ClusterRow, ConfigStatus, DesignRequest, DesignView, DiscoverState, FluxObject, HealthEvent, ImageStatus, Inventory, Namespace, NetworkView, NodeDetail, NodeNetworkView, NodeRow, PodEvent, Plan, PlanSummary, PodSummary, PxeStatus, RepoView, SecretEntry, SecretIndex, SecretSpec, ClusterSecrets, DeployKey, SOPSKey, Sample, Service, Snapshot, Status, StorageView, Versions, Workload } from './api/types'
 
 export type * from './api/types'
 export { getToken } from './api/http'
@@ -40,6 +40,8 @@ export const api = {
   sopsKey: (name: string) => req<SOPSKey>('GET', `/clusters/${name}/sops`),
   letFluxDecrypt: (name: string, repo: number) => req<{ rekeyed: number }>('POST', `/clusters/${name}/sops/flux?repo=${repo}`),
   flux: (name: string) => req<FluxObject[]>('GET', `/clusters/${name}/flux`),
+  deployKey: (name: string) => req<DeployKey>('GET', `/clusters/${name}/flux/key`),
+  newDeployKey: (name: string, hash: string, hostsOnly: boolean) => req<DeployKey>('POST', `/clusters/${name}/flux/key`, { hash, hostsOnly }),
   builds: (name: string) => req<Build[]>('GET', `/clusters/${name}/builds`),
   pods: (name: string, namespace = '', selector = '') => req<PodSummary[]>('GET', `/clusters/${name}/pods?namespace=${encodeURIComponent(namespace)}&selector=${encodeURIComponent(selector)}`),
   podEvents: (name: string, ns: string, pod: string) => req<PodEvent[]>('GET', `/clusters/${name}/pods/${ns}/${pod}/events`),

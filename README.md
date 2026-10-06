@@ -63,7 +63,7 @@ plan is empty, the Lease is free and the nodes are Ready. `WORK=<dir>` keeps the
 ```
 lab/
   cluster.yaml         the declaration; Kubit never writes it after init
-  secrets.sops.yaml    Talos secrets bundle, Flux age key, state passphrase, backup S3 keys
+  secrets.sops.yaml    Talos secrets bundle, Flux age and deploy keys, state passphrase, backup S3 keys
   .sops.yaml           age recipients for *.sops.yaml
   snapshots/           etcd snapshots, age-encrypted (git-ignored)
   .gitignore           talosconfig, kubeconfig, .terraform/, snapshots/
@@ -145,7 +145,7 @@ spec:
     builds: { enabled: false }
     flux:
       enabled: true
-      repository: { url: https://github.com/you/apps.git, branch: main, path: ./flux }
+      repository: { url: ssh://git@github.com/you/apps.git, branch: main, path: ./flux }
 ```
 
 The Discovery page copies a node entry for any machine in maintenance mode.
@@ -185,7 +185,7 @@ Kubit keeps no state of its own. Each run reads:
 | What | From |
 |---|---|
 | Declaration | `cluster.yaml` |
-| Talos secrets, Flux key, state passphrase, backup keys | `secrets.sops.yaml`, decrypted in memory |
+| Talos secrets, Flux keys, state passphrase, backup keys | `secrets.sops.yaml`, decrypted in memory |
 | Add-on state | the cluster: Secret `kube-system/tfstate-default-kubit-platform`, encrypted by tofu |
 | etcd snapshots | `snapshots/*.db.gz.age` (git-ignored) |
 | Versions, members, schematics, config drift | the live nodes (Talos dry run) and the Kubernetes API |
@@ -198,6 +198,27 @@ alerts and samples live in the daemon's memory and start empty.
 platform apply with Flux installs it as `flux-system/sops-age`, and the root
 Kustomization decrypts with it. New repos encrypt app secrets to your own key plus the cluster's recipient
 (shown with *Copy* on the Add-ons tab's Flux card); see *Secrets editor*.
+
+**Private apps repo (deploy key).** `platform.flux.repository.url` is an `https://` URL
+for a public repo or an `ssh://user@host/path` URL for a private one (the scp form
+`git@host:path` is refused; Flux takes only ssh:// URLs). For ssh, *Generate* on the Flux
+card (or `kubit deploy-key lab`) writes a new ed25519 key to `secrets.sops.yaml`
+(`flux.deployKey`, under the rule for your keys only) together with the host's keys
+(`flux.knownHosts`, every type the host offers; compare the fingerprints with the host's
+published ones). Add the public key to the repository's deploy keys, read-only; on GitHub one
+deploy key serves one repository. Every plan then connects with the key and lists as a
+problem a refused key, a host key not in `flux.knownHosts`, a missing repository or branch,
+and an https repository that is private or missing; an unreachable host adds nothing. The
+platform apply installs the key as Secret `flux-system/flux-system` (`identity`,
+`known_hosts`) and points the GitRepository at it. To rotate: *Replace*, add the new key on
+the host (the plan stays blocked until then), apply, remove the old key. *Rescan* (or
+`--hosts`) re-reads the host keys after the host rotates them.
+
+**When Flux syncs.** source-controller asks the repository for the branch head every
+`platform.flux.repository.interval` (default 1m) and fetches only when it moved;
+kustomize-controller applies a new revision as soon as it arrives and re-applies every 10m
+to undo drift. Both run in the cluster and pull, so nothing inbound is needed and the laptop
+may sleep; a failure shows as the GitRepository's message on the Flux card.
 
 ## Discovery
 
@@ -405,6 +426,9 @@ The console writes only to the served repos and never commits:
 - **Enable / Disable** on an Add-ons card sets `spec.platform.<add-on>.enabled` (MetalLB asks
   for its range, Flux for its repository); Storage offers it for Longhorn when no
   StorageClass exists.
+- **Generate / Replace / Rescan** on the Flux card writes `flux.deployKey` and
+  `flux.knownHosts` to `secrets.sops.yaml` (stale-hash checked, re-encrypted for the file's
+  own recipients).
 - **Upgrade** on an update notice (Home, Overview) sets `talosVersion` and
   `kubernetesVersion` to the latest supported pair and opens Changes.
 - Clicking a node's address on the Nodes tab sets its `network` (static or DHCP, address, gateway,
@@ -496,7 +520,8 @@ result without writing), `POST design/checks` (the same with the VIP and address
 `GET secrets/values?repo&file` (one file decrypted, with its hash), `PATCH secrets/file`
 (`{repo, file, hash, set: [{path, value}], remove: [path]}`), `DELETE secrets/file?repo&file&hash`,
 `POST secrets/move` (`{repo, file, to, hash}`), `POST secrets/files` (`{repo, file, name, namespace,
-type, stringData}`), `POST clusters/{n}/sops/flux[?repo=i]`. Unknown `/api/`
+type, stringData}`), `POST clusters/{n}/sops/flux[?repo=i]`, `GET|POST clusters/{n}/flux/key`
+(`{hash, hostsOnly}`; public key, fingerprint, host keys). Unknown `/api/`
 paths answer 404 JSON.
 
 **Secrets.** A cluster's *Secrets* tab lists the Kubernetes Secrets Flux applies to it: the
@@ -599,7 +624,7 @@ access. Under `sudo` (`kubit pxe`) Kubit uses the invoking user's `~/.kubit`.
 
 Deleting `~/.kubit` loses nothing but downloads.
 
-**Commands:** `kubit [dirs…]` (daemon and console), `serve`, `init`, `plan`, `apply`,
+**Commands:** `kubit [dirs…]` (daemon and console), `serve`, `init`, `plan`, `apply`, `deploy-key`,
 `talosconfig`, `kubeconfig`, `pxe`, `etcd snapshot|list|restore`, `version`. Everything else is talosctl or
 kubectl with the derived credentials.
 

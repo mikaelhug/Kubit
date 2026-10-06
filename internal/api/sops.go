@@ -1,6 +1,7 @@
 package api
 
 import (
+	"errors"
 	"net/http"
 	"strconv"
 
@@ -12,6 +13,8 @@ func (s *Server) sopsRoutes() {
 	r := s.mux
 	r.HandleFunc("GET /api/v1/clusters/{name}/sops", s.handleSOPSKey)
 	r.HandleFunc("POST /api/v1/clusters/{name}/sops/flux", s.handleLetFluxDecrypt)
+	r.HandleFunc("GET /api/v1/clusters/{name}/flux/key", s.handleDeployKey)
+	r.HandleFunc("POST /api/v1/clusters/{name}/flux/key", s.handleNewDeployKey)
 }
 
 func (s *Server) handleSOPSKey(w http.ResponseWriter, r *http.Request) {
@@ -53,4 +56,50 @@ func (s *Server) handleLetFluxDecrypt(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]int{"rekeyed": n})
+}
+
+func (s *Server) handleDeployKey(w http.ResponseWriter, r *http.Request) {
+	dir, err := s.repoOf(r.PathValue("name"))
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+	ids, err := sops.Identities()
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+	k, err := repo.DeployKeyOf(dir, ids)
+	reply(w, k, err)
+}
+
+func (s *Server) handleNewDeployKey(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Hash      string `json:"hash"`
+		HostsOnly bool   `json:"hostsOnly"`
+	}
+	if !decode(w, r, &req) {
+		return
+	}
+	dir, err := s.repoOf(r.PathValue("name"))
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+	ids, err := sops.Identities()
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+	err = repo.NewDeployKey(r.Context(), dir, req.Hash, req.HostsOnly, ids)
+	switch {
+	case errors.Is(err, repo.ErrNotSSH):
+		writeErr(w, conflict(err.Error()))
+		return
+	case err != nil:
+		writeErr(w, editErr(err))
+		return
+	}
+	k, err := repo.DeployKeyOf(dir, ids)
+	reply(w, k, err)
 }

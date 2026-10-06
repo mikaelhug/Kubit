@@ -11,5 +11,5 @@ func FromRepo(r *repo.Repo) (*Desired, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Desired{Dir: r.Dir, Cluster: r.Cluster, Bundle: r.Secrets.Bundle, Talosconfig: tc, Kubeconfig: kc, FluxKey: r.Secrets.FluxKey, RepoState: r.StatePath(), Digest: r.Digest, Passphrase: r.Secrets.StatePassphrase, BackupKey: r.Secrets.BackupKeyID, BackupSec: r.Secrets.BackupSecret}, nil
+	return &Desired{Dir: r.Dir, Cluster: r.Cluster, Bundle: r.Secrets.Bundle, Talosconfig: tc, Kubeconfig: kc, FluxKey: r.Secrets.FluxKey, GitKey: r.Secrets.DeployKey, KnownHosts: r.Secrets.KnownHosts, RepoState: r.StatePath(), Digest: r.Digest, Passphrase: r.Secrets.StatePassphrase, BackupKey: r.Secrets.BackupKeyID, BackupSec: r.Secrets.BackupSecret}, nil
 }

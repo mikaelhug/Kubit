@@ -10,6 +10,7 @@ export interface ApplyRun { running: boolean; started?: string; finished?: strin
 export interface HealthEvent { id: number; ts: string; cluster: string; node?: string; severity: 'info' | 'warn' | 'critical'; kind: string; message: string; open: boolean }
 export interface Sample { ts: string; node?: string; cpuMilli: number; cpuCap: number; memBytes: number; memCap: number; pods: number; ready: boolean; reachable: boolean }
 export interface SOPSKey { recipient: string }
+export interface DeployKey { publicKey?: string; fingerprint?: string; hosts: { host: string; type: string; fingerprint: string }[] | null; hash: string }
 export interface Build { name: string; image?: string; state: 'running' | 'succeeded' | 'failed'; pod?: string; startedAt?: string; finishedAt?: string }
 export interface FluxRepository { url: string; branch?: string; path?: string; interval?: string }
 export interface FluxObject { kind: string; namespace: string; name: string; ready: 'True' | 'False' | 'Unknown'; reason?: string; message?: string; revision?: string; suspended?: boolean; since?: string }

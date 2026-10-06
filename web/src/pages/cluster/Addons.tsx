@@ -4,7 +4,7 @@ import { ErrorBox, Notice, Pill, Section, StatusDot } from '../../components/ui'
 import { stateTone } from '../../tone'
 import { useLive } from '../../useLive'
 import { AddonToggle } from '../../components/AddonToggle'
-import { BuildList, FluxSync, SOPSRow } from './AddonPanels'
+import { BuildList, DeployKeyRow, FluxSync, SOPSRow } from './AddonPanels'
 import type { ClusterCtx } from './ClusterPage'
 
 const stateText: Record<AddonStatus['state'], string> = { disabled: 'disabled', pending: 'enabled, not applied yet', deploying: 'deploying', ready: 'ready', degraded: 'degraded', failed: 'release failed', orphaned: 'disabled in cluster.yaml, still installed' }
@@ -19,6 +19,8 @@ export function Addons({ ctx }: { ctx: ClusterCtx }) {
   const repo = cluster.spec.spec.platform.flux?.repository
   const builds = !!cluster.spec.spec.platform.builds?.enabled
   const { data: sops } = useLive(() => api.sopsKey(name), [name], [[name, 'sops']], { onError: 'null', enabled: flux })
+  const ssh = !!repo?.url.startsWith('ssh://')
+  const { data: deployKey, set: setDeployKey } = useLive(() => api.deployKey(name), [name], [[name, 'sops']], { onError: 'null', enabled: flux && ssh })
   const { data: sync } = useLive(() => api.flux(name), [name], [[name, 'flux']], { onError: 'null', enabled: flux })
   const { data: buildList } = useLive(() => api.builds(name), [name], [[name, 'workloads']], { onError: 'null', enabled: builds })
   const stateOf = (key: string) => addons?.find((x) => x.key === key)?.state ?? 'disabled'
@@ -62,6 +64,7 @@ export function Addons({ ctx }: { ctx: ClusterCtx }) {
                     )}
                     {a?.key === 'flux' && sync && sync.length > 0 && <FluxSync objects={sync} />}
                     {a?.key === 'builds' && buildList && buildList.length > 0 && <BuildList cluster={name} builds={buildList} />}
+                    {a?.key === 'flux' && repo && deployKey && <DeployKeyRow cluster={name} url={repo.url} deployKey={deployKey} onChange={setDeployKey} />}
                     {a?.key === 'flux' && sops && <SOPSRow sops={sops} />}
                   </div>
                 </div>

@@ -216,7 +216,7 @@ plan {
 `, passphrase)
 }
 
-var secretEnv = []string{"KUBIT_TOKEN", "TF_ENCRYPTION", "TF_PLUGIN_CACHE_DIR", "SOPS_AGE_KEY", "SOPS_AGE_KEY_FILE", "TF_VAR_backup_access_key_id", "TF_VAR_backup_secret_access_key"}
+var secretEnv = []string{"KUBIT_TOKEN", "TF_ENCRYPTION", "TF_PLUGIN_CACHE_DIR", "SOPS_AGE_KEY", "SOPS_AGE_KEY_FILE", "TF_VAR_backup_access_key_id", "TF_VAR_backup_secret_access_key", "TF_VAR_flux_git_identity", "TF_VAR_flux_git_known_hosts"}
 
 func childEnv() []string {
 	var out []string

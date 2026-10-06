@@ -89,7 +89,10 @@ func (m *Manager) openPlatform(ctx context.Context, d *Desired, c *config.Cluste
 	}
 	r.Passphrase = d.Passphrase
 	if d.BackupKey != "" || d.BackupSec != "" {
-		r.Env = []string{"TF_VAR_backup_access_key_id=" + d.BackupKey, "TF_VAR_backup_secret_access_key=" + d.BackupSec}
+		r.Env = append(r.Env, "TF_VAR_backup_access_key_id="+d.BackupKey, "TF_VAR_backup_secret_access_key="+d.BackupSec)
+	}
+	if d.GitKey != "" {
+		r.Env = append(r.Env, "TF_VAR_flux_git_identity="+d.GitKey, "TF_VAR_flux_git_known_hosts="+d.KnownHosts)
 	}
 	if err := m.preparePlatform(ctx, r, d, c, move, apply); err != nil {
 		r.Close()

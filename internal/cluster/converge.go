@@ -17,6 +17,7 @@ import (
 	"github.com/mikael/kubit/internal/config"
 	"github.com/mikael/kubit/internal/k8s"
 	"github.com/mikael/kubit/internal/netx"
+	"github.com/mikael/kubit/internal/gitremote"
 	"github.com/mikael/kubit/internal/talos"
 	"github.com/siderolabs/talos/pkg/machinery/config/generate/secrets"
 	utilversion "k8s.io/apimachinery/pkg/util/version"
@@ -29,6 +30,8 @@ type Desired struct {
 	Talosconfig []byte
 	Kubeconfig  []byte
 	FluxKey     string
+	GitKey      string
+	KnownHosts  string
 	RepoState   string
 	Passphrase  string
 	BackupKey   string
@@ -158,6 +161,13 @@ func (m *Manager) plan(ctx context.Context, d *Desired, opts ConvergeOptions) (*
 	if c.Spec.Platform.Flux.Enabled && d.FluxKey == "" {
 		p.Problems = append(p.Problems, "Flux is on but secrets.sops.yaml has no flux.ageKey; add one with sops")
 		return p, nil
+	}
+	if r := c.Spec.Platform.Flux.Repository; c.Spec.Platform.Flux.Enabled && r != nil && gitremote.IsSSH(r.URL) && d.GitKey == "" {
+		p.Problems = append(p.Problems, "platform.flux.repository is an ssh:// URL but secrets.sops.yaml has no flux.deployKey; generate one on the Add-ons tab or with kubit deploy-key")
+		return p, nil
+	}
+	if problem := fluxSourceProblem(ctx, c, d); problem != "" {
+		p.Problems = append(p.Problems, problem)
 	}
 	ls := m.observe(ctx, d)
 	if ls.endpoint != "" {

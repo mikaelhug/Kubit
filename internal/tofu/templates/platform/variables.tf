@@ -78,6 +78,17 @@ variable "backup" {
   default = { enabled = false }
 }
 
+variable "flux_git_identity" {
+  type      = string
+  default   = ""
+  sensitive = true
+}
+
+variable "flux_git_known_hosts" {
+  type    = string
+  default = ""
+}
+
 variable "backup_access_key_id" {
   type      = string
   default   = ""

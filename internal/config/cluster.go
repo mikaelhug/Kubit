@@ -204,14 +204,14 @@ func (r *FluxRepository) Default() {
 		r.Path = "./"
 	}
 	if r.Interval == "" {
-		r.Interval = "5m"
+		r.Interval = "1m"
 	}
 }
 
 func (r *FluxRepository) Validate() error {
 	var errs []error
-	if u, err := url.Parse(r.URL); err != nil || u.Scheme != "https" || u.Host == "" {
-		errs = append(errs, fmt.Errorf("platform.flux.repository.url must be an https:// URL"))
+	if err := checkRepoURL(r.URL); err != nil {
+		errs = append(errs, fmt.Errorf("platform.flux.repository.url: %w", err))
 	}
 	if strings.HasPrefix(r.Path, "/") || slices.Contains(strings.Split(r.Path, "/"), "..") {
 		errs = append(errs, fmt.Errorf("platform.flux.repository.path %q must be relative to the repository root", r.Path))
@@ -223,6 +223,28 @@ func (r *FluxRepository) Validate() error {
 		errs = append(errs, fmt.Errorf("platform.flux.repository.interval %q: a Go duration of at least 10s", r.Interval))
 	}
 	return errors.Join(errs...)
+}
+
+var scpRemote = regexp.MustCompile(`^([^@/:]+)@([^/:]+):(.+)$`)
+
+func checkRepoURL(raw string) error {
+	if m := scpRemote.FindStringSubmatch(raw); m != nil {
+		return fmt.Errorf("write %q as ssh://%s@%s/%s", raw, m[1], m[2], strings.TrimPrefix(m[3], "/"))
+	}
+	u, err := url.Parse(raw)
+	switch {
+	case err != nil || u.Host == "":
+		return errors.New("an https:// or ssh:// URL with a host")
+	case u.Scheme == "https":
+		return nil
+	case u.Scheme != "ssh":
+		return errors.New("an https:// or ssh:// URL")
+	case u.User.Username() == "":
+		return fmt.Errorf("an ssh:// URL needs a user, as in ssh://git@%s%s", u.Host, u.Path)
+	case strings.Trim(u.Path, "/") == "":
+		return errors.New("an ssh:// URL needs the repository path")
+	}
+	return nil
 }
 
 type MetalLB struct {

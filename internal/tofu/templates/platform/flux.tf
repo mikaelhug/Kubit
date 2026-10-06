@@ -19,6 +19,24 @@ resource "helm_release" "flux" {
   ]
 }
 
+locals {
+  flux_ssh = var.flux.enabled && try(startswith(var.flux.repository.url, "ssh://"), false)
+}
+
+resource "kubernetes_secret_v1" "flux_git" {
+  count = local.flux_ssh ? 1 : 0
+
+  metadata {
+    name      = "flux-system"
+    namespace = "flux-system"
+  }
+  data = {
+    identity    = var.flux_git_identity
+    known_hosts = var.flux_git_known_hosts
+  }
+  depends_on = [helm_release.flux]
+}
+
 resource "kubectl_manifest" "flux_source" {
   count = var.flux.enabled && var.flux.repository != null ? 1 : 0
 
@@ -26,14 +44,15 @@ resource "kubectl_manifest" "flux_source" {
     apiVersion = "source.toolkit.fluxcd.io/v1"
     kind       = "GitRepository"
     metadata   = { name = "flux-system", namespace = "flux-system" }
-    spec = {
+    spec = merge({
       interval = var.flux.repository.interval
       url      = var.flux.repository.url
       ref      = { branch = var.flux.repository.branch }
-    }
+    }, { for k, v in { secretRef = { name = "flux-system" } } : k => v if local.flux_ssh })
   })
   depends_on = [
     helm_release.flux,
+    kubernetes_secret_v1.flux_git,
     helm_release.metallb,
     kubectl_manifest.metallb_pool,
     kubectl_manifest.metallb_l2,
