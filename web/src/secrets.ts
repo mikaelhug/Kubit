@@ -17,7 +17,7 @@ export const isSecret = (f: Pick<SecretFile, 'kind'>) => f.kind === 'Secret'
 
 const utf8 = new TextDecoder('utf-8', { fatal: true })
 
-export function decodeData(b64: string): { text: string; binary?: number } {
+function decodeData(b64: string): { text: string; binary?: number } {
   let bytes: Uint8Array
   try {
     bytes = Uint8Array.from(atob(b64), (c) => c.charCodeAt(0))
@@ -31,7 +31,7 @@ export function decodeData(b64: string): { text: string; binary?: number } {
   }
 }
 
-export function encodeData(text: string) {
+function encodeData(text: string) {
   let bin = ''
   for (const b of new TextEncoder().encode(text)) bin += String.fromCharCode(b)
   return btoa(bin)

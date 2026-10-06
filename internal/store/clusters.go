@@ -2,6 +2,7 @@ package store
 
 import (
 	"bytes"
+	"reflect"
 	"sort"
 
 	"github.com/mikael/kubit/internal/config"
@@ -21,12 +22,16 @@ type ClusterSecrets struct {
 
 func (s *Store) PutCluster(c ClusterRow) {
 	s.mu.Lock()
+	prev, had := s.clusters[c.Name]
 	if c.State == "" {
-		c.State = s.clusters[c.Name].State
+		c.State = prev.State
 	}
 	c.Spec = c.Spec.Clone()
 	s.clusters[c.Name] = c
 	s.mu.Unlock()
+	if had && prev.State == c.State && reflect.DeepEqual(prev.Spec, c.Spec) {
+		return
+	}
 	s.notify(Change{Table: "clusters", Cluster: c.Name, Key: c.Name})
 }
 

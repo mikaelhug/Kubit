@@ -16,6 +16,7 @@ func (s *Server) clusterRoutes() {
 	r := s.mux
 	r.HandleFunc("GET /api/v1/clusters", s.handleClusters)
 	r.HandleFunc("GET /api/v1/clusters/{name}/status", s.handleClusterStatus)
+	r.HandleFunc("POST /api/v1/clusters/{name}/check", s.handleClusterCheck)
 	r.HandleFunc("GET /api/v1/clusters/{name}/yaml", s.handleClusterYAML)
 	r.HandleFunc("PUT /api/v1/clusters/{name}/yaml", s.handleClusterYAMLPut)
 	r.HandleFunc("GET /api/v1/clusters/{name}/kubeconfig", s.handleClusterKubeconfig)
@@ -28,14 +29,20 @@ func (s *Server) handleClusters(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleClusterStatus(w http.ResponseWriter, r *http.Request) {
-	if r.URL.Query().Get("fresh") != "true" {
-		if st := s.watcher.Latest(r.PathValue("name")); st != nil {
-			writeJSON(w, http.StatusOK, st)
-			return
-		}
+	if st := s.watcher.Latest(r.PathValue("name")); st != nil {
+		writeJSON(w, http.StatusOK, st)
+		return
 	}
 	st, err := s.manager.Status(r.Context(), r.PathValue("name"))
 	reply(w, st, err)
+}
+
+func (s *Server) handleClusterCheck(w http.ResponseWriter, r *http.Request) {
+	if !s.watcher.CheckNow(r.PathValue("name")) {
+		writeErr(w, conflict("Kubit is not watching this cluster yet."))
+		return
+	}
+	w.WriteHeader(http.StatusAccepted)
 }
 
 func (s *Server) handleClusterYAML(w http.ResponseWriter, r *http.Request) {

@@ -58,22 +58,6 @@ func Keys(data []byte) ([]Key, error) {
 	return out, walkKeys(root, nil)
 }
 
-func Get(data []byte, ids []age.Identity, path []string) (string, error) {
-	plain, err := Decrypt(data, ids)
-	if err != nil {
-		return "", err
-	}
-	root, err := parseMapping(plain)
-	if err != nil {
-		return "", err
-	}
-	n := lookup(root, path)
-	if n == nil || n.Kind != yaml.ScalarNode {
-		return "", fmt.Errorf("no value at %s", strings.Join(path, "."))
-	}
-	return n.Value, nil
-}
-
 func Edit(data []byte, ids []age.Identity, edit func(root *yaml.Node) error) ([]byte, error) {
 	rule, err := RuleOf(data)
 	if err != nil {

@@ -1,7 +1,6 @@
 import { useEffect } from 'preact/hooks'
 import { api, type Inventory, type NodeRow, type NodeSpec } from '../../api'
 import { AddMachines, Declared } from '../../components/AddMachine'
-import { RemoveNode } from '../../components/RemoveNode'
 import { Tabs } from '../../components/Tabs'
 import { Breadcrumbs, ErrorBox, Pill, SeenAgo } from '../../components/ui'
 import { KindPill, TypePill } from '../../components/Machine'
@@ -51,7 +50,6 @@ export function NodePage({ ip: ipParam, mac }: { ip?: string; mac?: string }) {
           {k8s ? <Pill tone={k8s.ready ? 'good' : 'warn'}>{k8s.ready ? 'Ready' : 'NotReady'}</Pill> : null}
           {k8s?.unschedulable && <Pill tone="warn">cordoned</Pill>}
           {node?.kind === 'maintenance' && <span class="ml-auto">{node.declared ? <Declared m={node} /> : <AddMachines machines={[node]} />}</span>}
-          {node?.kind !== 'maintenance' && cluster && spec && <span class="ml-auto"><RemoveNode cluster={cluster.name} hostname={spec.hostname} /></span>}
         </div>
         <Tabs active={shown} onSelect={(t) => setQuery({ tab: t === 'overview' ? undefined : t })} tabs={tabs} />
       </header>

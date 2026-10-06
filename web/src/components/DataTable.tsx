@@ -14,6 +14,8 @@ export interface Column<T> {
   wrap?: boolean
 }
 
+const searchFrom = 10
+
 export const withoutColumn = <T,>(cols: Column<T>[], id: string, hide: boolean) => (hide ? cols.filter((c) => c.id !== id) : cols)
 
 interface Props<T> {
@@ -69,12 +71,16 @@ export function DataTable<T>({ columns, rows, rowKey, empty = 'Nothing to show.'
     if (pref) persist(pref + '.sort', next)
   }
 
+  if (rows.length === 0 && !loading) {
+    return <div class="panel px-4 py-6 text-center text-[13px] text-muted">{empty}</div>
+  }
+  const searchable = search && (rows.length >= searchFrom || q !== '')
   return (
     <div class="panel flex flex-col overflow-hidden">
-      {search && (
+      {(searchable || toolbar) && (
         <div class="flex items-center gap-2 px-3 py-2 border-b border-border">
-          <input class="input !w-64" placeholder="Filter" data-table-filter value={q} onInput={(e) => { setQ((e.target as HTMLInputElement).value); setPage(0) }} aria-label="Filter rows" />
-          <span class="text-[12px] text-muted">{filtered.length === rows.length ? `${rows.length} rows` : `${filtered.length} of ${rows.length}`}</span>
+          {searchable && <input class="input !w-64" placeholder="Filter" data-table-filter value={q} onInput={(e) => { setQ((e.target as HTMLInputElement).value); setPage(0) }} aria-label="Filter rows" />}
+          {searchable && <span class="text-[12px] text-muted">{filtered.length === rows.length ? `${rows.length} rows` : `${filtered.length} of ${rows.length}`}</span>}
           {toolbar && <span class="ml-auto flex items-center gap-2">{toolbar}</span>}
         </div>
       )}

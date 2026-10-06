@@ -17,14 +17,11 @@ func RowFromScan(res talos.ScanResult) store.Machine {
 	return row
 }
 
-func RecordScan(st *store.Store, results []talos.ScanResult) int {
+func RecordScan(st *store.Store, results []talos.ScanResult) {
 	vips := st.ClusterVIPs()
-	found := 0
 	for _, res := range results {
 		if _, isVIP := vips[res.IP]; res.Err == nil && !isVIP {
 			st.UpsertNode(RowFromScan(res))
-			found++
 		}
 	}
-	return found
 }

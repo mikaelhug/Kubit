@@ -62,7 +62,6 @@ func (s *Server) serveRepo(dir string) (*cluster.Desired, error) {
 	s.repos.mu.Unlock()
 	d := s.readRepo(dir)
 	if d != nil {
-		s.manager.Register(d)
 		go s.trackRepo(ctx, dir, d, true)
 	}
 	if served {
@@ -177,7 +176,8 @@ func (s *Server) readRepo(dir string) *cluster.Desired {
 		update(func(e *servedRepo) { e.Error = err.Error() })
 		return nil
 	}
-	s.store.SetClusterHash(r.Cluster.Metadata.Name, repo.Fingerprint(r.Spec))
+	name, hash := r.Cluster.Metadata.Name, repo.Fingerprint(r.Spec)
+	defer s.store.SetClusterHash(name, hash)
 	var subnets []string
 	for _, n := range r.Cluster.Spec.Nodes {
 		if p, ok := config.Slash24(n.IP); ok {
@@ -195,6 +195,7 @@ func (s *Server) readRepo(dir string) *cluster.Desired {
 		update(func(e *servedRepo) { e.Error = err.Error() })
 		return nil
 	}
+	s.manager.Register(d)
 	return d
 }
 

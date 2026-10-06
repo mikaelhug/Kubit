@@ -6,25 +6,25 @@ import { readText, writeText } from '../local'
 import { kindLabel } from '../machine'
 import { sectionList } from '../routes'
 import { api } from '../api'
-import { checkNow, clusters, machineList, toast } from '../store'
+import { clusters, machineList, toast } from '../store'
 import { Pill } from './ui'
 
-interface Item { label: string; hint?: string; href?: string; run?: () => Promise<unknown>; done?: string; group: string }
+interface Item { label: string; hint?: string; href?: string; run?: () => Promise<unknown>; group: string }
 
 function paletteItems(): Item[] {
   const out: Item[] = []
   for (const c of clusters.value) {
     for (const [id, label] of sectionList) out.push({ label: `${c.name} › ${label}`, href: `/clusters/${c.name}/${id}`, group: 'Clusters' })
     out.push(
-      { label: `Plan ${c.name} again`, run: () => api.replan(c.name), done: `Planning ${c.name}`, group: 'Actions' },
-      { label: `Check ${c.name} now`, run: () => checkNow(c.name), done: `${c.name} checked`, group: 'Actions' },
+      { label: `Plan ${c.name}`, run: () => api.replan(c.name), group: 'Actions' },
+      { label: `Check ${c.name} now`, run: () => api.checkNow(c.name), group: 'Actions' },
     )
     for (const n of c.spec.spec.nodes) out.push({ label: n.hostname, hint: `${c.name} · ${n.ip} · ${n.role ?? 'worker'}`, href: n.mac ? `/machines/${n.mac}` : `/nodes/${n.ip}`, group: 'Nodes' })
   }
   for (const m of machineList.value) {
     if (m.kind !== 'member') out.push({ label: m.hostname || m.mac, hint: `${kindLabel[m.kind]} · ${m.ip || m.mac}`, href: `/machines/${m.mac}`, group: 'Machines' })
   }
-  out.push({ label: 'Scan the network', run: () => api.discover([]), done: 'Scan finished', group: 'Actions' })
+  out.push({ label: 'Scan the network', run: () => api.discover([]), group: 'Actions' })
   out.push({ label: 'Home', href: '/', group: 'Kubit' }, { label: 'Discovery', href: '/discovery', group: 'Kubit' }, { label: 'Secrets', href: '/secrets', group: 'Kubit' })
   return out
 }
@@ -55,7 +55,7 @@ function PaletteDialog({ onClose }: { onClose: () => void }) {
   }, [items, q])
   const go = (it: Item) => {
     onClose()
-    if (it.run) it.run().then(() => it.done && toast(it.done, 'good')).catch((e) => toast(e.message, 'error'))
+    if (it.run) it.run().catch((e) => toast(e.message, 'error'))
     else if (it.href) route(it.href)
   }
   return (

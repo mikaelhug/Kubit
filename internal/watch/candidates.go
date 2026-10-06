@@ -11,13 +11,13 @@ import (
 )
 
 const (
-	PingEvery     = 10 * time.Second
+	pingEvery     = 10 * time.Second
 	missesOffline = 2
 )
 
 func (w *Watcher) candidateLoop(ctx context.Context) {
 	go w.pingLoop(ctx)
-	w.every(ctx, w.ScanInterval, w.candidateTick)
+	w.every(ctx, w.ScanInterval, nil, w.candidateTick)
 }
 
 func (w *Watcher) candidateTick(ctx context.Context) {
@@ -57,7 +57,7 @@ func (ms *misses) record(key string, up bool) int {
 
 func (w *Watcher) pingLoop(ctx context.Context) {
 	ms := &misses{n: map[string]int{}}
-	w.every(ctx, PingEvery, func(ctx context.Context) { w.ping(ctx, ms) })
+	w.every(ctx, pingEvery, nil, func(ctx context.Context) { w.ping(ctx, ms) })
 }
 
 func (w *Watcher) ping(ctx context.Context, ms *misses) {

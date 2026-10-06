@@ -129,7 +129,7 @@ function WorkloadsCard({ cluster, pods, unreachable }: { cluster: string; pods?:
   const down = controllers.filter((w) => !w.available)
   const scope = down[0] && platform.has(down[0].namespace) ? 'platform' : 'apps'
   const value = pods === undefined ? '—' : `${pods} pods`
-  const sub = !workloads ? 'loading' : down.length === 0 ? `all ${controllers.length} controllers available` : `${down.length} controller${down.length === 1 ? '' : 's'} unavailable`
+  const sub = !workloads ? 'loading' : down.length === 0 ? `${controllers.length} controllers up` : `${down.length} of ${controllers.length} controllers down`
   const tone: Tone = !workloads ? 'muted' : down.length > 0 ? 'bad' : 'good'
   return <Tile compact size="lg" label="Workloads" tone={tone} value={value} sub={sub} href={`/clusters/${cluster}/workloads?scope=${scope}`} />
 }
@@ -141,5 +141,5 @@ function BackupsCard({ cluster, status, schedule }: { cluster: string; status?: 
   const age = at ? now.value - Date.parse(at) : Infinity
   const tone: Tone = age < day ? 'good' : age < 3 * day ? 'warn' : schedule ? 'bad' : 'muted'
   const value = at ? <Ago iso={at} /> : 'none'
-  return <Tile compact size="lg" label="Last etcd snapshot" tone={tone} value={value} title={at ? fmt.datetime(at) : undefined} sub={schedule ? `talos-backup, cron ${schedule}` : 'no schedule in spec.backup'} href={`/clusters/${cluster}/backups`} />
+  return <Tile compact size="lg" label="Last etcd snapshot" tone={tone} value={value} title={at ? fmt.datetime(at) : undefined} sub={schedule ? `cron ${schedule}` : 'manual only'} href={`/clusters/${cluster}/backups`} />
 }

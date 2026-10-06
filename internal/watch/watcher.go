@@ -28,6 +28,7 @@ type Watcher struct {
 	lastTick     map[string]time.Time
 	lastContact  map[string]time.Time
 	running      map[string]bool
+	nudges       map[string]chan struct{}
 	observer     ObserverState
 	gaps         []time.Time
 	offlineTicks int
@@ -41,7 +42,7 @@ func New(m *cluster.Manager, interval time.Duration) *Watcher {
 	if interval <= 0 {
 		interval = 15 * time.Second
 	}
-	w := &Watcher{Manager: m, Store: m.Store, Alerts: NewAlerts(), ScanInterval: 4 * interval, last: map[string]*cluster.Status{}, confirms: map[string]*confirm{}, lastTick: map[string]time.Time{}, lastContact: map[string]time.Time{}, running: map[string]bool{}, kubeSignals: map[string]chan struct{}{}, samples: newSampleRing(), observer: ObserverState{Online: true}}
+	w := &Watcher{Manager: m, Store: m.Store, Alerts: NewAlerts(), ScanInterval: 4 * interval, last: map[string]*cluster.Status{}, confirms: map[string]*confirm{}, lastTick: map[string]time.Time{}, lastContact: map[string]time.Time{}, running: map[string]bool{}, nudges: map[string]chan struct{}{}, kubeSignals: map[string]chan struct{}{}, samples: newSampleRing(), observer: ObserverState{Online: true}}
 	w.interval = interval
 	return w
 }

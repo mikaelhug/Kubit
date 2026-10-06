@@ -3,8 +3,8 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
-	"os"
 	"strings"
 	"time"
 
@@ -63,6 +63,14 @@ func (s *Server) handleApply(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, err)
 		return
 	}
+	if req.PlanHash == "" {
+		writeErr(w, conflict("Review the plan first."))
+		return
+	}
+	if sum, _ := s.latestPlan(name); sum.Hash != req.PlanHash {
+		writeErr(w, conflict("The plan changed since you reviewed it; review the new plan."))
+		return
+	}
 	s.runsMu.Lock()
 	if run := s.runs[name]; run != nil && run.Running {
 		s.runsMu.Unlock()
@@ -72,50 +80,15 @@ func (s *Server) handleApply(w http.ResponseWriter, r *http.Request) {
 	run := &applyRun{Running: true, Started: time.Now().UTC().Format(time.RFC3339), Lines: []applyLine{}}
 	s.runs[name] = run
 	s.runsMu.Unlock()
-	fail := func(err error) {
-		s.runsMu.Lock()
-		delete(s.runs, name)
-		s.runsMu.Unlock()
-		writeErr(w, err)
-	}
-	ctx := s.serveCtx
-	host, _ := os.Hostname()
-	unlock, err := s.manager.LockApply(ctx, d, "console/"+host)
-	if err != nil {
-		fail(conflict(err.Error()))
-		return
-	}
-	opts := cluster.ConvergeOptions{AllowRemoval: req.AllowRemoval}
-	p, err := s.manager.Plan(ctx, d, opts)
-	if err != nil {
-		unlock()
-		fail(err)
-		return
-	}
-	if p.Hash != req.PlanHash {
-		unlock()
-		s.storePlan(name, p)
-		msg := "The plan changed since you reviewed it; review the new plan."
-		if req.PlanHash == "" {
-			msg = "Review the plan first."
-		}
-		fail(conflict(msg))
-		return
-	}
-	if len(p.Problems) > 0 {
-		unlock()
-		fail(conflict("The plan has problems: " + strings.Join(p.Problems, "; ")))
-		return
-	}
 	s.setSummary(name, func(sum *planSummary) { sum.State, sum.Holder = planApplying, "" })
 	s.refresh(name, scopeApply)
-	go s.apply(ctx, name, d, p, opts, run, unlock)
+	go s.apply(s.serveCtx, name, d, req.PlanHash, cluster.ConvergeOptions{AllowRemoval: req.AllowRemoval}, run)
 	w.WriteHeader(http.StatusAccepted)
 }
 
 const scopeApply = "apply"
 
-func (s *Server) apply(ctx context.Context, name string, d *cluster.Desired, p *cluster.Plan, opts cluster.ConvergeOptions, run *applyRun, unlock func()) {
+func (s *Server) apply(ctx context.Context, name string, d *cluster.Desired, reviewed string, opts cluster.ConvergeOptions, run *applyRun) {
 	sink := func(e cluster.Event) {
 		line := applyLine{TS: e.Time.UTC().Format(time.RFC3339), Level: string(e.Level), Step: e.Step, Node: e.Node, Message: e.Message}
 		if e.Kind == cluster.KindStep {
@@ -132,10 +105,7 @@ func (s *Server) apply(ctx context.Context, name string, d *cluster.Desired, p *
 		s.runsMu.Unlock()
 		s.hub.publish(Message{Kind: "apply", Cluster: name, Line: &line})
 	}
-	awake := cluster.KeepAwake()
-	err := s.converge(ctx, d, p, opts, sink)
-	awake()
-	unlock()
+	err := s.applyReviewed(ctx, name, d, reviewed, opts, sink)
 	s.runsMu.Lock()
 	run.Running, run.Finished = false, time.Now().UTC().Format(time.RFC3339)
 	if err != nil {
@@ -144,6 +114,36 @@ func (s *Server) apply(ctx context.Context, name string, d *cluster.Desired, p *
 	s.runsMu.Unlock()
 	s.refresh(name, scopeApply, scopeConfig, scopeRepo)
 	s.kickPlan(name, "applied")
+}
+
+func (s *Server) applyReviewed(ctx context.Context, name string, d *cluster.Desired, reviewed string, opts cluster.ConvergeOptions, sink cluster.Sink) error {
+	var unlock func()
+	if err := sink.Run("lock", func() (err error) {
+		unlock, err = s.manager.LockApply(ctx, d, cluster.Holder("console"))
+		return err
+	}); err != nil {
+		return err
+	}
+	defer unlock()
+	var p *cluster.Plan
+	if err := sink.Run("review", func() (err error) {
+		if p, err = s.manager.Plan(ctx, d, opts); err != nil {
+			return err
+		}
+		if p.Hash != reviewed {
+			s.storePlan(name, p)
+			return errors.New("the plan changed since you reviewed it; review the new plan")
+		}
+		if len(p.Problems) > 0 {
+			return errors.New("the plan has problems: " + strings.Join(p.Problems, "; "))
+		}
+		return nil
+	}); err != nil {
+		return err
+	}
+	awake := cluster.KeepAwake()
+	defer awake()
+	return s.converge(ctx, d, p, opts, sink)
 }
 
 func (s *Server) converge(ctx context.Context, d *cluster.Desired, p *cluster.Plan, opts cluster.ConvergeOptions, sink cluster.Sink) error {

@@ -32,10 +32,17 @@ func TestEditNeverWritesValuesInClearAndKeepsTheRule(t *testing.T) {
 	if r, _ := RuleOf(edited); r.EncryptedRegex != rule.EncryptedRegex || len(r.Age) != 2 {
 		t.Errorf("rule after edit %+v", r)
 	}
+	values, err := Values(edited, []age.Identity{other})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := map[string]string{}
+	for _, e := range values {
+		got[strings.Join(e.Path, ".")] = e.Value
+	}
 	for path, want := range map[string]string{"stringData.password": "s3cret\nline2", "stringData.token": "abc"} {
-		got, err := Get(edited, []age.Identity{other}, strings.Split(path, "."))
-		if err != nil || got != want {
-			t.Errorf("%s = %q %v", path, got, err)
+		if got[path] != want {
+			t.Errorf("%s = %q", path, got[path])
 		}
 	}
 }

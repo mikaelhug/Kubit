@@ -43,4 +43,5 @@ export const fmt = {
     if (s < 86400) return `${Math.round(s / 3600)} h`
     return `${Math.round(s / 86400)} d`
   },
+  ago(sec: number) { return sec < 10 ? 'just now' : `${fmt.age(sec)} ago` },
 }

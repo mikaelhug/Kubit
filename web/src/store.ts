@@ -1,4 +1,4 @@
-import { batch, computed, signal, type Signal } from '@preact/signals'
+import { batch, computed, effect, signal, type Signal } from '@preact/signals'
 import { api, type ApplyRun, type ClusterRow, type HealthEvent, type NodeRow, type PlanSummary, type Status, type Versions } from './api'
 import { editMap, setIn } from './maps'
 
@@ -14,7 +14,7 @@ export const stopped = signal(false)
 export const resyncing = signal(false)
 export const live = computed(() => connected.value && !resyncing.value)
 export const reconnectAttempt = signal(0)
-export const toasts = signal<{ id: number; text: string; tone: 'info' | 'error' | 'good' }[]>([])
+export const toasts = signal<{ id: number; text: string; tone: 'info' | 'error' | 'good'; until: number }[]>([])
 export const statuses = signal<Map<string, Status>>(new Map())
 export const health = signal<Map<string, HealthEvent[]>>(new Map())
 export const applyRuns = signal<Map<string, ApplyRun>>(new Map())
@@ -51,9 +51,19 @@ const isOpen = (e: HealthEvent) => e.open
 
 export function openAlerts(key: string) { return (health.value.get(key) ?? []).filter(isOpen) }
 
-export async function loadAllHealth(keys: string[]) {
+async function loadAllHealth(keys: string[]) {
   const lists = await Promise.all(keys.map((k) => api.events(k).catch(() => null)))
   editMap(health, (m) => lists.forEach((list, i) => { if (list) m.set(keys[i], list) }))
+}
+
+const clusterHash = (name: string) => clusters.value.find((c) => c.name === name)?.hash ?? ''
+
+export async function writeClusterYaml(name: string, write: (hash: string) => Promise<{ hash: string }>) {
+  const { hash } = await write(clusterHash(name))
+  await new Promise<void>((resolve) => {
+    let stop = () => {}
+    stop = effect(() => { if (clusterHash(name) === hash) { resolve(); queueMicrotask(() => stop()) } })
+  })
 }
 
 export function upsertCluster(row: ClusterRow) {
@@ -73,8 +83,8 @@ export async function loadMachines() {
 let toastSeq = 0
 export function toast(text: string, tone: 'info' | 'error' | 'good' = 'info') {
   const id = ++toastSeq
-  toasts.value = [...toasts.value, { id, text, tone }]
-  setTimeout(() => { toasts.value = toasts.value.filter((t) => t.id !== id) }, tone === 'error' ? 8000 : 4000)
+  const at = Date.now()
+  toasts.value = [...toasts.value.filter((t) => t.until > at), { id, text, tone, until: at + (tone === 'error' ? 8000 : 4000) }]
 }
 
 export async function reloadClusters() {
@@ -85,12 +95,4 @@ export async function reloadClusters() {
     editMap(statuses, (m) => rows.forEach((s, i) => { if (s) m.set(names[i], s) }))
     await loadAllHealth([kubitKey, ...names])
   } catch {}
-}
-
-export function checkNow(name: string) {
-  return api.status(name, true).then((st) => {
-    const prev = statuses.value.get(name)
-    const contact = st.apiReachable || st.nodes.some((n) => n.talosReachable) ? st.observedAt : prev?.lastContactAt
-    setIn(statuses, name, { ...(prev ?? st), ...st, health: prev?.health, openAlerts: prev?.openAlerts, lastContactAt: contact })
-  })
 }

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
@@ -303,7 +304,7 @@ func (m *Manager) recordHardware(n config.Node, tc *talos.Client) {
 	if n.MAC == "" || tc == nil {
 		return
 	}
-	if mc, err := m.Store.GetMachine(n.MAC); err != nil || len(mc.Hardware) > 2 {
+	if mc, err := m.Store.GetMachine(n.MAC); err != nil || !staleInventory(mc, tc.IP) {
 		return
 	}
 	if _, busy := m.inspecting.LoadOrStore(n.MAC, true); busy {
@@ -319,6 +320,15 @@ func (m *Manager) recordHardware(n config.Node, tc *talos.Client) {
 		}
 		m.RecordInventory(n.MAC, tc.IP, inv)
 	}()
+}
+
+func staleInventory(mc *store.Machine, ip string) bool {
+	var inv talos.Inventory
+	if len(mc.Hardware) <= 2 || json.Unmarshal(mc.Hardware, &inv) != nil {
+		return true
+	}
+	addr, _, _ := strings.Cut(inv.UplinkAddress(), "/")
+	return addr != ip
 }
 
 func (m *Manager) RecordInventory(mac, ip string, inv *talos.Inventory) {

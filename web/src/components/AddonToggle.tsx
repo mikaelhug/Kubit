@@ -1,13 +1,10 @@
 import { useState } from 'preact/hooks'
 import type { AddonInfo } from '../addons'
 import { api, type PlatformSpec } from '../api'
-import { clusters, toast } from '../store'
+import { toast, writeClusterYaml } from '../store'
 import { Dialog, ErrorBox, Field, inputValue } from './ui'
 
 type PlatformKey = keyof PlatformSpec
-
-const hashOf = (cluster: string) => clusters.value.find((c) => c.name === cluster)?.hash ?? ''
-
 
 export function AddonToggle({ cluster, info, platform, label }: { cluster: string; info: AddonInfo; platform: PlatformSpec; label?: string }) {
   const [open, setOpen] = useState(false)
@@ -19,7 +16,7 @@ export function AddonToggle({ cluster, info, platform, label }: { cluster: strin
   const toggle = () => {
     if (settings) { setOpen(true); return }
     setBusy(true)
-    api.setAddon(cluster, key, { enabled: !on, hash: hashOf(cluster) }).then(() => toast('cluster.yaml updated', 'good')).catch((e) => toast(e.message, 'error')).finally(() => setBusy(false))
+    writeClusterYaml(cluster, (hash) => api.setAddon(cluster, key, { enabled: !on, hash })).catch((e) => toast(e.message, 'error')).finally(() => setBusy(false))
   }
   return (
     <>
@@ -41,12 +38,12 @@ function AddonDialog({ cluster, name, addon, on, platform, onClose }: { cluster:
   const needsRange = enabling && addon === 'metallb' && !range
   const save = () => {
     setBusy(true)
-    api.setAddon(cluster, addon, {
-      hash: hashOf(cluster),
+    writeClusterYaml(cluster, (hash) => api.setAddon(cluster, addon, {
+      hash,
       enabled: enabling,
       ...(enabling && addon === 'metallb' ? { range } : {}),
       ...(enabling && addon === 'flux' ? { repository: { url, branch, path } } : {}),
-    }).then(() => { toast('cluster.yaml updated', 'good'); onClose() }).catch((e) => setError(e.message)).finally(() => setBusy(false))
+    })).then(onClose).catch((e) => setError(e.message)).finally(() => setBusy(false))
   }
   return (
     <Dialog title={`${enabling ? 'Enable' : 'Disable'} ${name}`} onClose={onClose}

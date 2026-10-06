@@ -1,7 +1,6 @@
 package watch
 
 import (
-	"strings"
 	"sync"
 	"time"
 )
@@ -76,16 +75,4 @@ func (r *sampleRing) window(cluster, node string, span time.Duration, now time.T
 		}
 	}
 	return out
-}
-
-func (r *sampleRing) forget(cluster string) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	for _, m := range []map[string][]Sample{r.series, r.fine} {
-		for k := range m {
-			if strings.HasPrefix(k, cluster+"|") {
-				delete(m, k)
-			}
-		}
-	}
 }

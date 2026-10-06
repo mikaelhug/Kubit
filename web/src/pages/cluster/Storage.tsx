@@ -40,7 +40,7 @@ export function Storage({ ctx }: { ctx: ClusterCtx }) {
   const { name, cluster } = ctx
   const platform = cluster.spec.spec.platform
   const { data: view, error } = useLive(() => api.storage(name), [name], [[name, 'storage']])
-  const s = useNamespaceScope(name)
+  const s = useNamespaceScope(name, view ? view.claims.map((c) => c.namespace) : null)
   const claims = useMemo(() => (view?.claims ?? []).filter((c) => s.keep(c.namespace)), [view, s.keep])
   const ccols = useMemo(() => withoutColumn<PVC>([
     { id: 'ns', header: 'Namespace', sort: (c) => c.namespace, cell: (c) => c.namespace },
@@ -64,9 +64,11 @@ export function Storage({ ctx }: { ctx: ClusterCtx }) {
           </span>
         </Notice>
       )}
-      <Section title={`Storage classes (${view?.classes.length ?? 0})`}>
-        <DataTable loading={loading} search={false} columns={scols} rows={view?.classes ?? []} rowKey={(c) => c.name} empty="None." />
-      </Section>
+      {!(view && view.classes.length === 0) && (
+        <Section title={`Storage classes (${view?.classes.length ?? 0})`}>
+          <DataTable loading={loading} search={false} columns={scols} rows={view?.classes ?? []} rowKey={(c) => c.name} empty="None." />
+        </Section>
+      )}
       <Section title={`Persistent volume claims (${claims.length})`} actions={<NamespaceScope s={s} rows={(view?.claims ?? []).map((c) => c.namespace)} />}>
         <DataTable loading={loading || s.loading} id="pvcs" columns={ccols} rows={claims} rowKey={(c) => c.namespace + '/' + c.name} empty={s.scope === 'apps' && !s.ns ? 'No app claims yet.' : 'No claims.'} />
       </Section>

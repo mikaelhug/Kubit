@@ -46,15 +46,22 @@ func TestApplyRefusesAPlanThatWasNotReviewed(t *testing.T) {
 			t.Errorf("%s: %d %s", body, rec.Code, rec.Body)
 		}
 	}
-	sum, p := s.latestPlan("lab")
-	if p == nil || sum.Hash == "" {
-		t.Fatalf("the refused apply publishes the fresh plan: %+v", sum)
+	var sum planSummary
+	for deadline := time.Now().Add(30 * time.Second); sum.Hash == "" && time.Now().Before(deadline); time.Sleep(50 * time.Millisecond) {
+		sum, _ = s.latestPlan("lab")
 	}
-	rec := call(t, s, http.MethodPost, "/api/v1/clusters/lab/apply", `{"planHash":"`+sum.Hash+`"}`)
-	if rec.Code != http.StatusConflict || !strings.Contains(rec.Body.String(), "problems") {
-		t.Errorf("a reviewed plan with problems is still refused: %d %s", rec.Code, rec.Body)
+	if sum.Hash == "" {
+		t.Fatal("no plan to review")
 	}
-	if s.applying("lab") {
-		t.Error("a refused apply leaves no run behind")
+	if rec := call(t, s, http.MethodPost, "/api/v1/clusters/lab/apply", `{"planHash":"`+sum.Hash+`"}`); rec.Code != http.StatusAccepted {
+		t.Fatalf("a reviewed plan starts an apply: %d %s", rec.Code, rec.Body)
+	}
+	for deadline := time.Now().Add(30 * time.Second); s.applying("lab") && time.Now().Before(deadline); time.Sleep(50 * time.Millisecond) {
+	}
+	s.runsMu.Lock()
+	err := s.runs["lab"].Error
+	s.runsMu.Unlock()
+	if !strings.Contains(err, "problems") {
+		t.Errorf("a reviewed plan with problems is still refused: %q", err)
 	}
 }

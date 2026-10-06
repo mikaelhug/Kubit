@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'preact/hooks'
+import { useEffect, useRef, useState } from 'preact/hooks'
 import { useLocation } from 'preact-iso'
 import { api, fmt, type DesignNode, type DesignRequest, type DesignView, type NodeRow } from '../api'
 import { modelOf, roleLabel, specsOf } from '../machine'
@@ -45,8 +45,10 @@ function AddDialog({ machines, onClose }: { machines: NodeRow[]; onClose: (done:
   const [addr, setAddr] = useState<Record<string, string>>({})
   const [gateway, setGateway] = useState('')
   const [dns, setDns] = useState<DnsPair>(['', ''])
-  const [recheck, setRecheck] = useState(0)
+  const [rechecks, setRechecks] = useState(0)
   const [preview, setPreview] = useState<DesignView | null>(null)
+  const [checking, setChecking] = useState(false)
+  const seq = useRef(0)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const creating = target === newCluster
@@ -69,12 +71,28 @@ function AddDialog({ machines, onClose }: { machines: NodeRow[]; onClose: (done:
     setError(null)
     try { await f() } catch (e) { setError((e as Error).message) } finally { setBusy(false) }
   }
-  const review = (withVip = vip) => run(async () => {
-    const d = await api.design(creating ? '' : target, request(withVip))
+  const show = (id: number, d: DesignView) => {
+    if (id !== seq.current) return
     setPreview(d)
     setVip(d.vip ?? '')
-  })
-  useEffect(() => { if (recheck > 0) review() }, [recheck])
+  }
+  const review = (withVip = vip) => {
+    const id = ++seq.current
+    const cluster = creating ? '' : target
+    const body = request(withVip)
+    let checked = false
+    setChecking(true)
+    api.designChecks(cluster, body)
+      .then((d) => { checked = true; show(id, d) })
+      .catch(() => {})
+      .finally(() => { if (id === seq.current) setChecking(false) })
+    const load = () => api.design(cluster, body).then((d) => { if (!checked) show(id, d) })
+    if (!preview) return run(load)
+    setError(null)
+    load().catch((e) => { if (id === seq.current) setError(e.message) })
+  }
+  useEffect(() => { if (rechecks > 0) review() }, [rechecks])
+  const recheck = () => { setChecking(true); setRechecks((r) => r + 1) }
   const setStatic = (n: DesignNode, on: boolean) => {
     const next = { ...addr }
     if (on) next[n.mac] = addressOf(n.network?.addresses[0] ?? n.live.address ?? n.ip)
@@ -82,7 +100,7 @@ function AddDialog({ machines, onClose }: { machines: NodeRow[]; onClose: (done:
     setAddr(next)
     if (on && !gateway) setGateway(n.live.gateway ?? '')
     if (on && !dnsList(dns).length) setDns(dnsPair(n.live.nameservers))
-    setRecheck((r) => r + 1)
+    recheck()
   }
   const anyStatic = Object.keys(addr).length > 0
   const taken = preview?.nodes.some((n) => n.inUse) ?? false
@@ -99,8 +117,8 @@ function AddDialog({ machines, onClose }: { machines: NodeRow[]; onClose: (done:
     return (
       <Dialog title={title} width="max-w-2xl" onClose={() => onClose(false)} footer={
         <>
-          <button class="btn" onClick={() => setPreview(null)}>Back</button>
-          <button class="btn btn-primary" disabled={busy || !!preview.vipInUse || taken} onClick={write}>{busy ? 'Writing' : 'Write cluster.yaml'}</button>
+          <button class="btn" onClick={() => { seq.current++; setChecking(false); setPreview(null) }}>Back</button>
+          <button class="btn btn-primary" disabled={busy || checking || !!preview.vipInUse || taken} onClick={write}>{busy ? 'Writing' : checking ? 'Checking addresses' : 'Write cluster.yaml'}</button>
         </>
       }>
         <ErrorBox error={error} />
@@ -122,7 +140,7 @@ function AddDialog({ machines, onClose }: { machines: NodeRow[]; onClose: (done:
                         <option value="static">Static</option>
                       </select>
                       {addr[n.mac] !== undefined
-                        ? <input class="input mono !w-40" value={addr[n.mac]} onInput={(e) => setAddr({ ...addr, [n.mac]: (e.target as HTMLInputElement).value })} onBlur={() => setRecheck((r) => r + 1)} onKeyDown={(e) => e.key === 'Enter' && setRecheck((r) => r + 1)} />
+                        ? <input class="input mono !w-40" value={addr[n.mac]} onInput={(e) => setAddr({ ...addr, [n.mac]: (e.target as HTMLInputElement).value })} onBlur={() => recheck()} onKeyDown={(e) => e.key === 'Enter' && recheck()} />
                         : <span class="mono">{n.ip}</span>}
                     </span>
                     {n.inUse && <span class="block text-[11px] text-bad">in use</span>}
@@ -137,9 +155,9 @@ function AddDialog({ machines, onClose }: { machines: NodeRow[]; onClose: (done:
         {anyStatic && (
           <div class="grid grid-cols-1 sm:grid-cols-3 gap-3">
             <Field label="Gateway">
-              <input class="input mono" value={gateway} onInput={(e) => setGateway((e.target as HTMLInputElement).value)} onBlur={() => setRecheck((r) => r + 1)} />
+              <input class="input mono" value={gateway} onInput={(e) => setGateway((e.target as HTMLInputElement).value)} onBlur={() => recheck()} />
             </Field>
-            <DnsFields value={dns} onChange={setDns} onBlur={() => setRecheck((r) => r + 1)} />
+            <DnsFields value={dns} onChange={setDns} onBlur={() => recheck()} />
           </div>
         )}
         {preview.new && preview.vip !== undefined && (

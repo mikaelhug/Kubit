@@ -12,12 +12,13 @@ export function useNamespaces(cluster: string) {
   return data ?? (loading ? null : none)
 }
 
-export function useNamespaceScope(cluster: string) {
+export function useNamespaceScope(cluster: string, rows: string[] | null) {
   const [query, setQuery] = useQueryParams()
   const namespaces = useNamespaces(cluster)
   const platform = useMemo(() => new Set((namespaces ?? []).filter((n) => n.platform).map((n) => n.name)), [namespaces])
   const ns = query.ns ?? ''
-  const scope: Scope = scopes.some((s) => s.id === query.scope) ? (query.scope as Scope) : ns && platform.has(ns) ? 'platform' : 'apps'
+  const onlyPlatform = !!rows && rows.every((n) => platform.has(n))
+  const scope: Scope = scopes.some((s) => s.id === query.scope) ? (query.scope as Scope) : ns && platform.has(ns) ? 'platform' : onlyPlatform ? 'all' : 'apps'
   const { inScope, keep } = useMemo(() => {
     const inScope = (n: string, s: Scope = scope) => s === 'all' || (s === 'platform') === platform.has(n)
     return { inScope, keep: (n: string) => (ns ? n === ns : inScope(n)) }
@@ -27,6 +28,7 @@ export function useNamespaceScope(cluster: string) {
 }
 
 export function NamespaceScope({ s, rows }: { s: ReturnType<typeof useNamespaceScope>; rows: string[] }) {
+  if (rows.length === 0 && !s.ns) return null
   const names = [...new Set([...(s.namespaces ?? []).map((n) => n.name), ...rows])].filter((n) => s.inScope(n)).sort()
   return (
     <span class="flex items-center gap-1">

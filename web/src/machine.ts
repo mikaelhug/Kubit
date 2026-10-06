@@ -39,7 +39,7 @@ export function modelName(inv?: Inventory | null) {
 }
 export const modelOf = (m?: NodeRow | null) => modelName(m?.inventory)
 
-export function diskCandidates(inv?: Inventory | null) {
+function diskCandidates(inv?: Inventory | null) {
   return (inv?.disks ?? []).filter((d) => d.devPath && !d.readonly && !d.cdrom && d.transport !== 'usb').sort((a, b) => b.sizeBytes - a.sizeBytes)
 }
 export const installCandidates = (m?: NodeRow | null) => diskCandidates(m?.inventory)

@@ -58,7 +58,7 @@ func (m *Manager) stateMoveFor(ctx context.Context, d *Desired) (stateMove, erro
 	if _, err := os.Stat(d.RepoState); err != nil {
 		return stateInCluster, nil
 	}
-	kc, err := m.KubeClientFor(d.Cluster.Metadata.Name, d.Kubeconfig)
+	kc, err := m.KubeClientFor(d.Cluster.Metadata.Name, m.liveKubeconfig(d))
 	if err != nil {
 		return 0, err
 	}
@@ -99,10 +99,11 @@ func (m *Manager) openPlatform(ctx context.Context, d *Desired, c *config.Cluste
 }
 
 func (m *Manager) preparePlatform(ctx context.Context, r *tofu.Runner, d *Desired, c *config.Cluster, move stateMove, apply bool) error {
-	if err := r.WriteKubeconfig(d.Kubeconfig); err != nil {
+	kubeconfig := m.liveKubeconfig(d)
+	if err := r.WriteKubeconfig(kubeconfig); err != nil {
 		return err
 	}
-	if err := tofu.Render(r.Dir, c, r.Kubeconfig, m.ingressPin(ctx, c.Metadata.Name, d.Kubeconfig)); err != nil {
+	if err := tofu.Render(r.Dir, c, r.Kubeconfig, m.ingressPin(ctx, c.Metadata.Name, kubeconfig)); err != nil {
 		return err
 	}
 	switch {

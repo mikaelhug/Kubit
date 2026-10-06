@@ -2,6 +2,8 @@ package api
 
 import (
 	"net/http"
+	"os"
+	"path/filepath"
 
 	"github.com/mikael/kubit/internal/repo"
 )
@@ -29,7 +31,7 @@ func (s *Server) handleAddonPut(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, editErr(err))
 		return
 	}
-	w.WriteHeader(http.StatusNoContent)
+	writeHash(w, dir)
 }
 
 func (s *Server) handleVersionsPut(w http.ResponseWriter, r *http.Request) {
@@ -54,5 +56,14 @@ func (s *Server) handleVersionsPut(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, editErr(err))
 		return
 	}
-	w.WriteHeader(http.StatusNoContent)
+	writeHash(w, dir)
+}
+
+func writeHash(w http.ResponseWriter, dir string) {
+	b, err := os.ReadFile(filepath.Join(dir, repo.ClusterFile))
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"hash": repo.Fingerprint(b)})
 }

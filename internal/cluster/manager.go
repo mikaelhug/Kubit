@@ -54,6 +54,7 @@ type Manager struct {
 
 	liveEndpoint map[string]string
 	converging   sync.Map
+	observed     sync.Map
 }
 
 type kubeEntry struct {

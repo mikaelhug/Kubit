@@ -26,7 +26,7 @@ type HelmRelease struct {
 }
 
 func (c *Client) HelmRelease(ctx context.Context, namespace, name string) (*HelmRelease, error) {
-	list, err := c.CoreV1().Secrets(namespace).List(ctx, metav1.ListOptions{LabelSelector: "owner=helm,name=" + name})
+	list, err := c.CoreV1().Secrets(namespace).List(ctx, metav1.ListOptions{LabelSelector: "owner=helm,status!=superseded,name=" + name})
 	if err != nil {
 		return nil, err
 	}

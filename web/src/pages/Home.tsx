@@ -26,7 +26,8 @@ export function Home() {
   }
   const quiet = groups.length === 0 && notices.length === 0
   const available = machines.filter(addable).length
-  const other = machines.filter((m) => m.kind !== 'maintenance').length
+  const members = machines.filter((m) => m.kind === 'member').length
+  const other = machines.filter((m) => m.kind !== 'maintenance' && m.kind !== 'member').length
 
   return (
     <div class="p-5 flex flex-col gap-4 max-w-[1300px]">
@@ -44,9 +45,10 @@ export function Home() {
       </Section>
 
       <Section title="Machines">
-        <div class="grid grid-cols-2 gap-4">
+        <div class="grid grid-cols-3 gap-4">
           <Tile label="Ready to add" value={available} href="/discovery" tone={available > 0 ? 'good' : undefined} />
-          <Tile label="Other machines" value={other} href="/discovery" />
+          <Tile label="Cluster members" value={members} href="/discovery" />
+          <Tile label="Other" value={other} href="/discovery" tone={other > 0 ? 'warn' : undefined} />
         </div>
       </Section>
 

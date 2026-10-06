@@ -159,7 +159,11 @@ func (m *Manager) plan(ctx context.Context, d *Desired, opts ConvergeOptions) (*
 		p.Problems = append(p.Problems, "Flux is on but secrets.sops.yaml has no flux.ageKey; add one with sops")
 		return p, nil
 	}
-	return m.planWith(ctx, d, p, m.observe(ctx, d), opts)
+	ls := m.observe(ctx, d)
+	if ls.endpoint != "" {
+		m.pinEndpoint(d.Cluster.Metadata.Name, ls.endpoint)
+	}
+	return m.planWith(ctx, d, p, ls, opts)
 }
 
 func (m *Manager) planWith(ctx context.Context, d *Desired, p *Plan, ls *liveState, opts ConvergeOptions) (*Plan, error) {
@@ -177,6 +181,7 @@ func (m *Manager) planWith(ctx context.Context, d *Desired, p *Plan, ls *liveSta
 		if len(p.Problems) > 0 {
 			return p, nil
 		}
+		p.Problems = append(p.Problems, takenTargets(ctx, c.Spec.Nodes, ls)...)
 		if v := c.Spec.ControlPlane.VIP; v != "" && netx.InUse(ctx, v, 3*time.Second) {
 			p.Problems = append(p.Problems, fmt.Sprintf("the control plane VIP %s is already in use on the network; set a free address in cluster.yaml", v))
 		}
@@ -220,6 +225,7 @@ func (m *Manager) planWith(ctx context.Context, d *Desired, p *Plan, ls *liveSta
 			p.Problems = append(p.Problems, notInMaintenance(n, n.TargetIP(), ln))
 		}
 	}
+	p.Problems = append(p.Problems, takenTargets(ctx, p.adds, ls)...)
 	m.planAddresses(ctx, p, d, ls)
 	if len(p.applied.Spec.Nodes) > 0 {
 		if err := m.EnsureSchematic(ctx, p.applied); err != nil {
@@ -510,8 +516,8 @@ func appliedSpec(d *config.Cluster, ls *liveState) *config.Cluster {
 	var talosVersions, kubelets []string
 	schematic := ""
 	for _, n := range d.Spec.Nodes {
-		ln := ls.nodes[n.Hostname]
-		if !ln.member {
+		ln, ok := ls.nodes[n.Hostname]
+		if !ok || !ln.member {
 			continue
 		}
 		n.IP = ln.addr
@@ -698,9 +704,17 @@ func (m *Manager) Converge(ctx context.Context, d *Desired, p *Plan, opts Conver
 }
 
 func (m *Manager) Register(d *Desired) {
+	name := d.Cluster.Metadata.Name
 	m.use(d)
-	if _, err := m.Store.GetCluster(d.Cluster.Metadata.Name); err != nil {
+	if _, err := m.Store.GetCluster(name); err != nil {
 		m.saveCluster(d.Cluster, StateConnecting)
+		return
+	}
+	if _, busy := m.converging.Load(name); busy {
+		return
+	}
+	if last, ok := m.observed.Load(name); ok && last.(*liveState).exists {
+		m.publish(d, appliedSpec(d.Cluster, last.(*liveState)), "")
 	}
 }
 
@@ -719,6 +733,7 @@ func (m *Manager) Track(ctx context.Context, d *Desired) (bool, error) {
 	}
 	m.Register(d)
 	ls := m.observe(ctx, d)
+	m.observed.Store(name, ls)
 	if ls.endpoint != "" {
 		m.pinEndpoint(name, ls.endpoint)
 	}
@@ -736,14 +751,7 @@ func (m *Manager) Track(ctx context.Context, d *Desired) (bool, error) {
 	return true, m.adopt(ctx, d, appliedSpec(d.Cluster, ls), ls.api)
 }
 
-func (m *Manager) adopt(ctx context.Context, d *Desired, applied *config.Cluster, ready bool) error {
-	if err := m.EnsureSchematic(ctx, applied); err != nil {
-		return err
-	}
-	state := StateBootstrapped
-	if ready {
-		state = StateReady
-	}
+func (m *Manager) publish(d *Desired, applied *config.Cluster, state string) {
 	if prev, _, err := m.LoadCluster(d.Cluster.Metadata.Name); err == nil && prev != nil {
 		for _, n := range d.Cluster.Spec.Nodes {
 			if i := prev.NodeIndex(n.Hostname); applied.NodeIndex(n.Hostname) < 0 && i >= 0 {
@@ -752,6 +760,17 @@ func (m *Manager) adopt(ctx context.Context, d *Desired, applied *config.Cluster
 		}
 	}
 	m.saveCluster(applied, state)
+}
+
+func (m *Manager) adopt(ctx context.Context, d *Desired, applied *config.Cluster, ready bool) error {
+	if err := m.EnsureSchematic(ctx, applied); err != nil {
+		return err
+	}
+	state := StateBootstrapped
+	if ready {
+		state = StateReady
+	}
+	m.publish(d, applied, state)
 	for _, n := range applied.Spec.Nodes {
 		if d.Cluster.NodeIndex(n.Hostname) >= 0 {
 			m.recordNode(applied, n)

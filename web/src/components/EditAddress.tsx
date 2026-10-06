@@ -2,7 +2,7 @@ import type { ComponentChildren } from 'preact'
 import { useEffect, useState } from 'preact/hooks'
 import { api, type NodeNetworkView } from '../api'
 import { addressOf } from '../net'
-import { toast } from '../store'
+import { writeClusterYaml } from '../store'
 import { DnsFields, dnsList, dnsPair, type DnsPair } from './DnsFields'
 import { Dialog, ErrorBox, Field } from './ui'
 
@@ -28,7 +28,7 @@ function AddressDialog({ cluster, hostname, onClose }: { cluster: string; hostna
     api.nodeNetwork(cluster, hostname).then((v) => {
       setView(v)
       setMode(v.declared ? 'static' : 'dhcp')
-      setAddress(addressOf(v.declared?.addresses[0] ?? v.live.address ?? v.ip))
+      setAddress(addressOf(v.declared?.addresses[0] ?? v.ip))
       setGateway(v.declared?.gateway ?? v.live.gateway ?? '')
       setDns(dnsPair(v.declared?.nameservers ?? (v.clusterNameservers?.length ? [] : v.live.nameservers)))
     }).catch((e) => setError(e.message))
@@ -38,8 +38,8 @@ function AddressDialog({ cluster, hostname, onClose }: { cluster: string; hostna
   const save = () => {
     setBusy(true)
     setError(null)
-    api.setNodeNetwork(cluster, hostname, isStatic ? { static: true, address: address.includes('/') ? address.trim() : `${address.trim()}/${view!.prefix}`, gateway: gateway.trim(), nameservers: dnsList(dns), hash: view!.hash } : { static: false, hash: view!.hash })
-      .then(() => { toast('cluster.yaml updated', 'good'); onClose() })
+    writeClusterYaml(cluster, () => api.setNodeNetwork(cluster, hostname, isStatic ? { static: true, address: address.includes('/') ? address.trim() : `${address.trim()}/${view!.prefix}`, gateway: gateway.trim(), nameservers: dnsList(dns), hash: view!.hash } : { static: false, hash: view!.hash }))
+      .then(onClose)
       .catch((e) => setError(e.message))
       .finally(() => setBusy(false))
   }

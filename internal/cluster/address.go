@@ -6,9 +6,11 @@ import (
 	"fmt"
 	"io"
 	"slices"
+	"sync"
 	"time"
 
 	"github.com/mikael/kubit/internal/config"
+	"github.com/mikael/kubit/internal/k8s"
 	"github.com/mikael/kubit/internal/netx"
 	"github.com/mikael/kubit/internal/repo"
 	"github.com/mikael/kubit/internal/talos"
@@ -41,6 +43,24 @@ type addrChange struct {
 	live   config.Addressing
 	peerID uint64
 	stale  string
+}
+
+func takenTargets(ctx context.Context, nodes []config.Node, ls *liveState) []string {
+	problems := make([]string, len(nodes))
+	var wg sync.WaitGroup
+	for i, n := range nodes {
+		target := n.TargetIP()
+		if ln := ls.nodes[n.Hostname]; target == n.IP || (ln != nil && target == ln.addr) {
+			continue
+		}
+		wg.Go(func() {
+			if addressInUse(ctx, target, addressProbe) {
+				problems[i] = fmt.Sprintf("%s: %s already answers on the network", n.Hostname, target)
+			}
+		})
+	}
+	wg.Wait()
+	return slices.DeleteFunc(problems, func(p string) bool { return p == "" })
 }
 
 func (ch addrChange) moves() bool {
@@ -161,7 +181,7 @@ func (m *Manager) ApplyAddresses(ctx context.Context, d *Desired, p *Plan, sink 
 	}
 	name := d.Cluster.Metadata.Name
 	if slices.ContainsFunc(p.moves, func(ch addrChange) bool { return ch.moves() && ch.node.Role == config.RoleControlPlane }) {
-		if err := sink.Run("address", func() error { return m.preUpgradeSnapshot(ctx, name, sink) }); err != nil {
+		if err := sink.Run("address", func() error { return m.safetySnapshot(ctx, name, "pre-move", sink) }); err != nil {
 			return err
 		}
 	}
@@ -410,24 +430,11 @@ func (m *Manager) waitEtcd(ctx context.Context, tc *talos.Client, d *Desired) er
 }
 
 func (m *Manager) waitNodeAt(ctx context.Context, name, host, ip string) error {
-	return talos.Retry(ctx, readyTimeout, 5*time.Second, func() error {
-		kc, err := m.KubeClient(ctx, name)
-		if err != nil {
-			return talos.NotReady(err.Error())
-		}
-		call, cancel := context.WithTimeout(ctx, 10*time.Second)
-		defer cancel()
-		nodes, err := kc.Nodes(call)
-		if err != nil {
-			return talos.NotReady(err.Error())
-		}
-		for _, n := range nodes {
-			if n.Name == host && n.Ready && n.InternalIP == ip {
-				return nil
-			}
-		}
-		return talos.NotReady(fmt.Sprintf("%s not Ready at %s yet", host, ip))
-	})
+	kc, err := m.KubeClient(ctx, name)
+	if err != nil {
+		return err
+	}
+	return kc.WaitNodes(ctx, []string{host}, readyTimeout, func(n k8s.NodeStatus) bool { return n.Ready && n.InternalIP == ip }, nil)
 }
 
 func (m *Manager) recordAddress(d *Desired, n config.Node, ip, step string, sink Sink) error {

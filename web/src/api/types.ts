@@ -151,7 +151,6 @@ export interface RepoView { dir: string; git: GitState }
 
 export interface DiscoverState {
   subnets: string[]
-  pingSeconds: number
   scanning: boolean
   lastScanAt?: string
   everySeconds: number

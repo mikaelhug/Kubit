@@ -8,14 +8,18 @@ import (
 
 	"github.com/siderolabs/crypto/x509"
 	"github.com/siderolabs/talos/pkg/machinery/client/config"
+	"github.com/siderolabs/talos/pkg/machinery/config/generate/secrets"
 	"github.com/siderolabs/talos/pkg/machinery/role"
 	"go.yaml.in/yaml/v4"
 )
 
-const credentialTTL = 365 * 24 * time.Hour
+const (
+	credentialTTL = 365 * 24 * time.Hour
+	ClockSkew     = 24 * time.Hour
+)
 
 func (r *Repo) Talosconfig() ([]byte, error) {
-	cert, err := r.Secrets.Bundle.GenerateTalosAPIClientCertificateWithTTL(role.MakeSet(role.Admin), credentialTTL)
+	cert, err := secrets.NewAdminCertificateAndKey(time.Now().Add(-ClockSkew), r.Secrets.Bundle.Certs.OS, role.MakeSet(role.Admin), credentialTTL+ClockSkew)
 	if err != nil {
 		return nil, err
 	}
@@ -35,6 +39,7 @@ func (r *Repo) Kubeconfig() ([]byte, error) {
 	kp, err := x509.NewKeyPair(ca,
 		x509.CommonName("admin"),
 		x509.Organization("system:masters"),
+		x509.NotBefore(time.Now().Add(-ClockSkew)),
 		x509.NotAfter(time.Now().Add(credentialTTL)),
 		x509.KeyUsage(stdx509.KeyUsageDigitalSignature|stdx509.KeyUsageKeyEncipherment),
 		x509.ExtKeyUsage([]stdx509.ExtKeyUsage{stdx509.ExtKeyUsageClientAuth}),

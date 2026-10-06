@@ -15,7 +15,7 @@ func (m *Manager) ApplyConfigs(ctx context.Context, c *config.Cluster, wantKubel
 	if err != nil {
 		return err
 	}
-	kc, err := m.KubeClientFor(c.Metadata.Name, sec.Kubeconfig)
+	kc, err := m.KubeClientFor(c.Metadata.Name, m.liveKubeconfig(sec))
 	if err != nil {
 		return err
 	}

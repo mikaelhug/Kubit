@@ -15,7 +15,7 @@ export function Workloads({ ctx }: { ctx: ClusterCtx }) {
   const { name, cluster } = ctx
   const scope = [[name, 'workloads']] as const
   const { data: workloads, error: wError } = useLive(() => api.workloads(name), [name], scope)
-  const s = useNamespaceScope(name)
+  const s = useNamespaceScope(name, workloads ? workloads.map((w) => w.namespace) : null)
   const [query, setQuery] = useQueryParams()
   const owner = (workloads ?? []).find((w) => w.selector && `${w.kind}/${w.namespace}/${w.name}` === query.owner)
   const { data: pods, error: pError } = useLive(() => api.pods(name, owner?.namespace ?? '', owner?.selector ?? ''), [name, owner?.namespace, owner?.selector], scope)

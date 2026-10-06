@@ -13,7 +13,7 @@ import type { ClusterCtx } from './ClusterPage'
 const certColumns: Column<CertInfo>[] = [
   { id: 'name', header: 'Certificate', sort: (c) => c.name, text: (c) => `${c.name} ${c.subject}`, cell: (c) => <span class="flex flex-col"><span class="font-medium">{c.name}</span><span class="text-[11px] text-muted mono truncate">{c.subject}</span></span> },
   { id: 'expires', header: 'Expires', sort: (c) => c.notAfter, cell: (c) => c.error ? <span class="text-bad">{c.error}</span> : fmt.date(c.notAfter) },
-  { id: 'left', header: 'Left', align: 'right', sort: (c) => c.daysLeft, cell: (c) => <Pill tone={c.daysLeft < 14 ? 'bad' : c.daysLeft < 60 ? 'warn' : 'good'}>{c.daysLeft} d</Pill> },
+  { id: 'left', header: 'Left', align: 'right', sort: (c) => c.daysLeft, cell: (c) => <Pill tone={c.daysLeft < 14 ? 'bad' : c.daysLeft < 60 ? 'warn' : 'good'}>{c.daysLeft} days</Pill> },
 ]
 
 const views = ['yaml', 'git', 'certs'] as const

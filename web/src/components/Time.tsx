@@ -6,7 +6,7 @@ export function Ago({ iso, bare }: { iso?: string; bare?: boolean }) {
   const at = Date.parse(iso)
   const minute = nowEvery(60_000)
   const sec = ((minute - at >= 60_000 ? minute : now.value) - at) / 1000
-  return <>{bare ? fmt.age(sec) : `${fmt.age(sec)} ago`}</>
+  return <>{bare ? fmt.age(sec) : fmt.ago(sec)}</>
 }
 
 export function Elapsed({ from, to }: { from?: string; to?: string }) {

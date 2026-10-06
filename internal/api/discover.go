@@ -9,7 +9,6 @@ import (
 
 	"github.com/mikael/kubit/internal/cluster"
 	"github.com/mikael/kubit/internal/talos"
-	"github.com/mikael/kubit/internal/watch"
 )
 
 const scopeDiscovery = "discovery"
@@ -25,13 +24,12 @@ type discoverView struct {
 	Scanning   bool      `json:"scanning"`
 	LastScanAt time.Time `json:"lastScanAt,omitzero"`
 	Every      int       `json:"everySeconds"`
-	Ping       int       `json:"pingSeconds"`
 }
 
 func (s *Server) discoverRoutes() {
 	s.mux.HandleFunc("GET /api/v1/discover", func(w http.ResponseWriter, r *http.Request) {
 		s.scans.mu.Lock()
-		v := discoverView{Scanning: s.scans.running > 0, LastScanAt: s.scans.lastScan, Ping: int(watch.PingEvery.Seconds())}
+		v := discoverView{Scanning: s.scans.running > 0, LastScanAt: s.scans.lastScan}
 		s.scans.mu.Unlock()
 		v.Subnets = s.discoverySubnets(r.Context())
 		v.Every = int(s.watcher.ScanInterval.Seconds())
@@ -53,12 +51,12 @@ func (s *Server) handleDiscover(w http.ResponseWriter, r *http.Request) {
 	if len(req.Targets) == 0 {
 		req.Targets = s.discoverySubnets(r.Context())
 	}
-	found, err := s.scan(r.Context(), req.Targets, true)
-	if err != nil {
+	if _, err := talos.ExpandTargets(req.Targets); err != nil {
 		writeErr(w, invalid(err))
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]int{"found": found})
+	go s.scan(s.serveCtx, req.Targets, true)
+	w.WriteHeader(http.StatusAccepted)
 }
 
 func (s *Server) scanSubnets(ctx context.Context) {
@@ -67,10 +65,10 @@ func (s *Server) scanSubnets(ctx context.Context) {
 	}
 }
 
-func (s *Server) scan(ctx context.Context, targets []string, all bool) (int, error) {
+func (s *Server) scan(ctx context.Context, targets []string, all bool) {
 	addrs, err := talos.ExpandTargets(targets)
 	if err != nil {
-		return 0, err
+		return
 	}
 	s.scans.mu.Lock()
 	s.scans.running++
@@ -82,11 +80,10 @@ func (s *Server) scan(ctx context.Context, targets []string, all bool) (int, err
 			found = append(found, r)
 		}
 	}
-	n := cluster.RecordScan(s.store, found)
+	cluster.RecordScan(s.store, found)
 	s.scans.mu.Lock()
 	s.scans.running--
 	s.scans.lastScan = time.Now().UTC()
 	s.scans.mu.Unlock()
 	s.refresh("", scopeDiscovery)
-	return n, nil
 }

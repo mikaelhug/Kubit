@@ -51,6 +51,13 @@ keys and tfstate, and `TestRepoHoldsNoCredentials` fails on any tracked one.
 192.168.105.0/24 with the host; vfkit's own NAT isolates VMs from each other and breaks
 etcd and the VIP. The Talos API is flaky for about two minutes after boot.
 
+`hack/scenario.sh` drives a daemon's API through a whole cluster life on vm1–3: discover,
+create a repo, a stale edit refused, create, add a worker, pin it static, move it, move the
+control plane with the endpoint, release to DHCP, upgrade Talos and Kubernetes, toggle an
+add-on, an etcd snapshot, remove a node. Every step plans, applies, and checks that the next
+plan is empty, the Lease is free and the nodes are Ready. `WORK=<dir>` keeps the state,
+`START=<n>` resumes at step n.
+
 ## Cluster repo
 
 ```
@@ -218,7 +225,9 @@ From discovery to a cluster, in the console:
    install disks, the Talos and Kubernetes versions and, for three control planes, the
    VIP. Kubit suggests a VIP between .250 and .240 of the nodes' /24 that answers on none
    of 6443, 50000, 22, 53, 80, 443 and 445, and refuses to write one that does. Design
-   warnings (single control plane, undersized machines) are listed.
+   warnings (single control plane, undersized machines) are listed. The review appears at
+   once; the VIP and address checks run in one parallel round behind it, and *Write* is
+   enabled when they pass.
 4. **Write** creates the repo (`cluster.yaml`, `secrets.sops.yaml`, `.sops.yaml`,
    `.gitignore`, `git init` when the directory is in no git repository) or appends the
    nodes, and opens the cluster's Changes tab, where the plan is already running. The machines move
@@ -262,7 +271,8 @@ merge.
 
 `kubit apply` takes a Kubernetes Lease `kube-system/kubit-apply` (one apply per cluster
 at a time, expires after an hour), plans again, asks (or `--yes`), then converges in
-this order:
+this order. The Lease names its holder (`console/<host>/<pid>`, `cli/<host>/<pid>`); a Lease
+held by a process on this machine that no longer runs is taken over instead of waited out.
 
 1. **address** (below), before anything else.
 2. **create** when no node is a member yet: preflight → schematic → configs from the
@@ -281,7 +291,7 @@ an `endpoint` row. The plan refuses: a target that already answers on the networ
 control-plane move with exactly two control planes, releasing the endpoint control plane to
 DHCP without a VIP, and an endpoint change without a control plane moving to it. Apply
 moves one node at a time (other control planes, then the endpoint holder, then workers),
-after a `pre-upgrade` etcd snapshot:
+after a `pre-move` etcd snapshot:
 
 1. Talos **try** apply at the old address: Talos restores the previous config by itself
    after 3 minutes unless confirmed.
@@ -299,7 +309,14 @@ from the plan (`record` writes a missing `ip:`, `repair` fixes a stale etcd peer
 **Node lost at both addresses.** Wait 3 minutes: an unconfirmed try apply rolls back to the
 old address. A confirmed node that answers nowhere needs a console: boot it, read its
 address, set `ip:` to it and plan again. A single control plane that does not come back is
-restored from the `pre-upgrade` snapshot (*Backups*).
+restored from the `pre-move` snapshot (*Backups*).
+
+Kubit's client certificates (talosconfig, kubeconfig, the etcd peer repair) start 24 hours in
+the past, so a node whose clock lags still accepts them.
+
+Waits on nodes (Ready, a new boot, a kubelet version, a moved InternalIP) list the Node
+objects once and then follow a watch on them, reconnecting while the API is down; they react
+to the change instead of a poll interval.
 
 A second `kubit apply` right after finds nothing to do. `~/.kubit` is only a cache: Kubit
 rebuilds its view of a cluster from the repo and the live nodes on every run, so a fresh
@@ -407,9 +424,11 @@ The console writes only to the served repos and never commits:
   Lease), and the planner plans again when that Lease is released or expires (a watch on
   it, not a retry).
 - **Apply** runs only the plan you reviewed: the console sends the plan's hash (a digest of
-  cluster.yaml, secrets.sops.yaml and the planned changes), Kubit plans again under the
-  Lease and refuses with "The plan changed since you reviewed it" when the hash differs.
-  Removals need *allow removal*; the log streams live and survives a page reload.
+  cluster.yaml, secrets.sops.yaml and the planned changes). Kubit answers at once when the
+  hash matches the latest plan and runs the rest in the background: `lock` takes the Lease,
+  `review` plans again under it and stops with "the plan changed since you reviewed it" when
+  the hash differs. Removals need *allow removal*; the log streams live and survives a page
+  reload.
 
 Every cluster page header, the sidebar and Home show the plan state: *in sync*, *N
 changes*, *planning*, *applying*, *N problems* or *plan failed*. One-time housekeeping
@@ -422,7 +441,9 @@ carries the version (hash) of cluster.yaml it was made from (the cluster row pus
 console carries it) and is refused when the file changed since; writes to one file are
 serialised and atomic (temporary file, fsync, rename), including `.sops.yaml`,
 kustomization.yaml, secrets and `kubit init`. Kubit's own write and your editor's both reload
-through the file watcher. Discovery's scan, the Secrets tab, *Take snapshot* on Backups (an etcd snapshot into the
+through the file watcher. A reload publishes the declared spec at once, merged with the last
+observed state, and observes the nodes after; a console write answers with the new file hash
+and its button stays busy until the cluster row with that hash arrives. Discovery's scan, the Secrets tab, *Take snapshot* on Backups (an etcd snapshot into the
 repo's `snapshots/`) and *Stop Kubit* are the other writes.
 
 A served repo's cluster is listed at once as `connecting` until Kubit has reached its
@@ -440,7 +461,9 @@ limits.
 Clicking a controller on Workloads lists the pods its selector matches; a pod opens its logs
 and events, also from a machine's Kubernetes tab. Network lists Services, Ingresses and Gateway
 API HTTPRoutes (with whether a Gateway accepted them), all live. ⌘K jumps to any page and runs
-*Plan again*, *Check now* and *Scan the network*.
+*Plan*, *Check now* and *Scan the network*. Actions answer at once and show their progress in
+the page (*Scanning*, *Taking snapshot*, the plan pill, the apply log); none blocks on the
+work.
 
 | route | shows |
 |---|---|
@@ -458,16 +481,17 @@ watcher; reconnects replay from `?since=`. Nothing polls; the only UI timer is
 Endpoints (all `GET` unless noted): `clusters`, `clusters/{n}/status|yaml|kubeconfig|
 config|image|addons|flux|builds|sops|certificates|snapshots[/{id}]|events|samples|
 workloads|pods|namespaces|network|storage`, `nodes`,
-`nodes/{ip}/inventory|services|logs|kubernetes`, `versions`, `pxe`, `ws`; `GET discover` (subnets, last scan), `POST discover` (scans `targets`, or the default subnets, and answers `{found}`),
+`nodes/{ip}/inventory|services|logs|kubernetes`, `versions`, `pxe`, `ws`; `GET discover` (subnets, last scan), `POST discover` (scans `targets`, or the default subnets, in the background; machines arrive as `machine` messages),
+`POST clusters/{n}/check` (the watcher observes the cluster now),
 `POST daemon/stop`, `POST design` (`{cluster | dir, name, vip, machines: [{mac, role}]}`; the
-result without writing), `POST repos` (same body, writes a new repo), `POST clusters/{n}/nodes`
+result without writing), `POST design/checks` (the same with the VIP and address probes), `POST repos` (same body, writes a new repo), `POST clusters/{n}/nodes`
 (`{machines: [{mac, role}], hash}`), `clusters/{n}/repo` (directory and git state), `DELETE clusters/{n}/nodes/{hostname}?hash=`,
 `GET|PUT clusters/{n}/nodes/{hostname}/network` (`{static, address, gateway, nameservers, hash}`),
 `PUT clusters/{n}/platform/{add-on}` (`{enabled, range, repository, hash}`), `PUT clusters/{n}/versions`
 (`{talosVersion, kubernetesVersion, hash}`), `POST clusters/{n}/snapshots` (takes an etcd snapshot),
-`PUT clusters/{n}/yaml` (`{yaml, hash}`), `plans` (every cluster's plan state), `GET clusters/{n}/plan`
+`PUT clusters/{n}/yaml` (`{yaml, hash}`; this and the other cluster.yaml writes answer the new `{hash}`), `plans` (every cluster's plan state), `GET clusters/{n}/plan`
 (`{summary, plan}`), `POST clusters/{n}/plan` (plan again), `GET|POST clusters/{n}/apply`
-(`{allowRemoval, planHash}`; lines arrive as `apply` messages, plan states as `plan` messages),
+(`{allowRemoval, planHash}`, 202; lines arrive as `apply` messages, plan states as `plan` messages),
 `GET secrets` (`{repos, labels}`), `GET clusters/{n}/secrets` (Flux source, repos, files),
 `GET secrets/values?repo&file` (one file decrypted, with its hash), `PATCH secrets/file`
 (`{repo, file, hash, set: [{path, value}], remove: [path]}`), `DELETE secrets/file?repo&file&hash`,

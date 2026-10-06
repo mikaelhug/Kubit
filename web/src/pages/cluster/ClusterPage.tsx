@@ -1,10 +1,10 @@
 import { useEffect, useState } from 'preact/hooks'
 import { useLocation } from 'preact-iso'
-import type { ClusterRow, Status } from '../../api'
+import { api, type ClusterRow, type Status } from '../../api'
 import { Tabs } from '../../components/Tabs'
 import { ClusterPill, PlanPill, SeenAgo } from '../../components/ui'
 import { pendingSections, sectionList, type Section } from '../../routes'
-import { checkNow, clusters, live, plans, statuses } from '../../store'
+import { clusters, live, plans, statuses, toast } from '../../store'
 import { Addons } from './Addons'
 import { Backups } from './Backups'
 import { Changes } from './Changes'
@@ -67,10 +67,12 @@ function renderSection(section: Section, ctx: ClusterCtx) {
 }
 
 function CheckNow({ name }: { name: string }) {
-  const [busy, setBusy] = useState(false)
+  const observed = statuses.value.get(name)?.observedAt ?? ''
+  const [since, setSince] = useState<string | null>(null)
+  const busy = since !== null && since === observed
   const check = () => {
-    setBusy(true)
-    checkNow(name).catch(() => {}).finally(() => setBusy(false))
+    setSince(observed)
+    api.checkNow(name).catch((e) => { setSince(null); toast(e.message, 'error') })
   }
   return <button class="btn btn-sm" disabled={busy} onClick={check}>{busy ? 'Checking' : 'Check now'}</button>
 }

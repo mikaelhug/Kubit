@@ -18,6 +18,7 @@ export function Nodes({ ctx }: { ctx: ClusterCtx }) {
   const specs = cluster.spec.spec.nodes
   const apiUp = !!status?.apiReachable
   const behind = useConfigStatus(name)?.behind
+  const sensors = !!status?.nodes.some((n) => n.temperatures?.length)
 
   const columns = useMemo<Column<NodeStatus>[]>(() => {
     const specOf = (n: NodeStatus) => specs.find((s) => s.hostname === n.hostname)
@@ -41,22 +42,25 @@ export function Nodes({ ctx }: { ctx: ClusterCtx }) {
       { id: 'hardware', header: 'Hardware', sort: (n) => inventoryOf(n)?.memoryBytes ?? 0, text: (n) => `${modelName(inventoryOf(n))} ${specsOf(inventoryOf(n))}`, cell: (n) => {
         const inv = inventoryOf(n)
         return inv ? (
-          <span class="flex flex-col whitespace-nowrap">
-            <span>{modelName(inv)}</span>
-            <span class="text-[10px] text-muted">{specsOf(inv)}</span>
+          <span class="flex flex-col whitespace-nowrap max-w-[200px]" title={`${modelName(inv)}\n${specsOf(inv)}`}>
+            <span class="truncate">{modelName(inv)}</span>
+            <span class="text-[10px] text-muted truncate">{specsOf(inv)}</span>
           </span>
         ) : <span class="text-muted">—</span>
       } },
-      { id: 'status', header: 'Status', sort: (n) => (n.talosReachable ? 1 : 0) + (n.ready ? 2 : 0), text: (n) => `${n.talosReachable ? '' : 'unreachable'} ${n.ready ? 'ready' : 'notready'}${behind?.includes(n.hostname) ? ' config behind' : ''}`, cell: (n) => <NodeHealth n={n} apiReachable={apiUp} behind={!!behind?.includes(n.hostname)} changes={`/clusters/${name}/changes`} /> },
-      { id: 'talos', header: 'Talos', sort: (n) => n.talosVersion, mono: true, cell: (n) => n.talosVersion || '—' },
-      { id: 'kubelet', header: 'Kubelet', sort: (n) => n.kubeletVersion, mono: true, cell: (n) => n.kubeletVersion || '—' },
+      { id: 'status', header: 'Status', sort: (n) => (n.talosReachable ? 1 : 0) + (n.ready ? 2 : 0), text: (n) => `${n.talosReachable ? '' : 'unreachable'} ${n.ready ? 'ready' : 'notready'}${behind?.includes(n.hostname) ? ' config behind' : ''}`, cell: (n) => <NodeHealth n={n} apiReachable={apiUp} behind={!!behind?.includes(n.hostname)} declared={!!specOf(n)} changes={`/clusters/${name}/changes`} /> },
+      { id: 'versions', header: 'Versions', sort: (n) => `${n.talosVersion} ${n.kubeletVersion}`, cell: (n) => (
+        <span class="flex flex-col whitespace-nowrap mono text-[12px]">
+          <span>{n.talosVersion || '—'}<span class="text-muted"> Talos</span></span>
+          <span>{n.kubeletVersion || '—'}<span class="text-muted"> Kubernetes</span></span>
+        </span>
+      ) },
       { id: 'cpu', header: 'CPU', align: 'right', sort: (n) => n.cpuMilli, cell: (n) => <>{fmt.cores(n.cpuMilli)}<span class="text-muted">/{fmt.cores(n.cpuCapMilli)}</span></> },
-      { id: 'ram', header: 'RAM used / total', align: 'right', sort: (n) => n.memBytes, cell: (n) => { const small = !!n.memAllocBytes && n.memAllocBytes < smallAlloc; return <span title={n.memAllocBytes ? `${fmt.bytes(n.memAllocBytes)} allocatable for pods${small ? '; too small for the add-ons' : ''}` : undefined}><span class={n.memCapBytes && n.memBytes >= n.memCapBytes * 0.95 ? 'text-bad' : ''}>{fmt.bytes(n.memBytes)}</span><span class={small ? 'text-warn' : 'text-muted'}>/{fmt.bytes(n.memCapBytes)}</span></span> } },
+      { id: 'ram', header: 'Memory', align: 'right', sort: (n) => n.memBytes, cell: (n) => { const small = !!n.memAllocBytes && n.memAllocBytes < smallAlloc; return <span title={n.memAllocBytes ? `${fmt.bytes(n.memAllocBytes)} allocatable for pods${small ? '; too small for the add-ons' : ''}` : undefined}><span class={n.memCapBytes && n.memBytes >= n.memCapBytes * 0.95 ? 'text-bad' : ''}>{fmt.bytes(n.memBytes)}</span><span class={small ? 'text-warn' : 'text-muted'}>/{fmt.bytes(n.memCapBytes)}</span></span> } },
       { id: 'pods', header: 'Pods', align: 'right', sort: (n) => n.pods, cell: (n) => <a href={`/clusters/${name}/workloads?view=pods&node=${encodeURIComponent(n.hostname)}`} class="hover:underline">{n.pods}</a> },
-      { id: 'temp', header: 'Temp', align: 'right', sort: (n) => sensorOf(n.temperatures, 'cpu')?.celsius ?? -1, cell: (n) => <NodeTemperature n={n} /> },
-      { id: 'undeclared', header: '', align: 'right', cell: (n) => !specOf(n) && <Pill tone="warn">undeclared</Pill> },
+      ...(sensors ? [{ id: 'temp', header: 'Temp', align: 'right', sort: (n: NodeStatus) => sensorOf(n.temperatures, 'cpu')?.celsius ?? -1, cell: (n: NodeStatus) => <NodeTemperature n={n} /> } satisfies Column<NodeStatus>] : []),
     ]
-  }, [specs, apiUp, name, behind, machines.value])
+  }, [specs, apiUp, name, behind, machines.value, sensors])
 
   return (
     <Section title="Nodes" actions={<a class="btn btn-sm" href="/discovery">Add machines</a>}>
@@ -65,7 +69,7 @@ export function Nodes({ ctx }: { ctx: ClusterCtx }) {
   )
 }
 
-function NodeHealth({ n, apiReachable, behind, changes }: { n: NodeStatus; apiReachable: boolean; behind: boolean; changes: string }) {
+function NodeHealth({ n, apiReachable, behind, declared, changes }: { n: NodeStatus; apiReachable: boolean; behind: boolean; declared: boolean; changes: string }) {
   const pills = []
   if (!n.talosReachable) pills.push(<Pill key="talos" tone="bad" title={n.talosError}>Talos unreachable</Pill>)
   else if (n.stage && n.stage !== 'running') pills.push(<Pill key="talos" tone="warn">{n.stage}</Pill>)
@@ -75,6 +79,7 @@ function NodeHealth({ n, apiReachable, behind, changes }: { n: NodeStatus; apiRe
   else pills.push(<Pill key="k8s" tone="good">Ready</Pill>)
   if (n.unschedulable) pills.push(<Pill key="cordon" tone="warn">cordoned</Pill>)
   if (behind) pills.push(<a key="config" href={changes}><Pill tone="warn">Config behind</Pill></a>)
+  if (!declared) pills.push(<Pill key="undeclared" tone="warn">undeclared</Pill>)
   return (
     <div class="flex flex-col gap-0.5">
       <span class="inline-flex flex-wrap gap-1">{pills}</span>

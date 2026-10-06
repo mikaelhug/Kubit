@@ -2,8 +2,9 @@ import type { ComponentChildren } from 'preact'
 import { fmt, type ClusterSpec, type Inventory, type NodeDetail, type NodeRow, type NodeSpec } from '../../api'
 import { Elapsed } from '../../components/Time'
 import { identityRows } from '../../components/Machine'
+import { RemoveNode } from '../../components/RemoveNode'
 import { KeyValue, Meter, Notice, Pill, Section } from '../../components/ui'
-import { kindLabel, modelName } from '../../machine'
+import { kindLabel, modelName, roleLabel } from '../../machine'
 
 type Row = [string, ComponentChildren]
 
@@ -19,7 +20,18 @@ export function OverviewTab({ inv, invErr, k8s, k8sErr, node, spec, storage }: {
   ]
   const identity = (
     <Section title="Machine">
-      <div class="panel p-3"><KeyValue rows={rows} /></div>
+      <div class="panel p-3">
+        <KeyValue rows={rows} />
+        {node.kind !== 'maintenance' && node.cluster && spec && (
+          <div class="mt-4 pt-4 border-t border-border flex flex-wrap items-center gap-3">
+            <div class="flex flex-col gap-1">
+              <span class="label">Cluster</span>
+              <span><a href={`/clusters/${node.cluster}/nodes`} class="hover:underline">{node.cluster}</a><span class="text-muted"> · {roleLabel(spec.role)}</span></span>
+            </div>
+            <span class="ml-auto"><RemoveNode cluster={node.cluster} hostname={spec.hostname} label="Remove from cluster" /></span>
+          </div>
+        )}
+      </div>
     </Section>
   )
   if (!node.talos) {

@@ -43,6 +43,7 @@ func New(kubeconfig []byte) (*Client, error) {
 		return nil, fmt.Errorf("kubeconfig: %w", err)
 	}
 	cfg.Timeout = 15 * time.Second
+	cfg.QPS, cfg.Burst = 50, 100
 	cs, err := kubernetes.NewForConfig(cfg)
 	if err != nil {
 		return nil, err
@@ -178,37 +179,94 @@ func (c *Client) WaitRebooted(ctx context.Context, before map[string]string, tim
 }
 
 func (c *Client) WaitNodes(ctx context.Context, names []string, timeout time.Duration, done func(NodeStatus) bool, progress func(ready, total int)) error {
-	deadline := time.Now().Add(timeout)
+	if len(names) == 0 {
+		return nil
+	}
+	wait, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
 	want := map[string]bool{}
 	for _, n := range names {
 		want[n] = true
 	}
-	lastReady := -1
-	for {
-		ready := 0
-		nodes, err := c.nodes(ctx)
-		for i := range nodes {
-			if want[nodes[i].Name] && done(statusOf(&nodes[i])) {
+	ok := map[string]bool{}
+	ready, lastReady := 0, -1
+	see := func(n *corev1.Node, gone bool) bool {
+		if want[n.Name] {
+			ok[n.Name] = !gone && done(statusOf(n))
+		}
+		ready = 0
+		for n := range want {
+			if ok[n] {
 				ready++
 			}
 		}
 		if ready != lastReady && progress != nil {
 			progress(ready, len(want))
-			lastReady = ready
 		}
-		if ready == len(want) {
+		lastReady = ready
+		return ready == len(want)
+	}
+	var last error
+	for {
+		finished, err := c.watchNodes(wait, see)
+		if finished {
 			return nil
 		}
-		if time.Now().After(deadline) {
-			if err != nil {
-				return fmt.Errorf("%d/%d nodes Ready after %s: %w", ready, len(want), timeout, err)
+		if err != nil && wait.Err() == nil {
+			last = err
+		}
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		if wait.Err() != nil {
+			if last != nil {
+				return fmt.Errorf("%d/%d nodes Ready after %s: %w", ready, len(want), timeout, last)
 			}
 			return fmt.Errorf("%d/%d nodes Ready after %s", ready, len(want), timeout)
 		}
+		if err == nil {
+			continue
+		}
+		select {
+		case <-wait.Done():
+		case <-time.After(2 * time.Second):
+		}
+	}
+}
+
+func (c *Client) watchNodes(ctx context.Context, see func(n *corev1.Node, gone bool) bool) (bool, error) {
+	list, err := c.CoreV1().Nodes().List(ctx, metav1.ListOptions{})
+	if err != nil {
+		return false, err
+	}
+	finished := false
+	for i := range list.Items {
+		finished = see(&list.Items[i], false)
+	}
+	if finished {
+		return true, nil
+	}
+	w, err := c.CoreV1().Nodes().Watch(ctx, metav1.ListOptions{ResourceVersion: list.ResourceVersion, TimeoutSeconds: new(int64(10))})
+	if err != nil {
+		return false, err
+	}
+	defer w.Stop()
+	for {
 		select {
 		case <-ctx.Done():
-			return ctx.Err()
-		case <-time.After(5 * time.Second):
+			return false, ctx.Err()
+		case ev, open := <-w.ResultChan():
+			if !open {
+				return false, nil
+			}
+			switch o := ev.Object.(type) {
+			case *corev1.Node:
+				if see(o, ev.Type == watch.Deleted) {
+					return true, nil
+				}
+			case *metav1.Status:
+				return false, fmt.Errorf("watch nodes: %s", o.Message)
+			}
 		}
 	}
 }

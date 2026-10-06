@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'preact/hooks'
-import { api, fmt, type Plan, type PlanChange } from '../../api'
+import { api, fmt, type ApplyLine, type Plan, type PlanChange } from '../../api'
 import { Ago } from '../../components/Time'
 import { ConfirmDialog, ErrorBox, Notice, Pill, PlanPill, Section } from '../../components/ui'
 import { roleLabel } from '../../machine'
@@ -26,15 +26,15 @@ export function Changes({ ctx }: { ctx: ClusterCtx }) {
   const replan = () => { setError(null); api.replan(name).catch((e) => setError(e.message)) }
 
   return (
-    <Section
-      actions={<span class="flex items-center gap-2">
-        <button class="btn btn-sm" disabled={checking || running} onClick={replan}>{checking ? 'Planning' : 'Plan'}</button>
-        <button class="btn btn-primary btn-sm" disabled={!applicable} onClick={() => setConfirm(true)}>Apply</button>
-      </span>}>
+    <Section>
       <div class="flex flex-wrap items-center gap-2 text-[13px]">
         <PlanPill plan={summary} />
         {summary?.plannedAt && <span class="text-muted">planned <Ago iso={summary.plannedAt} /></span>}
-        {summary?.state === 'applying' && summary.holder && <span class="text-muted">kubit apply by {summary.holder} holds the cluster</span>}
+        {summary?.state === 'applying' && summary.holder && <span class="text-muted">held by {summary.holder}</span>}
+        <span class="ml-auto flex items-center gap-2">
+          <button class="btn btn-sm" disabled={checking || running} onClick={replan}>{checking ? 'Planning' : 'Plan'}</button>
+          <button class="btn btn-primary btn-sm" disabled={!applicable} onClick={() => setConfirm(true)}>Apply</button>
+        </span>
       </div>
       <ErrorBox error={error ?? loadError ?? (summary?.state === 'failed' ? summary.error ?? null : null)} />
       {plan && <div class={checking ? 'opacity-60' : ''}><PlanView plan={plan} /></div>}
@@ -47,32 +47,33 @@ export function Changes({ ctx }: { ctx: ClusterCtx }) {
             {run.started && <span class="text-muted">{fmt.datetime(run.started)}</span>}
           </div>
           {run.error && <div class="px-3 pt-2"><ErrorBox error={run.error} /></div>}
-          <pre class="log !max-h-none !rounded-none !border-0">{run.lines.map((l) => `${new Date(l.ts).toLocaleTimeString()} ${l.level === 'info' || l.level === 'done' ? '' : l.level.toUpperCase() + ' '}[${l.step}]${l.node ? ` ${l.node}:` : ''} ${l.message}`).join('\n')}</pre>
+          <pre class="log !max-h-none !rounded-none !border-0">{run.lines.map(logLine).join('\n')}</pre>
         </div>
       )}
       {confirm && plan && (
         <ConfirmDialog title={`Apply ${name}`} action="Apply" tone={removals ? 'danger' : 'primary'} onClose={() => setConfirm(false)}
-          impact={<>
-            <span>{impactOf(name, plan)}</span>
+          impact={impactOf(plan) || removals ? <>
+            {impactOf(plan) && <span>{impactOf(plan)}</span>}
             {removals && <label class="flex items-center gap-2"><input type="checkbox" checked={allowRemoval} onChange={(e) => setAllowRemoval((e.target as HTMLInputElement).checked)} />Drain, delete and reset removed nodes</label>}
-          </>}
+          </> : null}
           onConfirm={() => api.apply(name, allowRemoval, plan.hash).then(() => setConfirm(false)).catch((e) => { setError(e.message); setConfirm(false) })} />
       )}
     </Section>
   )
 }
 
+const logLine = (l: ApplyLine) => {
+  const time = new Date(l.ts).toLocaleTimeString()
+  const level = l.level === 'info' || l.level === 'done' ? '' : `${l.level.toUpperCase()} `
+  if (l.message === l.step) return `${time} ${level}${l.step}`
+  return `${time} ${level}  ${l.node ? `${l.node}: ` : ''}${l.message}`
+}
+
 const oneTime = (c: PlanChange) => c.action === 'platform' && c.target === 'state'
 
-function impactOf(name: string, plan: Plan) {
+function impactOf(plan: Plan) {
   const n = plan.installs?.length ?? 0
-  const erases = n > 0 ? ` Erases the install disk on ${n} machine${n === 1 ? '' : 's'}.` : ''
-  if (plan.changes.some((c) => c.action === 'create')) return `Creates ${name} on ${n} machine${n === 1 ? '' : 's'}.${erases}`
-  const changes = plan.changes.filter((c) => !oneTime(c)).length
-  const housekeeping = plan.changes.some(oneTime) ? ' Moves the add-on state into the cluster.' : ''
-  const readdressed = plan.changes.filter((c) => c.action === 'address' && !c.detail?.startsWith('answers at') && !c.detail?.startsWith('etcd')).length
-  const moves = readdressed ? ` Changes ${readdressed} node address${readdressed === 1 ? '' : 'es'}; each node reboots once.` : ''
-  return `${changes ? `Applies ${changes} change${changes === 1 ? '' : 's'} to ${name}.` : 'No cluster changes.'}${moves}${housekeeping}${erases}`
+  return n > 0 ? `Erases the install disk on ${n} machine${n === 1 ? '' : 's'}.` : ''
 }
 
 function PlanView({ plan }: { plan: Plan }) {

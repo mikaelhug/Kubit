@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'preact/hooks'
 import { api, fmt, type NodeRow } from '../api'
-import { DataTable, type Column } from '../components/DataTable'
+import { DataTable, withoutColumn, type Column } from '../components/DataTable'
 import { KindPill, TypePill } from '../components/Machine'
 import { AddMachines } from '../components/AddMachine'
 import { ScanBox } from '../components/ScanBox'
@@ -55,7 +55,8 @@ export function Discovery() {
   const all = machineList.value
   const available = useMemo(() => all.filter(addable), [all])
   const waiting = useMemo(() => all.filter((m) => m.kind === 'maintenance' && m.declared), [all])
-  const rest = useMemo(() => all.filter((m) => m.kind !== 'maintenance'), [all])
+  const members = useMemo(() => all.filter((m) => m.kind === 'member'), [all])
+  const rest = useMemo(() => all.filter((m) => m.kind !== 'maintenance' && m.kind !== 'member'), [all])
   const [selected, setSelected] = useState<Set<string>>(new Set())
   const picked = available.filter((m) => selected.has(m.mac))
   const toggle = (mac: string) => { const next = new Set(selected); if (!next.delete(mac)) next.add(mac); setSelected(next) }
@@ -71,9 +72,14 @@ export function Discovery() {
       </Section>
       {waiting.length > 0 && <Waiting machines={waiting} />}
       <PxePanel />
+      {members.length > 0 && (
+        <Section title={`Cluster members (${members.length})`}>
+          <DataTable id="members" columns={withoutColumn(other, 'state', true)} rows={members} rowKey={(n) => n.mac || n.ip} defaultSort={{ id: 'ip', dir: 'asc' }} />
+        </Section>
+      )}
       {rest.length > 0 && (
         <Section title={`Other machines (${rest.length})`}>
-          <DataTable id="machines" columns={other} rows={rest} rowKey={(n) => n.mac || n.ip} defaultSort={{ id: 'ip', dir: 'asc' }} />
+          <DataTable id="machines" columns={withoutColumn(other, 'cluster', true)} rows={rest} rowKey={(n) => n.mac || n.ip} defaultSort={{ id: 'ip', dir: 'asc' }} />
         </Section>
       )}
     </div>

@@ -7,6 +7,7 @@ import (
 	stdx509 "crypto/x509"
 	"encoding/json"
 	"fmt"
+	"github.com/mikael/kubit/internal/repo"
 	"io"
 	"net"
 	"net/http"
@@ -29,6 +30,7 @@ func etcdClientTLS(bundle *secrets.Bundle) (*tls.Config, error) {
 	}
 	kp, err := x509.NewKeyPair(ca,
 		x509.CommonName("kubit"),
+		x509.NotBefore(time.Now().Add(-repo.ClockSkew)),
 		x509.NotAfter(time.Now().Add(10*time.Minute)),
 		x509.KeyUsage(stdx509.KeyUsageDigitalSignature|stdx509.KeyUsageKeyEncipherment),
 		x509.ExtKeyUsage([]stdx509.ExtKeyUsage{stdx509.ExtKeyUsageClientAuth}),

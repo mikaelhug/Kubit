@@ -16,10 +16,9 @@
 - Console create: *Add* on a maintenance machine to a new repo dir, then *Apply* creates
   the cluster.
 - Address moves on `lab` (each needs a go): pin cp-01 static at .240; move a worker; move
-  cp-01 with the endpoint; a wrong gateway to prove the 3-minute try rollback. Unproven:
-  try-mode rollback and the no-reboot confirm, the etcd gateway on :2379 with a client
-  certificate from the bundle CA, RouteStatus/ResolverStatus in maintenance mode, finding a
-  DHCP node by hostname after a release.
+  cp-01 with the endpoint; a wrong gateway to prove the 3-minute try rollback. Proven on VMs
+  by `hack/scenario.sh` (pin, move a worker, move the control plane with the endpoint and its
+  etcd peer URL, release to DHCP); still unproven: the try-mode rollback.
 
 ## Converge
 - `ApplyConfigs` (internal/cluster/apply.go) has an empty `if wantKubelet == "" {}` block.
@@ -50,6 +49,10 @@
 - A node left cordoned by a failed upgrade blocks `upgrade kubernetes`; release Kubit's
   cordon in `ApplyConfigs` too.
 - Drain timeout (5 min) and PDB policy are fixed; Longhorn's last-replica PDB can block.
+- A NotReady node is still drained and waits out the full timeout; skip the drain when the
+  node is NotReady.
+- A node whose clock lags more than a day rejects Kubit's certificates ("expired
+  certificate"); the plan could read Talos's time status and report the skew as a problem.
 - Turning `network.policies` off leaves the kube-network-policies DaemonSet running;
   prune it in the manifests step.
 - Changing `platform.flux.repository.path` prunes everything under the old path before
@@ -69,7 +72,7 @@
   Ingress with `ingressClassName: nginx`.
 - The unencrypted-state fallback in `tofu/runner.go` can go once `lab`'s repo state is
   confirmed encrypted.
-- Gateway API objects are not in the Network view and raise no alerts.
+- Gateway API: Network lists HTTPRoutes but not the Gateways themselves; none raise alerts.
 - Traefik's own CRDs are never upgraded by Helm; a chart bump needs a CRD apply step.
 - Gateway API CRDs owned by another manager fight with Kubit's force-conflicts apply.
 - The default Gateway listens on HTTP only; offer a cert-manager HTTPS listener.
@@ -103,3 +106,5 @@
 ## Dev harness
 - vfkit console: direct-kernel boot with `console=hvc0` would give a readable log.
 - vmnet NAT is flaky for ~2 min after VM boot; the harness could wait for :50000.
+- VM clocks drift after the Mac sleeps (minutes); `vm.sh stop n` and `start n --no-iso`
+  resets them.

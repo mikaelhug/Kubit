@@ -18,7 +18,7 @@ export function Network({ ctx }: { ctx: ClusterCtx }) {
   const spec = cluster.spec.spec
   const { data: view, error } = useLive(() => api.network(name), [name], [[name, 'network'], [name, 'addons']])
   const pool = view?.pool
-  const s = useNamespaceScope(name)
+  const s = useNamespaceScope(name, view ? [...view.services.map(home), ...view.ingresses.map((x) => x.namespace), ...(view.routes ?? []).map((x) => x.namespace)] : null)
   const services = useMemo(() => (view?.services ?? []).filter((x) => s.keep(home(x))), [view, s.keep])
   const ingresses = useMemo(() => (view?.ingresses ?? []).filter((x) => s.keep(x.namespace)), [view, s.keep])
   const routes = useMemo(() => (view?.routes ?? []).filter((x) => s.keep(x.namespace)), [view, s.keep])
@@ -93,8 +93,7 @@ export function Network({ ctx }: { ctx: ClusterCtx }) {
           )}
         </Section>
       </div>
-      <div class="flex justify-end"><NamespaceScope s={s} rows={[...(view?.services ?? []).map(home), ...(view?.ingresses ?? []).map((x) => x.namespace), ...(view?.routes ?? []).map((x) => x.namespace)]} /></div>
-      <Section title={`Services (${services.length})`}>
+      <Section title={`Services (${services.length})`} actions={<NamespaceScope s={s} rows={[...(view?.services ?? []).map(home), ...(view?.ingresses ?? []).map((x) => x.namespace), ...(view?.routes ?? []).map((x) => x.namespace)]} />}>
         <DataTable loading={loading} id="services" columns={scols} rows={services} rowKey={(x) => x.namespace + '/' + x.name} defaultSort={{ id: 'type', dir: 'desc' }} empty={s.scope === 'apps' && !s.ns ? 'No app services yet.' : 'No services.'} />
       </Section>
       {(routes.length > 0 || view?.routesError) && (
@@ -104,7 +103,7 @@ export function Network({ ctx }: { ctx: ClusterCtx }) {
         </Section>
       )}
       <Section title={`Ingresses (${ingresses.length})`} help={ingressIP ? `Traefik at ${ingressIP}` : undefined}>
-        <DataTable loading={loading} id="ingresses" columns={icols} rows={ingresses} rowKey={(i) => i.namespace + '/' + i.name} empty="No Ingress objects yet." />
+        <DataTable loading={loading} id="ingresses" columns={icols} rows={ingresses} rowKey={(i) => i.namespace + '/' + i.name} empty="No ingresses." />
       </Section>
     </div>
   )

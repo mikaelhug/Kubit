@@ -20,12 +20,12 @@ import (
 	"github.com/mikael/kubit/internal/netx"
 	"github.com/mikael/kubit/internal/repo"
 	"github.com/mikael/kubit/internal/store"
-	"github.com/mikael/kubit/internal/talos"
 )
 
 func (s *Server) editRoutes() {
 	r := s.mux
 	r.HandleFunc("POST /api/v1/design", s.handleDesign)
+	r.HandleFunc("POST /api/v1/design/checks", s.handleDesign)
 	r.HandleFunc("GET /api/v1/clusters/{name}/repo", s.handleRepo)
 	r.HandleFunc("POST /api/v1/repos", s.handleCreateRepo)
 	r.HandleFunc("POST /api/v1/clusters/{name}/nodes", s.handleAddNodes)
@@ -102,15 +102,6 @@ type designNode struct {
 	Network   *config.NodeNetwork `json:"network,omitempty"`
 	Live      liveNet             `json:"live"`
 	InUse     bool                `json:"inUse,omitempty"`
-}
-
-func (d *design) addressInUse() error {
-	for _, n := range d.view.Nodes {
-		if n.InUse {
-			return conflict(fmt.Sprintf("%s already answers on the network; pick a free address for %s.", n.Network.Addresses[0], n.Hostname))
-		}
-	}
-	return nil
 }
 
 type designView struct {
@@ -213,7 +204,7 @@ func (s *Server) freeVIP(ctx context.Context, c *config.Cluster) (string, bool) 
 	return "", false
 }
 
-func (s *Server) design(ctx context.Context, req designRequest) (*design, error) {
+func (s *Server) design(ctx context.Context, req designRequest, probe bool) (*design, error) {
 	if len(req.Machines) == 0 {
 		return nil, badRequest("Select at least one machine.")
 	}
@@ -224,6 +215,8 @@ func (s *Server) design(ctx context.Context, req designRequest) (*design, error)
 	ms, roles := ch.machines, ch.roles
 	d := &design{}
 	var warnings []config.Warning
+	var redesign func(vip string) *config.Cluster
+	pickVIP := false
 	if req.Cluster == "" {
 		dir, err := expandHome(req.Dir)
 		if err != nil {
@@ -240,12 +233,12 @@ func (s *Server) design(ctx context.Context, req designRequest) (*design, error)
 			return nil, invalid(err)
 		}
 		vip := strings.TrimSpace(req.VIP)
-		c, _ := config.Design(name, ms, config.DesignOptions{Roles: roles, VIP: vip, Networks: ch.networks})
-		if vip == "" && c.Spec.ControlPlane.VIP != "" {
-			if free, ok := s.freeVIP(ctx, c); ok {
-				c, _ = config.Design(name, ms, config.DesignOptions{Roles: roles, VIP: free, Networks: ch.networks})
-			}
+		redesign = func(vip string) *config.Cluster {
+			c, _ := config.Design(name, ms, config.DesignOptions{Roles: roles, VIP: vip, Networks: ch.networks})
+			return c
 		}
+		c := redesign(vip)
+		pickVIP = vip == ""
 		warnings = config.Lint(c, ms)
 		d.spec, d.added = c, c.Spec.Nodes
 		d.view = designView{Cluster: name, Dir: dir, New: true}
@@ -275,10 +268,8 @@ func (s *Server) design(ctx context.Context, req designRequest) (*design, error)
 	if err := d.spec.Validate(); err != nil {
 		return nil, invalid(err)
 	}
-	cp := d.spec.Spec.ControlPlane
-	d.view.VIP, d.view.Endpoint, d.view.Warnings = cp.VIP, cp.Endpoint, []string{}
+	d.view.Warnings = []string{}
 	d.view.Talos, d.view.K8s = d.spec.Spec.TalosVersion, d.spec.Spec.KubernetesVersion
-	d.view.VIPInUse = d.view.New && cp.VIP != "" && netx.InUse(ctx, cp.VIP, vipProbe)
 	for _, w := range warnings {
 		d.view.Warnings = append(d.view.Warnings, w.Message)
 	}
@@ -288,13 +279,33 @@ func (s *Server) design(ctx context.Context, req designRequest) (*design, error)
 			size[m.MAC] = m.Disks[0].SizeBytes
 		}
 	}
-	for _, n := range d.added {
-		dn := designNode{Hostname: n.Hostname, IP: n.IP, MAC: n.MAC, Role: n.Role, Disk: n.InstallDisk.String(), DiskBytes: size[n.MAC], Network: n.Network, Live: ch.live[n.MAC]}
-		if target := n.TargetIP(); target != n.IP {
-			dn.InUse = netx.InUse(ctx, target, vipProbe)
+	d.view.Nodes = make([]designNode, len(d.added))
+	var wg sync.WaitGroup
+	for i, n := range d.added {
+		d.view.Nodes[i] = designNode{Hostname: n.Hostname, IP: n.IP, MAC: n.MAC, Role: n.Role, Disk: n.InstallDisk.String(), DiskBytes: size[n.MAC], Network: n.Network, Live: ch.live[n.MAC]}
+		if target := n.TargetIP(); probe && target != n.IP {
+			wg.Go(func() { d.view.Nodes[i].InUse = netx.InUse(ctx, target, vipProbe) })
 		}
-		d.view.Nodes = append(d.view.Nodes, dn)
 	}
+	vip := d.spec.Spec.ControlPlane.VIP
+	free, found := "", false
+	if probe && d.view.New && vip != "" {
+		if pickVIP {
+			wg.Go(func() { free, found = s.freeVIP(ctx, d.spec) })
+		} else {
+			wg.Go(func() { d.view.VIPInUse = netx.InUse(ctx, vip, vipProbe) })
+		}
+	}
+	wg.Wait()
+	switch {
+	case found && free != vip:
+		d.spec = redesign(free)
+		d.added = d.spec.Spec.Nodes
+	case pickVIP && probe && vip != "" && !found:
+		d.view.VIPInUse = true
+	}
+	cp := d.spec.Spec.ControlPlane
+	d.view.VIP, d.view.Endpoint = cp.VIP, cp.Endpoint
 	return d, nil
 }
 
@@ -311,7 +322,7 @@ func (s *Server) handleDesign(w http.ResponseWriter, r *http.Request) {
 	if !decode(w, r, &req) {
 		return
 	}
-	d, err := s.design(r.Context(), req)
+	d, err := s.design(r.Context(), req, strings.HasSuffix(r.URL.Path, "/checks"))
 	if err != nil {
 		writeErr(w, err)
 		return
@@ -329,16 +340,8 @@ func (s *Server) handleCreateRepo(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, badRequest("A repo directory is required."))
 		return
 	}
-	d, err := s.design(r.Context(), req)
+	d, err := s.design(r.Context(), req, false)
 	if err != nil {
-		writeErr(w, err)
-		return
-	}
-	if d.view.VIPInUse {
-		writeErr(w, conflict(d.view.VIP+" already answers on the network; pick a free address for the VIP."))
-		return
-	}
-	if err := d.addressInUse(); err != nil {
 		writeErr(w, err)
 		return
 	}
@@ -374,12 +377,8 @@ func (s *Server) handleAddNodes(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	req.Cluster = r.PathValue("name")
-	d, err := s.design(r.Context(), req)
+	d, err := s.design(r.Context(), req, false)
 	if err != nil {
-		writeErr(w, err)
-		return
-	}
-	if err := d.addressInUse(); err != nil {
 		writeErr(w, err)
 		return
 	}
@@ -400,7 +399,7 @@ func (s *Server) handleRemoveNode(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, editErr(err))
 		return
 	}
-	w.WriteHeader(http.StatusNoContent)
+	writeHash(w, dir)
 }
 
 type nodeNetworkView struct {
@@ -462,14 +461,13 @@ func (s *Server) handleNodeNetwork(w http.ResponseWriter, r *http.Request) {
 	}
 	c, n := ns.c, ns.n
 	v := nodeNetworkView{Hostname: n.Hostname, Role: n.Role, IP: n.IP, Declared: n.Network, Endpoint: c.Spec.ControlPlane.Endpoint, EndpointFollows: endpointFollows(c, n), ClusterDNS: c.Spec.Network.Nameservers, Hash: ns.hash}
-	if sec, err := s.store.GetClusterSecrets(c.Metadata.Name); err == nil {
-		call, cancel := context.WithTimeout(r.Context(), 20*time.Second)
-		defer cancel()
-		if tc, err := talos.Dial(call, n.IP, sec.Talosconfig); err == nil {
-			if inv, err := tc.Inspect(call); err == nil {
-				v.Live = liveNet{Address: inv.UplinkAddress(), Gateway: inv.Gateway, Nameservers: inv.Nameservers}
-			}
-			tc.Close()
+	row, err := s.store.GetMachine(n.MAC)
+	if err != nil {
+		row, err = s.store.GetNode(n.IP)
+	}
+	if err == nil {
+		if inv, ok := inventoryOf(row); ok {
+			v.Live = liveNet{Address: inv.UplinkAddress(), Gateway: inv.Gateway, Nameservers: inv.Nameservers}
 		}
 	}
 	declared := ""
@@ -521,13 +519,9 @@ func (s *Server) handleNodeNetworkPut(w http.ResponseWriter, r *http.Request) {
 		}
 		endpoint = "https://" + net.JoinHostPort(target, port)
 	}
-	if target != n.IP && netx.InUse(r.Context(), target, vipProbe) {
-		writeErr(w, conflict(target+" already answers on the network; pick a free address."))
-		return
-	}
 	if err := repo.SetNodeNetwork(dir, req.Hash, n.Hostname, nn, endpoint); err != nil {
 		writeErr(w, editErr(err))
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]string{"endpoint": endpoint})
+	writeHash(w, dir)
 }

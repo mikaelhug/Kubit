@@ -1,9 +1,9 @@
 import { useCallback } from 'preact/hooks'
 import { useLocation } from 'preact-iso'
 
-export type QueryPatch = Record<string, string | undefined>
+type QueryPatch = Record<string, string | undefined>
 
-export function withQuery(search: string, patch: QueryPatch) {
+function withQuery(search: string, patch: QueryPatch) {
   const q = new URLSearchParams(search)
   for (const [k, v] of Object.entries(patch)) if (v) q.set(k, v); else q.delete(k)
   return q.toString()

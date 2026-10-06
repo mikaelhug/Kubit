@@ -3,7 +3,10 @@ package cluster
 import (
 	"context"
 	"crypto/sha256"
+	"net/http"
+	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -68,9 +71,9 @@ func TestApplyLeaseSerialisesApplies(t *testing.T) {
 	kubeconfig := kubeconfigFor("https://10.0.0.10:6443")
 	st.PutCluster(store.ClusterRow{Name: "lab", Spec: parsedSpec(t, convergeSpec), State: StateReady})
 	st.PutClusterSecrets("lab", store.ClusterSecrets{Talosconfig: []byte("t"), Kubeconfig: kubeconfig})
-	m.kube = map[string]kubeEntry{"lab": {sum: sha256.Sum256(kubeconfig), kc: &k8s.Client{Interface: fake.NewClientset()}}}
 	d, _ := config.Parse([]byte(convergeSpec))
 	desired := &Desired{Cluster: d, Kubeconfig: kubeconfig}
+	m.kube = map[string]kubeEntry{"lab": {sum: sha256.Sum256(m.liveKubeconfig(desired)), kc: &k8s.Client{Interface: fake.NewClientset()}}}
 	ctx := context.Background()
 	unlock, err := m.LockApply(ctx, desired, "ci-1")
 	if err != nil {
@@ -85,4 +88,32 @@ func TestApplyLeaseSerialisesApplies(t *testing.T) {
 		t.Fatalf("after release: %v", err)
 	}
 	unlock2()
+}
+
+func TestApplyConfigsReachesTheMovedEndpointAfterAReload(t *testing.T) {
+	// Reproduces the e2e failure: after a control-plane move, the config step dialed the old API address.
+	var oldHits, newHits atomic.Int32
+	serve := func(hits *atomic.Int32) *httptest.Server {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			hits.Add(1)
+			w.Header().Set("Content-Type", "application/json")
+			w.Write([]byte(`{"kind":"NodeList","apiVersion":"v1","items":[]}`))
+		}))
+		t.Cleanup(srv.Close)
+		return srv
+	}
+	before, after := serve(&oldHits), serve(&newHits)
+	m := NewManager(testStore(t), t.TempDir())
+	b := bundle(t)
+	m.use(&Desired{Cluster: parsedSpec(t, convergeSpec), Bundle: b, Kubeconfig: kubeconfigFor(before.URL)})
+	edited := parsedSpec(t, strings.Replace(convergeSpec, "https://10.0.0.10:6443", "https://10.0.0.51:6443", 1))
+	m.use(&Desired{Cluster: edited, Bundle: b, Kubeconfig: kubeconfigFor(after.URL)})
+	m.pinEndpoint("lab", after.URL)
+	for i := range edited.Spec.Nodes {
+		edited.Spec.Nodes[i].InstallDisk = config.InstallDisk{}
+	}
+	_ = m.ApplyConfigs(context.Background(), edited, "", func(Event) {})
+	if oldHits.Load() != 0 || newHits.Load() == 0 {
+		t.Errorf("the config step must use the live endpoint: old %d, new %d requests", oldHits.Load(), newHits.Load())
+	}
 }

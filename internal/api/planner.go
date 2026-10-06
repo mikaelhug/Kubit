@@ -2,6 +2,9 @@ package api
 
 import (
 	"context"
+	"errors"
+	"fmt"
+	"log"
 	"math/rand/v2"
 	"net/http"
 	"slices"
@@ -130,11 +133,16 @@ func (s *Server) planOnce(ctx context.Context, name string) {
 	if run == nil {
 		run = s.planFromRepo
 	}
+	started := time.Now()
 	p, err := run(ctx, name)
-	if ctx.Err() != nil {
+	switch {
+	case errors.Is(ctx.Err(), context.DeadlineExceeded):
+		err = fmt.Errorf("the plan did not finish within %s", planDeadline)
+	case ctx.Err() != nil:
 		return
 	}
 	if err != nil {
+		log.Printf("plan %s: %v (after %s)", name, err, time.Since(started).Round(time.Second))
 		s.setSummary(name, func(p *planSummary) { p.State, p.Error = planFailed, err.Error() })
 		return
 	}

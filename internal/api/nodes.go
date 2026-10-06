@@ -25,7 +25,7 @@ func (s *Server) handleNodeInventory(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, err)
 		return
 	}
-	if len(row.Hardware) <= 2 && !strings.HasPrefix(row.MAC, "ip:") {
+	if !strings.HasPrefix(row.MAC, "ip:") {
 		s.manager.RecordInventory(row.MAC, row.IP, inv)
 	}
 	if row.Role == "controlplane" {

@@ -284,11 +284,15 @@ func kubernetesSupported(talosVersion, kubeVersion string) (known bool, err erro
 }
 
 func (m *Manager) preUpgradeSnapshot(ctx context.Context, name string, sink Sink) error {
-	sn, err := m.SnapshotEtcd(ctx, name, "pre-upgrade", subSink(sink, "snapshot"))
+	return m.safetySnapshot(ctx, name, "pre-upgrade", sink)
+}
+
+func (m *Manager) safetySnapshot(ctx context.Context, name, source string, sink Sink) error {
+	sn, err := m.SnapshotEtcd(ctx, name, source, subSink(sink, "snapshot"))
 	if err != nil {
-		return fmt.Errorf("pre-upgrade snapshot: %w", err)
+		return fmt.Errorf("%s snapshot: %w", source, err)
 	}
-	sink.Emit(Info, "snapshot", "", "etcd snapshot %s written; kubit etcd restore undoes a failed upgrade", sn.ID)
+	sink.Emit(Info, "snapshot", "", "etcd snapshot %s written; kubit etcd restore %s undoes the change", sn.ID, sn.ID)
 	return nil
 }
 

@@ -42,7 +42,7 @@ export function SeenAgo({ contact, observed, blind }: { contact?: string; observ
   const sec = (now.value - Date.parse(at)) / 1000
   const text = fmt.age(sec)
   const stale = blind || sec > 120
-  return <span class={`text-[12px] ${stale ? 'text-warn' : 'text-muted'}`} title={`Last contact ${fmt.datetime(at)}`}>{stale && blind ? `not seen for ${text}` : `seen ${text} ago`}</span>
+  return <span class={`text-[12px] ${stale ? 'text-warn' : 'text-muted'}`} title={`Last contact ${fmt.datetime(at)}`}>{stale && blind ? `not seen for ${text}` : `seen ${fmt.ago(sec)}`}</span>
 }
 
 export function StatusDot({ tone, pulse }: { tone: Tone; pulse?: boolean }) {
@@ -66,7 +66,7 @@ export function Meter({ label, used, cap, format }: { label: string; used: numbe
 }
 
 
-export function Dialog({ title, onClose, children, width = 'max-w-lg', footer }: { title: string; onClose: () => void; children: ComponentChildren; width?: string; footer?: ComponentChildren }) {
+export function Dialog({ title, onClose, children, width = 'max-w-lg', footer }: { title: string; onClose: () => void; children?: ComponentChildren; width?: string; footer?: ComponentChildren }) {
   useEscape(onClose)
   const pressed = useRef(false)
   return createPortal(
@@ -76,15 +76,15 @@ export function Dialog({ title, onClose, children, width = 'max-w-lg', footer }:
           <h2 class="text-base font-semibold">{title}</h2>
           <button class="btn btn-sm" onClick={onClose} aria-label="Close">✕</button>
         </div>
-        <div class="px-5 py-4 flex flex-col gap-4">{children}</div>
-        {footer && <div class="px-5 py-3 border-t border-border flex justify-end gap-2">{footer}</div>}
+        {children != null && <div class="px-5 py-4 flex flex-col gap-4">{children}</div>}
+        {footer && <div class={`px-5 py-3 flex justify-end gap-2 ${children != null ? 'border-t border-border' : ''}`}>{footer}</div>}
       </div>
     </div>,
     document.body,
   )
 }
 
-export function ConfirmDialog({ title, impact, action, tone = 'primary', onConfirm, onClose }: { title: string; impact: ComponentChildren; action: string; tone?: 'primary' | 'danger'; onConfirm: () => void | Promise<unknown>; onClose: () => void }) {
+export function ConfirmDialog({ title, impact, action, tone = 'primary', onConfirm, onClose }: { title: string; impact?: ComponentChildren; action: string; tone?: 'primary' | 'danger'; onConfirm: () => void | Promise<unknown>; onClose: () => void }) {
   const [busy, setBusy] = useState(false)
   const confirm = () => {
     if (busy) return
@@ -101,7 +101,7 @@ export function ConfirmDialog({ title, impact, action, tone = 'primary', onConfi
         <button class={`btn ${tone === 'danger' ? 'btn-danger' : 'btn-primary'}`} disabled={busy} onClick={confirm}>{busy ? 'Working' : action}</button>
       </>
     }>
-      <div class="text-[13px] flex flex-col gap-2">{impact}</div>
+      {impact != null ? <div class="text-[13px] flex flex-col gap-2">{impact}</div> : null}
     </Dialog>
   )
 }
@@ -112,9 +112,9 @@ function copy(text: string) {
 }
 
 export function CopyButton({ text, className = 'btn', label = 'Copy' }: { text: string | (() => string); className?: string; label?: string }) {
-  const [done, setDone] = useState(false)
-  const click = () => copy(typeof text === 'function' ? text() : text).then(() => { setDone(true); setTimeout(() => setDone(false), 1500) }).catch((e) => toast(e.message, 'error'))
-  return <button class={className} onClick={click}>{done ? 'Copied' : label}</button>
+  const [copiedAt, setCopiedAt] = useState(0)
+  const click = () => copy(typeof text === 'function' ? text() : text).then(() => setCopiedAt(Date.now())).catch((e) => toast(e.message, 'error'))
+  return <button class={className} onClick={click}>{now.value - copiedAt < 1500 ? 'Copied' : label}</button>
 }
 
 export function Code({ text }: { text: string }) {

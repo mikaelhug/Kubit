@@ -128,8 +128,7 @@ func applyCmd() *cobra.Command {
 }
 
 func lockHolder() string {
-	host, _ := os.Hostname()
-	return fmt.Sprintf("%s/%d", host, os.Getpid())
+	return cluster.Holder("cli")
 }
 
 func confirm(in io.Reader, out io.Writer) (bool, error) {

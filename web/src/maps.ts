@@ -1,6 +1,6 @@
 import type { Signal } from '@preact/signals'
 
-export function copyMap<K, V>(m: Map<K, V>, edit: (m: Map<K, V>) => void): Map<K, V> {
+function copyMap<K, V>(m: Map<K, V>, edit: (m: Map<K, V>) => void): Map<K, V> {
   const next = new Map(m)
   edit(next)
   return next

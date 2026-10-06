@@ -18,7 +18,30 @@ func (w *Watcher) loop(ctx context.Context, name string) {
 		w.watchKubernetes(ctx, name)
 	}()
 	defer func() { <-kube }()
-	w.every(ctx, w.interval, func(ctx context.Context) { w.tick(ctx, name) })
+	nudge := make(chan struct{}, 1)
+	w.mu.Lock()
+	w.nudges[name] = nudge
+	w.mu.Unlock()
+	defer func() {
+		w.mu.Lock()
+		delete(w.nudges, name)
+		w.mu.Unlock()
+	}()
+	w.every(ctx, w.interval, nudge, func(ctx context.Context) { w.tick(ctx, name) })
+}
+
+func (w *Watcher) CheckNow(name string) bool {
+	w.mu.Lock()
+	nudge := w.nudges[name]
+	w.mu.Unlock()
+	if nudge == nil {
+		return false
+	}
+	select {
+	case nudge <- struct{}{}:
+	default:
+	}
+	return true
 }
 
 func (w *Watcher) watchKubernetes(ctx context.Context, name string) {
@@ -161,7 +184,7 @@ func nudge(ch chan struct{}) {
 	}
 }
 
-func (w *Watcher) every(ctx context.Context, d time.Duration, tick func(context.Context)) {
+func (w *Watcher) every(ctx context.Context, d time.Duration, nudge <-chan struct{}, tick func(context.Context)) {
 	t := time.NewTicker(d)
 	defer t.Stop()
 	for {
@@ -170,6 +193,8 @@ func (w *Watcher) every(ctx context.Context, d time.Duration, tick func(context.
 		case <-ctx.Done():
 			return
 		case <-t.C:
+		case <-nudge:
+			t.Reset(d)
 		}
 	}
 }

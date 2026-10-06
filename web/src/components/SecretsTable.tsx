@@ -5,7 +5,7 @@ import { DataTable, withoutColumn, type Column } from './DataTable'
 import { Ago } from './Time'
 import { Pill } from './ui'
 
-export const keyCount = (f: SecretFile) => f.keys.filter((k) => !isSecret(f) || k.path[0] === 'data' || k.path[0] === 'stringData').length
+const keyCount = (f: SecretFile) => f.keys.filter((k) => !isSecret(f) || k.path[0] === 'data' || k.path[0] === 'stringData').length
 
 export function FluxCell({ f, long }: { f: SecretFile; long?: boolean }) {
   if (!f.cluster) return <span class="text-muted">—</span>

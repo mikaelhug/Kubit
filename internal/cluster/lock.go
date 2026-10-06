@@ -2,7 +2,12 @@ package cluster
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"os"
+	"strconv"
+	"strings"
+	"syscall"
 	"time"
 
 	coordinationv1 "k8s.io/api/coordination/v1"
@@ -16,7 +21,7 @@ const (
 )
 
 func (m *Manager) LockApply(ctx context.Context, d *Desired, holder string) (func(), error) {
-	kc, err := m.KubeClientFor(d.Cluster.Metadata.Name, d.Kubeconfig)
+	kc, err := m.KubeClientFor(d.Cluster.Metadata.Name, m.liveKubeconfig(d))
 	if err != nil {
 		return func() {}, nil
 	}
@@ -46,6 +51,11 @@ func (m *Manager) LockApply(ctx context.Context, d *Desired, holder string) (fun
 	return func() {
 		release, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
 		defer cancel()
+		kc, err := m.KubeClientFor(d.Cluster.Metadata.Name, m.liveKubeconfig(d))
+		if err != nil {
+			return
+		}
+		leases := kc.CoordinationV1().Leases("kube-system")
 		cur, err := leases.Get(release, applyLease, metav1.GetOptions{})
 		if err != nil || deref(cur.Spec.HolderIdentity) != holder {
 			return
@@ -71,8 +81,30 @@ func (m *Manager) ApplyQuiet(ctx context.Context, name string, after time.Durati
 	return held(l, now) || (deref(l.Spec.HolderIdentity) == "" && now.Sub(l.Spec.RenewTime.Time) < after)
 }
 
+func Holder(kind string) string {
+	host, _ := os.Hostname()
+	return fmt.Sprintf("%s/%s/%d", kind, host, os.Getpid())
+}
+
+func orphaned(holder string) bool {
+	parts := strings.Split(holder, "/")
+	if len(parts) < 3 {
+		return false
+	}
+	host, _ := os.Hostname()
+	pid, err := strconv.Atoi(parts[len(parts)-1])
+	if err != nil || parts[len(parts)-2] != host || pid == os.Getpid() {
+		return false
+	}
+	p, err := os.FindProcess(pid)
+	if err != nil {
+		return false
+	}
+	return errors.Is(p.Signal(syscall.Signal(0)), os.ErrProcessDone)
+}
+
 func held(l *coordinationv1.Lease, now time.Time) bool {
-	if deref(l.Spec.HolderIdentity) == "" || l.Spec.RenewTime == nil || l.Spec.LeaseDurationSeconds == nil {
+	if deref(l.Spec.HolderIdentity) == "" || l.Spec.RenewTime == nil || l.Spec.LeaseDurationSeconds == nil || orphaned(deref(l.Spec.HolderIdentity)) {
 		return false
 	}
 	return now.Before(l.Spec.RenewTime.Add(time.Duration(*l.Spec.LeaseDurationSeconds) * time.Second))

@@ -14,13 +14,21 @@ func kubeconfigAt(kubeconfig []byte, endpoint string) ([]byte, error) {
 }
 
 func (m *Manager) followEndpoint(d *Desired, live string) []byte {
-	if live == "" || live == d.Cluster.Spec.ControlPlane.Endpoint {
-		return d.Kubeconfig
+	endpoint := live
+	if endpoint == "" {
+		endpoint = d.Cluster.Spec.ControlPlane.Endpoint
 	}
-	if kc, err := kubeconfigAt(d.Kubeconfig, live); err == nil {
+	if kc, err := kubeconfigAt(d.Kubeconfig, endpoint); err == nil {
 		return kc
 	}
 	return d.Kubeconfig
+}
+
+func (m *Manager) liveKubeconfig(d *Desired) []byte {
+	m.desiredMu.Lock()
+	live := m.liveEndpoint[d.Cluster.Metadata.Name]
+	m.desiredMu.Unlock()
+	return m.followEndpoint(d, live)
 }
 
 func (m *Manager) pinEndpoint(name, live string) {
