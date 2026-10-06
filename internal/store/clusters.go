@@ -1,229 +1,109 @@
 package store
 
 import (
-	"context"
-	"database/sql"
-	"encoding/json"
-	"errors"
-	"fmt"
-	"slices"
+	"bytes"
+	"sort"
 
-	"go.yaml.in/yaml/v4"
+	"github.com/mikael/kubit/internal/config"
 )
 
-var ErrNotFound = errors.New("not found")
-
 type ClusterRow struct {
-	Name        string `json:"name"`
-	Spec        []byte `json:"-"`
-	SchematicID string `json:"schematicId"`
-	State       string `json:"state"`
-	CreatedAt   string `json:"createdAt"`
-	UpdatedAt   string `json:"updatedAt"`
+	Name  string          `json:"name"`
+	Spec  *config.Cluster `json:"spec"`
+	State string          `json:"state"`
+	Hash  string          `json:"hash"`
 }
 
 type ClusterSecrets struct {
-	SecretsBundle []byte
-	Talosconfig   []byte
-	Kubeconfig    []byte
+	Talosconfig []byte
+	Kubeconfig  []byte
 }
 
-func (s *Store) PutCluster(ctx context.Context, c ClusterRow) error {
-	_, err := s.db.ExecContext(ctx, `
-		INSERT INTO clusters (name, spec, schematic_id, state) VALUES (?, ?, ?, ?)
-		ON CONFLICT(name) DO UPDATE SET spec = excluded.spec, schematic_id = excluded.schematic_id,
-			state = CASE WHEN excluded.state = '' THEN clusters.state ELSE excluded.state END, updated_at = `+sqlNow,
-		c.Name, string(c.Spec), c.SchematicID, c.State)
-	return s.done(err, Change{Table: "clusters", Cluster: c.Name, Key: c.Name, Op: "put"})
-}
-
-func (s *Store) ClusterVIPs(ctx context.Context) map[string]string {
-	out := map[string]string{}
-	rows, err := s.ListClusters(ctx)
-	if err != nil {
-		return out
+func (s *Store) PutCluster(c ClusterRow) {
+	s.mu.Lock()
+	if c.State == "" {
+		c.State = s.clusters[c.Name].State
 	}
-	for _, r := range rows {
-		var c struct {
-			Spec struct {
-				ControlPlane struct {
-					VIP string `yaml:"vip"`
-				} `yaml:"controlPlane"`
-			} `yaml:"spec"`
-		}
-		if yaml.Unmarshal(r.Spec, &c) == nil && c.Spec.ControlPlane.VIP != "" {
-			out[c.Spec.ControlPlane.VIP] = r.Name
+	c.Spec = c.Spec.Clone()
+	s.clusters[c.Name] = c
+	s.mu.Unlock()
+	s.notify(Change{Table: "clusters", Cluster: c.Name, Key: c.Name})
+}
+
+func (s *Store) GetCluster(name string) (*ClusterRow, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	c, ok := s.clusters[name]
+	if !ok {
+		return nil, notFound("cluster %q", name)
+	}
+	c.Spec = c.Spec.Clone()
+	c.Hash = s.hashes[name]
+	return &c, nil
+}
+
+func (s *Store) ListClusters() []ClusterRow {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := make([]ClusterRow, 0, len(s.clusters))
+	for _, c := range s.clusters {
+		c.Hash = s.hashes[c.Name]
+		out = append(out, c)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
+	return out
+}
+
+func (s *Store) ClusterVIPs() map[string]string {
+	out := map[string]string{}
+	for _, r := range s.ListClusters() {
+		if vip := r.Spec.Spec.ControlPlane.VIP; vip != "" {
+			out[vip] = r.Name
 		}
 	}
 	return out
 }
 
-const clusterCols = `name, spec, schematic_id, state, created_at, updated_at`
-
-func scanCluster(sc scanner) (*ClusterRow, error) {
-	var c ClusterRow
-	var spec string
-	if err := sc.Scan(&c.Name, &spec, &c.SchematicID, &c.State, &c.CreatedAt, &c.UpdatedAt); err != nil {
-		return nil, err
+func (s *Store) SetClusterHash(name, hash string) {
+	s.mu.Lock()
+	changed := s.hashes[name] != hash
+	s.hashes[name] = hash
+	_, known := s.clusters[name]
+	s.mu.Unlock()
+	if changed && known {
+		s.notify(Change{Table: "clusters", Cluster: name, Key: name})
 	}
-	c.Spec = []byte(spec)
-	return &c, nil
 }
 
-func (s *Store) GetCluster(ctx context.Context, name string) (*ClusterRow, error) {
-	c, err := scanCluster(s.db.QueryRowContext(ctx, `SELECT `+clusterCols+` FROM clusters WHERE name = ?`, name))
-	if err := notFound(err, "cluster %q", name); err != nil {
-		return nil, err
+func (s *Store) SetClusterState(name, state string) {
+	s.mu.Lock()
+	c, ok := s.clusters[name]
+	if ok {
+		c.State = state
+		s.clusters[name] = c
 	}
-	return c, nil
+	s.mu.Unlock()
+	if ok {
+		s.notify(Change{Table: "clusters", Cluster: name, Key: name})
+	}
 }
 
-func (s *Store) ListClusters(ctx context.Context) ([]ClusterRow, error) {
-	return queryAll(ctx, s.db, scanCluster, `SELECT `+clusterCols+` FROM clusters ORDER BY name`)
+func (s *Store) PutClusterSecrets(name string, sec ClusterSecrets) {
+	s.mu.Lock()
+	prev, had := s.secrets[name]
+	s.secrets[name] = ClusterSecrets{Talosconfig: bytes.Clone(sec.Talosconfig), Kubeconfig: bytes.Clone(sec.Kubeconfig)}
+	s.mu.Unlock()
+	if !had || !bytes.Equal(prev.Talosconfig, sec.Talosconfig) || !bytes.Equal(prev.Kubeconfig, sec.Kubeconfig) {
+		s.notify(Change{Table: "secrets", Cluster: name, Key: name})
+	}
 }
 
-func notFound(err error, format string, args ...any) error {
-	if errors.Is(err, sql.ErrNoRows) {
-		return fmt.Errorf(format+": %w", append(args, ErrNotFound)...)
+func (s *Store) GetClusterSecrets(name string) (*ClusterSecrets, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	sec, ok := s.secrets[name]
+	if !ok {
+		return nil, notFound("secrets for cluster %q", name)
 	}
-	return err
-}
-
-func (s *Store) SetClusterState(ctx context.Context, name, state string) error {
-	res, err := s.db.ExecContext(ctx, `UPDATE clusters SET state = ?, updated_at = `+sqlNow+` WHERE name = ?`, state, name)
-	if err != nil {
-		return err
-	}
-	if n, _ := res.RowsAffected(); n == 0 {
-		return fmt.Errorf("cluster %q: %w", name, ErrNotFound)
-	}
-	s.notify(Change{Table: "clusters", Cluster: name, Key: name, Op: "put"})
-	return nil
-}
-
-func (s *Store) DeleteCluster(ctx context.Context, name string) error {
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback()
-	if _, err := tx.ExecContext(ctx, `UPDATE machines SET cluster = NULL, hostname = '', pool = '', role = '', machine_config = NULL, system_split = 0, state = 'configured', updated_at = `+sqlNow+` WHERE cluster = ?`, name); err != nil {
-		return err
-	}
-	res, err := tx.ExecContext(ctx, `UPDATE events SET acked = 1 WHERE cluster = ? AND acked = 0`, name)
-	if err != nil {
-		return err
-	}
-	acked, _ := res.RowsAffected()
-	if _, err := tx.ExecContext(ctx, `DELETE FROM clusters WHERE name = ?`, name); err != nil {
-		return err
-	}
-	if err := tx.Commit(); err != nil {
-		return err
-	}
-	if acked > 0 {
-		s.notify(Change{Table: "events", Cluster: name, Key: "*", Op: "ack"})
-	}
-	s.notify(Change{Table: "machines", Cluster: name, Op: "put"})
-	s.notify(Change{Table: "clusters", Cluster: name, Key: name, Op: "delete"})
-	return nil
-}
-
-func (s *Store) PutClusterSecrets(ctx context.Context, name string, sec ClusterSecrets) error {
-	if _, ok := s.heldSecrets(name, func(h *ClusterSecrets) { *h = cloneSecrets(sec) }); ok {
-		s.notify(Change{Table: "secrets", Cluster: name, Key: name, Op: "put"})
-		return nil
-	}
-	bundle, err := s.crypto.Seal(sec.SecretsBundle)
-	if err != nil {
-		return err
-	}
-	tc, err := s.crypto.Seal(sec.Talosconfig)
-	if err != nil {
-		return err
-	}
-	var kc []byte
-	if sec.Kubeconfig != nil {
-		if kc, err = s.crypto.Seal(sec.Kubeconfig); err != nil {
-			return err
-		}
-	}
-	_, err = s.db.ExecContext(ctx, `
-		INSERT INTO cluster_secrets (cluster, secrets_bundle, talosconfig, kubeconfig) VALUES (?, ?, ?, ?)
-		ON CONFLICT(cluster) DO UPDATE SET secrets_bundle = excluded.secrets_bundle,
-			talosconfig = excluded.talosconfig, kubeconfig = excluded.kubeconfig`,
-		name, bundle, tc, kc)
-	return s.done(err, Change{Table: "secrets", Cluster: name, Key: name, Op: "put"})
-}
-
-func (s *Store) SetKubeconfig(ctx context.Context, name string, kubeconfig []byte) error {
-	if _, ok := s.heldSecrets(name, func(h *ClusterSecrets) { h.Kubeconfig = slices.Clone(kubeconfig) }); ok {
-		s.notify(Change{Table: "secrets", Cluster: name, Key: name, Op: "put"})
-		return nil
-	}
-	kc, err := s.crypto.Seal(kubeconfig)
-	if err != nil {
-		return err
-	}
-	res, err := s.db.ExecContext(ctx, `UPDATE cluster_secrets SET kubeconfig = ? WHERE cluster = ?`, kc, name)
-	if err != nil {
-		return err
-	}
-	if n, _ := res.RowsAffected(); n == 0 {
-		return fmt.Errorf("secrets for cluster %q: %w", name, ErrNotFound)
-	}
-	s.notify(Change{Table: "secrets", Cluster: name, Key: name, Op: "put"})
-	return nil
-}
-
-func (s *Store) GetClusterSecrets(ctx context.Context, name string) (*ClusterSecrets, error) {
-	if sec, ok := s.heldSecrets(name, nil); ok {
-		return sec, nil
-	}
-	var bundle, tc, kc []byte
-	err := s.db.QueryRowContext(ctx, `SELECT secrets_bundle, talosconfig, kubeconfig FROM cluster_secrets WHERE cluster = ?`, name).Scan(&bundle, &tc, &kc)
-	if err := notFound(err, "secrets for cluster %q", name); err != nil {
-		return nil, err
-	}
-	var out ClusterSecrets
-	if out.SecretsBundle, err = s.crypto.Open(bundle); err != nil {
-		return nil, fmt.Errorf("unseal secrets bundle: %w", err)
-	}
-	if out.Talosconfig, err = s.crypto.Open(tc); err != nil {
-		return nil, fmt.Errorf("unseal talosconfig: %w", err)
-	}
-	if kc != nil {
-		if out.Kubeconfig, err = s.crypto.Open(kc); err != nil {
-			return nil, fmt.Errorf("unseal kubeconfig: %w", err)
-		}
-	}
-	return &out, nil
-}
-
-type PlatformStatus struct {
-	AppliedAt string            `json:"appliedAt,omitempty"`
-	Outputs   map[string]string `json:"outputs,omitempty"`
-	Error     string            `json:"error,omitempty"`
-}
-
-func (s *Store) SetPlatformStatus(ctx context.Context, name string, p PlatformStatus) error {
-	b, err := json.Marshal(p)
-	if err != nil {
-		return err
-	}
-	_, err = s.db.ExecContext(ctx, `UPDATE clusters SET platform = ?, updated_at = `+sqlNow+` WHERE name = ?`, string(b), name)
-	return s.done(err, Change{Table: "clusters", Cluster: name, Key: name, Op: "put"})
-}
-
-func (s *Store) GetPlatformStatus(ctx context.Context, name string) (*PlatformStatus, error) {
-	var raw string
-	err := s.db.QueryRowContext(ctx, `SELECT platform FROM clusters WHERE name = ?`, name).Scan(&raw)
-	if err := notFound(err, "cluster %q", name); err != nil {
-		return nil, err
-	}
-	var p PlatformStatus
-	if err := json.Unmarshal([]byte(raw), &p); err != nil {
-		return nil, err
-	}
-	return &p, nil
+	return &sec, nil
 }

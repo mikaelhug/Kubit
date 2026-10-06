@@ -10,85 +10,52 @@ import (
 
 func (s *Server) k8sRoutes() {
 	r := s.mux
-	r.HandleFunc("GET /api/v1/clusters/{name}/workloads", s.handleWorkloads)
-	r.HandleFunc("GET /api/v1/clusters/{name}/namespaces", s.handleNamespaces)
-	r.HandleFunc("GET /api/v1/clusters/{name}/pods", s.handlePods)
-	r.HandleFunc("GET /api/v1/clusters/{name}/pods/{namespace}/{pod}/events", s.handlePodEvents)
+	r.HandleFunc("GET /api/v1/clusters/{name}/workloads", s.kubeJSON(func(r *http.Request, kc *k8s.Client) (any, error) {
+		list, err := kc.Workloads(r.Context())
+		if list == nil {
+			list = []k8s.Workload{}
+		}
+		return list, err
+	}))
+	r.HandleFunc("GET /api/v1/clusters/{name}/namespaces", s.kubeJSON(func(r *http.Request, kc *k8s.Client) (any, error) {
+		list, err := kc.Namespaces(r.Context())
+		return namespaceRows(list), err
+	}))
+	r.HandleFunc("GET /api/v1/clusters/{name}/pods", s.kubeJSON(func(r *http.Request, kc *k8s.Client) (any, error) {
+		return kc.Pods(r.Context(), r.URL.Query().Get("namespace"), r.URL.Query().Get("selector"))
+	}))
+	r.HandleFunc("GET /api/v1/clusters/{name}/pods/{namespace}/{pod}/events", s.kubeJSON(func(r *http.Request, kc *k8s.Client) (any, error) {
+		return kc.PodEvents(r.Context(), r.PathValue("namespace"), r.PathValue("pod"))
+	}))
+	r.HandleFunc("GET /api/v1/clusters/{name}/flux", s.kubeJSON(func(r *http.Request, kc *k8s.Client) (any, error) {
+		return kc.FluxObjects(r.Context())
+	}))
+	r.HandleFunc("GET /api/v1/clusters/{name}/builds", s.kubeJSON(func(r *http.Request, kc *k8s.Client) (any, error) {
+		return kc.Builds(r.Context())
+	}))
+	r.HandleFunc("GET /api/v1/clusters/{name}/storage", s.kubeJSON(func(r *http.Request, kc *k8s.Client) (any, error) {
+		return kc.Storage(r.Context())
+	}))
+	r.HandleFunc("GET /api/v1/clusters/{name}/network", s.kubeJSON(s.network))
 	r.HandleFunc("GET /api/v1/clusters/{name}/pods/{namespace}/{pod}/logs", s.handlePodLogs)
-	r.HandleFunc("GET /api/v1/clusters/{name}/network", s.handleNetwork)
-	r.HandleFunc("GET /api/v1/clusters/{name}/storage", s.handleStorage)
-	r.HandleFunc("GET /api/v1/clusters/{name}/flux", s.handleFlux)
-	r.HandleFunc("GET /api/v1/clusters/{name}/builds", s.handleBuilds)
 }
 
-func (s *Server) kube(w http.ResponseWriter, r *http.Request) (*k8s.Client, bool) {
-	kc, err := s.manager.KubeClient(r.Context(), r.PathValue("name"))
-	if err != nil {
-		writeErr(w, err)
-		return nil, false
+func (s *Server) kubeJSON(fn func(r *http.Request, kc *k8s.Client) (any, error)) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		kc, err := s.manager.KubeClient(r.Context(), r.PathValue("name"))
+		if err != nil {
+			writeErr(w, err)
+			return
+		}
+		v, err := fn(r, kc)
+		reply(w, v, err)
 	}
-	return kc, true
-}
-
-func (s *Server) handleWorkloads(w http.ResponseWriter, r *http.Request) {
-	kc, ok := s.kube(w, r)
-	if !ok {
-		return
-	}
-	list, err := kc.Workloads(r.Context())
-	if err != nil {
-		writeErr(w, err)
-		return
-	}
-	if list == nil {
-		list = []k8s.Workload{}
-	}
-	writeJSON(w, http.StatusOK, list)
-}
-
-func (s *Server) handleFlux(w http.ResponseWriter, r *http.Request) {
-	kc, ok := s.kube(w, r)
-	if !ok {
-		return
-	}
-	list, err := kc.FluxObjects(r.Context())
-	if err != nil {
-		writeErr(w, err)
-		return
-	}
-	writeJSON(w, http.StatusOK, list)
-}
-
-func (s *Server) handleBuilds(w http.ResponseWriter, r *http.Request) {
-	kc, ok := s.kube(w, r)
-	if !ok {
-		return
-	}
-	list, err := kc.Builds(r.Context())
-	if err != nil {
-		writeErr(w, err)
-		return
-	}
-	writeJSON(w, http.StatusOK, list)
 }
 
 type namespaceRow struct {
 	k8s.Namespace
 	Platform bool   `json:"platform"`
 	Addon    string `json:"addon,omitempty"`
-}
-
-func (s *Server) handleNamespaces(w http.ResponseWriter, r *http.Request) {
-	kc, ok := s.kube(w, r)
-	if !ok {
-		return
-	}
-	list, err := kc.Namespaces(r.Context())
-	if err != nil {
-		writeErr(w, err)
-		return
-	}
-	writeJSON(w, http.StatusOK, namespaceRows(list))
 }
 
 func namespaceRows(list []k8s.Namespace) []namespaceRow {
@@ -100,35 +67,10 @@ func namespaceRows(list []k8s.Namespace) []namespaceRow {
 	return out
 }
 
-func (s *Server) handlePods(w http.ResponseWriter, r *http.Request) {
-	kc, ok := s.kube(w, r)
-	if !ok {
-		return
-	}
-	list, err := kc.Pods(r.Context(), r.URL.Query().Get("namespace"), r.URL.Query().Get("selector"))
-	if err != nil {
-		writeErr(w, err)
-		return
-	}
-	writeJSON(w, http.StatusOK, list)
-}
-
-func (s *Server) handlePodEvents(w http.ResponseWriter, r *http.Request) {
-	kc, ok := s.kube(w, r)
-	if !ok {
-		return
-	}
-	list, err := kc.PodEvents(r.Context(), r.PathValue("namespace"), r.PathValue("pod"))
-	if err != nil {
-		writeErr(w, err)
-		return
-	}
-	writeJSON(w, http.StatusOK, list)
-}
-
 func (s *Server) handlePodLogs(w http.ResponseWriter, r *http.Request) {
-	kc, ok := s.kube(w, r)
-	if !ok {
+	kc, err := s.manager.KubeClient(r.Context(), r.PathValue("name"))
+	if err != nil {
+		writeErr(w, err)
 		return
 	}
 	tail, _ := strconv.ParseInt(r.URL.Query().Get("tail"), 10, 64)
@@ -141,17 +83,12 @@ func (s *Server) handlePodLogs(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer rc.Close()
-	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
-	w.Header().Set("X-Content-Type-Options", "nosniff")
-	fl, _ := w.(http.Flusher)
+	write := textStream(w)
 	buf := make([]byte, 16*1024)
 	for {
 		n, err := rc.Read(buf)
 		if n > 0 {
-			w.Write(buf[:n])
-			if fl != nil {
-				fl.Flush()
-			}
+			write(buf[:n])
 		}
 		if err != nil {
 			return
@@ -162,46 +99,33 @@ func (s *Server) handlePodLogs(w http.ResponseWriter, r *http.Request) {
 type networkView struct {
 	Services  []k8s.Service  `json:"services"`
 	Ingresses []k8s.Ingress  `json:"ingresses"`
+	Routes    []k8s.Route    `json:"routes"`
+	RoutesErr string         `json:"routesError,omitempty"`
 	Pool      *k8s.PoolUsage `json:"pool,omitempty"`
 	PoolError string         `json:"poolError,omitempty"`
 }
 
-func (s *Server) handleNetwork(w http.ResponseWriter, r *http.Request) {
-	name := r.PathValue("name")
-	kc, ok := s.kube(w, r)
-	if !ok {
-		return
-	}
+func (s *Server) network(r *http.Request, kc *k8s.Client) (any, error) {
 	svcs, err := kc.Services(r.Context())
 	if err != nil {
-		writeErr(w, err)
-		return
+		return nil, err
 	}
 	ings, err := kc.Ingresses(r.Context())
 	if err != nil {
-		writeErr(w, err)
-		return
+		return nil, err
 	}
-	view := networkView{Services: svcs, Ingresses: ings}
-	if c, _, err := s.manager.LoadCluster(r.Context(), name); err == nil && c.Spec.Platform.MetalLB.Enabled {
+	view := networkView{Services: svcs, Ingresses: ings, Routes: []k8s.Route{}}
+	if routes, err := kc.HTTPRoutes(r.Context()); err == nil {
+		view.Routes = routes
+	} else {
+		view.RoutesErr = err.Error()
+	}
+	if c, _, err := s.manager.LoadCluster(r.PathValue("name")); err == nil && c.Spec.Platform.MetalLB.Enabled {
 		if pool, err := k8s.PoolUsageFor(c.Spec.Platform.MetalLB.Range, svcs); err == nil {
 			view.Pool = pool
 		} else {
 			view.PoolError = err.Error()
 		}
 	}
-	writeJSON(w, http.StatusOK, view)
-}
-
-func (s *Server) handleStorage(w http.ResponseWriter, r *http.Request) {
-	kc, ok := s.kube(w, r)
-	if !ok {
-		return
-	}
-	st, err := kc.Storage(r.Context())
-	if err != nil {
-		writeErr(w, err)
-		return
-	}
-	writeJSON(w, http.StatusOK, st)
+	return view, nil
 }

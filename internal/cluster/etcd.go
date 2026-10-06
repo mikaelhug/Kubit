@@ -4,16 +4,21 @@ import (
 	"bytes"
 	"compress/gzip"
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
+	"sort"
+	"strings"
 	"time"
 
+	"filippo.io/age"
 	"github.com/mikael/kubit/internal/config"
 	"github.com/mikael/kubit/internal/fsx"
+	"github.com/mikael/kubit/internal/repo"
+	"github.com/mikael/kubit/internal/sops"
 	"github.com/mikael/kubit/internal/store"
 	"github.com/mikael/kubit/internal/talos"
 )
@@ -36,17 +41,34 @@ func firstControlPlane(ctx context.Context, cps []config.Node, talosconfig []byt
 	return config.Node{}, nil, last
 }
 
-func (m *Manager) snapshotDir(name string) string {
-	return filepath.Join(m.ClusterDir(name), "snapshots")
+const snapshotExt = ".db.gz.age"
+
+type Snapshot struct {
+	ID        string `json:"id"`
+	TS        string `json:"ts"`
+	Source    string `json:"source"`
+	SizeBytes int64  `json:"sizeBytes"`
+	Path      string `json:"-"`
 }
 
-func (m *Manager) SnapshotEtcd(ctx context.Context, name, source string, sink Sink) (*store.Snapshot, error) {
-	sink.Plan(Steps("pick", "Find a healthy control plane", "snapshot", "Stream the etcd snapshot", "verify", "Verify and seal")...)
-	c, _, err := m.LoadCluster(ctx, name)
+func (m *Manager) snapshotDir(name string) (string, error) {
+	d, err := m.Desired(name)
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(d.Dir, repo.SnapshotDir), nil
+}
+
+func (m *Manager) SnapshotEtcd(ctx context.Context, name, source string, sink Sink) (*Snapshot, error) {
+	c, _, err := m.LoadCluster(name)
 	if err != nil {
 		return nil, err
 	}
-	sec, err := m.Store.GetClusterSecrets(ctx, name)
+	d, err := m.Desired(name)
+	if err != nil {
+		return nil, err
+	}
+	rule, err := sops.RuleFor(d.Dir, filepath.Join(d.Dir, repo.SecretsFile))
 	if err != nil {
 		return nil, err
 	}
@@ -54,7 +76,7 @@ func (m *Manager) SnapshotEtcd(ctx context.Context, name, source string, sink Si
 	var tc *talos.Client
 	err = sink.Run("pick", func() error {
 		var err error
-		cp, tc, err = firstControlPlane(ctx, c.ControlPlanes(), sec.Talosconfig, func(n config.Node, t *talos.Client) error {
+		cp, tc, err = firstControlPlane(ctx, c.ControlPlanes(), d.Talosconfig, func(n config.Node, t *talos.Client) error {
 			probe, cancel := context.WithTimeout(ctx, 10*time.Second)
 			defer cancel()
 			ok, err := t.ServiceHealthy(probe, "etcd")
@@ -74,29 +96,36 @@ func (m *Manager) SnapshotEtcd(ctx context.Context, name, source string, sink Si
 	}
 	defer tc.Close()
 
-	dir := m.snapshotDir(name)
+	dir := filepath.Join(d.Dir, repo.SnapshotDir)
+	if err := repo.Ignore(d.Dir); err != nil {
+		return nil, err
+	}
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return nil, err
 	}
 	ts := time.Now().UTC()
-	plainPath := filepath.Join(dir, ts.Format("20060102T150405Z")+".db")
-	sn := store.Snapshot{Cluster: name, Node: cp.Hostname, Source: source, Status: "ok", TalosVersion: c.Spec.TalosVersion, K8sVersion: c.Spec.KubernetesVersion}
-	if err := sink.Run("snapshot", func() error { return streamSnapshot(ctx, tc, plainPath, &sn, sink) }); err != nil {
-		return nil, err
-	}
-	if err := sink.Run("verify", func() error { return m.sealSnapshot(plainPath, &sn, sink) }); err != nil {
-		return nil, err
-	}
-	sn.ID, err = m.Store.AddSnapshot(ctx, sn)
+	sn := Snapshot{ID: ts.Format("20060102T150405Z") + "-" + source, TS: ts.Format(time.RFC3339), Source: source}
+	tmp, err := os.CreateTemp("", "kubit-etcd-*.db")
 	if err != nil {
 		return nil, err
 	}
-	sn.TS = ts.Format(time.RFC3339)
-	sink.Emit(Done, "verify", "", "snapshot #%d stored", sn.ID)
+	tmp.Close()
+	defer os.Remove(tmp.Name())
+	if err := sink.Run("snapshot", func() error { return streamSnapshot(ctx, tc, tmp.Name(), cp.Hostname, sink) }); err != nil {
+		return nil, err
+	}
+	sn.Path = filepath.Join(dir, sn.ID+snapshotExt)
+	if err := sink.Run("verify", func() error { return encryptSnapshot(tmp.Name(), sn.Path, rule.Age, sink) }); err != nil {
+		return nil, err
+	}
+	if fi, err := os.Stat(sn.Path); err == nil {
+		sn.SizeBytes = fi.Size()
+	}
+	sink.Emit(Done, "verify", "", "snapshot %s written", sn.Path)
 	return &sn, nil
 }
 
-func streamSnapshot(ctx context.Context, tc *talos.Client, plainPath string, sn *store.Snapshot, sink Sink) error {
+func streamSnapshot(ctx context.Context, tc *talos.Client, path, node string, sink Sink) error {
 	call, cancel := context.WithTimeout(ctx, snapshotTimeout)
 	defer cancel()
 	stream, err := tc.EtcdSnapshot(call)
@@ -104,139 +133,169 @@ func streamSnapshot(ctx context.Context, tc *talos.Client, plainPath string, sn 
 		return err
 	}
 	defer stream.Close()
-	f, err := os.OpenFile(plainPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_TRUNC, 0o600)
 	if err != nil {
 		return err
 	}
-	h := sha256.New()
-	n, err := io.Copy(io.MultiWriter(f, h), stream)
+	n, err := io.Copy(f, stream)
 	if cerr := f.Close(); err == nil {
 		err = cerr
 	}
 	if err != nil {
-		os.Remove(plainPath)
 		return err
 	}
-	sn.SizeBytes, sn.SHA256 = n, hex.EncodeToString(h.Sum(nil))
-	sink.Emit(Info, "snapshot", sn.Node, "%s received, sha256 %s…", HumanBytes(uint64(n)), sn.SHA256[:12])
+	sink.Emit(Info, "snapshot", node, "%s received", HumanBytes(uint64(n)))
 	return nil
 }
 
-func (m *Manager) sealSnapshot(plainPath string, sn *store.Snapshot, sink Sink) error {
-	defer os.Remove(plainPath)
+func encryptSnapshot(plainPath, path string, recipients []string, sink Sink) error {
 	keys, err := talos.VerifySnapshot(plainPath)
 	if err != nil {
 		return err
 	}
-	sn.Keys = keys
 	plain, err := os.ReadFile(plainPath)
 	if err != nil {
 		return err
 	}
-	var zb bytes.Buffer
-	zw := gzip.NewWriter(&zb)
+	var rcpts []age.Recipient
+	for _, r := range recipients {
+		rc, err := age.ParseX25519Recipient(r)
+		if err != nil {
+			return fmt.Errorf("recipient %s: %w", r, err)
+		}
+		rcpts = append(rcpts, rc)
+	}
+	if len(rcpts) == 0 {
+		return errors.New("no age recipient in .sops.yaml")
+	}
+	var out bytes.Buffer
+	aw, err := age.Encrypt(&out, rcpts...)
+	if err != nil {
+		return err
+	}
+	zw := gzip.NewWriter(aw)
 	if _, err := zw.Write(plain); err != nil {
 		return err
 	}
 	if err := zw.Close(); err != nil {
 		return err
 	}
-	sealed, err := m.Store.SealFile(zb.Bytes())
-	if err != nil {
+	if err := aw.Close(); err != nil {
 		return err
 	}
-	sn.Path = plainPath + ".gz.sealed"
-	if err := fsx.WriteFile(sn.Path, sealed, 0o600); err != nil {
+	if err := fsx.WriteFile(path, out.Bytes(), 0o600); err != nil {
 		return err
 	}
-	sink.Emit(Info, "verify", "", "%d keys; %s on disk, sealed to %s", keys, HumanBytes(uint64(len(sealed))), filepath.Base(sn.Path))
+	sink.Emit(Info, "verify", "", "%d keys; %s encrypted for %d recipient(s)", keys, HumanBytes(uint64(out.Len())), len(rcpts))
 	return nil
 }
 
-func (m *Manager) DeleteSnapshot(ctx context.Context, id int64) error {
-	sn, err := m.Store.GetSnapshot(ctx, id)
+func (m *Manager) ListSnapshots(name string) ([]Snapshot, error) {
+	dir, err := m.snapshotDir(name)
 	if err != nil {
-		return err
+		return nil, err
 	}
-	if err := os.Remove(sn.Path); err != nil && !os.IsNotExist(err) {
-		return err
-	}
-	return m.Store.DeleteSnapshot(ctx, id)
+	return listSnapshots(dir)
 }
 
-func (m *Manager) OpenSnapshot(ctx context.Context, id int64) (*store.Snapshot, []byte, error) {
-	sn, err := m.Store.GetSnapshot(ctx, id)
-	if err != nil {
-		return nil, nil, err
+func SnapshotsIn(repoDir string) ([]Snapshot, error) {
+	return listSnapshots(filepath.Join(repoDir, repo.SnapshotDir))
+}
+
+func listSnapshots(dir string) ([]Snapshot, error) {
+	entries, err := os.ReadDir(dir)
+	if errors.Is(err, fs.ErrNotExist) {
+		return []Snapshot{}, nil
 	}
-	sealed, err := os.ReadFile(sn.Path)
 	if err != nil {
-		if os.IsNotExist(err) {
-			_ = m.Store.SetSnapshotStatus(ctx, id, "missing")
+		return nil, err
+	}
+	out := []Snapshot{}
+	for _, e := range entries {
+		id, ok := strings.CutSuffix(e.Name(), snapshotExt)
+		if !ok || e.IsDir() {
+			continue
 		}
-		return sn, nil, err
-	}
-	plain, err := m.Store.OpenFile(sealed)
-	if err != nil {
-		_ = m.Store.SetSnapshotStatus(ctx, id, "corrupt")
-		return sn, nil, fmt.Errorf("unseal snapshot %d: %w", id, err)
-	}
-	if zr, zerr := gzip.NewReader(bytes.NewReader(plain)); zerr == nil {
-		plain, err = io.ReadAll(zr)
-		zr.Close()
+		stamp, source, _ := strings.Cut(id, "-")
+		ts, err := time.Parse("20060102T150405Z", stamp)
 		if err != nil {
-			_ = m.Store.SetSnapshotStatus(ctx, id, "corrupt")
-			return sn, nil, fmt.Errorf("decompress snapshot %d: %w", id, err)
+			continue
 		}
+		sn := Snapshot{ID: id, TS: ts.Format(time.RFC3339), Source: source, Path: filepath.Join(dir, e.Name())}
+		if fi, err := e.Info(); err == nil {
+			sn.SizeBytes = fi.Size()
+		}
+		out = append(out, sn)
 	}
-	sum := sha256.Sum256(plain)
-	if hex.EncodeToString(sum[:]) != sn.SHA256 {
-		_ = m.Store.SetSnapshotStatus(ctx, id, "corrupt")
-		return sn, nil, fmt.Errorf("snapshot %d: sha256 mismatch", id)
-	}
-	if sn.Status != "ok" {
-		_ = m.Store.SetSnapshotStatus(ctx, id, "ok")
-		sn.Status = "ok"
-	}
-	return sn, plain, nil
+	sort.Slice(out, func(i, j int) bool { return out[i].ID > out[j].ID })
+	return out, nil
 }
 
-func (m *Manager) VerifySnapshot(ctx context.Context, id int64) (*store.Snapshot, error) {
-	sn, plain, err := m.OpenSnapshot(ctx, id)
+func (m *Manager) Snapshot(name, id string) (*Snapshot, error) {
+	list, err := m.ListSnapshots(name)
 	if err != nil {
-		return sn, err
+		return nil, err
 	}
-	tmp, err := os.CreateTemp("", "kubit-snap-*.db")
+	for _, sn := range list {
+		if sn.ID == id {
+			return &sn, nil
+		}
+	}
+	return nil, fmt.Errorf("snapshot %s: %w", id, store.ErrNotFound)
+}
+
+func openSnapshot(sn *Snapshot) ([]byte, error) {
+	ids, err := sops.Identities()
 	if err != nil {
-		return sn, err
+		return nil, err
+	}
+	enc, err := os.ReadFile(sn.Path)
+	if err != nil {
+		return nil, err
+	}
+	ar, err := age.Decrypt(bytes.NewReader(enc), ids...)
+	if err != nil {
+		return nil, fmt.Errorf("snapshot %s: %w", sn.ID, err)
+	}
+	zr, err := gzip.NewReader(ar)
+	if err != nil {
+		return nil, fmt.Errorf("snapshot %s: %w", sn.ID, err)
+	}
+	defer zr.Close()
+	plain, err := io.ReadAll(zr)
+	if err != nil {
+		return nil, fmt.Errorf("snapshot %s: %w", sn.ID, err)
+	}
+	tmp, err := os.CreateTemp("", "kubit-restore-*.db")
+	if err != nil {
+		return nil, err
 	}
 	defer os.Remove(tmp.Name())
-	if _, err := tmp.Write(plain); err != nil {
-		tmp.Close()
-		return sn, err
+	_, err = tmp.Write(plain)
+	if cerr := tmp.Close(); err == nil {
+		err = cerr
 	}
-	tmp.Close()
+	if err != nil {
+		return nil, err
+	}
 	if _, err := talos.VerifySnapshot(tmp.Name()); err != nil {
-		_ = m.Store.SetSnapshotStatus(ctx, id, "corrupt")
-		sn.Status = "corrupt"
-		return sn, err
+		return nil, fmt.Errorf("snapshot %s: %w", sn.ID, err)
 	}
-	return sn, nil
+	return plain, nil
 }
 
-func (m *Manager) RestoreEtcd(ctx context.Context, name string, snapshotID int64, sink Sink) error {
-	sink.Plan(Steps("check", "Verify the snapshot and reach every control plane", "wipe", "Wipe etcd state on every control plane and reboot", "upload", "Upload the snapshot to the first control plane", "bootstrap", "Bootstrap etcd from the snapshot", "ready", "Wait for nodes to become Ready", "workers", "Restart pods on workers")...)
-	c, _, err := m.LoadCluster(ctx, name)
+func (m *Manager) RestoreEtcd(ctx context.Context, name, snapshotID string, sink Sink) error {
+	c, _, err := m.LoadCluster(name)
 	if err != nil {
 		return err
 	}
-	sec, err := m.Store.GetClusterSecrets(ctx, name)
+	sec, err := m.Store.GetClusterSecrets(name)
 	if err != nil {
 		return err
 	}
 	cps := c.ControlPlanes()
 	var plain []byte
-	var sn *store.Snapshot
+	var sn *Snapshot
 	err = sink.Run("check", func() error {
 		var err error
 		sn, plain, err = m.restoreCheck(ctx, name, snapshotID, cps, sec.Talosconfig, sink)
@@ -245,48 +304,44 @@ func (m *Manager) RestoreEtcd(ctx context.Context, name string, snapshotID int64
 	if err != nil {
 		return err
 	}
-	_ = m.Store.SetClusterState(ctx, name, StateProvisioning)
-	fail := func(err error) error {
-		_ = m.Store.SetClusterState(ctx, name, StateFailed)
-		return err
-	}
 	if err := sink.Run("wipe", func() error { return m.wipeEtcd(ctx, cps, sec.Talosconfig, sink) }); err != nil {
-		return fail(err)
+		return err
 	}
 	cp1 := cps[0]
 	if err := sink.Run("upload", func() error { return m.uploadSnapshot(ctx, cp1, sec.Talosconfig, plain, sink) }); err != nil {
-		return fail(err)
+		return err
 	}
 	if err := sink.Run("bootstrap", func() error { return m.bootstrapRecovered(ctx, cp1, sec.Talosconfig, len(cps), sink) }); err != nil {
-		return fail(err)
+		return err
 	}
 	if err := sink.Run("ready", func() error { return m.waitReady(ctx, c, c.Spec.Nodes, sink) }); err != nil {
-		return fail(err)
+		return err
 	}
-	if len(c.Workers()) == 0 {
-		sink.Skip("workers")
-	} else if err := sink.Run("workers", func() error { return m.restartWorkerPods(ctx, name, c.Workers(), sink) }); err != nil {
-		return fail(err)
+	if len(c.Workers()) > 0 {
+		if err := sink.Run("workers", func() error { return m.restartWorkerPods(ctx, name, c.Workers(), sink) }); err != nil {
+			return err
+		}
 	}
-	sink.Emit(Done, "workers", "", "cluster %s restored from snapshot #%d (%s)", name, sn.ID, sn.TS)
+	sink.Emit(Done, "workers", "", "cluster %s restored from snapshot %s", name, sn.ID)
 	return nil
 }
 
-func (m *Manager) restoreCheck(ctx context.Context, name string, snapshotID int64, cps []config.Node, talosconfig []byte, sink Sink) (*store.Snapshot, []byte, error) {
-	sn, plain, err := m.OpenSnapshot(ctx, snapshotID)
+func (m *Manager) restoreCheck(ctx context.Context, name, snapshotID string, cps []config.Node, talosconfig []byte, sink Sink) (*Snapshot, []byte, error) {
+	sn, err := m.Snapshot(name, snapshotID)
 	if err != nil {
 		return nil, nil, err
 	}
-	if sn.Cluster != name {
-		return nil, nil, fmt.Errorf("snapshot %d belongs to cluster %s", snapshotID, sn.Cluster)
+	plain, err := openSnapshot(sn)
+	if err != nil {
+		return nil, nil, err
 	}
-	sink.Emit(Info, "check", "", "snapshot #%d from %s (%s, %d keys) verified", sn.ID, sn.Node, sn.TS, sn.Keys)
+	sink.Emit(Info, "check", "", "snapshot %s (%s) verified", sn.ID, HumanBytes(uint64(len(plain))))
 	for _, n := range cps {
 		probe, cancel := context.WithTimeout(ctx, 10*time.Second)
 		_, err := talos.Stage(probe, n.IP, talosconfig)
 		cancel()
 		if err != nil {
-			return nil, nil, fmt.Errorf("%s (%s) must answer the Talos API before a restore (%w); if it is gone, remove it with Remove anyway first", n.Hostname, n.IP, err)
+			return nil, nil, fmt.Errorf("%s (%s) must answer the Talos API before a restore: %w", n.Hostname, n.IP, err)
 		}
 	}
 	return sn, plain, nil
@@ -311,7 +366,7 @@ func (m *Manager) wipeEtcd(ctx context.Context, cps []config.Node, talosconfig [
 		sink.Emit(Info, "wipe", n.Hostname, "EPHEMERAL wiped, rebooting")
 	}
 	for _, n := range cps {
-		if err := talos.WaitForReboot(ctx, n.IP, talosconfig, boots[n.Hostname], m.Timeouts.Install); err != nil {
+		if err := talos.WaitForReboot(ctx, n.IP, talosconfig, boots[n.Hostname], installTimeout); err != nil {
 			return fmt.Errorf("%s: %w", n.Hostname, err)
 		}
 		sink.Emit(Info, "wipe", n.Hostname, "back up, waiting for etcd")
@@ -320,7 +375,7 @@ func (m *Manager) wipeEtcd(ctx context.Context, cps []config.Node, talosconfig [
 }
 
 func (m *Manager) uploadSnapshot(ctx context.Context, cp config.Node, talosconfig, plain []byte, sink Sink) error {
-	return talos.Retry(ctx, m.Timeouts.Bootstrap, 5*time.Second, func() error {
+	return talos.Retry(ctx, bootstrapTimeout, 5*time.Second, func() error {
 		call, cancel := context.WithTimeout(ctx, 2*time.Minute)
 		defer cancel()
 		tc, err := talos.Dial(call, cp.IP, talosconfig)
@@ -342,7 +397,7 @@ func (m *Manager) bootstrapRecovered(ctx context.Context, cp config.Node, talosc
 		return err
 	}
 	defer tc.Close()
-	err = talos.Retry(ctx, m.Timeouts.Bootstrap, 5*time.Second, func() error {
+	err = talos.Retry(ctx, bootstrapTimeout, 5*time.Second, func() error {
 		call, cancel := context.WithTimeout(ctx, 30*time.Second)
 		defer cancel()
 		return tc.BootstrapRecover(call)

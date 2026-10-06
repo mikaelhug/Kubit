@@ -22,31 +22,30 @@ type Server struct {
 	hub         *hub
 	started     time.Time
 	watcher     *watch.Watcher
-	periodic    throttle
+	scans       scanState
+	plans       planner
 	versionsMu  sync.Mutex
-	versionsAt  time.Time
-	latestTalos string
-	talosList   talosList
+	talosList   []string
+	talosListAt time.Time
 	pxeMu       sync.Mutex
 	pxeLast     pxeSnapshot
-	ctx         context.Context
-	stop        context.CancelFunc
 	stopDaemon  func()
 	token       string
 	repos       repoSet
+	reloading   sync.Map
+	settings    Settings
+	certsMu     sync.Mutex
+	certsSeen   map[string]time.Time
+	serveCtx    context.Context
+	runsMu      sync.Mutex
+	runs        map[string]*applyRun
 }
 
-func New(version string, m *cluster.Manager, token string) *Server {
-	s := &Server{mux: http.NewServeMux(), version: version, manager: m, store: m.Store, hub: newHub(), token: token, started: time.Now()}
-	s.ctx, s.stop = context.WithCancel(context.Background())
+func New(version string, m *cluster.Manager, token string, settings Settings, w *watch.Watcher, stop func()) *Server {
+	s := &Server{mux: http.NewServeMux(), version: version, manager: m, store: m.Store, hub: newHub(), token: token, settings: settings, watcher: w, stopDaemon: stop, certsSeen: map[string]time.Time{}, runs: map[string]*applyRun{}, serveCtx: context.Background(), started: time.Now()}
+	m.Factory.SetBaseURL(settings.FactoryURL)
 	s.routes()
 	return s
-}
-
-func (s *Server) Start() {
-	if v, err := s.store.GetSettings(s.ctx); err == nil {
-		s.manager.Factory.SetBaseURL(v.FactoryURL)
-	}
 }
 
 func (s *Server) routes() {
@@ -63,6 +62,9 @@ func (s *Server) routes() {
 	s.certRoutes()
 	s.sopsRoutes()
 	s.secretRoutes()
+	s.editRoutes()
+	s.planRoutes()
+	s.specRoutes()
 	s.mux.HandleFunc("/api/", func(w http.ResponseWriter, _ *http.Request) {
 		writeErr(w, &statusError{Status: http.StatusNotFound, Msg: "not found"})
 	})

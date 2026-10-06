@@ -1,26 +1,25 @@
 package api
 
 import (
-	"bytes"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"strings"
 	"testing"
 
+	"filippo.io/age"
 	"github.com/mikael/kubit/internal/cluster"
+	"github.com/mikael/kubit/internal/config"
+	"github.com/mikael/kubit/internal/repo"
 	"github.com/mikael/kubit/internal/store"
+	"github.com/mikael/kubit/internal/watch"
 )
 
 func localServer(t *testing.T) (*Server, *store.Store) {
 	t.Helper()
-	c, _ := store.NewCrypto(bytes.Repeat([]byte{11}, 32))
 	dir := t.TempDir()
-	st, err := store.Open(dir, c)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { st.Close() })
+	st := store.New()
 	factory := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/versions":
@@ -35,7 +34,7 @@ func localServer(t *testing.T) (*Server, *store.Store) {
 	t.Cleanup(factory.Close)
 	m := cluster.NewManager(st, dir)
 	m.Factory.SetBaseURL(factory.URL)
-	return New("test", m, ""), st
+	return New("test", m, "", DefaultSettings(), watch.New(m, 0), func() {}), st
 }
 
 func call(t *testing.T, s *Server, method, path, body string) *httptest.ResponseRecorder {
@@ -45,4 +44,30 @@ func call(t *testing.T, s *Server, method, path, body string) *httptest.Response
 	rec := httptest.NewRecorder()
 	s.ServeHTTP(rec, req)
 	return rec
+}
+
+const labSpec = "apiVersion: kubit.dev/v1\nkind: Cluster\nmetadata: {name: lab}\nspec:\n  nodes:\n    - {hostname: cp-01, ip: \"::1\", role: controlplane, installDisk: {path: /dev/sda}}\n"
+
+func servedLab(t *testing.T) (*Server, string) {
+	t.Helper()
+	id, err := age.GenerateX25519Identity()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("SOPS_AGE_KEY", id.String())
+	t.Setenv("SOPS_AGE_KEY_FILE", "")
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	c, err := config.Parse([]byte(labSpec))
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := filepath.Join(t.TempDir(), "lab")
+	if _, err := repo.Init(dir, c, []string{id.Recipient().String()}); err != nil {
+		t.Fatal(err)
+	}
+	s, _ := localServer(t)
+	if err := s.ServeRepos(t.Context(), []string{dir}); err != nil {
+		t.Fatal(err)
+	}
+	return s, dir
 }

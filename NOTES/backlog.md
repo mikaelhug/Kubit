@@ -3,19 +3,42 @@
 ## Verify on real clusters
 - `kubit apply` end to end: create, add, config, Talos and Kubernetes upgrades, removal,
   platform; the Lease lock and alert quieting; encrypted state on the real platform module.
-- `kubit export lab --repo` on the live `lab`, then a plan with no changes.
+- `kubit export lab --repo` with a `dbeba6f` build on the live `lab`, then a plan with no
+  changes from the current build.
+- Create resume from live state: a create stopped after install, then `kubit apply`.
+- Layout guard: a plan against a node whose EPHEMERAL/STATE volume config differs.
 - talos-backup against a real bucket; a restore from one of its snapshots.
 - Lifecycle/Image API upgrade: installer pulled into `NS_SYSTEM`, digest-pinned
   `ImageName` accepted, plain reboot (and kexec) boots the new slot.
-- Host firewall: `nftableschains`, `kubectl top nodes`, a MetalLB Service, a node add
-  from a second subnet.
-- Disk encryption, TPM and watchdog detection on hardware.
 - Longhorn on data disks: shared mount propagation of `/var/mnt/data-N`.
-- Pushed stage on a reboot/upgrade; no stale pushes after sleep.
-- SMTP STARTTLS and implicit TLS against a real provider; `master.key` fallback on Linux.
+- Webhook: one POST per raise and per resolve; none for faults present at start.
 - QEMU lab (`hack/qemu`) has never booted a VM.
+- Console create: *Add* on a maintenance machine to a new repo dir, then *Apply* creates
+  the cluster.
+- Address moves on `lab` (each needs a go): pin cp-01 static at .240; move a worker; move
+  cp-01 with the endpoint; a wrong gateway to prove the 3-minute try rollback. Unproven:
+  try-mode rollback and the no-reboot confirm, the etcd gateway on :2379 with a client
+  certificate from the bundle CA, RouteStatus/ResolverStatus in maintenance mode, finding a
+  DHCP node by hostname after a release.
 
 ## Converge
+- `ApplyConfigs` (internal/cluster/apply.go) has an empty `if wantKubelet == "" {}` block.
+- An endpoint change alone (a new VIP or DNS name with no node moving) is refused; it needs
+  every node re-configured and kubeconfigs rotated in one step.
+- Address moves run one node at a time; a big worker pool takes a reboot each.
+- Node temperatures are shown, not alerted on; a node at its chip's critical limit could
+  raise an alert.
+- Console apply has no cancel; stopping the daemon is the only way out of a running apply.
+- Console edits cover nodes, addresses, add-on toggles, versions and secrets; roles,
+  labels, patches and add-on values are edited in the cluster.yaml editor.
+- Machine page Services and Logs tabs each fetch the service list when shown.
+- A declared cluster's page shows Changes, Secrets and Repository only, so a wrongly added
+  node is removed in the cluster.yaml editor; a Nodes view for declared clusters would allow
+  *Remove*.
+- A declared (not yet installed) node whose DHCP lease moved is still a plan problem; the
+  console could offer to write the new address.
+- `kubit pxe <repos>` sends every declared MAC to its local disk, also before it is
+  installed; a declared machine rebooted before *Apply* then misses maintenance mode.
 - A failed node stops `kubit apply`; a rerun re-applies every node first. Resume at the
   failed node.
 - The manifests step fails when the Kubernetes API does not answer although every node
@@ -27,25 +50,25 @@
 - A node left cordoned by a failed upgrade blocks `upgrade kubernetes`; release Kubit's
   cordon in `ApplyConfigs` too.
 - Drain timeout (5 min) and PDB policy are fixed; Longhorn's last-replica PDB can block.
-- Node removal leaves its subnet in the others' firewall rules until the next apply.
-- Node add's `firewall` step applies each node's full config, so one unreachable node
-  fails the add; apply only the firewall documents.
 - Turning `network.policies` off leaves the kube-network-policies DaemonSet running;
   prune it in the manifests step.
 - Changing `platform.flux.repository.path` prunes everything under the old path before
   the new Kustomizations re-create it; the plan should warn.
 - The tofu provider lock file lives in `~/.kubit`; writing `.terraform.lock.hcl` into the
   repo would pin providers.
-- A node declared at its DHCP lease is found by MAC only before it joins; afterwards the
-  plan asks for a cluster.yaml update or a static address.
+- A node declared at its DHCP lease is found by MAC (a /24 scan) only before it joins;
+  afterwards the plan asks for a cluster.yaml update or a static address.
 - Platform apply: retry on transient API errors, scale the Helm timeout with node count,
   surface pod events while a Deployment never rolls out.
-- A failed plan/apply clears `ingress_ip`, which raises `lb.lost`; keep outputs on error.
 - Containerd config v4 arrives with Talos 1.15; check `RegistryMirrorConfig` first.
-- `configBehind` relies on byte-identical `config.Generate`; add a test.
 - No linter catches deprecated machinery calls; run `staticcheck` (SA1019).
 
 ## Platform
+- The `nginx` IngressClass shim (traefik.tf `traefik_nginx_class`, the `kubernetesIngressNGINX`
+  provider, flux.tf depends_on) and the `ingress_nginx` plan mapping can go once `lab` has no
+  Ingress with `ingressClassName: nginx`.
+- The unencrypted-state fallback in `tofu/runner.go` can go once `lab`'s repo state is
+  confirmed encrypted.
 - Gateway API objects are not in the Network view and raise no alerts.
 - Traefik's own CRDs are never upgraded by Helm; a chart bump needs a CRD apply step.
 - Gateway API CRDs owned by another manager fight with Kubit's force-conflicts apply.
@@ -63,19 +86,19 @@
 - Cilium as a create-time CNI option.
 
 ## Observer and console
-- Info-level events accumulate unacked; auto-ack after a day.
-- Workload alert thresholds are fixed; make them per-cluster if needed.
 - `status` asks only the first reachable control plane for the etcd leader.
-- `ConfigStatus` regenerates every node config on each fetch.
-- A pushed stage and a tick can publish out of order; stamp statuses with probe time.
-- A node that refuses the COSI stage watch logs once per tick.
+- Removing a served repo leaves its cluster in the daemon until restart.
 - The status-bar uptime keeps ticking while disconnected.
-- Secrets editor: keys under sequences are not editable; non-Secret files split keys on
-  dots; encrypted comments are dropped on a write.
+- Secrets: keys under sequences are not editable; non-Secret files split keys on dots;
+  encrypted comments are dropped on a write.
+- Secrets attribution follows only the root `flux-system` Kustomization: Flux Kustomization
+  objects in the repo with their own `path`, `.sourceignore` and `patches`/`components` are
+  not followed. A file under two clusters' Flux paths is shown for the first one.
+- *Let Flux decrypt* on a shared apps repo adds one cluster's key at a time; a repo synced by
+  several clusters needs it once per cluster.
 - Security: no CSRF guard on bodiless POSTs while loopback needs no token; check
   `Origin`/`Sec-Fetch-Site` in `ServeHTTP`. WebSocket origin check fails behind a proxy
   that rewrites `Host`.
-- `platform.argocd` and `platform.ingressNginx` are still read and folded in on load.
 
 ## Dev harness
 - vfkit console: direct-kernel boot with `console=hvc0` would give a readable log.

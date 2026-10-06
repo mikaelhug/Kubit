@@ -2,26 +2,23 @@ package main
 
 import (
 	"fmt"
-	"os/exec"
-	"strings"
+	"os"
+	"path/filepath"
 
 	"github.com/mikael/kubit/internal/cluster"
 	"github.com/mikael/kubit/internal/store"
 	"github.com/spf13/cobra"
 )
 
-func homeDir() (string, error) { return store.HomeDir() }
-
-func openStore() (*store.Store, error) {
-	dir, err := homeDir()
-	if err != nil {
-		return nil, err
+func homeDir() (string, error) {
+	if h := os.Getenv("KUBIT_HOME"); h != "" {
+		return h, nil
 	}
-	crypto, err := store.LoadCrypto()
+	u, err := os.UserHomeDir()
 	if err != nil {
-		return nil, err
+		return "", err
 	}
-	return store.Open(dir, crypto)
+	return filepath.Join(u, ".kubit"), nil
 }
 
 func openManager() (*cluster.Manager, error) {
@@ -29,11 +26,7 @@ func openManager() (*cluster.Manager, error) {
 	if err != nil {
 		return nil, err
 	}
-	s, err := openStore()
-	if err != nil {
-		return nil, err
-	}
-	return cluster.NewManager(s, dir), nil
+	return cluster.NewManager(store.New(), dir), nil
 }
 
 func withManager(fn func(cmd *cobra.Command, args []string, m *cluster.Manager) error) func(*cobra.Command, []string) error {
@@ -42,7 +35,6 @@ func withManager(fn func(cmd *cobra.Command, args []string, m *cluster.Manager) 
 		if err != nil {
 			return err
 		}
-		defer m.Store.Close()
 		return fn(cmd, args, m)
 	}
 }
@@ -50,7 +42,6 @@ func withManager(fn func(cmd *cobra.Command, args []string, m *cluster.Manager) 
 func printEvents(cmd *cobra.Command) cluster.Sink {
 	return func(e cluster.Event) {
 		switch e.Kind {
-		case cluster.KindSteps:
 		case cluster.KindStep:
 			if e.Status == cluster.StepRunning {
 				fmt.Fprintf(cmd.ErrOrStderr(), "%s ▶ %s\n", e.Time.Format("15:04:05"), e.Step)
@@ -61,12 +52,4 @@ func printEvents(cmd *cobra.Command) cluster.Sink {
 			fmt.Fprintln(cmd.ErrOrStderr(), e.String())
 		}
 	}
-}
-
-func run(name string, args ...string) error {
-	out, err := exec.Command(name, args...).CombinedOutput()
-	if err != nil {
-		return fmt.Errorf("%s %s: %v: %s", name, strings.Join(args, " "), err, strings.TrimSpace(string(out)))
-	}
-	return nil
 }

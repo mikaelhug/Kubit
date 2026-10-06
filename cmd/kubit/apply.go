@@ -44,7 +44,7 @@ func planCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			p, err := m.Plan(cmd.Context(), d, cluster.ConvergeOptions{AllowRemoval: allowRemoval})
+			p, err := m.Plan(cmd.Context(), d, cluster.ConvergeOptions{AllowRemoval: allowRemoval, ReadOnly: true})
 			if err != nil {
 				return err
 			}
@@ -72,6 +72,7 @@ func planCmd() *cobra.Command {
 
 func applyCmd() *cobra.Command {
 	var allowRemoval, yes bool
+	var reviewed string
 	cmd := &cobra.Command{
 		Use:   "apply [dir]",
 		Short: "Converge the cluster to the declaration in dir: create, join, configure, upgrade, remove, add-ons",
@@ -97,6 +98,9 @@ func applyCmd() *cobra.Command {
 			if len(p.Problems) > 0 {
 				return exitCode(1)
 			}
+			if reviewed != "" && reviewed != p.Hash {
+				return fmt.Errorf("the plan is now %s, not the reviewed %s; review it again", p.Hash, reviewed)
+			}
 			if p.Empty() {
 				return nil
 			}
@@ -109,6 +113,7 @@ func applyCmd() *cobra.Command {
 					return errors.New("not applied")
 				}
 			}
+			defer cluster.KeepAwake()()
 			if err := m.Converge(ctx, d, p, opts, printEvents(cmd)); err != nil {
 				return err
 			}
@@ -118,6 +123,7 @@ func applyCmd() *cobra.Command {
 	}
 	cmd.Flags().BoolVar(&allowRemoval, "allow-removal", false, "remove nodes that are no longer declared (drain, delete, reset)")
 	cmd.Flags().BoolVarP(&yes, "yes", "y", false, "apply without asking")
+	cmd.Flags().StringVar(&reviewed, "plan", "", "apply only if the plan still has this hash (from kubit plan)")
 	return cmd
 }
 
@@ -172,13 +178,16 @@ func printPlan(w io.Writer, p *cluster.Plan) {
 			}
 		}
 	}
+	for _, in := range p.Installs {
+		fmt.Fprintf(w, "  install %s (%s at %s) erases %s\n", in.Hostname, in.Role, in.IP, in.Disk)
+	}
 	switch {
 	case len(p.Problems) > 0:
 		fmt.Fprintf(w, "%s cannot be applied.\n", p.Cluster)
 	case p.Empty():
 		fmt.Fprintf(w, "%s: no changes.\n", p.Cluster)
 	default:
-		fmt.Fprintf(w, "%s: %d change(s).\n", p.Cluster, len(p.Changes))
+		fmt.Fprintf(w, "%s: %d change(s). Plan %s.\n", p.Cluster, len(p.Changes), p.Hash)
 	}
 }
 

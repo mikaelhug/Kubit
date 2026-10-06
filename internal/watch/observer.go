@@ -33,7 +33,7 @@ func (w *Watcher) noteOnline() {
 func (w *Watcher) noteGap(at time.Time) {
 	w.mu.Lock()
 	n := len(w.gaps)
-	fresh := n == 0 || at.Sub(w.gaps[n-1]) >= 2*w.Interval()
+	fresh := n == 0 || at.Sub(w.gaps[n-1]) >= 2*w.interval
 	if fresh {
 		w.gaps = append(w.gaps, at)
 	}

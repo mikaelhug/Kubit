@@ -7,7 +7,6 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/kubectl/pkg/drain"
 )
 
 type NodeDetail struct {
@@ -107,18 +106,4 @@ func (c *Client) NodeDetail(ctx context.Context, name string) (*NodeDetail, erro
 		return d.Pods[i].Name < d.Pods[j].Name
 	})
 	return d, nil
-}
-
-func (c *Client) Cordon(ctx context.Context, name string) error {
-	node, err := c.CoreV1().Nodes().Get(ctx, name, metav1.GetOptions{})
-	if err != nil {
-		return err
-	}
-	if err := drain.RunCordonOrUncordon(&drain.Helper{Ctx: ctx, Client: c.Interface}, node, true); err != nil {
-		return err
-	}
-	if _, ok := node.Annotations[CordonedBy]; !ok {
-		return nil
-	}
-	return c.annotateCordon(ctx, name, "null")
 }

@@ -13,7 +13,6 @@ type Network struct {
 	NTP         []string `yaml:"ntp,omitempty" json:"ntp,omitempty"`
 	Policies    *bool    `yaml:"policies,omitempty" json:"policies,omitempty"`
 	Discovery   *bool    `yaml:"discovery,omitempty" json:"discovery,omitempty"`
-	Firewall    *bool    `yaml:"firewall,omitempty" json:"firewall,omitempty"`
 }
 
 func (n Node) TargetIP() string {
@@ -70,4 +69,12 @@ func ParseIPRange(s string) (netip.Addr, netip.Addr, error) {
 		return netip.Addr{}, netip.Addr{}, fmt.Errorf("%q: end precedes start", s)
 	}
 	return a, b, nil
+}
+
+func (c *Cluster) PoliciesOn() bool {
+	return c.Spec.Network.Policies == nil || *c.Spec.Network.Policies
+}
+
+func (c *Cluster) DiscoveryOn() bool {
+	return c.Spec.Network.Discovery == nil || *c.Spec.Network.Discovery
 }

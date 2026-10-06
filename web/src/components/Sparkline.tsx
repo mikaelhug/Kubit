@@ -4,7 +4,7 @@ import { nowEvery } from '../clock'
 
 interface Point { t: number; v: number | null }
 
-const spans: Record<string, number> = { '1h': 3600e3, '6h': 6 * 3600e3, '24h': 86400e3, '7d': 7 * 86400e3 }
+const spans: Record<string, number> = { '5m': 5 * 60e3, '30m': 30 * 60e3, '1h': 3600e3, '6h': 6 * 3600e3, '24h': 86400e3 }
 export const spanOf = (range: string) => spans[range] ?? spans['24h']
 const ranges = Object.keys(spans)
 
@@ -24,7 +24,7 @@ function onThemeChange(fn: () => void) {
   return () => { attr.disconnect(); media.removeEventListener('change', fn) }
 }
 
-const tickSteps = [5, 10, 15, 30, 60, 120, 180, 360, 720, 1440, 2880].map((m) => m * 60e3)
+const tickSteps = [1, 2, 5, 10, 15, 30, 60, 120, 180, 360, 720, 1440, 2880].map((m) => m * 60e3)
 const shareSteps = [0.05, 0.1, 0.2, 0.25, 0.5, 1]
 
 function ceilingFor(v: number, max?: number): number {
@@ -34,9 +34,9 @@ function ceilingFor(v: number, max?: number): number {
   return ([1, 2, 5, 10].find((m) => m * p >= v) ?? 10) * p
 }
 
-export function Sparkline({ points, max, height = 56, format, label, span, tone = 'accent' }: { points: Point[]; max?: number; height?: number; format: (v: number) => string; label: string; span?: number; tone?: 'accent' | 'bad' }) {
+export function Sparkline({ points, max, height = 56, format, label, span, tone = 'accent' }: { points: Point[]; max?: number; height?: number; format: (v: number) => string; label: string; span: number; tone?: 'accent' | 'bad' }) {
   const ref = useRef<HTMLCanvasElement>(null)
-  const minute = span ? nowEvery(60_000) : 0
+  const now = nowEvery(span <= spans['30m'] ? 15_000 : 60_000)
   const draw = useRef(() => {})
   draw.current = () => {
     const canvas = ref.current
@@ -53,11 +53,11 @@ export function Sparkline({ points, max, height = 56, format, label, span, tone 
     ctx.scale(dpr, dpr)
     ctx.clearRect(0, 0, w, height)
     ctx.font = '10px system-ui'
-    const px0 = span ? 34 : 1, px1 = w - 2, py0 = 6, py1 = height - (span ? 15 : 4)
+    const px0 = 34, px1 = w - 2, py0 = 6, py1 = height - 15
     const known = points.filter((p): p is { t: number; v: number } => p.v !== null)
-    const lastT = points.length ? points[points.length - 1].t : minute || Date.now()
-    const t1 = span ? Math.max(minute, lastT) : lastT
-    const t0 = span ? t1 - span : points.length ? points[0].t : t1 - 1
+    const lastT = points.length ? points[points.length - 1].t : now || Date.now()
+    const t1 = Math.max(now, lastT)
+    const t0 = t1 - span
     const x = (t: number) => px0 + ((t - t0) / Math.max(1, t1 - t0)) * (px1 - px0)
 
     const gaps = points.slice(1).map((p, i) => p.t - points[i].t).sort((a, b) => a - b)
@@ -89,17 +89,15 @@ export function Sparkline({ points, max, height = 56, format, label, span, tone 
     for (const f of [0.5, 1]) {
       const gy = Math.round(y(top * f)) + 0.5
       ctx.beginPath(); ctx.moveTo(px0, gy); ctx.lineTo(px1, gy); ctx.stroke()
-      if (span) ctx.fillText(max ? pct(top * f) : format(top * f), px0 - 5, gy)
+      ctx.fillText(max ? pct(top * f) : format(top * f), px0 - 5, gy)
     }
-    if (span) {
-      const step = tickSteps.find((s) => span / s <= 4) ?? tickSteps[tickSteps.length - 1]
-      const off = new Date(t1).getTimezoneOffset() * 60e3
-      ctx.textBaseline = 'top'
-      ctx.textAlign = 'center'
-      for (let t = Math.ceil((t0 - off) / step) * step + off; t <= t1; t += step) {
-        const text = step >= 86400e3 ? fmt.weekday(t) : fmt.hm(t)
-        ctx.fillText(text, Math.min(Math.max(x(t), px0 + 16), px1 - 16), py1 + 4)
-      }
+    const step = tickSteps.find((s) => span / s <= 4) ?? tickSteps[tickSteps.length - 1]
+    const off = new Date(t1).getTimezoneOffset() * 60e3
+    ctx.textBaseline = 'top'
+    ctx.textAlign = 'center'
+    for (let t = Math.ceil((t0 - off) / step) * step + off; t <= t1; t += step) {
+      const text = step >= 86400e3 ? fmt.weekday(t) : fmt.hm(t)
+      ctx.fillText(text, Math.min(Math.max(x(t), px0 + 16), px1 - 16), py1 + 4)
     }
     if (known.length < 2) {
       ctx.textBaseline = 'middle'
@@ -133,7 +131,7 @@ export function Sparkline({ points, max, height = 56, format, label, span, tone 
       ctx.beginPath(); ctx.arc(x(last.t), y(last.v), 2.5, 0, Math.PI * 2); ctx.fill()
     }
   }
-  useEffect(() => draw.current(), [points, max, height, span, tone, minute])
+  useEffect(() => draw.current(), [points, max, height, span, tone, now])
   useEffect(() => {
     const canvas = ref.current
     if (!canvas) return
@@ -146,10 +144,10 @@ export function Sparkline({ points, max, height = 56, format, label, span, tone 
   const last = points.filter((p) => p.v !== null).pop()
   return (
     <div class="flex flex-col gap-1">
-      {label && <div class="flex items-baseline justify-between">
+      <div class="flex items-baseline justify-between">
         <span class="label">{label}</span>
         <span class="text-[13px]">{last ? <><strong>{format(last.v!)}</strong>{max ? <span class="text-muted"> / {format(max)} · {Math.round((last.v! / max) * 100)}%</span> : null}</> : '—'}</span>
-      </div>}
+      </div>
       <canvas ref={ref} class="w-full" style={{ height }} />
     </div>
   )

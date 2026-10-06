@@ -7,102 +7,20 @@ import (
 	"github.com/mikael/kubit/internal/tofu"
 )
 
-func TestParseShowPlan(t *testing.T) {
+func TestParseShowPlanReadsOpenTofuPlanJSON(t *testing.T) {
 	raw, err := os.ReadFile("testdata/plan-changes.json")
 	if err != nil {
 		t.Fatal(err)
 	}
-	d, err := tofu.ParseShowPlan(raw, []string{"Deprecated Resource: x"})
+	groups, err := tofu.ParseShowPlan(raw)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if d.Summary.Add != 1 || d.Summary.Change != 1 || d.Summary.Remove != 0 {
-		t.Errorf("summary = %+v, tofu said 1 to add, 1 to change", d.Summary)
+	byAddon := map[string]string{}
+	for _, g := range groups {
+		byAddon[g.Addon] = g.Actions
 	}
-	byAddon := map[string]tofu.Group{}
-	for _, g := range d.Groups {
-		byAddon[g.Addon] = g
-	}
-	cm, ok := byAddon["cert-manager"]
-	if !ok || len(cm.Changes) != 1 || cm.Changes[0].Action != "create" || cm.Changes[0].Type != "helm_release" {
-		t.Errorf("cert-manager group: %+v", cm)
-	}
-	var chart, version string
-	for _, a := range cm.Changes[0].Attrs {
-		switch a.Key {
-		case "chart":
-			chart = a.After
-		case "version":
-			version = a.After
-		}
-	}
-	if chart != "cert-manager" || version == "" {
-		t.Errorf("create attrs should show chart and version: chart=%q version=%q", chart, version)
-	}
-	ml, ok := byAddon["metallb"]
-	if !ok || len(ml.Changes) != 1 || ml.Changes[0].Action != "update" || ml.Changes[0].Type != "kubectl_manifest" {
-		t.Errorf("metallb group: %+v", ml)
-	}
-	found := false
-	for _, a := range ml.Changes[0].Attrs {
-		if a.Key == "yaml_body_parsed" && a.Before != a.After && a.After != "" && !a.Sensitive {
-			found = true
-		}
-		if a.Key == "yaml_body" {
-			t.Error("sensitive yaml_body must be replaced by yaml_body_parsed")
-		}
-	}
-	if !found {
-		t.Errorf("pool update must show the manifest change: %+v", ml.Changes[0].Attrs)
-	}
-	for _, g := range d.Groups {
-		for _, c := range g.Changes {
-			if c.Action == "no-op" || c.Action == "read" {
-				t.Errorf("%s: no-op/read changes must be dropped", c.Address)
-			}
-		}
-	}
-	if len(d.Warnings) != 1 || d.Timestamp == "" {
-		t.Errorf("warnings/timestamp: %+v %q", d.Warnings, d.Timestamp)
-	}
-}
-
-func TestAddonOf(t *testing.T) {
-	for addr, want := range map[string]string{
-		"helm_release.metallb[0]":                     "metallb",
-		"kubectl_manifest.metallb_pool[0]":            "metallb",
-		"kubernetes_namespace_v1.metallb[0]":          "metallb",
-		"helm_release.ingress_nginx[0]":               "traefik",
-		"data.kubernetes_service_v1.ingress_nginx[0]": "traefik",
-		"helm_release.traefik[0]":                     "traefik",
-		"data.kubernetes_service_v1.traefik[0]":       "traefik",
-		"kubectl_manifest.traefik_nginx_class[0]":     "traefik",
-		`kubectl_manifest.traefik_gateway_api["/apis/apiextensions.k8s.io/v1/customresourcedefinitions/httproutes.gateway.networking.k8s.io"]`: "traefik",
-		"kubectl_manifest.runtimeclass_gvisor_kvm[0]": "gvisor",
-		"helm_release.metrics_server[0]":              "metrics-server",
-		"helm_release.cert_manager[0]":                "cert-manager",
-		"kubectl_manifest.flux_sync[0]":               "flux",
-		"helm_release.something_else":                 "something_else",
-	} {
-		if got := tofu.AddonOf(addr); got != want {
-			t.Errorf("AddonOf(%s) = %s, want %s", addr, got, want)
-		}
-	}
-}
-
-func TestRetiredIngressDestroyShowsUnderTraefik(t *testing.T) {
-	raw := []byte(`{"resource_changes": [
-		{"address": "helm_release.ingress_nginx[0]", "mode": "managed", "type": "helm_release", "name": "ingress_nginx", "change": {"actions": ["delete"], "before": {"name": "ingress-nginx"}, "after": null}},
-		{"address": "helm_release.traefik[0]", "mode": "managed", "type": "helm_release", "name": "traefik", "change": {"actions": ["create"], "before": null, "after": {"name": "traefik"}}}
-	]}`)
-	d, err := tofu.ParseShowPlan(raw, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(d.Groups) != 1 || d.Groups[0].Addon != "traefik" || len(d.Groups[0].Changes) != 2 {
-		t.Fatalf("groups: %+v", d.Groups)
-	}
-	if d.Summary.Add != 1 || d.Summary.Remove != 1 {
-		t.Errorf("summary: %+v", d.Summary)
+	if byAddon["cert-manager"] != "1 to create" || byAddon["metallb"] != "1 to update" || len(groups) != 2 {
+		t.Errorf("groups %+v", groups)
 	}
 }

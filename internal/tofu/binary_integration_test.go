@@ -11,7 +11,7 @@ import (
 	"github.com/mikael/kubit/internal/tofu"
 )
 
-func TestBinaryDownloads(t *testing.T) {
+func TestTheOpenTofuReleaseDownloadsAndRuns(t *testing.T) {
 	p, err := tofu.Binary(context.Background(), t.TempDir())
 	if err != nil {
 		t.Fatal(err)

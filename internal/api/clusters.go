@@ -1,12 +1,15 @@
 package api
 
 import (
+	"encoding/json"
+	"fmt"
 	"net/http"
 	"os"
 	"path/filepath"
 
+	"github.com/mikael/kubit/internal/cluster"
 	"github.com/mikael/kubit/internal/config"
-	"github.com/mikael/kubit/internal/store"
+	"github.com/mikael/kubit/internal/repo"
 )
 
 func (s *Server) clusterRoutes() {
@@ -14,74 +17,76 @@ func (s *Server) clusterRoutes() {
 	r.HandleFunc("GET /api/v1/clusters", s.handleClusters)
 	r.HandleFunc("GET /api/v1/clusters/{name}/status", s.handleClusterStatus)
 	r.HandleFunc("GET /api/v1/clusters/{name}/yaml", s.handleClusterYAML)
+	r.HandleFunc("PUT /api/v1/clusters/{name}/yaml", s.handleClusterYAMLPut)
 	r.HandleFunc("GET /api/v1/clusters/{name}/kubeconfig", s.handleClusterKubeconfig)
 	r.HandleFunc("GET /api/v1/clusters/{name}/image", s.handleImageStatus)
 	r.HandleFunc("GET /api/v1/clusters/{name}/config", s.handleConfigStatus)
 }
 
-type clusterSummary struct {
-	store.ClusterRow
-	Spec *config.Cluster `json:"spec"`
-}
-
-func summarize(row store.ClusterRow) *clusterSummary {
-	c, _ := config.Parse(row.Spec)
-	return &clusterSummary{ClusterRow: row, Spec: c}
-}
-
 func (s *Server) handleClusters(w http.ResponseWriter, r *http.Request) {
-	rows, err := s.store.ListClusters(r.Context())
-	if err != nil {
-		writeErr(w, err)
-		return
-	}
-	out := []*clusterSummary{}
-	for _, row := range rows {
-		out = append(out, summarize(row))
-	}
-	writeJSON(w, http.StatusOK, out)
+	writeJSON(w, http.StatusOK, s.store.ListClusters())
 }
 
 func (s *Server) handleClusterStatus(w http.ResponseWriter, r *http.Request) {
-	if s.watcher != nil && r.URL.Query().Get("fresh") != "true" {
+	if r.URL.Query().Get("fresh") != "true" {
 		if st := s.watcher.Latest(r.PathValue("name")); st != nil {
 			writeJSON(w, http.StatusOK, st)
 			return
 		}
 	}
 	st, err := s.manager.Status(r.Context(), r.PathValue("name"))
-	if err != nil {
-		writeErr(w, err)
-		return
-	}
-	writeJSON(w, http.StatusOK, st)
+	reply(w, st, err)
 }
 
 func (s *Server) handleClusterYAML(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")
-	for _, repo := range s.servedRepos() {
-		if repo.Cluster != name {
+	for _, sr := range s.servedRepos() {
+		if sr.Cluster != name {
 			continue
 		}
-		b, err := os.ReadFile(filepath.Join(repo.Dir, "cluster.yaml"))
+		b, err := os.ReadFile(filepath.Join(sr.Dir, repo.ClusterFile))
 		if err != nil {
 			writeErr(w, err)
 			return
 		}
-		writeJSON(w, http.StatusOK, map[string]string{"dir": repo.Dir, "yaml": string(b)})
+		writeJSON(w, http.StatusOK, map[string]string{"dir": sr.Dir, "yaml": string(b), "hash": repo.Fingerprint(b)})
 		return
 	}
 	writeErr(w, &statusError{Status: http.StatusNotFound, Msg: "not served from a repo; start Kubit with the cluster's repo dir"})
 }
 
-func (s *Server) handleClusterKubeconfig(w http.ResponseWriter, r *http.Request) {
-	sec, err := s.store.GetClusterSecrets(r.Context(), r.PathValue("name"))
+func (s *Server) handleClusterYAMLPut(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		YAML string `json:"yaml"`
+		Hash string `json:"hash"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeErr(w, badRequest("body must be {yaml, hash}"))
+		return
+	}
+	name := r.PathValue("name")
+	dir, err := s.repoOf(name)
 	if err != nil {
 		writeErr(w, err)
 		return
 	}
-	if sec.Kubeconfig == nil {
-		writeErr(w, &statusError{Status: http.StatusNotFound, Msg: "no kubeconfig yet"})
+	err = repo.WriteSpec(dir, req.Hash, []byte(req.YAML), func(c *config.Cluster) error {
+		if c.Metadata.Name != name {
+			return fmt.Errorf("metadata.name must stay %q; a new name is a new cluster", name)
+		}
+		return nil
+	})
+	if err != nil {
+		writeErr(w, editErr(err))
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"hash": repo.Fingerprint([]byte(req.YAML))})
+}
+
+func (s *Server) handleClusterKubeconfig(w http.ResponseWriter, r *http.Request) {
+	sec, err := s.store.GetClusterSecrets(r.PathValue("name"))
+	if err != nil {
+		writeErr(w, err)
 		return
 	}
 	w.Header().Set("Content-Type", "application/yaml")
@@ -91,18 +96,17 @@ func (s *Server) handleClusterKubeconfig(w http.ResponseWriter, r *http.Request)
 
 func (s *Server) handleImageStatus(w http.ResponseWriter, r *http.Request) {
 	st, err := s.manager.ImageStatus(r.Context(), r.PathValue("name"))
-	if err != nil {
-		writeErr(w, err)
-		return
-	}
-	writeJSON(w, http.StatusOK, st)
+	reply(w, st, err)
 }
 
 func (s *Server) handleConfigStatus(w http.ResponseWriter, r *http.Request) {
-	st, err := s.manager.ConfigStatus(r.Context(), r.PathValue("name"))
-	if err != nil {
+	if _, err := s.store.GetCluster(r.PathValue("name")); err != nil {
 		writeErr(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, st)
+	if _, p := s.latestPlan(r.PathValue("name")); p != nil {
+		writeJSON(w, http.StatusOK, p.ConfigStatus())
+		return
+	}
+	writeJSON(w, http.StatusOK, cluster.ConfigStatus{Behind: []string{}})
 }

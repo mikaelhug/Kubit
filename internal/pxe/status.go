@@ -32,25 +32,34 @@ type Status struct {
 	Log          []string  `json:"log"`
 }
 
-func (st Status) BaseURL() string {
-	return BaseURL(st.IP, st.HTTPPort)
-}
-
 type tracker struct {
 	mu      sync.Mutex
 	started time.Time
 	boots   map[string]*Boot
 	byIP    map[string]string
 	log     []string
+	wake    chan struct{}
 }
 
 func newTracker() *tracker {
-	return &tracker{started: time.Now(), boots: map[string]*Boot{}, byIP: map[string]string{}}
+	return &tracker{started: time.Now(), boots: map[string]*Boot{}, byIP: map[string]string{}, wake: make(chan struct{})}
+}
+
+func (t *tracker) notify() {
+	close(t.wake)
+	t.wake = make(chan struct{})
+}
+
+func (t *tracker) changes() <-chan struct{} {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.wake
 }
 
 func (t *tracker) dhcp(mac, arch string) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
+	defer t.notify()
 	b := t.boots[mac]
 	if b == nil {
 		b = &Boot{MAC: mac, FirstSeen: time.Now()}
@@ -72,6 +81,7 @@ func (t *tracker) dhcp(mac, arch string) {
 func (t *tracker) plain(mac, class string) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
+	defer t.notify()
 	b := t.boots[mac]
 	if b == nil {
 		b = &Boot{MAC: mac, FirstSeen: time.Now(), Stage: "nopxe"}
@@ -97,6 +107,7 @@ func (t *tracker) plain(mac, class string) {
 func (t *tracker) http(ip, arch, stage string) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
+	defer t.notify()
 	mac := t.byIP[ip]
 	if mac == "" {
 		var latest *Boot
@@ -129,6 +140,7 @@ func (t *tracker) http(ip, arch, stage string) {
 func (t *tracker) logf(line string) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
+	defer t.notify()
 	t.appendLog(line)
 }
 
@@ -188,7 +200,36 @@ func (t *tracker) status(s *Server) Status {
 	return st
 }
 
-func (s *Server) statusHandler(w http.ResponseWriter, _ *http.Request) {
-	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(s.track.status(s))
+const streamBatch = 250 * time.Millisecond
+
+func (s *Server) statusHandler(w http.ResponseWriter, r *http.Request) {
+	flusher, ok := w.(http.Flusher)
+	if !r.URL.Query().Has("watch") || !ok {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(s.track.status(s))
+		return
+	}
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-store")
+	for {
+		changed := s.track.changes()
+		b, err := json.Marshal(s.track.status(s))
+		if err != nil {
+			return
+		}
+		if _, err := fmt.Fprintf(w, "data: %s\n\n", b); err != nil {
+			return
+		}
+		flusher.Flush()
+		select {
+		case <-r.Context().Done():
+			return
+		case <-changed:
+		}
+		select {
+		case <-r.Context().Done():
+			return
+		case <-time.After(streamBatch):
+		}
+	}
 }

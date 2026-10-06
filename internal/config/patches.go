@@ -14,13 +14,7 @@ type sourcedPatch struct {
 }
 
 func nodePatches(c *Cluster, n Node) []sourcedPatch {
-	out := patchSet("", c.Spec.Patches)
-	for i, p := range c.Spec.Pools {
-		if p.Name == n.Pool {
-			out = append(out, patchSet(fmt.Sprintf("pools[%d].", i), p.Patches)...)
-		}
-	}
-	return append(out, patchSet(n.Hostname+".", n.Patches)...)
+	return append(patchSet("", c.Spec.Patches), patchSet(n.Hostname+".", n.Patches)...)
 }
 
 func patchSet(prefix string, patches []map[string]any) []sourcedPatch {
@@ -60,9 +54,6 @@ func applyPatches(cfg talosconfig.Provider, sourced []sourcedPatch) (talosconfig
 
 func (c *Cluster) validatePatches() []error {
 	all := patchSet("", c.Spec.Patches)
-	for i, p := range c.Spec.Pools {
-		all = append(all, patchSet(fmt.Sprintf("pools[%d].", i), p.Patches)...)
-	}
 	for _, n := range c.Spec.Nodes {
 		all = append(all, patchSet(n.Hostname+".", n.Patches)...)
 	}

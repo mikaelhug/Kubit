@@ -7,8 +7,18 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 )
+
+var locks sync.Map
+
+func Lock(path string) func() {
+	m, _ := locks.LoadOrStore(filepath.Clean(path), &sync.Mutex{})
+	mu := m.(*sync.Mutex)
+	mu.Lock()
+	return mu.Unlock
+}
 
 func WriteFile(path string, data []byte, perm os.FileMode) error {
 	return WriteStream(path, perm, Bytes(data))

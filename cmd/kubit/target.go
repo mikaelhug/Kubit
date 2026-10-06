@@ -1,40 +1,15 @@
 package main
 
 import (
-	"errors"
 	"fmt"
-	"os"
-	"path/filepath"
 
 	"github.com/mikael/kubit/internal/cluster"
 	"github.com/mikael/kubit/internal/repo"
 	"github.com/spf13/cobra"
 )
 
-func isRepo(arg string) bool {
-	_, err := os.Stat(filepath.Join(arg, repo.ClusterFile))
-	return err == nil
-}
-
-func nameOf(arg string) (string, error) {
-	if !isRepo(arg) {
-		if arg == "." {
-			return "", errors.New("no cluster.yaml here; give a repo dir or a cluster name")
-		}
-		return arg, nil
-	}
-	c, _, err := repo.LoadSpec(arg)
-	if err != nil {
-		return "", err
-	}
-	return c.Metadata.Name, nil
-}
-
-func useCluster(cmd *cobra.Command, m *cluster.Manager, arg string) (string, error) {
-	if !isRepo(arg) {
-		return nameOf(arg)
-	}
-	r, err := repo.Load(arg)
+func useCluster(cmd *cobra.Command, m *cluster.Manager, dir string) (string, error) {
+	r, err := repo.Load(dir)
 	if err != nil {
 		return "", err
 	}

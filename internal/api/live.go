@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"log"
 	"net/http"
-	"os"
 	"runtime"
 	"strconv"
 	"sync"
@@ -19,33 +18,28 @@ import (
 
 func (s *Server) liveRoutes() {
 	r := s.mux
-	r.HandleFunc("GET /api/v1/version", s.handleVersion)
 	r.HandleFunc("GET /api/v1/ws", s.handleLive)
 	r.HandleFunc("POST /api/v1/daemon/stop", s.handleDaemonStop)
 }
 
 type Message struct {
-	Seq        int64                `json:"seq,omitempty"`
-	Kind       string               `json:"kind"`
-	Cluster    string               `json:"cluster,omitempty"`
-	Status     *cluster.Status      `json:"status,omitempty"`
-	Health     *store.EventRow      `json:"health,omitempty"`
-	Scope      string               `json:"scope,omitempty"`
-	ClusterRow *clusterSummary      `json:"clusterRow,omitempty"`
-	Machine    *nodeView            `json:"machine,omitempty"`
-	Snapshot   *store.Snapshot      `json:"snapshot,omitempty"`
-	Sample     *store.Sample        `json:"sample,omitempty"`
-	Key        string               `json:"key,omitempty"`
-	Node       string               `json:"node,omitempty"`
-	Hello      *Hello               `json:"hello,omitempty"`
-	Observer   *watch.ObserverState `json:"observer,omitempty"`
+	Seq        int64             `json:"seq,omitempty"`
+	Kind       string            `json:"kind"`
+	Cluster    string            `json:"cluster,omitempty"`
+	Status     *cluster.Status   `json:"status,omitempty"`
+	Health     *watch.Event      `json:"health,omitempty"`
+	Scope      string            `json:"scope,omitempty"`
+	ClusterRow *store.ClusterRow `json:"clusterRow,omitempty"`
+	Machine    *nodeView         `json:"machine,omitempty"`
+	Hello      *Hello            `json:"hello,omitempty"`
+	Line       *applyLine        `json:"line,omitempty"`
+	Plan       *planSummary      `json:"plan,omitempty"`
 }
 
 type Hello struct {
 	Seq       int64  `json:"seq"`
 	Version   string `json:"version"`
 	StartedAt string `json:"startedAt"`
-	PID       int    `json:"pid"`
 	OS        string `json:"os"`
 }
 
@@ -175,55 +169,28 @@ func withSeq(b []byte, seq int64) []byte {
 
 func (s *Server) attachLive(ctx context.Context) {
 	s.store.OnChange(func(c store.Change) { s.onChange(ctx, c) })
-	go s.store.WatchExternal(ctx, 2*time.Second)
 }
 
 func (s *Server) onChange(ctx context.Context, c store.Change) {
 	switch c.Table {
-	case "*":
-		s.hub.publish(Message{Kind: "resync"})
 	case "clusters":
-		if c.Op == "delete" {
-			s.hub.publish(Message{Kind: "clusterRemoved", Cluster: c.Cluster, Key: c.Key})
-			return
-		}
-		if row, err := s.store.GetCluster(ctx, c.Key); err == nil {
-			s.hub.publish(Message{Kind: "cluster", Cluster: row.Name, ClusterRow: summarize(*row)})
+		if row, err := s.store.GetCluster(c.Key); err == nil {
+			s.hub.publish(Message{Kind: "cluster", Cluster: row.Name, ClusterRow: row})
 			s.refresh(row.Name, scopeConfig)
+			s.noteClusterState(row.Name, row.State)
 		}
 	case "machines":
-		if c.Op == "delete" {
-			s.hub.publish(Message{Kind: "machineRemoved", Key: c.Key})
-			return
-		}
 		if c.Key == "" {
 			s.refresh("", scopeMachines)
 			return
 		}
-		if m, err := s.store.GetMachine(ctx, c.Key); err == nil {
-			v := machineView(*m)
+		if m, err := s.store.GetMachine(c.Key); err == nil {
+			s.machineSeen(ctx, *m)
+			v := s.machineView(*m, s.declaredNodes())
 			s.hub.publish(Message{Kind: "machine", Cluster: m.Cluster, Machine: &v})
-		}
-	case "snapshots":
-		id, _ := strconv.ParseInt(c.Key, 10, 64)
-		if c.Op == "delete" {
-			s.hub.publish(Message{Kind: "snapshotRemoved", Cluster: c.Cluster, Key: c.Key})
-			return
-		}
-		if sn, err := s.store.GetSnapshot(ctx, id); err == nil {
-			s.hub.publish(Message{Kind: "snapshot", Cluster: sn.Cluster, Snapshot: sn})
 		}
 	case "secrets":
 		s.refresh(c.Cluster, scopeCertificates)
-	case "sops":
-		s.hub.publish(Message{Kind: "refresh", Cluster: c.Cluster, Scope: "sops"})
-	case "events":
-		switch c.Op {
-		case "ack":
-			s.hub.publish(Message{Kind: "healthAck", Cluster: c.Cluster, Key: c.Key})
-		case "resolve":
-			s.hub.publish(Message{Kind: "healthResolved", Cluster: c.Cluster, Key: c.Key, Node: c.Node})
-		}
 	}
 }
 
@@ -302,28 +269,16 @@ func (s *Server) handleLive(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func (s *Server) handleVersion(w http.ResponseWriter, _ *http.Request) {
-	h := s.hello()
-	writeJSON(w, http.StatusOK, map[string]any{"kubit": h.Version, "startedAt": h.StartedAt, "pid": h.PID, "os": h.OS})
-}
-
-func (s *Server) AttachStop(stop func()) { s.stopDaemon = stop }
-
 func (s *Server) handleDaemonStop(w http.ResponseWriter, r *http.Request) {
-	if s.stopDaemon == nil {
-		writeErr(w, conflict("This daemon cannot be stopped from the console."))
-		return
-	}
 	w.WriteHeader(http.StatusAccepted)
 	s.stopDaemon()
 }
 
 func (s *Server) hello() Hello {
-	return Hello{Version: s.version, StartedAt: s.started.UTC().Format(time.RFC3339), PID: os.Getpid(), OS: runtime.GOOS}
+	return Hello{Version: s.version, StartedAt: s.started.UTC().Format(time.RFC3339), OS: runtime.GOOS}
 }
 
 func (s *Server) Close() {
-	s.stop()
 	s.hub.shutdown(Message{Kind: "stopped"})
 	deadline := time.Now().Add(2 * time.Second)
 	for !s.hub.idle() && time.Now().Before(deadline) {

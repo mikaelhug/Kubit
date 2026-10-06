@@ -1,15 +1,13 @@
-import { useMemo } from 'preact/hooks'
+import { useMemo, useState } from 'preact/hooks'
 import { api, fmt, type NodeRow } from '../api'
 import { DataTable, type Column } from '../components/DataTable'
 import { KindPill, TypePill } from '../components/Machine'
+import { AddMachines } from '../components/AddMachine'
 import { ScanBox } from '../components/ScanBox'
-import { Code, CopyButton, KeyValue, Notice, Pill, Section } from '../components/ui'
-import { installCandidates, lastSeenOf, modelOf, nodeEntry } from '../machine'
-import { live, machineList, toast, versions } from '../store'
+import { Code, KeyValue, Notice, Pill, SeenAgo, Section } from '../components/ui'
+import { addable, installCandidates, lastSeenOf, modelOf, specsOf } from '../machine'
+import { live, machineList, toast } from '../store'
 import { useLive } from '../useLive'
-import { defaultTalos, talosIso } from '../versions'
-
-const factory = 'https://factory.talos.dev'
 
 const hardware = (n: NodeRow) => {
   const inv = n.inventory
@@ -17,51 +15,61 @@ const hardware = (n: NodeRow) => {
   const disks = installCandidates(n)
   return (
     <span class="whitespace-nowrap" title={disks.map((d) => `${d.devPath} ${fmt.bytes(d.sizeBytes)}${d.rotational ? ' HDD' : ''}`).join(', ')}>
-      {inv.cpus} CPU · {fmt.bytes(inv.memoryBytes)} · {disks.length ? `${fmt.bytes(disks[0].sizeBytes)}${disks.length > 1 ? ` +${disks.length - 1}` : ''}` : 'no disk'}
-      <span class="block text-[10px] text-muted">{inv.arch || n.arch}{inv.kvm ? ' · kvm' : ''}{inv.tpm ? ' · tpm' : ''}</span>
+      {specsOf(inv)}{disks.length > 1 ? ` +${disks.length - 1}` : ''}
+      <span class="block text-[10px] text-muted">{inv.arch || n.arch}{inv.kvm ? ' · kvm' : ''}</span>
     </span>
   )
 }
 
 const machineCell = (n: NodeRow) => (
   <a href={`/machines/${n.mac}`} class="flex flex-col min-w-0 hover:underline">
-    <span class="font-medium truncate">{n.inventory?.hostname || modelOf(n)}</span>
+    <span class="font-medium truncate">{(n.kind === 'member' && n.hostname) || n.inventory?.hostname || modelOf(n)}</span>
     <span class="text-[10px] text-muted mono truncate">{n.mac}</span>
   </a>
 )
 
-const ready: Column<NodeRow>[] = [
+const readyColumns = (selected: Set<string>, toggle: (mac: string) => void, all: NodeRow[], setAll: (on: boolean) => void): Column<NodeRow>[] => [
+  { id: 'pick', header: <input type="checkbox" aria-label="Select all" checked={all.length > 0 && all.every((n) => selected.has(n.mac))} onChange={(e) => setAll((e.target as HTMLInputElement).checked)} />, width: '28px', cell: (n) => <input type="checkbox" aria-label={`Select ${n.ip}`} checked={selected.has(n.mac)} onChange={() => toggle(n.mac)} /> },
   { id: 'machine', header: 'Machine', sort: (n) => n.ip, text: (n) => `${modelOf(n)} ${n.mac} ${n.serial ?? ''}`, cell: machineCell },
   { id: 'ip', header: 'Address', mono: true, sort: (n) => n.ip, cell: (n) => n.ip },
   { id: 'type', header: 'Type', cell: (n) => <TypePill m={n} /> },
   { id: 'hardware', header: 'Hardware', sort: (n) => n.inventory?.memoryBytes ?? 0, cell: hardware },
   { id: 'talos', header: 'Talos', mono: true, cell: (n) => n.inventory?.talosVersion || n.talosVersion || '—' },
-  { id: 'seen', header: 'Seen', sort: (n) => lastSeenOf(n), cell: (n) => <span class="text-muted">{fmt.when(lastSeenOf(n))}</span> },
-  { id: 'entry', header: '', align: 'right', cell: (n) => <CopyButton className="btn btn-primary btn-sm" label="Copy node entry" text={() => nodeEntry(n)} /> },
+  { id: 'seen', header: 'Seen', sort: (n) => lastSeenOf(n), cell: (n) => <SeenAgo observed={lastSeenOf(n)} /> },
+  { id: 'add', header: '', align: 'right', cell: (n) => <AddMachines machines={[n]} primary={false} /> },
 ]
+
+const kindHint: Partial<Record<NodeRow['kind'], string>> = {
+  configured: 'Reset it or wipe its disk to add it.',
+}
 
 const other: Column<NodeRow>[] = [
   { id: 'machine', header: 'Machine', sort: (n) => n.ip, text: (n) => `${modelOf(n)} ${n.mac}`, cell: machineCell },
   { id: 'ip', header: 'Address', mono: true, sort: (n) => n.ip, cell: (n) => n.ip || '—' },
-  { id: 'state', header: 'State', sort: (n) => n.kind, cell: (n) => <KindPill m={n} /> },
+  { id: 'state', header: 'State', sort: (n) => n.kind, wrap: true, cell: (n) => <span class="flex flex-col items-start gap-0.5"><KindPill m={n} />{kindHint[n.kind] && <span class="text-[11px] text-muted">{kindHint[n.kind]}</span>}</span> },
   { id: 'cluster', header: 'Cluster', sort: (n) => n.cluster, cell: (n) => n.cluster ? <a class="text-accent hover:underline" href={`/clusters/${n.cluster}/nodes`}>{n.cluster}</a> : <span class="text-muted">—</span> },
-  { id: 'seen', header: 'Seen', sort: (n) => lastSeenOf(n), cell: (n) => <span class="text-muted">{fmt.when(lastSeenOf(n))}</span> },
+  { id: 'seen', header: 'Seen', sort: (n) => lastSeenOf(n), cell: (n) => <SeenAgo observed={lastSeenOf(n)} /> },
 ]
 
 export function Discovery() {
   const all = machineList.value
-  const available = useMemo(() => all.filter((m) => m.kind === 'maintenance'), [all])
+  const available = useMemo(() => all.filter(addable), [all])
+  const waiting = useMemo(() => all.filter((m) => m.kind === 'maintenance' && m.declared), [all])
   const rest = useMemo(() => all.filter((m) => m.kind !== 'maintenance'), [all])
-  const talos = defaultTalos(versions.value)
+  const [selected, setSelected] = useState<Set<string>>(new Set())
+  const picked = available.filter((m) => selected.has(m.mac))
+  const toggle = (mac: string) => { const next = new Set(selected); if (!next.delete(mac)) next.add(mac); setSelected(next) }
+  const setAll = (on: boolean) => setSelected(on ? new Set(available.map((m) => m.mac)) : new Set())
+  const columns = readyColumns(selected, toggle, available, setAll)
   return (
     <div class="p-5 flex flex-col gap-4">
-      <Section title="Discovery" help="Talos machines in maintenance mode. Copy an entry into cluster.yaml, then run kubit apply.">
-        <div class="panel p-3 flex flex-col gap-2">
-          <ScanBox primary fallbackIp={all[0]?.ip} onError={(m) => toast(m, 'error')} />
-          <div class="text-[12px] text-muted">Talos ISO: <a class="text-accent hover:underline" href={talosIso(factory, talos, 'amd64')}>amd64</a> · <a class="text-accent hover:underline" href={talosIso(factory, talos, 'arm64')}>arm64</a></div>
+      <Section title="Discovery">
+        <div class="panel p-3">
+          <ScanBox onError={(m) => toast(m, 'error')} />
         </div>
-        <DataTable loading={!live.value} id="discovery" columns={ready} rows={available} rowKey={(n) => n.mac || n.ip} defaultSort={{ id: 'ip', dir: 'asc' }} empty="No machines in maintenance mode." />
+        <DataTable loading={!live.value} id="discovery" columns={columns} toolbar={picked.length > 0 && <AddMachines machines={picked} label={`Add ${picked.length} to cluster`} onDone={() => setSelected(new Set())} />} rows={available} rowKey={(n) => n.mac || n.ip} defaultSort={{ id: 'ip', dir: 'asc' }} empty="No machines to add." />
       </Section>
+      {waiting.length > 0 && <Waiting machines={waiting} />}
       <PxePanel />
       {rest.length > 0 && (
         <Section title={`Other machines (${rest.length})`}>
@@ -72,10 +80,38 @@ export function Discovery() {
   )
 }
 
+function Waiting({ machines }: { machines: NodeRow[] }) {
+  const byCluster = new Map<string, NodeRow[]>()
+  for (const m of machines) byCluster.set(m.declared!.cluster, [...(byCluster.get(m.declared!.cluster) ?? []), m])
+  return (
+    <Section title="Waiting for apply">
+      {[...byCluster].map(([cluster, ms]) => (
+        <div key={cluster} class="panel">
+          <div class="flex items-center gap-2 px-3 py-2 border-b border-border text-[13px]">
+            <a class="font-medium hover:underline" href={`/clusters/${cluster}/changes`}>{cluster}</a>
+            <span class="text-muted">{ms.length} machine{ms.length === 1 ? '' : 's'}</span>
+            <a class="btn btn-sm btn-primary ml-auto" href={`/clusters/${cluster}/changes`}>Review changes</a>
+          </div>
+          <div class="divide-y divide-border/60">
+            {ms.sort((a, b) => a.declared!.hostname.localeCompare(b.declared!.hostname)).map((m) => (
+              <div key={m.mac} class="flex items-center gap-3 px-3 py-1.5 text-[13px]">
+                <span class="mono w-40 shrink-0">{m.declared!.hostname}</span>
+                <span class="mono w-32 shrink-0">{m.ip}</span>
+                <span class="text-muted truncate">{modelOf(m)}</span>
+                <span class="ml-auto"><SeenAgo observed={lastSeenOf(m)} /></span>
+              </div>
+            ))}
+          </div>
+        </div>
+      ))}
+    </Section>
+  )
+}
+
 function PxePanel() {
   const { data: st } = useLive(() => api.pxe(), [], [['', 'pxe']], { onError: 'silent' })
   if (!st) return null
-  if (!st.running) return <Notice tone="muted"><span class="flex flex-col gap-2"><span>Network boot is off. Start it with:</span><Code text={st.command ?? 'sudo kubit pxe'} /></span></Notice>
+  if (!st.running) return <Notice tone={st.error ? 'warn' : 'muted'}><span class="flex flex-col gap-2"><span>{st.error ? `Network boot: ${st.error}` : 'Network boot is off.'} Start it with:</span><Code text={st.command ?? 'sudo kubit pxe'} /></span></Notice>
   const boots = st.boots ?? []
   return (
     <Section title="Network boot">

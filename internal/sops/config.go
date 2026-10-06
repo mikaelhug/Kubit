@@ -64,23 +64,3 @@ func RuleFor(dir, file string) (Rule, error) {
 	}
 	return Rule{}, errors.New(ConfigFile + ": no creation rule matches " + rel)
 }
-
-func WriteConfig(dir string, recipients []string) error {
-	cf := configFile{CreationRules: []creationRule{{PathRegex: `\.sops\.yaml$`, Age: joinRecipients(recipients)}}}
-	b, err := yaml.Marshal(cf)
-	if err != nil {
-		return err
-	}
-	return os.WriteFile(filepath.Join(dir, ConfigFile), b, 0o644)
-}
-
-func joinRecipients(r []string) string {
-	out := ""
-	for i, s := range r {
-		if i > 0 {
-			out += ","
-		}
-		out += s
-	}
-	return out
-}

@@ -122,17 +122,6 @@ func (c *Client) Uncordon(ctx context.Context, name string) error {
 	return c.annotateCordon(ctx, name, "null")
 }
 
-func (c *Client) NodeReady(ctx context.Context, name string) (ready, found bool, err error) {
-	node, err := c.CoreV1().Nodes().Get(ctx, name, metav1.GetOptions{})
-	if apierrors.IsNotFound(err) {
-		return false, false, nil
-	}
-	if err != nil {
-		return false, false, err
-	}
-	return statusOf(node).Ready, true, nil
-}
-
 func (c *Client) DeleteNode(ctx context.Context, name string) error {
 	return c.CoreV1().Nodes().Delete(ctx, name, metav1.DeleteOptions{})
 }

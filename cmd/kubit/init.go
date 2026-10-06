@@ -3,12 +3,10 @@ package main
 import (
 	"errors"
 	"fmt"
-	"io"
 	"os"
 	"path/filepath"
 	"time"
 
-	"filippo.io/age"
 	"github.com/mikael/kubit/internal/config"
 	"github.com/mikael/kubit/internal/repo"
 	"github.com/mikael/kubit/internal/sops"
@@ -22,6 +20,7 @@ func initCmd() *cobra.Command {
 		nodes        []string
 		recipients   []string
 		talosVersion string
+		lbRange      string
 		timeout      time.Duration
 	)
 	cmd := &cobra.Command{
@@ -38,7 +37,10 @@ age recipients in .sops.yaml (or --age, or your own key). Never overwrites.`,
 				if err != nil {
 					return err
 				}
-				name = filepath.Base(abs)
+				name = config.NameFrom(filepath.Base(abs))
+			}
+			if err := config.CheckName(name); err != nil {
+				return err
 			}
 			if len(nodes) == 0 {
 				return errors.New("--nodes: give the addresses (or subnets) of the machines in Talos maintenance mode")
@@ -56,13 +58,17 @@ age recipients in .sops.yaml (or --age, or your own key). Never overwrites.`,
 			if len(machines) == 0 {
 				return fmt.Errorf("no machine in Talos maintenance mode at %v", nodes)
 			}
-			c, warnings := config.Design(name, machines, config.DesignOptions{})
+			c, warnings := config.Design(name, machines, config.DesignOptions{MetalLBRange: lbRange})
 			if talosVersion != "" {
 				c.Spec.TalosVersion = talosVersion
 			}
 			if len(recipients) == 0 {
-				if recipients, err = ownRecipients(cmd.ErrOrStderr()); err != nil {
+				var created string
+				if recipients, created, err = repo.Recipients(); err != nil {
 					return err
+				}
+				if created != "" {
+					fmt.Fprintf(cmd.ErrOrStderr(), "created your age key %s; back it up, it opens the cluster secrets\n", created)
 				}
 			}
 			r, err := repo.Init(dir, c, recipients)
@@ -83,37 +89,9 @@ age recipients in .sops.yaml (or --age, or your own key). Never overwrites.`,
 	cmd.Flags().StringSliceVar(&nodes, "nodes", nil, "addresses or subnets of the machines in maintenance mode")
 	cmd.Flags().StringSliceVar(&recipients, "age", nil, "age recipients for the secrets (default: .sops.yaml, else your own key)")
 	cmd.Flags().StringVar(&talosVersion, "talos-version", "", "Talos version (default: Kubit's)")
+	cmd.Flags().StringVar(&lbRange, "lb-range", "", "LoadBalancer address range start-end; turns on MetalLB and Traefik")
 	cmd.Flags().DurationVar(&timeout, "timeout", 2*time.Second, "per-host connect timeout")
 	return cmd
-}
-
-func ownRecipients(log io.Writer) ([]string, error) {
-	ids, err := sops.Identities()
-	if err != nil {
-		return nil, err
-	}
-	var out []string
-	for _, id := range ids {
-		if r := sops.Recipient(id); r != "" {
-			out = append(out, r)
-		}
-	}
-	if len(out) > 0 {
-		return out, nil
-	}
-	id, err := age.GenerateX25519Identity()
-	if err != nil {
-		return nil, err
-	}
-	path := sops.DefaultKeyFile()
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-		return nil, err
-	}
-	if err := os.WriteFile(path, sops.KeyFileFor(id, repo.Stamp()), 0o600); err != nil {
-		return nil, err
-	}
-	fmt.Fprintf(log, "created your age key %s; back it up, it opens the cluster secrets\n", path)
-	return []string{id.Recipient().String()}, nil
 }
 
 func credentialCmd(use, short string, derive func(*repo.Repo) ([]byte, error)) *cobra.Command {

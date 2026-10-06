@@ -3,38 +3,33 @@ package cluster
 import (
 	"context"
 	"encoding/base64"
-	"errors"
 	"fmt"
-	"time"
 
 	"filippo.io/age"
 	"github.com/mikael/kubit/internal/config"
-	"github.com/mikael/kubit/internal/store"
 	"github.com/mikael/kubit/internal/tofu"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
-func (m *Manager) SOPSKey(ctx context.Context, name string) (*store.SOPSKey, error) {
-	if _, err := m.Store.GetCluster(ctx, name); err != nil {
-		return nil, err
-	}
-	k, err := m.Store.GetSOPSKey(ctx, name)
-	if !errors.Is(err, store.ErrNotFound) {
-		return k, err
-	}
-	id, err := age.GenerateX25519Identity()
+type SOPSKey struct {
+	Identity  []byte `json:"-"`
+	Recipient string `json:"recipient"`
+}
+
+func (m *Manager) SOPSKey(name string) (*SOPSKey, error) {
+	d, err := m.Desired(name)
 	if err != nil {
 		return nil, err
 	}
-	if err := m.Store.CreateSOPSKey(ctx, name, keysFile(id), id.Recipient().String()); err != nil {
-		return nil, err
+	if d.FluxKey == "" {
+		return nil, fmt.Errorf("%s has no flux.ageKey", name)
 	}
-	return m.Store.GetSOPSKey(ctx, name)
-}
-
-func keysFile(id *age.X25519Identity) []byte {
-	return fmt.Appendf(nil, "# created: %s\n# public key: %s\n%s\n", time.Now().UTC().Format(time.RFC3339), id.Recipient(), id)
+	id, err := age.ParseX25519Identity(d.FluxKey)
+	if err != nil {
+		return nil, fmt.Errorf("flux.ageKey: %w", err)
+	}
+	return &SOPSKey{Identity: []byte(id.String() + "\n"), Recipient: id.Recipient().String()}, nil
 }
 
 func (m *Manager) installSOPSKey(ctx context.Context, c *config.Cluster, sink Sink) error {
@@ -53,7 +48,7 @@ func (m *Manager) installSOPSKey(ctx context.Context, c *config.Cluster, sink Si
 		}
 		return nil
 	}
-	k, err := m.SOPSKey(ctx, name)
+	k, err := m.SOPSKey(name)
 	if err != nil {
 		return err
 	}

@@ -17,7 +17,7 @@ func (metalMode) RequiresInstall() bool { return true }
 func (metalMode) InContainer() bool     { return false }
 
 func CheckDeclaration(c *config.Cluster, bundle *secrets.Bundle) error {
-	gen, err := config.Generate(c, bundle, config.FixedInstaller("ghcr.io/siderolabs/installer:"+c.Spec.TalosVersion))
+	gen, err := config.Generate(c, bundle, "ghcr.io/siderolabs/installer:"+c.Spec.TalosVersion)
 	if err != nil {
 		return err
 	}

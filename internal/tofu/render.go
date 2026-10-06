@@ -4,6 +4,7 @@ import (
 	"embed"
 	"encoding/json"
 	"io/fs"
+	"maps"
 	"net/netip"
 	"os"
 	"path/filepath"
@@ -15,57 +16,31 @@ import (
 //go:embed all:templates
 var templates embed.FS
 
+const templateRoot = "templates/platform"
+
 func Render(dir string, c *config.Cluster, kubeconfigPath, ingressIP string) error {
-	if err := os.MkdirAll(dir, 0o700); err != nil {
-		return err
-	}
-	entries, err := fs.ReadDir(templates, "templates/platform")
-	if err != nil {
-		return err
-	}
-	current := map[string]bool{}
-	for _, e := range entries {
-		current[e.Name()] = true
-		b, err := templates.ReadFile("templates/platform/" + e.Name())
+	err := fs.WalkDir(templates, templateRoot, func(p string, e fs.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
-		if err := os.WriteFile(filepath.Join(dir, e.Name()), b, 0o600); err != nil {
+		dst := filepath.Join(dir, filepath.FromSlash(strings.TrimPrefix(p, templateRoot)))
+		if e.IsDir() {
+			return os.MkdirAll(dst, 0o700)
+		}
+		b, err := templates.ReadFile(p)
+		if err != nil {
 			return err
 		}
-	}
-	existing, err := os.ReadDir(dir)
+		return os.WriteFile(dst, b, 0o600)
+	})
 	if err != nil {
 		return err
 	}
-	for _, e := range existing {
-		if ext := filepath.Ext(e.Name()); (ext == ".tf" || ext == ".yaml") && !current[e.Name()] {
-			if err := os.Remove(filepath.Join(dir, e.Name())); err != nil {
-				return err
-			}
-		}
-	}
-	if ingressIP == "" {
-		ingressIP = renderedPin(dir)
-	}
-	vars := Vars(c, kubeconfigPath, ingressIP)
-	b, err := json.MarshalIndent(vars, "", "  ")
+	b, err := json.MarshalIndent(Vars(c, kubeconfigPath, ingressIP), "", "  ")
 	if err != nil {
 		return err
 	}
 	return os.WriteFile(filepath.Join(dir, "terraform.tfvars.json"), append(b, '\n'), 0o600)
-}
-
-func renderedPin(dir string) string {
-	b, err := os.ReadFile(filepath.Join(dir, "terraform.tfvars.json"))
-	if err != nil {
-		return ""
-	}
-	var v struct {
-		Pin string `json:"ingress_ip_pin"`
-	}
-	_ = json.Unmarshal(b, &v)
-	return v.Pin
 }
 
 type addonVars struct {
@@ -154,9 +129,9 @@ func requests(cpu, mem string) map[string]any {
 }
 
 func merged(defaults, over map[string]any) map[string]any {
-	out := map[string]any{}
-	for k, v := range defaults {
-		out[k] = v
+	out := maps.Clone(defaults)
+	if out == nil {
+		out = map[string]any{}
 	}
 	for k, v := range over {
 		if dm, ok := out[k].(map[string]any); ok {
@@ -173,7 +148,6 @@ func merged(defaults, over map[string]any) map[string]any {
 var ChartVersions = map[string]string{
 	"metallb":        "0.16.1",
 	"traefik":        "41.6.1",
-	"gateway-api":    "v1.6.1",
 	"metrics-server": "3.14.0",
 	"cert-manager":   "v1.21.2",
 	"flux":           "2.19.1",
@@ -195,7 +169,7 @@ func ingressPin(p config.Platform, recorded string) string {
 		return ""
 	}
 	lo, hi, err := config.ParseIPRange(p.MetalLB.Range)
-	if err != nil || ip.Less(lo) || hi.Less(ip) {
+	if err != nil || !config.InRange(ip, lo, hi) {
 		return ""
 	}
 	return ip.String()
@@ -208,7 +182,7 @@ func Vars(c *config.Cluster, kubeconfigPath, ingressIP string) map[string]any {
 		"metallb":          metallbVars{Enabled: p.MetalLB.Enabled, Range: p.MetalLB.Range, Values: merged(metallbDefaults, p.MetalLB.Values)},
 		"traefik":          addonVars{p.Traefik.Enabled, merged(traefikDefaults, p.Traefik.Values)},
 		"ingress_ip_pin":   ingressPin(p, ingressIP),
-		"gvisor":           addonVars{p.GVisor.Enabled, vals(p.GVisor.Values)},
+		"gvisor":           map[string]bool{"enabled": p.GVisor.Enabled},
 		"metrics_server":   addonVars{p.MetricsServer.Enabled, merged(metricsDefaults, p.MetricsServer.Values)},
 		"cert_manager":     addonVars{p.CertManager.Enabled, vals(p.CertManager.Values)},
 		"builds":           buildsVars{Enabled: p.Builds.Enabled, IP: c.RegistryIP()},
@@ -219,5 +193,3 @@ func Vars(c *config.Cluster, kubeconfigPath, ingressIP string) map[string]any {
 		"chart_versions":   chartVersionVars(),
 	}
 }
-
-var DeclaredOutputs = map[string]bool{"ingress_ip": true}

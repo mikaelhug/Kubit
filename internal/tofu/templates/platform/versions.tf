@@ -1,6 +1,6 @@
 terraform {
   required_version = ">= 1.9"
-  backend "local" {}
+  backend "kubernetes" {}
   required_providers {
     helm = {
       source  = "hashicorp/helm"

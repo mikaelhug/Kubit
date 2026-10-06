@@ -1,16 +1,13 @@
-data "kubectl_file_documents" "traefik_gateway_api" {
+resource "helm_release" "gateway_api" {
   count = var.traefik.enabled ? 1 : 0
 
-  content = file("${path.module}/gateway-api-${var.chart_versions.gateway_api}.yaml")
-}
-
-resource "kubectl_manifest" "traefik_gateway_api" {
-  for_each = try(data.kubectl_file_documents.traefik_gateway_api[0].manifests, {})
-
-  yaml_body         = each.value
-  server_side_apply = true
-  force_conflicts   = true
-  apply_only        = true
+  name           = "gateway-api"
+  namespace      = "kube-system"
+  chart          = "${path.module}/charts/gateway-api"
+  take_ownership = true
+  wait           = true
+  atomic         = true
+  timeout        = 300
 }
 
 resource "helm_release" "traefik" {
@@ -31,7 +28,7 @@ resource "helm_release" "traefik" {
     [{ name = "service.spec.type", value = var.metallb.enabled ? "LoadBalancer" : "NodePort" }],
     var.ingress_ip_pin != "" ? [{ name = "service.annotations.metallb\\.io/loadBalancerIPs", value = var.ingress_ip_pin }] : [],
   )
-  depends_on = [kubectl_manifest.metallb_l2, kubectl_manifest.traefik_gateway_api]
+  depends_on = [kubectl_manifest.metallb_l2, helm_release.gateway_api]
 }
 
 resource "kubectl_manifest" "traefik_nginx_class" {

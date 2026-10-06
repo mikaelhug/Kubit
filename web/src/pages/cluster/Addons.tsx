@@ -1,9 +1,9 @@
 import { addonCatalog } from '../../addons'
 import { api, fmt, type AddonStatus } from '../../api'
 import { ErrorBox, Notice, Pill, Section, StatusDot } from '../../components/ui'
-import { useImageStatus } from '../../imageStatus'
 import { stateTone } from '../../tone'
 import { useLive } from '../../useLive'
+import { AddonToggle } from '../../components/AddonToggle'
 import { BuildList, FluxSync, SOPSRow } from './AddonPanels'
 import type { ClusterCtx } from './ClusterPage'
 
@@ -11,9 +11,9 @@ const stateText: Record<AddonStatus['state'], string> = { disabled: 'disabled', 
 
 export function Addons({ ctx }: { ctx: ClusterCtx }) {
   const { name, status, cluster } = ctx
-  const { data: addons, error } = useLive(() => api.addons(name), [name], [[name, 'addons']], { refresh: [cluster.updatedAt] })
+  const { data: addons, error } = useLive(() => api.addons(name), [name], [[name, 'addons'], [name, 'config']])
   const drift = (addons ?? []).some((a) => a.state === 'pending' || a.state === 'orphaned')
-  const image = useImageStatus(name, cluster.updatedAt)
+  const { data: image } = useLive(() => api.imageStatus(name), [name], [[name, 'config'], [name, 'nodes']], { onError: 'null' })
   const longhornWaits = image?.outdated && cluster.spec.spec.platform.longhorn?.enabled
   const flux = !!cluster.spec.spec.platform.flux?.enabled
   const repo = cluster.spec.spec.platform.flux?.repository
@@ -23,16 +23,14 @@ export function Addons({ ctx }: { ctx: ClusterCtx }) {
   const { data: buildList } = useLive(() => api.builds(name), [name], [[name, 'workloads']], { onError: 'null', enabled: builds })
 
   return (
-      <Section title="Platform add-ons" help="Declared under spec.platform in cluster.yaml.">
+      <Section title="Platform add-ons">
         <ErrorBox error={error} />
-        {status?.platform?.error && <Notice tone="bad">Last apply failed: {status.platform.error}</Notice>}
-        {longhornWaits && <Notice tone="warn">Longhorn needs Talos extensions the nodes lack; upgrade Talos first.</Notice>}
-        {drift && <Notice tone="warn">cluster.yaml differs from what is installed; run <span class="mono">kubit apply</span>.</Notice>}
-        {!drift && status?.platform?.appliedAt && <Notice tone="muted">In sync with cluster.yaml; last applied {fmt.datetime(status.platform.appliedAt)}.</Notice>}
+        {longhornWaits && <Notice tone="warn">Nodes lack the Talos extensions Longhorn needs.</Notice>}
+        {drift && <Notice tone="warn">cluster.yaml differs from what is installed. <a class="underline" href={`/clusters/${name}/changes`}>Review changes</a></Notice>}
         <div class="grid grid-cols-1 lg:grid-cols-2 gap-3">
           {addonCatalog.map((d) => {
             const a = addons?.find((x) => x.key === d.key)
-            const link = d.key === 'traefik' && status?.platform?.outputs?.ingress_ip ? `http://${status.platform.outputs.ingress_ip}` : undefined
+            const link = d.key === 'traefik' && status?.ingressIP ? `http://${status.ingressIP}` : undefined
             const st = a?.state ?? (addons ? 'disabled' : null)
             return (
               <div key={d.key} class={`panel p-4 flex gap-3 ${st === 'disabled' ? 'opacity-75' : ''}`}>
@@ -41,9 +39,11 @@ export function Addons({ ctx }: { ctx: ClusterCtx }) {
                   <div class="flex items-center gap-2">
                     <span class="font-medium">{d.name}</span>
                     {st && <Pill tone={stateTone(st)}>{stateText[st]}</Pill>}
-                    {link && <a href={link} target="_blank" rel="noreferrer" class="btn btn-sm ml-auto">Open ↗</a>}
+                    <span class="ml-auto inline-flex gap-1">
+                      {link && <a href={link} target="_blank" rel="noreferrer" class="btn btn-sm">Open ↗</a>}
+                      {d.key === 'backup' ? <a href={`/clusters/${name}/backups`} class="btn btn-sm">Backups</a> : <AddonToggle cluster={name} info={d} platform={cluster.spec.spec.platform} />}
+                    </span>
                   </div>
-                  <p class="text-[12.5px] text-muted">{d.what}</p>
                   {a && (a.release || a.readiness || a.key === 'metallb' || a.key === 'flux' || a.key === 'builds') && (
                     <div class="grid grid-cols-[max-content_1fr] gap-x-4 gap-y-0.5 text-[12px] mt-1">
                       {a.release && <><span class="text-muted">Installed</span><span class="mono">{a.release.chart} {a.release.chartVersion}{a.release.appVersion ? ` (app ${a.release.appVersion})` : ''}{a.pinnedVersion && a.pinnedVersion !== a.release.chartVersion && <span class="text-warn"> · pinned {a.pinnedVersion}</span>}</span></>}
@@ -51,7 +51,7 @@ export function Addons({ ctx }: { ctx: ClusterCtx }) {
                       {a.readiness && <><span class="text-muted">Workloads</span><span class={a.readiness.ready === a.readiness.total ? '' : 'text-warn'}>{a.readiness.ready}/{a.readiness.total} available in {a.readiness.namespace}{a.readiness.detail?.length ? ` — ${a.readiness.detail.join(', ')}` : ''}</span></>}
                       {a.key === 'metallb' && <><span class="text-muted">Pool</span><span class="mono">{cluster.spec.spec.platform.metallb.range || '—'}</span></>}
                       {a.key === 'builds' && <><span class="text-muted">Registry</span><span class="mono">registry.kubit → {a.address ?? '—'}</span></>}
-                      {a.key === 'flux' && <><span class="text-muted">Repository</span><span class="mono truncate" title={repo?.url}>{repo ? `${repo.url} @ ${repo.branch} · ${repo.path}` : 'not set'}</span></>}
+                      {a.key === 'flux' && <><span class="text-muted">Repository</span><span class="mono truncate" title={repo?.url}>{repo ? [repo.url, repo.branch, repo.path].filter(Boolean).join(' · ') : 'not set'}</span></>}
                       {a.values && Object.keys(a.values).length > 0 && <><span class="text-muted">Values</span><span class="mono truncate" title={JSON.stringify(a.values)}>{Object.keys(a.values).join(', ')} overridden</span></>}
                     </div>
                   )}

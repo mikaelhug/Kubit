@@ -12,6 +12,7 @@ import (
 
 	"github.com/cosi-project/runtime/pkg/safe"
 	"github.com/siderolabs/talos/pkg/machinery/api/machine"
+	"github.com/siderolabs/talos/pkg/machinery/nethelpers"
 	"github.com/siderolabs/talos/pkg/machinery/resources/block"
 	"github.com/siderolabs/talos/pkg/machinery/resources/hardware"
 	"github.com/siderolabs/talos/pkg/machinery/resources/network"
@@ -35,11 +36,11 @@ type Inventory struct {
 	UUID         string      `json:"uuid,omitempty"`
 	Serial       string      `json:"serial,omitempty"`
 	KVM          bool        `json:"kvm"`
-	TPM          bool        `json:"tpm"`
-	Watchdog     bool        `json:"watchdog"`
 	Virtual      bool        `json:"virtual"`
 	Disks        []Disk      `json:"disks"`
 	Links        []Link      `json:"links"`
+	Gateway      string      `json:"gateway,omitempty"`
+	Nameservers  []string    `json:"nameservers,omitempty"`
 	BootTime     string      `json:"bootTime,omitempty"`
 	Extensions   []Extension `json:"extensions,omitempty"`
 	Etcd         *EtcdMember `json:"etcd,omitempty"`
@@ -127,8 +128,6 @@ func (c *Client) Inspect(ctx context.Context) (*Inventory, error) {
 		inv.Serial = si.TypedSpec().SerialNumber
 	}
 	inv.KVM = c.exists(ctx, "/dev/kvm")
-	inv.TPM = c.exists(ctx, "/dev/tpmrm0") && c.exists(ctx, "/sys/firmware/efi")
-	inv.Watchdog = c.exists(ctx, "/dev/watchdog0")
 
 	disks, err := safe.StateListAll[*block.Disk](ctx, c.COSI)
 	if err != nil {
@@ -168,6 +167,7 @@ func (c *Client) Inspect(ctx context.Context) (*Inventory, error) {
 		})
 	}
 	sort.Slice(inv.Links, func(i, j int) bool { return inv.Links[i].Name < inv.Links[j].Name })
+	inv.Gateway, inv.Nameservers = c.uplinkRoute(ctx)
 
 	if st, err := c.MachineClient.SystemStat(ctx, &emptypb.Empty{}); err == nil && len(st.Messages) > 0 && st.Messages[0].BootTime > 0 {
 		inv.BootTime = time.Unix(int64(st.Messages[0].BootTime), 0).UTC().Format(time.RFC3339)
@@ -233,8 +233,33 @@ func (inv *Inventory) InstallCandidates() []Disk {
 		}
 		out = append(out, d)
 	}
-	sort.SliceStable(out, func(i, j int) bool { return out[i].SizeBytes > out[j].SizeBytes })
+	sort.SliceStable(out, func(i, j int) bool {
+		if out[i].Rotational != out[j].Rotational {
+			return !out[i].Rotational
+		}
+		return out[i].SizeBytes > out[j].SizeBytes
+	})
 	return out
+}
+
+func (c *Client) uplinkRoute(ctx context.Context) (string, []string) {
+	var gateway string
+	if routes, err := safe.StateListAll[*network.RouteStatus](ctx, c.COSI); err == nil {
+		for r := range routes.All() {
+			s := r.TypedSpec()
+			if s.Table == nethelpers.TableMain && s.Gateway.Is4() && (!s.Destination.IsValid() || s.Destination.Bits() == 0) {
+				gateway = s.Gateway.String()
+				break
+			}
+		}
+	}
+	var servers []string
+	if res, err := safe.StateGetByID[*network.ResolverStatus](ctx, c.COSI, network.ResolverID); err == nil {
+		for _, a := range res.TypedSpec().DNSServers {
+			servers = append(servers, a.String())
+		}
+	}
+	return gateway, servers
 }
 
 func (c *Client) exists(ctx context.Context, path string) bool {
@@ -261,4 +286,15 @@ func IsVirtual(manufacturer, product string) bool {
 		}
 	}
 	return false
+}
+
+func (inv *Inventory) UplinkAddress() string {
+	for _, l := range inv.Links {
+		for _, a := range l.Addresses {
+			if strings.HasPrefix(a, inv.IP+"/") {
+				return a
+			}
+		}
+	}
+	return ""
 }

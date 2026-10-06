@@ -1,5 +1,5 @@
 import type { ComponentChildren } from 'preact'
-import { fmt, type NodeRow } from '../api'
+import { fmt, type Inventory, type NodeRow } from '../api'
 import { kindLabel, kindTone, lastSeenOf, typeOf } from '../machine'
 import { Pill } from './ui'
 
@@ -7,11 +7,10 @@ export function KindPill({ m }: { m: NodeRow }) {
   return <Pill tone={kindTone(m)}>{kindLabel[m.kind]}</Pill>
 }
 
-export function TypePill({ m }: { m?: NodeRow | null }) {
-  const form = typeOf(m)
+export function TypePill({ m, inv }: { m?: NodeRow | null; inv?: Inventory | null }) {
+  const form = typeOf(inv ?? m?.inventory)
   return <Pill tone={form === 'metal' ? 'muted' : 'info'}>{form}</Pill>
 }
-
 
 export function identityRows(m: NodeRow): [string, ComponentChildren][] {
   return [

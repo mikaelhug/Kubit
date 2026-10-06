@@ -13,10 +13,13 @@ import (
 	"github.com/siderolabs/talos/pkg/machinery/api/common"
 	machineapi "github.com/siderolabs/talos/pkg/machinery/api/machine"
 	"github.com/siderolabs/talos/pkg/machinery/constants"
+	configres "github.com/siderolabs/talos/pkg/machinery/resources/config"
 	"github.com/siderolabs/talos/pkg/machinery/resources/k8s"
+	"github.com/siderolabs/talos/pkg/machinery/resources/network"
 	"github.com/siderolabs/talos/pkg/machinery/resources/runtime"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/types/known/durationpb"
 	"google.golang.org/protobuf/types/known/emptypb"
 )
 
@@ -26,6 +29,28 @@ func (c *Client) Apply(ctx context.Context, cfg []byte) error {
 		Mode: machineapi.ApplyConfigurationRequest_AUTO,
 	})
 	return err
+}
+
+func (c *Client) ApplyTry(ctx context.Context, cfg []byte, rollback time.Duration) error {
+	_, err := c.ApplyConfiguration(c.nodeContext(ctx), &machineapi.ApplyConfigurationRequest{
+		Data: cfg, Mode: machineapi.ApplyConfigurationRequest_TRY, TryModeTimeout: durationpb.New(rollback),
+	})
+	return err
+}
+
+func (c *Client) ApplyNoReboot(ctx context.Context, cfg []byte) error {
+	_, err := c.ApplyConfiguration(c.nodeContext(ctx), &machineapi.ApplyConfigurationRequest{
+		Data: cfg, Mode: machineapi.ApplyConfigurationRequest_NO_REBOOT,
+	})
+	return err
+}
+
+func (c *Client) Hostname(ctx context.Context) (string, error) {
+	hn, err := safe.StateGetByID[*network.HostnameStatus](c.nodeContext(ctx), c.COSI, network.HostnameID)
+	if err != nil {
+		return "", err
+	}
+	return hn.TypedSpec().Hostname, nil
 }
 
 func (c *Client) ApplyDryRun(ctx context.Context, cfg []byte) (string, error) {
@@ -39,6 +64,14 @@ func (c *Client) ApplyDryRun(ctx context.Context, cfg []byte) (string, error) {
 		return "", nil
 	}
 	return resp.Messages[0].ModeDetails, nil
+}
+
+func (c *Client) MachineConfig(ctx context.Context) ([]byte, error) {
+	mc, err := safe.StateGetByID[*configres.MachineConfig](c.nodeContext(ctx), c.COSI, configres.ActiveID)
+	if err != nil {
+		return nil, err
+	}
+	return mc.Provider().Bytes()
 }
 
 func (c *Client) VersionTag(ctx context.Context) (string, error) {
@@ -280,10 +313,6 @@ func (c *Client) EtcdPeers(ctx context.Context) ([]EtcdPeer, error) {
 		}
 	}
 	return out, nil
-}
-
-func (c *Client) EtcdRemoveMember(ctx context.Context, id uint64) error {
-	return c.EtcdRemoveMemberByID(c.nodeContext(ctx), &machineapi.EtcdRemoveMemberByIDRequest{MemberId: id})
 }
 
 func (c *Client) EtcdAlarms(ctx context.Context) ([]string, error) {

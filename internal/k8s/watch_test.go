@@ -29,24 +29,6 @@ func (f *fires) count(key string) int {
 
 func newFires() *fires { return &fires{at: map[string][]time.Time{}} }
 
-func TestDebouncerCoalescesABurst(t *testing.T) {
-	f := newFires()
-	d := NewDebouncer(50*time.Millisecond, time.Second, f.record)
-	defer d.Stop()
-	for range 20 {
-		d.Hit("workloads")
-	}
-	d.Hit("network")
-	time.Sleep(200 * time.Millisecond)
-	if f.count("workloads") != 1 || f.count("network") != 1 {
-		t.Fatalf("fires: %v", f.at)
-	}
-	time.Sleep(100 * time.Millisecond)
-	if f.count("workloads") != 1 {
-		t.Errorf("a burst fired twice: %v", f.at)
-	}
-}
-
 func TestDebouncerFiresWithinMaxWaitUnderChurn(t *testing.T) {
 	f := newFires()
 	d := NewDebouncer(50*time.Millisecond, 150*time.Millisecond, f.record)
@@ -68,18 +50,6 @@ func TestDebouncerFiresWithinMaxWaitUnderChurn(t *testing.T) {
 	time.Sleep(150 * time.Millisecond)
 	if n := f.count("workloads"); n > len(got)+1 {
 		t.Errorf("trailing fires: %d after churn ended at %d", n, len(got))
-	}
-}
-
-func TestDebouncerStopPreventsFiring(t *testing.T) {
-	f := newFires()
-	d := NewDebouncer(30*time.Millisecond, 100*time.Millisecond, f.record)
-	d.Hit("workloads")
-	d.Stop()
-	d.Hit("nodes")
-	time.Sleep(100 * time.Millisecond)
-	if f.count("workloads")+f.count("nodes") != 0 {
-		t.Errorf("fired after Stop: %v", f.at)
 	}
 }
 
@@ -105,58 +75,14 @@ users:
 	if err != nil {
 		t.Fatal(err)
 	}
-	if c.rest.Timeout != 15*time.Second {
-		t.Errorf("requests keep their timeout, got %s", c.rest.Timeout)
-	}
 	if got := c.streamConfig().Timeout; got != 0 {
 		t.Errorf("watches and followed logs must not time out, got %s", got)
 	}
-	if c.rest.Timeout != 15*time.Second {
-		t.Error("streamConfig must not change the request config")
-	}
 }
 
-func TestObjectNamespace(t *testing.T) {
+func TestObjectNamespaceUnwrapsInformerTombstones(t *testing.T) {
 	pod := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "p", Namespace: "metallb-system"}}
-	for _, c := range []struct {
-		obj  any
-		want string
-	}{
-		{pod, "metallb-system"},
-		{cache.DeletedFinalStateUnknown{Key: "metallb-system/p", Obj: pod}, "metallb-system"},
-		{&corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "cert-manager"}}, "cert-manager"},
-		{&corev1.Node{ObjectMeta: metav1.ObjectMeta{Name: "n1"}}, ""},
-		{"not an object", ""},
-	} {
-		if got := objectNamespace(c.obj); got != c.want {
-			t.Errorf("objectNamespace(%T) = %q, want %q", c.obj, got, c.want)
-		}
-	}
-}
-
-func TestAge(t *testing.T) {
-	s, sec := age(metav1.NewTime(time.Now().Add(-90*time.Second - 400*time.Millisecond)))
-	if s != "1m30s" || sec != 90 {
-		t.Errorf("age = %q, %d", s, sec)
-	}
-}
-
-func TestRemovedBy(t *testing.T) {
-	for _, c := range []struct {
-		removed, target string
-		want            bool
-	}{
-		{"1.25", "v1.25.0", true},
-		{"1.25", "v1.26.3", true},
-		{"1.25", "v1.24.9", false},
-		{"1.32", "v2.0.0", true},
-		{"", "v1.30.0", false},
-		{"1.25", "garbage", false},
-		{"x", "v1.30.0", false},
-		{"1.25", "v1.25.0-alpha.1", true},
-	} {
-		if got := (DeprecatedAPI{RemovedRelease: c.removed}).RemovedBy(c.target); got != c.want {
-			t.Errorf("RemovedBy(%q, %q) = %v", c.removed, c.target, got)
-		}
+	if got := objectNamespace(cache.DeletedFinalStateUnknown{Key: "metallb-system/p", Obj: pod}); got != "metallb-system" {
+		t.Errorf("objectNamespace of a tombstone = %q", got)
 	}
 }

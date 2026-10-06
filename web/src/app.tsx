@@ -5,14 +5,15 @@ import { api, fmt } from './api'
 import { Palette, Shortcuts, ThemeToggle } from './components/Palette'
 import { Elapsed } from './components/Time'
 import { Toasts } from './components/Toasts'
-import { ClusterPill, ConfirmDialog, Pill } from './components/ui'
+import { ClusterPill, ConfirmDialog, Pill, planLabel } from './components/ui'
 import { connectLive } from './live'
+import { addable } from './machine'
 import { ClusterPage } from './pages/cluster/ClusterPage'
 import { Discovery } from './pages/Discovery'
 import { Home } from './pages/Home'
 import { NodePage } from './pages/node/NodePage'
 import { Secrets } from './pages/Secrets'
-import { clusters, connected, daemon, machineList, reconnectAttempt, resyncing, statuses, stopped, toast } from './store'
+import { clusters, connected, daemon, machineList, plans, reconnectAttempt, resyncing, statuses, stopped, toast } from './store'
 
 export function App() {
   useEffect(() => { connectLive() }, [])
@@ -26,11 +27,8 @@ export function App() {
   )
 }
 
-const redirects: Record<string, string> = { '/start': '/', '/fleet/inventory': '/discovery', '/fleet/network-boot': '/discovery', '/fleet/pxe': '/discovery' }
-
 function Shell() {
-  const { path, route } = useLocation()
-  useEffect(() => { if (redirects[path]) route(redirects[path], true) }, [path, route])
+  const { path } = useLocation()
   const activeCluster = /^\/clusters\/([^/]+)/.exec(path)?.[1]
 
   return (
@@ -58,17 +56,21 @@ function Shell() {
         <Router>
           <Route path="/clusters/:name" component={ClusterPage} />
           <Route path="/clusters/:name/:section" component={ClusterPage} />
-          <Route path="/clusters/:name/:section/:sub" component={ClusterPage} />
           <Route path="/nodes/:ip" component={NodePage} />
           <Route path="/machines/:mac" component={NodePage} />
           <Route path="/discovery" component={Discovery} />
           <Route path="/secrets" component={Secrets} />
           <Route path="/" component={Home} />
-          <Route default component={Home} />
+          <Route default component={NotFound} />
         </Router>
       </main>
     </div>
   )
+}
+
+function NotFound() {
+  const { path } = useLocation()
+  return <div class="p-8 text-[13px] text-muted">No page at <span class="mono">{path}</span>. <a href="/" class="text-accent hover:underline">Home</a></div>
 }
 
 const navCls = (active: boolean) => `pl-[14px] pr-3 py-1.5 border-l-2 hover:bg-panel-2 ${active ? 'bg-panel-2 border-accent' : 'border-transparent'}`
@@ -78,13 +80,23 @@ function NavLink({ href, path, children, exact }: { href: string; path: string; 
   return <a href={href} class={`${navCls(active)} flex items-center justify-between`}>{children}</a>
 }
 
+function PendingBadge({ name }: { name: string }) {
+  const p = plans.value.get(name)
+  if (!p || p.state === 'checking' || (p.state === 'ready' && p.changes === 0)) return null
+  const l = planLabel(p)
+  return <Pill tone={l.tone} title={l.text}>{p.state === 'ready' ? p.changes : p.state === 'applying' ? 'applying' : '!'}</Pill>
+}
+
 function ClusterNav({ active }: { active?: string }) {
   return (
     <>
       {clusters.value.map((c) => (
         <a key={c.name} href={`/clusters/${c.name}/overview`} class={`${navCls(active === c.name)} flex items-center justify-between`}>
           <span class="truncate font-medium">{c.name}</span>
-          <ClusterPill state={c.state} status={statuses.value.get(c.name)} />
+          <span class="flex items-center gap-1">
+            <PendingBadge name={c.name} />
+            <ClusterPill state={c.state} status={statuses.value.get(c.name)} />
+          </span>
         </a>
       ))}
     </>
@@ -93,7 +105,7 @@ function ClusterNav({ active }: { active?: string }) {
 
 
 function DiscoveryBadge() {
-  const n = machineList.value.filter((m) => m.kind === 'maintenance').length
+  const n = machineList.value.filter(addable).length
   return n > 0 ? <Pill tone="good">{n}</Pill> : null
 }
 

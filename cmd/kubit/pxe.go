@@ -25,13 +25,13 @@ func pxeCmd() *cobra.Command {
 		closed                         bool
 	)
 	cmd := &cobra.Command{
-		Use:   "pxe <dirs...>",
+		Use:   "pxe [dirs...]",
 		Short: "Network-boot machines into Talos maintenance mode; nodes declared in the repos boot their own disk (run with sudo)",
 		Long: `Answers PXE firmware next to the LAN's real DHCP server (which keeps assigning
 addresses), serves iPXE over TFTP and an iPXE script over HTTP that boots the Talos
 kernel and initramfs for the given schematic, cached from the Image Factory. Booted
 machines land in maintenance mode and show up in the console's Discovery.`,
-		Args: cobra.MinimumNArgs(1),
+		Args: cobra.ArbitraryArgs,
 		RunE: func(cmd *cobra.Command, repos []string) error {
 			var ip net.IP
 			if advertise != "" {
@@ -59,6 +59,10 @@ machines land in maintenance mode and show up in the console's Discovery.`,
 			if err := ensureDir(home, cache, 0o700); err != nil {
 				return err
 			}
+			run := filepath.Join(home, "run")
+			if err := ensureDir(home, run, 0o755); err != nil {
+				return err
+			}
 			logger := log.New(os.Stderr, "", log.LstdFlags)
 			decide := repoDecider(repos, closed, logger)
 			srv := &pxe.Server{
@@ -66,6 +70,7 @@ machines land in maintenance mode and show up in the console's Discovery.`,
 				Profile: pxe.Profile{SchematicID: schematic, TalosVersion: talosVersion},
 				Cache:   pxe.NewCache(cache),
 				Factory: f,
+				RunFile: filepath.Join(run, "pxe"),
 			}
 			return srv.Run(cmd.Context())
 		},

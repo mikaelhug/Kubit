@@ -2,15 +2,15 @@ package cluster
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
-	"strings"
 	"sync"
 	"time"
 
 	"github.com/mikael/kubit/internal/config"
+	"github.com/mikael/kubit/internal/k8s"
 	"github.com/mikael/kubit/internal/store"
 	"github.com/mikael/kubit/internal/talos"
-	"github.com/mikael/kubit/internal/tofu"
 )
 
 const (
@@ -21,52 +21,50 @@ const (
 )
 
 type Status struct {
-	Name              string                `json:"name"`
-	State             string                `json:"state"`
-	TalosVersion      string                `json:"talosVersion"`
-	KubernetesVersion string                `json:"kubernetesVersion"`
-	Endpoint          string                `json:"endpoint"`
-	APIReachable      bool                  `json:"apiReachable"`
-	APIError          string                `json:"apiError,omitempty"`
-	APIReach          string                `json:"apiReach,omitempty"`
-	Nodes             []NodeStatus          `json:"nodes"`
-	Etcd              EtcdStatus            `json:"etcd"`
-	Totals            Totals                `json:"totals"`
-	Platform          *store.PlatformStatus `json:"platform,omitempty"`
-	Health            string                `json:"health,omitempty"`
-	OpenAlerts        int                   `json:"openAlerts,omitempty"`
-	ObservedAt        string                `json:"observedAt"`
-	LastSnapshotAt    string                `json:"lastSnapshotAt,omitempty"`
-	Observer          string                `json:"observer,omitempty"`
-	ObserverError     string                `json:"observerError,omitempty"`
-	LastContactAt     string                `json:"lastContactAt,omitempty"`
+	Name              string       `json:"name"`
+	State             string       `json:"state"`
+	TalosVersion      string       `json:"talosVersion"`
+	KubernetesVersion string       `json:"kubernetesVersion"`
+	Endpoint          string       `json:"endpoint"`
+	APIReachable      bool         `json:"apiReachable"`
+	APIError          string       `json:"apiError,omitempty"`
+	APIReach          string       `json:"apiReach,omitempty"`
+	Nodes             []NodeStatus `json:"nodes"`
+	Etcd              EtcdStatus   `json:"etcd"`
+	Totals            Totals       `json:"totals"`
+	IngressIP         string       `json:"ingressIP,omitempty"`
+	Health            string       `json:"health,omitempty"`
+	OpenAlerts        int          `json:"openAlerts,omitempty"`
+	ObservedAt        string       `json:"observedAt"`
+	LastSnapshotAt    string       `json:"lastSnapshotAt,omitempty"`
+	Observer          string       `json:"observer,omitempty"`
+	ObserverError     string       `json:"observerError,omitempty"`
+	LastContactAt     string       `json:"lastContactAt,omitempty"`
 }
 
 type NodeStatus struct {
-	Hostname       string `json:"hostname"`
-	IP             string `json:"ip"`
-	Role           string `json:"role"`
-	Arch           string `json:"arch"`
-	KVM            bool   `json:"kvm"`
-	TalosVersion   string `json:"talosVersion"`
-	KubeletVersion string `json:"kubeletVersion"`
-	Ready          bool   `json:"ready"`
-	Unschedulable  bool   `json:"unschedulable"`
-	TalosReachable bool   `json:"talosReachable"`
-	TalosError     string `json:"talosError,omitempty"`
-	TalosReach     string `json:"talosReach,omitempty"`
-	Registered     bool   `json:"registered"`
-	Pool           string `json:"pool"`
-	SeenAt         string `json:"seenAt,omitempty"`
-	Stage          string `json:"stage"`
-	CPUMilli       int64  `json:"cpuMilli"`
-	CPUCapMilli    int64  `json:"cpuCapMilli"`
-	MemBytes       int64  `json:"memBytes"`
-	MemCapBytes    int64  `json:"memCapBytes"`
-	MemAllocBytes  int64  `json:"memAllocBytes"`
-	Pods           int    `json:"pods"`
-	PodCap         int64  `json:"podCap"`
-	GVisor         bool   `json:"gvisor"`
+	Hostname       string              `json:"hostname"`
+	IP             string              `json:"ip"`
+	Role           string              `json:"role"`
+	Arch           string              `json:"arch"`
+	TalosVersion   string              `json:"talosVersion"`
+	KubeletVersion string              `json:"kubeletVersion"`
+	Ready          bool                `json:"ready"`
+	Unschedulable  bool                `json:"unschedulable"`
+	TalosReachable bool                `json:"talosReachable"`
+	TalosError     string              `json:"talosError,omitempty"`
+	TalosReach     string              `json:"talosReach,omitempty"`
+	Registered     bool                `json:"registered"`
+	SeenAt         string              `json:"seenAt,omitempty"`
+	Stage          string              `json:"stage"`
+	CPUMilli       int64               `json:"cpuMilli"`
+	CPUCapMilli    int64               `json:"cpuCapMilli"`
+	MemBytes       int64               `json:"memBytes"`
+	MemCapBytes    int64               `json:"memCapBytes"`
+	MemAllocBytes  int64               `json:"memAllocBytes"`
+	Pods           int                 `json:"pods"`
+	PodCap         int64               `json:"podCap"`
+	Temperatures   []talos.Temperature `json:"temperatures,omitempty"`
 }
 
 type EtcdStatus struct {
@@ -89,26 +87,20 @@ type Totals struct {
 }
 
 func (m *Manager) Status(ctx context.Context, name string) (*Status, error) {
-	c, row, err := m.LoadCluster(ctx, name)
+	c, row, err := m.LoadCluster(name)
 	if err != nil {
-		m.dropClientsIfGone(name, err)
 		return nil, err
 	}
 	st := &Status{
 		Name: name, State: row.State, TalosVersion: c.Spec.TalosVersion,
 		KubernetesVersion: c.Spec.KubernetesVersion, Endpoint: c.Spec.ControlPlane.Endpoint,
 	}
-	if p, err := m.Store.GetPlatformStatus(ctx, name); err == nil && (p.AppliedAt != "" || p.Error != "") {
-		for k := range p.Outputs {
-			if !tofu.DeclaredOutputs[k] {
-				delete(p.Outputs, k)
-			}
-		}
-		st.Platform = p
+	if !Live(row.State) {
+		m.nodeRows(ctx, c, st)
+		return st, nil
 	}
-	sec, err := m.Store.GetClusterSecrets(ctx, name)
+	sec, err := m.Store.GetClusterSecrets(name)
 	if err != nil {
-		m.dropClientsIfGone(name, err)
 		return nil, err
 	}
 	ctx, cancel := context.WithTimeout(ctx, 20*time.Second)
@@ -118,7 +110,7 @@ func (m *Manager) Status(ctx context.Context, name string) (*Status, error) {
 	var wg sync.WaitGroup
 	var mu sync.Mutex
 	probeOf := m.probeNodes(ctx, c, sec.Talosconfig, byHost, &wg, &mu)
-	if cps := c.ControlPlanes(); len(cps) > 0 && sec.Kubeconfig != nil {
+	if cps := c.ControlPlanes(); len(cps) > 0 {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
@@ -139,20 +131,18 @@ func (m *Manager) Status(ctx context.Context, name string) (*Status, error) {
 			mu.Unlock()
 		}()
 	}
-	if sec.Kubeconfig != nil {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			m.collectKube(ctx, name, sec, st, byHost, &mu)
-		}()
-	}
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		m.collectKube(ctx, name, sec.Kubeconfig, st, byHost, &mu)
+	}()
 	wg.Wait()
 	ips := map[string]bool{}
 	for _, n := range c.Spec.Nodes {
 		ips[n.IP] = true
 	}
 	m.keepTalos(name, ips)
-	st.Observer, st.ObserverError = observe(ctx, st)
+	st.Observer, st.ObserverError = observerOf(ctx, st)
 
 	st.Etcd.Expected = len(c.ControlPlanes())
 	for _, ns := range st.Nodes {
@@ -168,7 +158,9 @@ func (m *Manager) Status(ctx context.Context, name string) (*Status, error) {
 		st.Totals.PodCap += ns.PodCap
 	}
 	st.ObservedAt = time.Now().UTC().Format(time.RFC3339)
-	st.LastSnapshotAt, _ = m.Store.LatestSnapshotTS(ctx, name)
+	if list, err := m.ListSnapshots(name); err == nil && len(list) > 0 {
+		st.LastSnapshotAt = list[0].TS
+	}
 	return st, nil
 }
 
@@ -176,19 +168,15 @@ func (m *Manager) nodeRows(ctx context.Context, c *config.Cluster, st *Status) m
 	ordered := orderedNodes(c)
 	st.Nodes = make([]NodeStatus, len(ordered))
 	byHost := map[string]*NodeStatus{}
-	var macs []string
-	for _, n := range ordered {
-		if n.MAC != "" {
-			macs = append(macs, n.MAC)
-		}
-	}
-	seen, _ := m.Store.MachineIPs(ctx, macs)
 	for i, n := range ordered {
-		st.Nodes[i] = NodeStatus{Hostname: n.Hostname, IP: n.IP, Role: string(n.Role), Pool: n.Pool, Arch: string(n.Arch), KVM: n.KVM}
-		if ip := seen[strings.ToLower(n.MAC)]; n.MAC != "" && ip != "" && ip != n.IP {
-			st.Nodes[i].SeenAt = ip
-		}
+		st.Nodes[i] = NodeStatus{Hostname: n.Hostname, IP: n.IP, Role: string(n.Role), Arch: string(n.Arch)}
 		byHost[n.Hostname] = &st.Nodes[i]
+		if n.MAC == "" {
+			continue
+		}
+		if mc, err := m.Store.GetMachine(n.MAC); err == nil && mc.IP != "" && mc.IP != n.IP {
+			st.Nodes[i].SeenAt = mc.IP
+		}
 	}
 	return byHost
 }
@@ -203,7 +191,7 @@ func (m *Manager) probeNodes(ctx context.Context, c *config.Cluster, talosconfig
 			defer wg.Done()
 			nctx, cancel := context.WithTimeout(ctx, 6*time.Second)
 			defer cancel()
-			ver, stage, err := p.probe(nctx, n.IP, talosconfig)
+			ver, stage, temps, err := p.probe(nctx, n.IP, talosconfig)
 			mu.Lock()
 			defer mu.Unlock()
 			ns := byHost[n.Hostname]
@@ -218,20 +206,26 @@ func (m *Manager) probeNodes(ctx context.Context, c *config.Cluster, talosconfig
 			ns.TalosReachable = true
 			ns.Stage = stage
 			ns.TalosVersion = ver
+			ns.Temperatures = temps
+			m.recordHardware(n, p.tc)
 		}()
 	}
 	return probeOf
 }
 
-func (m *Manager) collectKube(ctx context.Context, name string, sec *store.ClusterSecrets, st *Status, byHost map[string]*NodeStatus, mu *sync.Mutex) {
-	kc, err := m.KubeClientFor(name, sec)
+func (m *Manager) collectKube(ctx context.Context, name string, kubeconfig []byte, st *Status, byHost map[string]*NodeStatus, mu *sync.Mutex) {
+	kc, err := m.KubeClientFor(name, kubeconfig)
 	if err != nil {
 		mu.Lock()
 		st.APIError = err.Error()
 		mu.Unlock()
 		return
 	}
-	nodes, err := kc.Nodes(ctx)
+	err = kc.Ready(ctx)
+	var nodes []k8s.NodeStatus
+	if err == nil {
+		nodes, err = kc.Nodes(ctx)
+	}
 	if err != nil {
 		mu.Lock()
 		st.APIError = err.Error()
@@ -243,9 +237,11 @@ func (m *Manager) collectKube(ctx context.Context, name string, sec *store.Clust
 	}
 	usage, _ := kc.NodeUsages(ctx)
 	pods, _ := kc.PodCount(ctx)
+	ingress := kc.LoadBalancerIP(ctx, "traefik", "traefik")
 	mu.Lock()
 	defer mu.Unlock()
 	st.APIReachable = true
+	st.IngressIP = ingress
 	for _, kn := range nodes {
 		ns, ok := byHost[kn.Name]
 		if !ok {
@@ -259,14 +255,13 @@ func (m *Manager) collectKube(ctx context.Context, name string, sec *store.Clust
 		ns.MemCapBytes = kn.CapacityMem
 		ns.MemAllocBytes = kn.AllocatableMem
 		ns.PodCap = kn.CapacityPods
-		ns.GVisor = kn.Labels[config.LabelGVisor] == "true"
 		ns.CPUMilli = usage[kn.Name].CPUMilli
 		ns.MemBytes = usage[kn.Name].MemoryBytes
 		ns.Pods = pods[kn.Name]
 	}
 }
 
-func observe(ctx context.Context, st *Status) (string, string) {
+func observerOf(ctx context.Context, st *Status) (string, string) {
 	answered, noNet, failed := false, 0, 0
 	for _, n := range st.Nodes {
 		if n.TalosReachable {
@@ -302,6 +297,38 @@ func observe(ctx context.Context, st *Status) (string, string) {
 	return ObserverOffline, reason
 }
 
+const inspectTimeout = 30 * time.Second
+
+func (m *Manager) recordHardware(n config.Node, tc *talos.Client) {
+	if n.MAC == "" || tc == nil {
+		return
+	}
+	if mc, err := m.Store.GetMachine(n.MAC); err != nil || len(mc.Hardware) > 2 {
+		return
+	}
+	if _, busy := m.inspecting.LoadOrStore(n.MAC, true); busy {
+		return
+	}
+	go func() {
+		defer m.inspecting.Delete(n.MAC)
+		ctx, cancel := context.WithTimeout(context.Background(), inspectTimeout)
+		defer cancel()
+		inv, err := tc.Inspect(ctx)
+		if err != nil {
+			return
+		}
+		m.RecordInventory(n.MAC, tc.IP, inv)
+	}()
+}
+
+func (m *Manager) RecordInventory(mac, ip string, inv *talos.Inventory) {
+	hw, err := json.Marshal(inv)
+	if err != nil {
+		return
+	}
+	m.Store.UpsertNode(store.Machine{MAC: mac, IP: ip, UUID: inv.UUID, Serial: inv.Serial, Arch: inv.Arch, TalosVersion: inv.TalosVersion, Hardware: hw})
+}
+
 type talosProbe struct {
 	m       *Manager
 	cluster string
@@ -325,22 +352,23 @@ func (p *talosProbe) dial(ctx context.Context, ip string, talosconfig []byte) er
 	return nil
 }
 
-func (p *talosProbe) probe(ctx context.Context, ip string, talosconfig []byte) (version, stage string, err error) {
+func (p *talosProbe) probe(ctx context.Context, ip string, talosconfig []byte) (version, stage string, temps []talos.Temperature, err error) {
 	if err := p.dial(ctx, ip, talosconfig); err != nil {
-		return "", "", err
+		return "", "", nil, err
 	}
 	tc := p.tc
 	version, err = versionTag(ctx, tc)
 	if err != nil {
 		p.m.noteTalosErr(p.cluster, ip, tc, err)
-		return "", "", fmt.Errorf("version: %w", talos.ShortGRPC(err))
+		return "", "", nil, fmt.Errorf("version: %w", talos.ShortGRPC(err))
 	}
 	stage, err = tc.Stage(ctx)
 	if err != nil {
 		p.m.noteTalosErr(p.cluster, ip, tc, err)
-		return version, "", fmt.Errorf("machine status: %w", talos.ShortGRPC(err))
+		return version, "", nil, fmt.Errorf("machine status: %w", talos.ShortGRPC(err))
 	}
-	return version, stage, nil
+	temps, _ = tc.Temperatures(ctx)
+	return version, stage, temps, nil
 }
 
 func (m *Manager) etcdStatus(ctx context.Context, name string, cps []config.Node, dialed func(config.Node) *talos.Client) EtcdStatus {

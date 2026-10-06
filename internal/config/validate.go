@@ -3,13 +3,14 @@ package config
 import (
 	"errors"
 	"fmt"
-	"net"
 	"net/netip"
 	"net/url"
 	"regexp"
+	"slices"
 	"strings"
 
 	"filippo.io/age"
+	"github.com/mikael/kubit/internal/netx"
 	talosconfig "github.com/siderolabs/talos/pkg/machinery/config"
 )
 
@@ -19,7 +20,7 @@ func (c *Cluster) Validate() error {
 	var errs []error
 	for _, section := range []func() []error{
 		c.validateHeader, c.validateBackup, c.validatePlatform, c.validateStorage, c.validateAuth,
-		c.validateTalosVersion, c.validateControlPlane, c.validateNetwork, c.validatePools, c.validateNodes, c.validatePatches,
+		c.validateTalosVersion, c.validateControlPlane, c.validateNetwork, c.validateNodes, c.validatePatches,
 	} {
 		errs = append(errs, section()...)
 	}
@@ -92,26 +93,13 @@ func (c *Cluster) validatePlatform() []error {
 
 func (c *Cluster) validateStorage() []error {
 	s := c.Spec.Storage
-	var errs []error
-	switch s.Encryption {
-	case "", EncryptionTPM, EncryptionNodeID:
-	default:
-		errs = append(errs, fmt.Errorf("storage.encryption %q must be tpm or nodeID", s.Encryption))
-	}
-	if s.Encryption == EncryptionTPM {
-		for _, n := range c.Spec.Nodes {
-			if !n.TPM {
-				errs = append(errs, fmt.Errorf("%s: no TPM; storage.encryption is tpm", n.Hostname))
-			}
-		}
-	}
 	if s.EphemeralSize == "" {
-		return errs
+		return nil
 	}
 	if err := s.CheckEphemeral(); err != nil {
-		return append(errs, fmt.Errorf("storage.ephemeralSize %q: %w", s.EphemeralSize, err))
+		return []error{fmt.Errorf("storage.ephemeralSize %q: %w", s.EphemeralSize, err)}
 	}
-	return errs
+	return nil
 }
 
 func (c *Cluster) validateAuth() []error {
@@ -158,6 +146,18 @@ func (c *Cluster) validateControlPlane() []error {
 		if _, err := netip.ParseAddr(v); err != nil {
 			errs = append(errs, fmt.Errorf("controlPlane.vip: %w", err))
 		}
+		for _, n := range c.Spec.Nodes {
+			if n.IP == v || n.TargetIP() == v {
+				errs = append(errs, fmt.Errorf("controlPlane.vip %s is %s's address; the VIP needs an address of its own", v, n.Hostname))
+			}
+		}
+	}
+	if u, err := url.Parse(c.Spec.ControlPlane.Endpoint); err == nil && c.Spec.ControlPlane.VIP == "" {
+		for _, n := range c.ControlPlanes() {
+			if target := n.TargetIP(); u.Hostname() == n.IP && target != n.IP {
+				errs = append(errs, fmt.Errorf("controlPlane.endpoint points at %s's current address %s, which moves to %s; point it at the new address or a VIP", n.Hostname, n.IP, target))
+			}
+		}
 	}
 	return errs
 }
@@ -177,51 +177,21 @@ func (c *Cluster) validateNetwork() []error {
 	return errs
 }
 
-func (c *Cluster) validatePools() []error {
-	var errs []error
-	poolNames := map[string]bool{}
-	cpPools := 0
-	for i, pl := range c.Spec.Pools {
-		pp := fmt.Sprintf("pools[%d]", i)
-		if !hostnameRE.MatchString(pl.Name) {
-			errs = append(errs, fmt.Errorf("%s.name %q must be a DNS label", pp, pl.Name))
-		}
-		if poolNames[pl.Name] {
-			errs = append(errs, fmt.Errorf("%s.name %q duplicated", pp, pl.Name))
-		}
-		poolNames[pl.Name] = true
-		if pl.Role != RoleControlPlane && pl.Role != RoleWorker {
-			errs = append(errs, fmt.Errorf("%s.role %q must be controlplane or worker", pp, pl.Role))
-		}
-		if pl.Role == RoleControlPlane {
-			cpPools++
-		}
-		for k, v := range pl.Taints {
-			if err := validTaint(k, v); err != nil {
-				errs = append(errs, fmt.Errorf("%s.taints: %w", pp, err))
-			}
-		}
-	}
-	if cpPools != 1 {
-		errs = append(errs, fmt.Errorf("exactly one pool must have role controlplane, found %d", cpPools))
-	}
-	return errs
-}
-
 func (c *Cluster) validateNodes() []error {
 	var errs []error
-	var staticAddrs []netip.Prefix
-	seenHost, seenIP, seenMAC := map[string]bool{}, map[string]bool{}, map[string]bool{}
+	seenHost, seenMAC := map[string]bool{}, map[string]bool{}
+	owner := map[string]string{}
+	cidrs := c.clusterCIDRs()
 	for i, n := range c.Spec.Nodes {
 		p := fmt.Sprintf("nodes[%d]", i)
-		if c.poolByName(n.Pool) == nil {
-			errs = append(errs, fmt.Errorf("%s.pool %q is not declared in spec.pools", p, n.Pool))
+		if n.Role != RoleControlPlane && n.Role != RoleWorker {
+			errs = append(errs, fmt.Errorf("%s.role %q must be controlplane or worker", p, n.Role))
 		}
 		if n.MAC != "" {
-			if seenMAC[strings.ToLower(n.MAC)] {
+			if seenMAC[n.MAC] {
 				errs = append(errs, fmt.Errorf("%s.mac %q duplicated", p, n.MAC))
 			}
-			seenMAC[strings.ToLower(n.MAC)] = true
+			seenMAC[n.MAC] = true
 		}
 		for k, v := range n.Taints {
 			if err := validTaint(k, v); err != nil {
@@ -229,7 +199,20 @@ func (c *Cluster) validateNodes() []error {
 			}
 		}
 		if nn := n.Network; nn != nil {
-			errs = append(errs, c.validateNodeNetwork(p, nn, &staticAddrs)...)
+			errs = append(errs, c.validateNodeNetwork(p, nn)...)
+		}
+		for _, addr := range slices.Compact([]string{n.IP, n.TargetIP()}) {
+			if other, ok := owner[addr]; ok && other != n.Hostname {
+				errs = append(errs, fmt.Errorf("%s: %s is also %s's address", p, addr, other))
+			}
+			owner[addr] = n.Hostname
+			if a, err := netip.ParseAddr(addr); err == nil {
+				for _, pfx := range cidrs {
+					if pfx.Contains(a) {
+						errs = append(errs, fmt.Errorf("%s: %s lies inside the cluster network %s", p, addr, pfx))
+					}
+				}
+			}
 		}
 		if !hostnameRE.MatchString(n.Hostname) {
 			errs = append(errs, fmt.Errorf("%s.hostname %q must be a DNS label", p, n.Hostname))
@@ -242,14 +225,10 @@ func (c *Cluster) validateNodes() []error {
 			errs = append(errs, fmt.Errorf("%s.ip: %w", p, err))
 		}
 		if n.MAC != "" {
-			if _, err := net.ParseMAC(n.MAC); err != nil {
-				errs = append(errs, fmt.Errorf("%s.mac: %w", p, err))
+			if netx.Normalize(n.MAC) == "" {
+				errs = append(errs, fmt.Errorf("%s.mac %q is not a MAC address", p, n.MAC))
 			}
 		}
-		if seenIP[n.IP] {
-			errs = append(errs, fmt.Errorf("%s.ip %q duplicated", p, n.IP))
-		}
-		seenIP[n.IP] = true
 		if n.Arch != ArchAMD64 && n.Arch != ArchARM64 {
 			errs = append(errs, fmt.Errorf("%s.arch %q must be amd64 or arm64", p, n.Arch))
 		}
@@ -258,36 +237,52 @@ func (c *Cluster) validateNodes() []error {
 	return errs
 }
 
-func (c *Cluster) validateNodeNetwork(p string, nn *NodeNetwork, staticAddrs *[]netip.Prefix) []error {
+func (c *Cluster) clusterCIDRs() []netip.Prefix {
+	var out []netip.Prefix
+	for _, cidr := range []string{c.Spec.Network.PodCIDR, c.Spec.Network.ServiceCIDR} {
+		if pfx, err := netip.ParsePrefix(cidr); err == nil {
+			out = append(out, pfx)
+		}
+	}
+	return out
+}
+
+func (c *Cluster) validateNodeNetwork(p string, nn *NodeNetwork) []error {
 	var errs []error
 	if len(nn.Addresses) == 0 {
 		errs = append(errs, fmt.Errorf("%s.network.addresses must not be empty", p))
 	}
-	for _, a := range nn.Addresses {
+	var first netip.Prefix
+	for i, a := range nn.Addresses {
 		pfx, err := netip.ParsePrefix(a)
 		if err != nil {
 			errs = append(errs, fmt.Errorf("%s.network.addresses %q: must be CIDR notation", p, a))
 			continue
 		}
-		for _, other := range *staticAddrs {
-			if other.Addr() == pfx.Addr() {
-				errs = append(errs, fmt.Errorf("%s.network.addresses %q used by another node", p, a))
-			}
+		if i == 0 {
+			first = pfx
 		}
-		*staticAddrs = append(*staticAddrs, pfx)
+		if pfx.Addr().Is4() && pfx.Bits() <= 30 && (pfx.Addr() == pfx.Masked().Addr() || pfx.Addr() == lastAddr(pfx)) {
+			errs = append(errs, fmt.Errorf("%s.network.addresses %q is the network's own or broadcast address", p, a))
+		}
 		if v := c.Spec.ControlPlane.VIP; v != "" && v == pfx.Addr().String() {
 			errs = append(errs, fmt.Errorf("%s.network.addresses %q collides with the control plane VIP", p, a))
 		}
 		if m := c.Spec.Platform.MetalLB; m.Enabled {
-			if lo, hi, err := ParseIPRange(m.Range); err == nil && inRange(pfx.Addr(), lo, hi) {
+			if lo, hi, err := ParseIPRange(m.Range); err == nil && InRange(pfx.Addr(), lo, hi) {
 				errs = append(errs, fmt.Errorf("%s.network.addresses %q lies inside the MetalLB range", p, a))
 			}
 		}
 	}
-	if nn.Gateway != "" {
-		if _, err := netip.ParseAddr(nn.Gateway); err != nil {
-			errs = append(errs, fmt.Errorf("%s.network.gateway: %w", p, err))
-		}
+	switch gw, err := netip.ParseAddr(nn.Gateway); {
+	case nn.Gateway == "":
+		errs = append(errs, fmt.Errorf("%s.network.gateway is required with a static address", p))
+	case err != nil:
+		errs = append(errs, fmt.Errorf("%s.network.gateway: %w", p, err))
+	case first.IsValid() && !first.Masked().Contains(gw):
+		errs = append(errs, fmt.Errorf("%s.network.gateway %s is outside %s", p, gw, first.Masked()))
+	case first.IsValid() && first.Addr() == gw:
+		errs = append(errs, fmt.Errorf("%s.network.gateway %s is the node's own address", p, gw))
 	}
 	for _, ns := range nn.Nameservers {
 		if _, err := netip.ParseAddr(ns); err != nil {
@@ -295,7 +290,7 @@ func (c *Cluster) validateNodeNetwork(p string, nn *NodeNetwork, staticAddrs *[]
 		}
 	}
 	if len(nn.Nameservers) == 0 && len(c.Spec.Network.Nameservers) == 0 {
-		errs = append(errs, fmt.Errorf("%s uses static addressing but no nameservers are set (on the node or the cluster) — the node would have no DNS and image pulls would fail; add network.nameservers", p))
+		errs = append(errs, fmt.Errorf("%s.network: static addresses need nameservers on the node or the cluster", p))
 	}
 	if nn.VLAN > 4094 {
 		errs = append(errs, fmt.Errorf("%s.network.vlan %d out of range", p, nn.VLAN))
@@ -307,6 +302,11 @@ func validateNodeDisks(p string, n Node) []error {
 	var errs []error
 	if (n.InstallDisk.Path == "") == (n.InstallDisk.Selector == nil) {
 		errs = append(errs, fmt.Errorf("%s.installDisk needs exactly one of path or selector", p))
+	}
+	if sel := n.InstallDisk.Selector; sel != nil && sel.MinSize != "" {
+		if _, err := minSize(sel.MinSize); err != nil {
+			errs = append(errs, fmt.Errorf("%s.installDisk.selector: %w", p, err))
+		}
 	}
 	if len(n.DataDisks) > MaxDataDisks {
 		errs = append(errs, fmt.Errorf("%s.dataDisks: at most %d", p, MaxDataDisks))
@@ -336,4 +336,11 @@ func validTaint(key, value string) error {
 		return nil
 	}
 	return fmt.Errorf("%s=%q: effect must be NoSchedule, PreferNoSchedule or NoExecute (write value:Effect)", key, value)
+}
+
+func lastAddr(pfx netip.Prefix) netip.Addr {
+	b := pfx.Masked().Addr().As4()
+	host := uint32(1)<<(32-pfx.Bits()) - 1
+	v := uint32(b[0])<<24 | uint32(b[1])<<16 | uint32(b[2])<<8 | uint32(b[3]) | host
+	return netip.AddrFrom4([4]byte{byte(v >> 24), byte(v >> 16), byte(v >> 8), byte(v)})
 }

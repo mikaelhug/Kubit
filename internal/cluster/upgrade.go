@@ -1,9 +1,9 @@
 package cluster
 
 import (
-	"bytes"
 	"context"
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 
@@ -15,25 +15,22 @@ import (
 
 func nodeStep(n config.Node) string { return "node:" + n.Hostname }
 
-func nodeSteps(nodes []config.Node, verb string) []Step {
-	out := make([]Step, 0, len(nodes))
-	for _, n := range nodes {
-		out = append(out, Step{ID: nodeStep(n), Title: verb + " " + n.Hostname, Node: n.Hostname, Status: StepPending})
-	}
-	return out
-}
-
 func orderedNodes(c *config.Cluster) []config.Node {
 	return append(append([]config.Node{}, c.ControlPlanes()...), c.Workers()...)
 }
 
+func declared(c *config.Cluster) *config.Cluster {
+	out := *c
+	out.Spec.Nodes = slices.DeleteFunc(slices.Clone(c.Spec.Nodes), func(n config.Node) bool {
+		return n.InstallDisk.Path == "" && n.InstallDisk.Selector == nil
+	})
+	return &out
+}
+
 func (m *Manager) upgradeTarget(ctx context.Context, name, version string) (*config.Cluster, string, error) {
-	c, row, err := m.LoadCluster(ctx, name)
+	c, _, err := m.LoadCluster(name)
 	if err != nil {
 		return nil, "", err
-	}
-	if !Observable(row.State) {
-		return nil, "", fmt.Errorf("cluster %s is %s", name, row.State)
 	}
 	if !strings.HasPrefix(version, "v") {
 		version = "v" + version
@@ -46,11 +43,11 @@ func (m *Manager) UpgradeTalos(ctx context.Context, name, version string, sink S
 	if err != nil {
 		return err
 	}
-	schematic, pools, err := m.desiredSchematics(ctx, c)
+	schematic, err := m.Factory.CreateSchematic(ctx, c.Spec.Extensions)
 	if err != nil {
 		return err
 	}
-	reimage := imageOutdated(c, schematic, pools)
+	reimage := schematic != c.Spec.SchematicID
 	if version == c.Spec.TalosVersion && !reimage {
 		sink.Emit(Info, "upgrade", "", "cluster already on Talos %s with its current extensions", version)
 		return nil
@@ -59,18 +56,14 @@ func (m *Manager) UpgradeTalos(ctx context.Context, name, version string, sink S
 	if err != nil {
 		return err
 	}
-	wantFor := func(n config.Node) nodeImage {
-		if id, ok := pools[c.PoolOf(n).Name]; ok {
-			return nodeImage{version: version, schematic: id}
-		}
-		return nodeImage{version: version, schematic: schematic}
-	}
-	_, bundle, err := m.loadSecrets(ctx, name)
+	want := nodeImage{version: version, schematic: schematic}
+	_, bundle, err := m.loadSecrets(name)
 	if err != nil {
 		return err
 	}
-	next := upgradedDeclaration(c, version, schematic, pools)
-	final, err := config.Generate(&next, bundle, m.installer(&next))
+	next := *c
+	next.Spec.TalosVersion, next.Spec.SchematicID = version, schematic
+	final, err := m.machineConfigs(&next, bundle)
 	if err != nil {
 		return err
 	}
@@ -78,7 +71,7 @@ func (m *Manager) UpgradeTalos(ctx context.Context, name, version string, sink S
 	if reimage && version != c.Spec.TalosVersion {
 		current := next
 		current.Spec.TalosVersion = c.Spec.TalosVersion
-		if staged, err = config.Generate(&current, bundle, m.installer(&next)); err != nil {
+		if staged, err = config.Generate(declared(&current), bundle, m.installerImage(&next)); err != nil {
 			return err
 		}
 	}
@@ -90,8 +83,7 @@ func (m *Manager) UpgradeTalos(ctx context.Context, name, version string, sink S
 		return cfgs
 	}
 	kubeFrom, _ := liveKubelets(ctx, kc, c, c.Spec.KubernetesVersion)
-	nodes := orderedNodes(c)
-	sink.Plan(append(append(upgradePrechecks, nodeSteps(nodes, "Upgrade")...), manifestsStep)...)
+	nodes := orderedNodes(declared(c))
 	if reimage {
 		sink.Emit(Info, "precheck", "", "Talos %s → %s with a new image: extensions %s", c.Spec.TalosVersion, version, strings.Join(c.Spec.Extensions, ", "))
 	} else {
@@ -109,8 +101,7 @@ func (m *Manager) UpgradeTalos(ctx context.Context, name, version string, sink S
 	for _, n := range nodes {
 		step := nodeStep(n)
 		err := sink.Run(step, func() error {
-			want := wantFor(n)
-			already, err := m.upgradeInPlace(ctx, c, kc, n, sec.Talosconfig, m.Factory.InstallerImage(want.schematic, version), want, c.SchematicFor(c.PoolOf(n)) != want.schematic, configsFor(n), step, sink)
+			already, err := m.upgradeInPlace(ctx, c, kc, n, sec.Talosconfig, m.installerImage(&next), want, reimage, configsFor(n), step, sink)
 			if err != nil {
 				return err
 			}
@@ -125,36 +116,16 @@ func (m *Manager) UpgradeTalos(ctx context.Context, name, version string, sink S
 			return fmt.Errorf("%s: %w", n.Hostname, err)
 		}
 	}
-	if err := m.saveExisting(ctx, &next); err != nil {
-		return err
-	}
+	m.saveCluster(&next, "")
 	if err := m.syncManifestsStep(ctx, &next, kc, sink); err != nil {
 		return fmt.Errorf("all nodes on Talos %s; %w; run kubit apply again to sync them", version, err)
 	}
-	sink.Emit(Done, manifestsStep.ID, "", "all nodes on Talos %s", version)
+	sink.Emit(Done, manifestsStep, "", "all nodes on Talos %s", version)
 	return nil
 }
 
-func upgradedDeclaration(c *config.Cluster, version, schematic string, pools map[string]string) config.Cluster {
-	next := *c
-	next.Spec.TalosVersion = version
-	next.Spec.SchematicID = schematic
-	next.Spec.Pools = append([]config.Pool(nil), c.Spec.Pools...)
-	for i := range next.Spec.Pools {
-		if id, ok := pools[next.Spec.Pools[i].Name]; ok {
-			next.Spec.Pools[i].SchematicID = id
-		}
-	}
-	return next
-}
-
-func configBehind(stored []byte, readErr error, want []byte) bool {
-	return want != nil && (readErr != nil || !bytes.Equal(stored, want))
-}
-
 func (m *Manager) applyIfBehind(ctx context.Context, n config.Node, cfg, talosconfig []byte, step string, sink Sink) (rebooted bool, err error) {
-	stored, err := m.Store.GetNodeMachineConfig(ctx, n.IP)
-	if !configBehind(stored, err, cfg) {
+	if cfg == nil {
 		return false, nil
 	}
 	return m.applyNodeConfig(ctx, n, cfg, talosconfig, step, sink)
@@ -180,18 +151,13 @@ func (m *Manager) UpgradeKubernetes(ctx context.Context, name, version string, s
 	}
 	prev, rolled := liveKubelets(ctx, kc, c, version)
 	if rolled {
-		sink.Plan(manifestsStep)
-		if err := m.saveKubernetesVersion(ctx, c, version); err != nil {
-			return err
-		}
+		m.saveKubernetesVersion(c, version)
 		if err := sink.Run("manifests", func() error { return m.SyncManifests(ctx, c, sink) }); err != nil {
 			return err
 		}
 		sink.Emit(Done, "manifests", "", "cluster already on Kubernetes %s", version)
 		return nil
 	}
-	nodes := orderedNodes(c)
-	sink.Plan(append(append(upgradePrechecks, nodeSteps(nodes, "Apply")...), manifestsStep)...)
 	sink.Emit(Info, "precheck", "", "Kubernetes %s → %s", prev, version)
 	if err := sink.Run("precheck", func() error {
 		return m.precheckUpgrade(ctx, c, kc, sec.Talosconfig, "kubernetes", prev, version, sink)
@@ -206,9 +172,7 @@ func (m *Manager) UpgradeKubernetes(ctx context.Context, name, version string, s
 	if err := m.ApplyConfigs(ctx, &next, version, sink); err != nil {
 		return err
 	}
-	if err := m.saveKubernetesVersion(ctx, c, version); err != nil {
-		return err
-	}
+	m.saveKubernetesVersion(c, version)
 	if err := sink.Run("manifests", func() error { return m.SyncManifests(ctx, c, sink) }); err != nil {
 		return err
 	}
@@ -216,15 +180,14 @@ func (m *Manager) UpgradeKubernetes(ctx context.Context, name, version string, s
 	return nil
 }
 
-func (m *Manager) saveKubernetesVersion(ctx context.Context, c *config.Cluster, version string) error {
-	if c.Spec.KubernetesVersion == version {
-		return nil
+func (m *Manager) saveKubernetesVersion(c *config.Cluster, version string) {
+	if c.Spec.KubernetesVersion != version {
+		c.Spec.KubernetesVersion = version
+		m.saveCluster(c, "")
 	}
-	c.Spec.KubernetesVersion = version
-	return m.saveExisting(ctx, c)
 }
 
-var manifestsStep = Step{ID: "manifests", Title: "Sync bootstrap manifests (kube-proxy, CoreDNS, CNI)"}
+const manifestsStep = "manifests"
 
 func liveKubelets(ctx context.Context, kc *k8s.Client, c *config.Cluster, target string) (lowest string, rolled bool) {
 	lowest = c.Spec.KubernetesVersion

@@ -13,7 +13,7 @@ const columns: Column<Service>[] = [
 export function ServicesTab({ ip, node }: { ip: string; node: NodeRow | null }) {
   const { data: services, error } = useServices(ip, node)
   return (
-    <Section title="Talos services" help="Talos system services and their health checks.">
+    <Section title="Talos services">
       <ErrorBox error={error} />
       <DataTable search={false} columns={columns} rows={services ?? []} rowKey={(s) => s.id} />
     </Section>

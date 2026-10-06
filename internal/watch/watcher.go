@@ -7,36 +7,31 @@ import (
 
 	"github.com/mikael/kubit/internal/cluster"
 	"github.com/mikael/kubit/internal/store"
-	"github.com/mikael/kubit/internal/talos"
 )
 
 type Watcher struct {
-	Manager         *cluster.Manager
-	Store           *store.Store
-	ServiceInterval time.Duration
-	OnStatus        func(name string, st *cluster.Status)
-	OnEvent         func(e store.EventRow)
-	OnRefresh       func(name, scope string)
+	Manager      *cluster.Manager
+	Store        *store.Store
+	Alerts       *Alerts
+	ScanInterval time.Duration
+	OnStatus     func(name string, st *cluster.Status)
+	OnRefresh    func(name, scope string)
 
-	OnObserver func(o ObserverState)
-	Subnets    func(ctx context.Context) []string
+	OnObserver  func(o ObserverState)
+	ScanSubnets func(ctx context.Context)
 
 	interval time.Duration
 
 	mu           sync.Mutex
-	stopping     map[string]chan struct{}
 	last         map[string]*cluster.Status
-	lastServices map[string]*cluster.ServiceHealth
-	trackers     map[string]*ServiceTracker
 	confirms     map[string]*confirm
 	lastTick     map[string]time.Time
 	lastContact  map[string]time.Time
-	running      map[string]*clusterLoop
+	running      map[string]bool
 	observer     ObserverState
 	gaps         []time.Time
 	offlineTicks int
-	stages       map[string]map[string]*stageWatch
-	watchStage   stageSource
+	samples      *sampleRing
 
 	sigMu       sync.Mutex
 	kubeSignals map[string]chan struct{}
@@ -46,95 +41,37 @@ func New(m *cluster.Manager, interval time.Duration) *Watcher {
 	if interval <= 0 {
 		interval = 15 * time.Second
 	}
-	w := &Watcher{Manager: m, Store: m.Store, ServiceInterval: 4 * interval, stopping: map[string]chan struct{}{}, last: map[string]*cluster.Status{}, lastServices: map[string]*cluster.ServiceHealth{}, trackers: map[string]*ServiceTracker{}, confirms: map[string]*confirm{}, lastTick: map[string]time.Time{}, lastContact: map[string]time.Time{}, running: map[string]*clusterLoop{}, kubeSignals: map[string]chan struct{}{}, stages: map[string]map[string]*stageWatch{}, watchStage: talos.WatchStage, observer: ObserverState{Online: true}}
+	w := &Watcher{Manager: m, Store: m.Store, Alerts: NewAlerts(), ScanInterval: 4 * interval, last: map[string]*cluster.Status{}, confirms: map[string]*confirm{}, lastTick: map[string]time.Time{}, lastContact: map[string]time.Time{}, running: map[string]bool{}, kubeSignals: map[string]chan struct{}{}, samples: newSampleRing(), observer: ObserverState{Online: true}}
 	w.interval = interval
 	return w
 }
 
-func (w *Watcher) Interval() time.Duration { return w.interval }
-
-type clusterLoop struct {
-	cancel context.CancelFunc
-	done   chan struct{}
-}
-
 func (w *Watcher) Run(ctx context.Context) {
-	w.Store.OnChange(w.onStoreChange)
-	reconcile := func() {
-		rows, err := w.Store.ListClusters(ctx)
-		if err != nil {
+	w.Store.OnChange(func(c store.Change) {
+		w.onStoreChange(c)
+		if c.Table != "clusters" {
 			return
 		}
-		want := map[string]bool{}
-		for _, r := range rows {
-			if cluster.Observable(r.State) {
-				want[r.Name] = true
-			}
+		if row, err := w.Store.GetCluster(c.Cluster); err == nil && cluster.Live(row.State) {
+			w.ensureLoop(ctx, c.Cluster)
 		}
-		w.mu.Lock()
-		defer w.mu.Unlock()
-		for name := range want {
-			if _, ok := w.running[name]; !ok {
-				w.startLoop(ctx, name)
-			}
-		}
-		for name, l := range w.running {
-			if !want[name] {
-				l.cancel()
-				delete(w.running, name)
-				w.stopping[name] = l.done
-			}
+	})
+	for _, r := range w.Store.ListClusters() {
+		if cluster.Live(r.State) {
+			w.ensureLoop(ctx, r.Name)
 		}
 	}
-	reconcile()
-	go w.candidateLoop(ctx)
-	t := time.NewTicker(w.Interval())
-	prune := time.NewTicker(time.Hour)
-	defer t.Stop()
-	defer prune.Stop()
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-t.C:
-			reconcile()
-		case <-prune.C:
-			_ = w.Store.Prune(ctx)
-		}
-	}
+	w.candidateLoop(ctx)
 }
 
-func (w *Watcher) startLoop(ctx context.Context, name string) {
-	prev := w.stopping[name]
-	delete(w.stopping, name)
-	cctx, cancel := context.WithCancel(ctx)
-	l := &clusterLoop{cancel: cancel, done: make(chan struct{})}
-	w.running[name] = l
-	go func() {
-		defer close(l.done)
-		if prev != nil {
-			<-prev
-		}
-		if cctx.Err() == nil {
-			w.loop(cctx, name)
-		}
-		w.forget(name, l.done)
-	}()
-}
-
-func (w *Watcher) forget(name string, done chan struct{}) {
+func (w *Watcher) ensureLoop(ctx context.Context, name string) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	if w.stopping[name] == done {
-		delete(w.stopping, name)
+	if w.running[name] {
+		return
 	}
-	delete(w.last, name)
-	delete(w.trackers, name)
-	delete(w.lastServices, name)
-	delete(w.confirms, name)
-	delete(w.lastTick, name)
-	delete(w.lastContact, name)
-	w.dropStageWatches(name)
+	w.running[name] = true
+	go w.loop(ctx, name)
 }
 
 func (w *Watcher) Latest(name string) *cluster.Status {
@@ -143,8 +80,6 @@ func (w *Watcher) Latest(name string) *cluster.Status {
 	return w.last[name]
 }
 
-func (w *Watcher) LatestServices(name string) *cluster.ServiceHealth {
-	w.mu.Lock()
-	defer w.mu.Unlock()
-	return w.lastServices[name]
+func (w *Watcher) Samples(cluster, node string, span time.Duration) []Sample {
+	return w.samples.window(cluster, node, span, time.Now())
 }

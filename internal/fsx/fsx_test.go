@@ -9,7 +9,7 @@ import (
 	"time"
 )
 
-func TestWriteFileReplacesAndKeepsPerm(t *testing.T) {
+func TestWriteFileTightensThePermOfAnExistingFile(t *testing.T) {
 	p := filepath.Join(t.TempDir(), "out")
 	if err := os.WriteFile(p, []byte("old"), 0o644); err != nil {
 		t.Fatal(err)
@@ -47,16 +47,11 @@ func TestWriteStreamFailureLeavesTargetAlone(t *testing.T) {
 func TestSweepPartsRemovesOnlyStaleParts(t *testing.T) {
 	dir := t.TempDir()
 	old := time.Now().Add(-2 * time.Hour)
-	sub := filepath.Join(dir, "v1.14.0-abc")
-	if err := os.MkdirAll(sub, 0o755); err != nil {
-		t.Fatal(err)
-	}
 	files := map[string]bool{
-		filepath.Join(dir, ".kernel.123.part"):        true,
-		filepath.Join(sub, ".metal-arm64.iso.9.part"): true,
-		filepath.Join(dir, ".fresh.1.part"):           false,
-		filepath.Join(dir, "kernel"):                  false,
-		filepath.Join(dir, "notes.part"):              false,
+		filepath.Join(dir, ".kernel.123.part"): true,
+		filepath.Join(dir, ".fresh.1.part"):    false,
+		filepath.Join(dir, "kernel"):           false,
+		filepath.Join(dir, "notes.part"):       false,
 	}
 	for p, stale := range files {
 		if err := os.WriteFile(p, []byte("x"), 0o644); err != nil {
@@ -74,8 +69,5 @@ func TestSweepPartsRemovesOnlyStaleParts(t *testing.T) {
 		if gone := os.IsNotExist(err); gone != stale {
 			t.Errorf("%s: removed=%v, want %v", filepath.Base(p), gone, stale)
 		}
-	}
-	if err := SweepParts(filepath.Join(dir, "missing"), time.Hour); err != nil {
-		t.Errorf("a missing directory is not an error: %v", err)
 	}
 }

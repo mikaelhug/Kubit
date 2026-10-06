@@ -5,17 +5,22 @@ import (
 	"time"
 
 	"github.com/mikael/kubit/internal/cluster"
-	"github.com/mikael/kubit/internal/store"
 )
 
 func status(api bool, etcd bool, nodes ...cluster.NodeStatus) *cluster.Status {
 	return &cluster.Status{APIReachable: api, Etcd: cluster.EtcdStatus{Expected: 1, Members: 1, Healthy: etcd}, Nodes: nodes}
 }
 
-func ckinds(evs []store.EventRow) []string {
+func apply(c *confirm, st *cluster.Status) []transition { return c.Apply("c", badFacts("c", st)) }
+
+func tkinds(ts []transition) []string {
 	var out []string
-	for _, e := range evs {
-		out = append(out, e.Kind)
+	for _, t := range ts {
+		if t.raise != nil {
+			out = append(out, t.raise.Kind)
+		} else {
+			out = append(out, t.recovery.Kind)
+		}
 	}
 	return out
 }
@@ -24,82 +29,74 @@ func TestConfirmRaisesOnThirdTickAndClearsAtOnce(t *testing.T) {
 	c := newConfirm()
 	good := status(true, true, cluster.NodeStatus{Hostname: "a", TalosReachable: true, Registered: true, Ready: true})
 	bad := status(false, false, cluster.NodeStatus{Hostname: "a", TalosReachable: false, TalosError: "port closed", Registered: true, Ready: true})
-	if evs := c.Apply("c", good); len(evs) != 0 {
-		t.Fatalf("healthy: %v", ckinds(evs))
+	if ts := apply(c, good); len(ts) != 0 {
+		t.Fatalf("healthy: %v", tkinds(ts))
 	}
 	for i := 1; i < confirmAfter; i++ {
-		if evs := c.Apply("c", bad); len(evs) != 0 {
-			t.Fatalf("tick %d must not alert yet: %v", i, ckinds(evs))
+		if ts := apply(c, bad); len(ts) != 0 {
+			t.Fatalf("tick %d must not alert yet: %v", i, tkinds(ts))
 		}
 	}
-	evs := c.Apply("c", bad)
-	if len(evs) != 3 {
-		t.Fatalf("third tick must raise three alerts, got %v", ckinds(evs))
+	ts := apply(c, bad)
+	if len(ts) != 3 {
+		t.Fatalf("third tick must raise three alerts, got %v", tkinds(ts))
 	}
-	if evs := c.Apply("c", bad); len(evs) != 0 {
-		t.Fatalf("open alerts are not re-raised: %v", ckinds(evs))
+	for _, tr := range ts {
+		if tr.raise == nil || !tr.raise.Notify {
+			t.Errorf("a transition seen by this process notifies: %+v", tr)
+		}
 	}
-	evs = c.Apply("c", good)
-	if len(evs) != 3 {
-		t.Fatalf("recovery must close all three at once, got %v", ckinds(evs))
+	if ts := apply(c, bad); len(ts) != 0 {
+		t.Fatalf("open alerts are not re-raised: %v", tkinds(ts))
 	}
-	for _, e := range evs {
-		if e.Severity != "info" {
-			t.Errorf("recovery %s must be info", e.Kind)
+	ts = apply(c, good)
+	if len(ts) != 3 {
+		t.Fatalf("recovery must close all three at once, got %v", tkinds(ts))
+	}
+	for _, tr := range ts {
+		if tr.raise != nil || tr.recovery.Severity != "info" || tr.resolves == "" {
+			t.Errorf("recovery %+v", tr)
 		}
 	}
 }
 
 func TestConfirmBlipIsSilent(t *testing.T) {
 	c := newConfirm()
-	good := status(true, true)
-	bad := status(false, true)
-	c.Apply("c", good)
-	if evs := c.Apply("c", bad); len(evs) != 0 {
-		t.Fatalf("one failed tick: %v", ckinds(evs))
+	apply(c, status(true, true))
+	if ts := apply(c, status(false, true)); len(ts) != 0 {
+		t.Fatalf("one failed tick: %v", tkinds(ts))
 	}
-	if evs := c.Apply("c", good); len(evs) != 0 {
-		t.Fatalf("recovery of an unraised alert must be silent: %v", ckinds(evs))
+	if ts := apply(c, status(true, true)); len(ts) != 0 {
+		t.Fatalf("recovery of an unraised alert must be silent: %v", tkinds(ts))
 	}
 }
 
-func TestConfirmResetAfterGap(t *testing.T) {
+func TestConfirmRestartsCountingAfterASleep(t *testing.T) {
 	c := newConfirm()
 	bad := status(false, true)
-	c.Apply("c", bad)
-	c.Apply("c", bad)
+	apply(c, bad)
+	apply(c, bad)
 	c.Reset()
-	if evs := c.Apply("c", bad); len(evs) != 0 {
-		t.Fatalf("counting restarts after a gap: %v", ckinds(evs))
+	if ts := apply(c, bad); len(ts) != 0 {
+		t.Fatalf("counting restarts after a gap: %v", tkinds(ts))
 	}
 }
 
-func TestConfirmSeedKeepsOpenAlerts(t *testing.T) {
+func TestRestartedLoopDoesNotReRaiseOpenAlerts(t *testing.T) {
 	c := newConfirm()
-	c.Seed([]store.EventRow{{Kind: "api.unreachable", Severity: "critical"}})
-	if evs := c.Apply("c", status(false, true)); len(evs) != 0 {
-		t.Fatalf("seeded alert must not be re-raised: %v", ckinds(evs))
+	c.Seed([]Event{{Kind: "api.unreachable", Severity: "critical", Open: true}})
+	if ts := apply(c, status(false, true)); len(ts) != 0 {
+		t.Fatalf("seeded alert must not be re-raised: %v", tkinds(ts))
 	}
-	evs := c.Apply("c", status(true, true))
-	if len(evs) != 1 || evs[0].Kind != "api.back" {
-		t.Fatalf("seeded alert must clear on recovery, got %v", ckinds(evs))
-	}
-}
-
-func TestUnconfirmedDropsReachabilityKinds(t *testing.T) {
-	in := []store.EventRow{{Kind: "talos.unreachable"}, {Kind: "talos.back"}, {Kind: "talos.version"}, {Kind: "api.unreachable"}, {Kind: "etcd.members"}}
-	got := ckinds(unconfirmed(in))
-	if len(got) != 2 || got[0] != "talos.version" || got[1] != "etcd.members" {
-		t.Fatalf("got %v", got)
+	ts := apply(c, status(true, true))
+	if len(ts) != 1 || ts[0].recovery.Kind != "api.back" || ts[0].resolves != "api.unreachable" {
+		t.Fatalf("seeded alert must clear on recovery, got %v", tkinds(ts))
 	}
 }
 
-func TestIsGap(t *testing.T) {
+func TestATickSpanningASleepIsAGap(t *testing.T) {
 	iv := 15 * time.Second
 	t0 := time.Date(2026, 9, 19, 12, 0, 0, 0, time.UTC)
-	if isGap(time.Time{}, t0, t0.Add(time.Second), iv) {
-		t.Error("first tick is never a gap")
-	}
 	if isGap(t0, t0.Add(15*time.Second), t0.Add(16*time.Second), iv) {
 		t.Error("a regular tick is not a gap")
 	}
@@ -111,7 +108,7 @@ func TestIsGap(t *testing.T) {
 	}
 }
 
-func TestOfflineNeedsConfirmation(t *testing.T) {
+func TestObserverGoesOfflineOnlyAfterThreeBlindTicks(t *testing.T) {
 	w := &Watcher{observer: ObserverState{Online: true}}
 	var flips []bool
 	w.OnObserver = func(o ObserverState) { flips = append(flips, o.Online) }

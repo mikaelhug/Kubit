@@ -1,14 +1,16 @@
 package store
 
 import (
-	"context"
-	"database/sql"
-	"encoding/json"
 	"slices"
-	"strings"
+	"sort"
 	"time"
 
 	"github.com/mikael/kubit/internal/netx"
+)
+
+const (
+	stateMaintenance = "maintenance"
+	stateConfigured  = "configured"
 )
 
 type Machine struct {
@@ -19,19 +21,13 @@ type Machine struct {
 	IPsSeen      []string `json:"ipsSeen,omitempty"`
 	Cluster      string   `json:"cluster"`
 	Hostname     string   `json:"hostname"`
-	Pool         string   `json:"pool"`
 	Role         string   `json:"role"`
 	Arch         string   `json:"arch"`
-	Source       string   `json:"source"`
 	State        string   `json:"state"`
 	Hardware     []byte   `json:"-"`
 	TalosVersion string   `json:"talosVersion"`
-	FirstSeen    string   `json:"firstSeen"`
 	LastSeen     string   `json:"lastSeen"`
-	UpdatedAt    string   `json:"updatedAt"`
 }
-
-type NodeRow = Machine
 
 type Kind string
 
@@ -46,9 +42,9 @@ func (m *Machine) Kind() Kind {
 	switch {
 	case m.Cluster != "":
 		return KindMember
-	case m.State == "maintenance":
+	case m.State == stateMaintenance:
 		return KindMaintenance
-	case m.State == "configured":
+	case m.State == stateConfigured:
 		return KindConfigured
 	default:
 		return KindOffline
@@ -60,10 +56,8 @@ func (m *Machine) Talos() bool {
 	return k == KindMember || k == KindMaintenance
 }
 
-const byIPOrMAC = ` WHERE ip = ? OR mac = ?`
-
-func ipArgs(ip string, set ...any) []any {
-	return append(set, ip, "ip:"+ip)
+func (m *Machine) unassign(state string) {
+	m.Cluster, m.Hostname, m.Role, m.State = "", "", "", state
 }
 
 func MachineKey(mac, ip string) string {
@@ -73,91 +67,104 @@ func MachineKey(mac, ip string) string {
 	return "ip:" + ip
 }
 
-const machineCols = `mac, uuid, serial, COALESCE(ip,''), ips_seen, COALESCE(cluster,''), hostname, pool, role, arch, source, state, hardware, talos_version, first_seen, COALESCE(last_seen,''), updated_at`
+const lastSeenEvery = 5 * time.Second
 
-func scanMachine(sc scanner) (*Machine, error) {
-	var m Machine
-	var hw, seen string
-	if err := sc.Scan(&m.MAC, &m.UUID, &m.Serial, &m.IP, &seen, &m.Cluster, &m.Hostname, &m.Pool, &m.Role, &m.Arch, &m.Source, &m.State, &hw, &m.TalosVersion, &m.FirstSeen, &m.LastSeen, &m.UpdatedAt); err != nil {
-		return nil, err
-	}
-	m.Hardware = []byte(hw)
-	_ = json.Unmarshal([]byte(seen), &m.IPsSeen)
-	return &m, nil
-}
-
-func (s *Store) UpsertNode(ctx context.Context, n Machine) error {
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback()
+func (s *Store) UpsertNode(n Machine) {
+	s.mu.Lock()
 	key := MachineKey(n.MAC, n.IP)
 	if n.MAC == "" && n.IP != "" {
-		if existing, err := machineByIP(ctx, tx, n.IP); err == nil {
-			key = existing.MAC
+		if k, ok := s.keyByIP(n.IP); ok {
+			key = k
 		}
 	}
-	var moved int64
+	var changed []string
+	removed := false
+	prev, had := s.machines[key]
+	if ghost, ok := s.machines["ip:"+n.IP]; ok && n.MAC != "" && n.IP != "" {
+		delete(s.machines, "ip:"+n.IP)
+		removed = true
+		if !had {
+			prev, had = ghost, true
+		}
+	}
 	if n.IP != "" {
-		res, err := tx.ExecContext(ctx, `UPDATE machines SET ip = NULL WHERE ip = ? AND mac != ?`, n.IP, key)
-		if err != nil {
-			return err
-		}
-		moved, _ = res.RowsAffected()
-	}
-	before, seen := machineFingerprint(ctx, tx, key)
-	hw := string(n.Hardware)
-	if hw == "" {
-		hw = "{}"
-	}
-	prev, _ := machineByMAC(ctx, tx, key)
-	ips := []string{}
-	if prev != nil {
-		ips = prev.IPsSeen
-		if prev.IP != "" && prev.IP != n.IP && !slices.Contains(ips, prev.IP) {
-			ips = append(ips, prev.IP)
+		for k, m := range s.machines {
+			if k != key && m.IP == n.IP {
+				m.IP = ""
+				s.machines[k] = m
+				changed = append(changed, k)
+			}
 		}
 	}
-	ipsJSON, _ := json.Marshal(ips)
-	var cluster any
-	if n.Cluster != "" {
-		cluster = n.Cluster
+	next := merge(prev, n, had)
+	next.MAC = key
+	next.LastSeen = time.Now().UTC().Format(time.RFC3339Nano)
+	s.machines[key] = next
+	s.mu.Unlock()
+	if !had || !same(prev, next) || !seenWithin(prev.LastSeen, lastSeenEvery) {
+		changed = append(changed, key)
 	}
-	if _, err := tx.ExecContext(ctx, `
-		INSERT INTO machines (mac, uuid, serial, ip, ips_seen, cluster, hostname, pool, role, arch, source, state, hardware, talos_version, last_seen)
-		VALUES (?, ?, ?, NULLIF(?, ''), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, `+sqlNow+`)
-		ON CONFLICT(mac) DO UPDATE SET
-			uuid          = CASE WHEN excluded.uuid = '' THEN machines.uuid ELSE excluded.uuid END,
-			serial        = CASE WHEN excluded.serial = '' THEN machines.serial ELSE excluded.serial END,
-			ip            = COALESCE(excluded.ip, machines.ip),
-			ips_seen      = excluded.ips_seen,
-			cluster       = CASE WHEN excluded.state = 'maintenance' AND excluded.cluster IS NULL THEN NULL ELSE COALESCE(excluded.cluster, machines.cluster) END,
-			hostname      = CASE WHEN excluded.state = 'maintenance' AND excluded.cluster IS NULL THEN '' WHEN excluded.hostname = '' THEN machines.hostname ELSE excluded.hostname END,
-			pool          = CASE WHEN excluded.state = 'maintenance' AND excluded.cluster IS NULL THEN '' WHEN excluded.pool = '' THEN machines.pool ELSE excluded.pool END,
-			role          = CASE WHEN excluded.state = 'maintenance' AND excluded.cluster IS NULL THEN '' WHEN excluded.role = '' THEN machines.role ELSE excluded.role END,
-			arch          = CASE WHEN excluded.arch = '' THEN machines.arch ELSE excluded.arch END,
-			source        = excluded.source,
-			state         = CASE WHEN excluded.state = '' THEN machines.state ELSE excluded.state END,
-			hardware      = CASE WHEN excluded.hardware = '{}' THEN machines.hardware ELSE excluded.hardware END,
-			talos_version = CASE WHEN excluded.talos_version = '' THEN machines.talos_version ELSE excluded.talos_version END,
-			last_seen     = excluded.last_seen,
-			system_split  = CASE WHEN excluded.state = 'maintenance' AND excluded.cluster IS NULL THEN 0 ELSE machines.system_split END,
-			updated_at    = `+sqlNow,
-		key, n.UUID, n.Serial, n.IP, string(ipsJSON), cluster, n.Hostname, n.Pool, n.Role, n.Arch, n.Source, n.State, hw, n.TalosVersion); err != nil {
-		return err
+	for _, k := range changed {
+		s.notify(Change{Table: "machines", Key: k})
 	}
-	if after, _ := machineFingerprint(ctx, tx, key); moved == 0 && before != "" && before == after && seenWithin(seen, lastSeenEvery) {
-		return nil
+	if removed {
+		s.notify(Change{Table: "machines"})
 	}
-	return s.done(tx.Commit(), Change{Table: "machines", Cluster: n.Cluster, Key: key, Op: "put"})
 }
 
-const lastSeenEvery = 30 * time.Second
+func (s *Store) Touch(key string) {
+	s.mu.Lock()
+	m, ok := s.machines[key]
+	stale := ok && !seenWithin(m.LastSeen, lastSeenEvery)
+	if ok {
+		m.LastSeen = time.Now().UTC().Format(time.RFC3339Nano)
+		s.machines[key] = m
+	}
+	s.mu.Unlock()
+	if stale {
+		s.notify(Change{Table: "machines", Key: key})
+	}
+}
 
-func machineFingerprint(ctx context.Context, q rowQuerier, mac string) (fingerprint, lastSeen string) {
-	_ = q.QueryRowContext(ctx, `SELECT json_array(uuid, serial, ip, ips_seen, cluster, hostname, pool, role, arch, source, state, hardware, talos_version, system_split), COALESCE(last_seen, '') FROM machines WHERE mac = ?`, mac).Scan(&fingerprint, &lastSeen)
-	return fingerprint, lastSeen
+func merge(prev, n Machine, had bool) Machine {
+	if !had {
+		if n.IPsSeen == nil {
+			n.IPsSeen = []string{}
+		}
+		return n
+	}
+	out := prev
+	out.IPsSeen = slices.Clone(prev.IPsSeen)
+	if prev.IP != "" && n.IP != "" && prev.IP != n.IP && !slices.Contains(out.IPsSeen, prev.IP) {
+		out.IPsSeen = append(out.IPsSeen, prev.IP)
+	}
+	pick := func(dst *string, v string) {
+		if v != "" {
+			*dst = v
+		}
+	}
+	pick(&out.UUID, n.UUID)
+	pick(&out.Serial, n.Serial)
+	pick(&out.IP, n.IP)
+	pick(&out.Arch, n.Arch)
+	pick(&out.State, n.State)
+	pick(&out.TalosVersion, n.TalosVersion)
+	if len(n.Hardware) > 0 {
+		out.Hardware = n.Hardware
+	}
+	if n.State == stateMaintenance && n.Cluster == "" {
+		out.Cluster, out.Hostname, out.Role = "", "", ""
+		return out
+	}
+	pick(&out.Cluster, n.Cluster)
+	pick(&out.Hostname, n.Hostname)
+	pick(&out.Role, n.Role)
+	return out
+}
+
+func same(a, b Machine) bool {
+	return a.UUID == b.UUID && a.Serial == b.Serial && a.IP == b.IP && slices.Equal(a.IPsSeen, b.IPsSeen) && a.Cluster == b.Cluster && a.Hostname == b.Hostname &&
+		a.Role == b.Role && a.Arch == b.Arch && a.State == b.State && string(a.Hardware) == string(b.Hardware) && a.TalosVersion == b.TalosVersion
 }
 
 func seenWithin(ts string, d time.Duration) bool {
@@ -165,124 +172,94 @@ func seenWithin(ts string, d time.Duration) bool {
 	return err == nil && time.Since(t) < d
 }
 
-type rowQuerier interface {
-	QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row
-}
-
-func (s *Store) GetMachine(ctx context.Context, mac string) (*Machine, error) {
-	return machineByMAC(ctx, s.db, mac)
-}
-
-func (s *Store) MachineIPs(ctx context.Context, macs []string) (map[string]string, error) {
-	out := map[string]string{}
-	if len(macs) == 0 {
-		return out, nil
+func (s *Store) keyByIP(ip string) (string, bool) {
+	if _, ok := s.machines["ip:"+ip]; ok {
+		return "ip:" + ip, true
 	}
-	args := make([]any, len(macs))
-	for i, mac := range macs {
-		args[i] = netx.MACKey(mac)
-	}
-	rows, err := s.db.QueryContext(ctx, `SELECT mac, COALESCE(ip,'') FROM machines WHERE mac IN (?`+strings.Repeat(`, ?`, len(macs)-1)+`)`, args...)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	for rows.Next() {
-		var mac, ip string
-		if err := rows.Scan(&mac, &ip); err != nil {
-			return nil, err
+	for k, m := range s.machines {
+		if m.IP == ip {
+			return k, true
 		}
-		out[mac] = ip
 	}
-	return out, rows.Err()
+	return "", false
 }
 
-func machineByMAC(ctx context.Context, q rowQuerier, mac string) (*Machine, error) {
-	m, err := scanMachine(q.QueryRowContext(ctx, `SELECT `+machineCols+` FROM machines WHERE mac = ?`, netx.MACKey(mac)))
-	return m, notFound(err, "machine %s", mac)
-}
-
-func (s *Store) GetNode(ctx context.Context, ip string) (*Machine, error) {
-	return machineByIP(ctx, s.db, ip)
-}
-
-func machineByIP(ctx context.Context, q rowQuerier, ip string) (*Machine, error) {
-	m, err := scanMachine(q.QueryRowContext(ctx, `SELECT `+machineCols+` FROM machines`+byIPOrMAC, ipArgs(ip)...))
-	return m, notFound(err, "machine at %s", ip)
-}
-
-func (s *Store) ListNodes(ctx context.Context, cluster string) ([]Machine, error) {
-	q := `SELECT ` + machineCols + ` FROM machines`
-	var args []any
-	if cluster != "" {
-		q += ` WHERE cluster = ?`
-		args = append(args, cluster)
+func (s *Store) GetMachine(mac string) (*Machine, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	m, ok := s.machines[netx.MACKey(mac)]
+	if !ok {
+		return nil, notFound("machine %s", mac)
 	}
-	return queryAll(ctx, s.db, scanMachine, q+` ORDER BY cluster, role, hostname, ip`, args...)
+	return &m, nil
 }
 
-func (s *Store) SetNodeState(ctx context.Context, ip, state string) error {
-	return s.updateAt(ctx, ip, "", `state = ?`, state)
-}
-
-func (s *Store) UnassignNode(ctx context.Context, ip, state string) error {
-	return s.updateAt(ctx, ip, "", `cluster = NULL, hostname = '', pool = '', role = '', state = ?, machine_config = NULL, system_split = 0`, state)
-}
-
-func (s *Store) UnassignMachine(ctx context.Context, mac, ip, state string) error {
-	if mac == "" {
-		return s.UnassignNode(ctx, ip, state)
+func (s *Store) GetNode(ip string) (*Machine, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	k, ok := s.keyByIP(ip)
+	if !ok {
+		return nil, notFound("machine at %s", ip)
 	}
+	m := s.machines[k]
+	return &m, nil
+}
+
+func (s *Store) ListNodes(cluster string) []Machine {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := []Machine{}
+	for _, m := range s.machines {
+		if cluster == "" || m.Cluster == cluster {
+			out = append(out, m)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool {
+		a, b := out[i], out[j]
+		if a.Cluster != b.Cluster {
+			return a.Cluster < b.Cluster
+		}
+		if a.Role != b.Role {
+			return a.Role < b.Role
+		}
+		if a.Hostname != b.Hostname {
+			return a.Hostname < b.Hostname
+		}
+		return a.IP < b.IP
+	})
+	return out
+}
+
+func (s *Store) SetNodeState(ip, state string) {
+	s.updateAt(ip, func(m *Machine) { m.State = state })
+}
+
+func (s *Store) UnassignMachine(mac, ip, state string) {
+	s.mu.Lock()
 	key := netx.MACKey(mac)
-	res, err := s.db.ExecContext(ctx, `UPDATE machines SET cluster = NULL, hostname = '', pool = '', role = '', state = ?, machine_config = NULL, system_split = 0, updated_at = `+sqlNow+` WHERE mac = ?`, state, key)
-	if err != nil {
-		return err
+	m, ok := s.machines[key]
+	if mac != "" && ok {
+		m.unassign(state)
+		s.machines[key] = m
 	}
-	if n, _ := res.RowsAffected(); n == 0 {
-		return s.UnassignNode(ctx, ip, state)
+	s.mu.Unlock()
+	if mac != "" && ok {
+		s.notify(Change{Table: "machines", Key: key})
+		return
 	}
-	s.notify(Change{Table: "machines", Key: key, Op: "put"})
-	return nil
+	s.updateAt(ip, func(m *Machine) { m.unassign(state) })
 }
 
-func (s *Store) updateAt(ctx context.Context, ip, cluster, set string, args ...any) error {
-	macs, err := queryAll(ctx, s.db, func(sc scanner) (*string, error) {
-		var mac string
-		return &mac, sc.Scan(&mac)
-	}, `UPDATE machines SET `+set+`, updated_at = `+sqlNow+byIPOrMAC+` RETURNING mac`, ipArgs(ip, args...)...)
-	if err != nil {
-		return err
+func (s *Store) updateAt(ip string, fn func(*Machine)) {
+	s.mu.Lock()
+	k, ok := s.keyByIP(ip)
+	if ok {
+		m := s.machines[k]
+		fn(&m)
+		s.machines[k] = m
 	}
-	for _, mac := range macs {
-		s.notify(Change{Table: "machines", Cluster: cluster, Key: mac, Op: "put"})
+	s.mu.Unlock()
+	if ok {
+		s.notify(Change{Table: "machines", Key: k})
 	}
-	return nil
-}
-
-func (s *Store) PutNodeMachineConfig(ctx context.Context, ip string, cfg []byte, systemSplit bool) error {
-	sealed, err := s.crypto.Seal(cfg)
-	if err != nil {
-		return err
-	}
-	_, err = s.db.ExecContext(ctx, `UPDATE machines SET machine_config = ?, system_split = MAX(system_split, ?)`+byIPOrMAC, ipArgs(ip, sealed, systemSplit)...)
-	return err
-}
-
-func (s *Store) GetNodeMachineConfig(ctx context.Context, ip string) ([]byte, error) {
-	cfg, _, err := s.NodeMachineConfigSplit(ctx, ip)
-	return cfg, err
-}
-
-func (s *Store) NodeMachineConfigSplit(ctx context.Context, ip string) ([]byte, bool, error) {
-	var sealed []byte
-	var split bool
-	err := s.db.QueryRowContext(ctx, `SELECT machine_config, system_split FROM machines`+byIPOrMAC, ipArgs(ip)...).Scan(&sealed, &split)
-	if err == nil && sealed == nil {
-		err = sql.ErrNoRows
-	}
-	if err := notFound(err, "machine config for %s", ip); err != nil {
-		return nil, false, err
-	}
-	cfg, err := s.crypto.Open(sealed)
-	return cfg, split, err
 }

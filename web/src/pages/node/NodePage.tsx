@@ -1,10 +1,12 @@
-import { useEffect, useState } from 'preact/hooks'
+import { useEffect } from 'preact/hooks'
 import { api, type Inventory, type NodeRow, type NodeSpec } from '../../api'
+import { AddMachines, Declared } from '../../components/AddMachine'
+import { RemoveNode } from '../../components/RemoveNode'
 import { Tabs } from '../../components/Tabs'
-import { Breadcrumbs, CopyButton, ErrorBox, Pill, SeenAgo } from '../../components/ui'
+import { Breadcrumbs, ErrorBox, Pill, SeenAgo } from '../../components/ui'
 import { KindPill, TypePill } from '../../components/Machine'
-import { nodeEntry } from '../../machine'
 import { clusters, live, machineList, machines, statuses } from '../../store'
+import { useQueryParams } from '../../query'
 import { useLive } from '../../useLive'
 import { HardwareTab } from './Hardware'
 import { KubernetesTab } from './Kubernetes'
@@ -16,11 +18,12 @@ import { talosLive } from './talos'
 type TabId = 'overview' | 'hardware' | 'kubernetes' | 'services' | 'logs'
 
 export function NodePage({ ip: ipParam, mac }: { ip?: string; mac?: string }) {
-  const [tab, setTab] = useState<TabId>('overview')
+  const [query, setQuery] = useQueryParams()
+  const tab = (query.tab ?? 'overview') as TabId
   const node = mac ? machines.value.get(mac.toLowerCase()) ?? null : machineList.value.find((n) => n.ip === ipParam) ?? null
   const ip = node?.ip ?? ipParam ?? ''
   useEffect(() => {
-    if (node && !mac) history.replaceState(null, '', `/machines/${node.mac}`)
+    if (node && !mac) history.replaceState(null, '', `/machines/${node.mac}${location.search}`)
   }, [node?.mac, mac])
   const talos = talosLive(node)
   const { data: inv, error: invErr } = useLive(() => api.inventory(ip), [ip], talos.scopes, { enabled: !!node?.talos, refresh: talos.refresh })
@@ -43,19 +46,20 @@ export function NodePage({ ip: ipParam, mac }: { ip?: string; mac?: string }) {
         <div class="flex flex-wrap items-center gap-3 mt-2 mb-3">
           <h1 class="text-xl font-semibold">{title}</h1>
           {node && !node.cluster && <KindPill m={node} />}
-          {node && <TypePill m={node} />}
+          {node && <TypePill m={node} inv={inv} />}
           {node?.talos && <ReachPill node={node} inv={inv} invErr={invErr} />}
           {k8s ? <Pill tone={k8s.ready ? 'good' : 'warn'}>{k8s.ready ? 'Ready' : 'NotReady'}</Pill> : null}
           {k8s?.unschedulable && <Pill tone="warn">cordoned</Pill>}
-          {node?.kind === 'maintenance' && <span class="ml-auto"><CopyButton className="btn btn-primary btn-sm" label="Copy node entry" text={() => nodeEntry(node)} /></span>}
+          {node?.kind === 'maintenance' && <span class="ml-auto">{node.declared ? <Declared m={node} /> : <AddMachines machines={[node]} />}</span>}
+          {node?.kind !== 'maintenance' && cluster && spec && <span class="ml-auto"><RemoveNode cluster={cluster.name} hostname={spec.hostname} /></span>}
         </div>
-        <Tabs active={shown} onSelect={(t) => setTab(t as TabId)} tabs={tabs} />
+        <Tabs active={shown} onSelect={(t) => setQuery({ tab: t === 'overview' ? undefined : t })} tabs={tabs} />
       </header>
       <div class="p-5 flex flex-col gap-4 max-w-[1300px]">
         <ErrorBox error={!node && live.value ? `No machine ${mac ?? ipParam} is known.` : null} />
         {shown === 'overview' && <OverviewTab inv={inv} invErr={invErr} k8s={k8s} k8sErr={k8sErr} node={node} spec={spec} storage={cluster?.spec.spec.platform.longhorn?.enabled ? cluster.spec.spec.storage : undefined} />}
         {shown === 'hardware' && <HardwareTab inv={inv} invErr={invErr} node={node} />}
-        {shown === 'kubernetes' && <KubernetesTab k8s={k8s} err={k8sErr} />}
+        {shown === 'kubernetes' && <KubernetesTab cluster={node?.cluster ?? ''} k8s={k8s} err={k8sErr} />}
         {shown === 'services' && <ServicesTab ip={ip} node={node} />}
         {shown === 'logs' && <LogsTab ip={ip} node={node} />}
       </div>

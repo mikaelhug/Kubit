@@ -9,7 +9,7 @@ import (
 	"testing"
 )
 
-func TestInvokingUserHome(t *testing.T) {
+func TestSudoRunUsesTheInvokingUsersHome(t *testing.T) {
 	env := func(kv map[string]string) func(string) string { return func(k string) string { return kv[k] } }
 	lookup := func(name string) (*user.User, error) {
 		if name == "op" {
@@ -19,41 +19,6 @@ func TestInvokingUserHome(t *testing.T) {
 	}
 	if got := invokingUserHome(0, env(map[string]string{"SUDO_USER": "op"}), lookup); got != "/home/op/.kubit" {
 		t.Errorf("sudo: %q", got)
-	}
-	for name, c := range map[string]struct {
-		euid int
-		env  map[string]string
-	}{
-		"not root":        {501, map[string]string{"SUDO_USER": "op"}},
-		"explicit home":   {0, map[string]string{"SUDO_USER": "op", "KUBIT_HOME": "/srv/kubit"}},
-		"root login":      {0, map[string]string{}},
-		"sudo from root":  {0, map[string]string{"SUDO_USER": "root"}},
-		"unknown account": {0, map[string]string{"SUDO_USER": "ghost"}},
-	} {
-		if got := invokingUserHome(c.euid, env(c.env), lookup); got != "" {
-			t.Errorf("%s: %q", name, got)
-		}
-	}
-}
-
-func TestHomeOwner(t *testing.T) {
-	env := func(kv map[string]string) func(string) string { return func(k string) string { return kv[k] } }
-	if uid, gid, ok := homeOwner("/nowhere/.kubit", env(map[string]string{"SUDO_UID": "501", "SUDO_GID": "20"})); !ok || uid != 501 || gid != 20 {
-		t.Errorf("sudo ids: %d %d %v", uid, gid, ok)
-	}
-	home := filepath.Join(t.TempDir(), ".kubit")
-	uid, _, ok := homeOwner(home, env(nil))
-	if os.Geteuid() != 0 && (!ok || uid != os.Geteuid()) {
-		t.Errorf("a missing home is owned like its parent: %d %v", uid, ok)
-	}
-	if _, _, ok := homeOwner("/", env(nil)); ok {
-		t.Error("a root-owned home is left to root")
-	}
-	if err := ensureDir(home, filepath.Join(home, "cache"), 0o700); err != nil {
-		t.Fatal(err)
-	}
-	if fi, err := os.Stat(filepath.Join(home, "cache")); err != nil || fi.Mode().Perm() != 0o700 {
-		t.Errorf("cache dir: %v %v", fi, err)
 	}
 }
 

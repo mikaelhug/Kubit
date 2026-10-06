@@ -1,23 +1,8 @@
-import { fmt, type NodeDetail, type PodSummary } from '../../api'
-import { DataTable, type Column } from '../../components/DataTable'
-import { Age } from '../../components/Time'
-import { Notice, Pill, Section, StatusDot } from '../../components/ui'
-import { createdSort } from '../../time'
-import { phaseTone } from '../../tone'
+import { fmt, type NodeDetail } from '../../api'
+import { PodTable } from '../../components/PodTable'
+import { Notice, Section, StatusDot } from '../../components/ui'
 
-const columns: Column<PodSummary>[] = [
-  { id: 'ns', header: 'Namespace', sort: (p) => p.namespace, cell: (p) => p.namespace },
-  { id: 'name', header: 'Pod', sort: (p) => p.name, mono: true, cell: (p) => p.name },
-  { id: 'phase', header: 'Phase', sort: (p) => p.phase, cell: (p) => <Pill tone={phaseTone(p.phase)}>{p.phase}</Pill> },
-  { id: 'ready', header: 'Ready', cell: (p) => p.ready },
-  { id: 'restarts', header: 'Restarts', align: 'right', sort: (p) => p.restarts, cell: (p) => <span class={p.restarts > 3 ? 'text-warn' : ''}>{p.restarts}</span> },
-  { id: 'owner', header: 'Owner', sort: (p) => p.owner ?? '', cell: (p) => p.owner || '—' },
-  { id: 'cpu', header: 'CPU use / req', align: 'right', sort: (p) => p.usageCpuMilli ?? 0, cell: (p) => <>{fmt.cores(p.usageCpuMilli ?? 0)}<span class="text-muted"> / {p.cpuMilli ? fmt.cores(p.cpuMilli) : '—'}</span></> },
-  { id: 'mem', header: 'Mem use / req', align: 'right', sort: (p) => p.usageMemBytes ?? 0, cell: (p) => <>{fmt.bytes(p.usageMemBytes ?? 0)}<span class="text-muted"> / {p.memBytes ? fmt.bytes(p.memBytes) : '—'}</span></> },
-  { id: 'age', header: 'Age', sort: createdSort, cell: (p) => <span class="text-muted"><Age at={p.createdAt} fallback={p.age} /></span> },
-]
-
-export function KubernetesTab({ k8s, err }: { k8s: NodeDetail | null; err: string | null }) {
+export function KubernetesTab({ cluster, k8s, err }: { cluster: string; k8s: NodeDetail | null; err: string | null }) {
   if (err) return <Notice tone={err.includes('not a cluster member') ? 'muted' : 'bad'}>{err}</Notice>
   if (!k8s) return <div class="text-muted">Loading</div>
   const pods = k8s.pods ?? []
@@ -39,8 +24,8 @@ export function KubernetesTab({ k8s, err }: { k8s: NodeDetail | null; err: strin
           })}
         </div>
       </Section>
-      <Section title={`Pods on this node (${pods.length})`} help="Usage from metrics-server; requests from the pod specs.">
-        <DataTable id="node-pods" columns={columns} rows={pods} rowKey={(p) => p.namespace + '/' + p.name} defaultSort={{ id: 'ns', dir: 'asc' }} />
+      <Section title={`Pods on this node (${pods.length})`}>
+        <PodTable cluster={cluster} id="node-pods" pods={pods} hide={['node']} />
       </Section>
       <Section title="Labels">
         <div class="panel p-3 flex flex-wrap gap-1.5">

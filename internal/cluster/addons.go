@@ -2,6 +2,7 @@ package cluster
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"net"
@@ -13,26 +14,26 @@ import (
 )
 
 type AddonStatus struct {
-	Key       string         `json:"key"`
-	Enabled   bool           `json:"enabled"`
-	Values    map[string]any `json:"values,omitempty"`
-	Pinned    string         `json:"pinnedVersion,omitempty"`
-	Address   string         `json:"address,omitempty"`
-	Release   *tofu.Release  `json:"release,omitempty"`
-	Readiness *k8s.Readiness `json:"readiness,omitempty"`
-	State     string         `json:"state"`
+	Key       string           `json:"key"`
+	Enabled   bool             `json:"enabled"`
+	Values    map[string]any   `json:"values,omitempty"`
+	Pinned    string           `json:"pinnedVersion,omitempty"`
+	Address   string           `json:"address,omitempty"`
+	Release   *k8s.HelmRelease `json:"release,omitempty"`
+	Readiness *k8s.Readiness   `json:"readiness,omitempty"`
+	State     string           `json:"state"`
 }
 
-var addonMeta = []struct{ key, tofu, namespace string }{
-	{"metallb", "metallb", "metallb-system"},
-	{"traefik", "traefik", "traefik"},
-	{"gvisor", "gvisor", ""},
-	{"metricsServer", "metrics-server", "kube-system"},
-	{"certManager", "cert-manager", "cert-manager"},
-	{"flux", "flux", "flux-system"},
-	{"longhorn", "longhorn", "longhorn-system"},
-	{"builds", "builds", "kubit-builds"},
-	{"backup", "talos-backup", ""},
+var addonMeta = []struct{ key, tofu, namespace, release string }{
+	{"metallb", "metallb", "metallb-system", "metallb"},
+	{"traefik", "traefik", "traefik", "traefik"},
+	{"gvisor", "gvisor", "", ""},
+	{"metricsServer", "metrics-server", "kube-system", "metrics-server"},
+	{"certManager", "cert-manager", "cert-manager", "cert-manager"},
+	{"flux", "flux", "flux-system", "flux"},
+	{"longhorn", "longhorn", "longhorn-system", "longhorn"},
+	{"builds", "builds", "kubit-builds", ""},
+	{"backup", "talos-backup", "", ""},
 }
 
 func addonOf(ns string) (string, bool) {
@@ -71,7 +72,7 @@ func addonSpec(c *config.Cluster, key string) (bool, map[string]any) {
 	case "traefik":
 		return p.Traefik.Enabled, p.Traefik.Values
 	case "gvisor":
-		return p.GVisor.Enabled, p.GVisor.Values
+		return p.GVisor.Enabled, nil
 	case "metricsServer":
 		return p.MetricsServer.Enabled, p.MetricsServer.Values
 	case "certManager":
@@ -81,24 +82,21 @@ func addonSpec(c *config.Cluster, key string) (bool, map[string]any) {
 	case "longhorn":
 		return p.Longhorn.Enabled, p.Longhorn.Values
 	case "builds":
-		return p.Builds.Enabled, p.Builds.Values
+		return p.Builds.Enabled, nil
 	}
 	return false, nil
 }
 
 func (m *Manager) Addons(ctx context.Context, name string) ([]AddonStatus, error) {
-	c, _, err := m.LoadCluster(ctx, name)
+	c, _, err := m.LoadCluster(name)
 	if err != nil {
 		return nil, err
 	}
-	var releases []tofu.Release
-	if bin, err := m.tofuBin(ctx); err == nil {
-		releases, err = m.tofuRunner(name, bin, nil).Releases(ctx)
-		if m.addonErrorChanged(name, err) {
-			log.Printf("add-ons %s: %v", name, err)
-		}
-	}
 	kc, kerr := m.KubeClient(ctx, name)
+	var (
+		relMu   sync.Mutex
+		relErrs []error
+	)
 	out := make([]AddonStatus, len(addonMeta))
 	var wg sync.WaitGroup
 	for i, meta := range addonMeta {
@@ -109,19 +107,27 @@ func (m *Manager) Addons(ctx context.Context, name string) ([]AddonStatus, error
 		if meta.key == "builds" && c.RegistryIP() != "" {
 			st.Address = net.JoinHostPort(c.RegistryIP(), fmt.Sprint(config.RegistryPort))
 		}
-		for i := range releases {
-			if releases[i].Addon == meta.tofu {
-				st.Release = &releases[i]
-			}
-		}
 		chartless := pin == "" && meta.namespace != ""
-		if meta.namespace == "" || kerr != nil || (st.Release == nil && !enabled && !chartless) {
+		if meta.namespace == "" || kerr != nil {
 			st.State = addonState(*st, meta.namespace == "", chartless)
 			continue
 		}
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
+			if meta.release != "" {
+				rel, err := kc.HelmRelease(ctx, meta.namespace, meta.release)
+				if err != nil {
+					relMu.Lock()
+					relErrs = append(relErrs, err)
+					relMu.Unlock()
+				}
+				st.Release = rel
+			}
+			if st.Release == nil && !enabled && !chartless {
+				st.State = addonState(*st, false, chartless)
+				return
+			}
 			if r, err := kc.NamespaceReadiness(ctx, meta.namespace); err == nil {
 				st.Readiness = r
 			}
@@ -129,6 +135,9 @@ func (m *Manager) Addons(ctx context.Context, name string) ([]AddonStatus, error
 		}()
 	}
 	wg.Wait()
+	if err := errors.Join(relErrs...); m.addonErrorChanged(name, err) {
+		log.Printf("add-ons %s: %v", name, err)
+	}
 	return out, nil
 }
 

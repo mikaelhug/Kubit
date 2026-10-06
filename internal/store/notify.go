@@ -6,8 +6,6 @@ type Change struct {
 	Table   string
 	Cluster string
 	Key     string
-	Op      string
-	Node    string
 }
 
 type notifier struct {
@@ -22,20 +20,10 @@ func (s *Store) OnChange(fn func(Change)) {
 }
 
 func (s *Store) notify(c Change) {
-	if c.Table == "settings" || c.Table == "*" {
-		s.settings.invalidate()
-	}
 	s.n.mu.RLock()
 	fns := s.n.fns
 	s.n.mu.RUnlock()
 	for _, fn := range fns {
 		fn(c)
 	}
-}
-
-func (s *Store) done(err error, c Change) error {
-	if err == nil {
-		s.notify(c)
-	}
-	return err
 }

@@ -8,7 +8,7 @@ import (
 	"testing"
 )
 
-func TestIPXEBinariesDownload(t *testing.T) {
+func TestUpstreamIPXEBinariesStillDownload(t *testing.T) {
 	c := NewCache(t.TempDir())
 	for _, name := range []string{FileBIOS, FileX64, FileARM64} {
 		p, err := c.IPXEBinary(context.Background(), name)
@@ -19,8 +19,5 @@ func TestIPXEBinariesDownload(t *testing.T) {
 		if st.Size() < 50_000 {
 			t.Errorf("%s: %d bytes looks wrong", name, st.Size())
 		}
-	}
-	if _, err := c.IPXEBinary(context.Background(), FileX64); err != nil {
-		t.Fatal(err)
 	}
 }

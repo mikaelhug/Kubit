@@ -1,4 +1,4 @@
-import { type MachineKind, type NodeRow } from './api'
+import { fmt, type Inventory, type MachineKind, type NodeRow } from './api'
 import { statuses } from './store'
 import { later } from './time'
 import { type Tone } from './tone'
@@ -9,6 +9,8 @@ export const kindLabel: Record<MachineKind, string> = {
   configured: 'Talos, not managed here',
   offline: 'offline',
 }
+
+export const addable = (m: NodeRow) => m.kind === 'maintenance' && !m.declared
 
 export function kindTone(m: NodeRow): Tone {
   switch (m.kind) {
@@ -24,37 +26,28 @@ export function lastSeenOf(m: NodeRow) {
   return contact && later(contact, m.lastSeen) ? contact : m.lastSeen
 }
 
-function isVirtual(m?: NodeRow | null) {
-  const inv = m?.inventory
+function isVirtual(inv?: Inventory | null) {
   if (inv?.virtual) return true
   return /qemu|kvm|vmware|virtualbox|innotek|xen|virtual machine|apple virtualization|parallels|bochs|proxmox/i.test(`${inv?.manufacturer ?? ''} ${inv?.product ?? ''}`)
 }
-export function typeOf(m?: NodeRow | null): 'VM' | 'metal' { return isVirtual(m) ? 'VM' : 'metal' }
-export function modelOf(m?: NodeRow | null) {
-  const inv = m?.inventory
-  const name = [inv?.manufacturer, inv?.product].filter(Boolean).join(' ').replace(/\s+/g, ' ').trim()
-  return name || 'Unknown hardware'
+export function typeOf(inv?: Inventory | null): 'VM' | 'metal' { return isVirtual(inv) ? 'VM' : 'metal' }
+
+export function modelName(inv?: Inventory | null) {
+  const product = inv?.product ?? ''
+  const maker = inv?.manufacturer && !product.toLowerCase().startsWith(inv.manufacturer.toLowerCase()) ? inv.manufacturer : ''
+  return [maker, product].filter(Boolean).join(' ').replace(/\s+/g, ' ').trim() || 'Unknown hardware'
+}
+export const modelOf = (m?: NodeRow | null) => modelName(m?.inventory)
+
+export function diskCandidates(inv?: Inventory | null) {
+  return (inv?.disks ?? []).filter((d) => d.devPath && !d.readonly && !d.cdrom && d.transport !== 'usb').sort((a, b) => b.sizeBytes - a.sizeBytes)
+}
+export const installCandidates = (m?: NodeRow | null) => diskCandidates(m?.inventory)
+
+export function specsOf(inv?: Inventory | null) {
+  if (!inv) return ''
+  const disk = diskCandidates(inv)[0]
+  return [`${inv.cpus} CPU`, fmt.bytes(inv.memoryBytes), disk && `${fmt.bytes(disk.sizeBytes)}${disk.transport ? ` ${disk.transport}` : ''}`].filter(Boolean).join(' · ')
 }
 
-export function installCandidates(m?: NodeRow | null) {
-  return (m?.inventory?.disks ?? []).filter((d) => d.devPath && !d.readonly && !d.cdrom && d.transport !== 'usb').sort((a, b) => b.sizeBytes - a.sizeBytes)
-}
-
-
-
-export function nodeEntry(m: NodeRow, hostname = '') {
-  const inv = m.inventory
-  const disk = installCandidates(m).find((d) => !d.rotational) ?? installCandidates(m)[0]
-  const lines = [
-    `- hostname: ${hostname || inv?.hostname || `node-${m.mac.replaceAll(':', '').slice(-4)}`}`,
-    `  ip: ${m.ip}`,
-    `  mac: "${m.mac}"`,
-    `  role: worker`,
-    `  arch: ${inv?.arch || m.arch || 'amd64'}`,
-  ]
-  if (disk) lines.push(`  installDisk: { path: ${disk.devPath} }`)
-  if (inv?.kvm) lines.push('  kvm: true')
-  if (inv?.tpm) lines.push('  tpm: true')
-  if (inv?.watchdog) lines.push('  watchdog: true')
-  return lines.join('\n') + '\n'
-}
+export const roleLabel = (role?: string) => (role === 'controlplane' ? 'control plane' : 'worker')

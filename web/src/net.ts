@@ -1,4 +1,4 @@
-export function ip4(s: string): number | null {
+function ip4(s: string): number | null {
   const m = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(s.trim())
   if (!m) return null
   const p = m.slice(1).map(Number)
@@ -13,4 +13,5 @@ export function ipAt(range: string, i: number) {
   return start === null ? '' : fromInt(start + i)
 }
 
-export const subnet24 = (ip: string) => ip.replace(/\.\d+$/, '.0/24')
+
+export const addressOf = (cidr?: string) => (cidr ?? '').split('/')[0].trim()

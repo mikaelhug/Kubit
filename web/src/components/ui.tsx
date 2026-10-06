@@ -1,19 +1,38 @@
 import { Fragment, type ComponentChildren } from 'preact'
+import { createPortal } from 'preact/compat'
 import { useRef, useState } from 'preact/hooks'
-import { fmt } from '../api'
+import { fmt, type PlanSummary } from '../api'
 import { now } from '../clock'
 import { useEscape } from '../keys'
 import { toast } from '../store'
-import { severityTone, stateTone, toneBg, toneBorder, tonePill, toneText, type Tone } from '../tone'
+import { stateTone, toneBg, toneBorder, tonePill, toneText, type Tone } from '../tone'
 
 export function Pill({ tone, children, title }: { tone: Tone; children: ComponentChildren; title?: string }) {
   return <span class={`pill ${tonePill[tone]}`} title={title}>{children}</span>
 }
 
+export function planLabel(p?: PlanSummary): { text: string; tone: Tone; title?: string } {
+  if (!p) return { text: 'checking', tone: 'muted' }
+  switch (p.state) {
+    case 'applying': return { text: 'applying', tone: 'info', title: p.holder ? `kubit apply by ${p.holder}` : undefined }
+    case 'failed': return { text: 'plan failed', tone: 'bad', title: p.error }
+    case 'blocked': return { text: `${p.problems} problem${p.problems === 1 ? '' : 's'}`, tone: 'bad' }
+    case 'checking': return { text: 'planning', tone: 'muted' }
+  }
+  if (p.changes > 0) return { text: `${p.changes} change${p.changes === 1 ? '' : 's'}`, tone: 'info' }
+  return { text: 'in sync', tone: 'good', title: p.oneTime ? 'One-time housekeeping pending' : undefined }
+}
+
+export function PlanPill({ plan, href }: { plan?: PlanSummary; href?: string }) {
+  const l = planLabel(plan)
+  const pill = <Pill tone={l.tone} title={l.title}>{l.text}</Pill>
+  return href ? <a href={href} class="hover:opacity-80">{pill}</a> : pill
+}
+
 export function ClusterPill({ state, status }: { state: string; status?: { health?: string; openAlerts?: number; observerError?: string } | null }) {
   const h = state === 'ready' && status?.health && status.health !== 'healthy' ? status.health : ''
   const label = h || state
-  const title = h === 'degraded' ? `${status?.openAlerts ?? 0} open alert${status?.openAlerts === 1 ? '' : 's'}` : h === 'down' ? 'Confirmed outage: API, etcd or a node' : h === 'unknown' ? `Kubit cannot reach the network${status?.observerError ? ` (${status.observerError})` : ''}` : undefined
+  const title = h === 'degraded' ? `${status?.openAlerts ?? 0} open alert${status?.openAlerts === 1 ? '' : 's'}` : h === 'unknown' ? `Kubit cannot reach the network${status?.observerError ? ` (${status.observerError})` : ''}` : undefined
   return <Pill tone={state === 'ready' && !status ? 'muted' : stateTone(label)} title={state === 'ready' && !status ? 'not observed yet' : title}>{label}</Pill>
 }
 
@@ -30,9 +49,9 @@ export function StatusDot({ tone, pulse }: { tone: Tone; pulse?: boolean }) {
   return <span class={`inline-block h-2 w-2 rounded-full ${toneBg[tone]} ${pulse ? 'animate-pulse' : ''}`} />
 }
 
-export function Meter({ label, used, cap, format, color }: { label: string; used: number; cap: number; format: (n: number) => string; color?: string }) {
+export function Meter({ label, used, cap, format }: { label: string; used: number; cap: number; format: (n: number) => string }) {
   const pct = cap ? Math.min(100, Math.round((used / cap) * 100)) : 0
-  const tone = color ?? (pct > 90 ? 'var(--bad)' : pct > 75 ? 'var(--warn)' : 'var(--accent)')
+  const tone = pct > 90 ? 'var(--bad)' : pct > 75 ? 'var(--warn)' : 'var(--accent)'
   return (
     <div class="flex flex-col gap-1.5">
       <div class="flex items-baseline justify-between">
@@ -50,7 +69,7 @@ export function Meter({ label, used, cap, format, color }: { label: string; used
 export function Dialog({ title, onClose, children, width = 'max-w-lg', footer }: { title: string; onClose: () => void; children: ComponentChildren; width?: string; footer?: ComponentChildren }) {
   useEscape(onClose)
   const pressed = useRef(false)
-  return (
+  return createPortal(
     <div class="fixed inset-0 z-40 flex items-start justify-center bg-black/50 p-6 overflow-auto" onMouseDown={(e) => { pressed.current = e.target === e.currentTarget }} onClick={(e) => { if (pressed.current && e.target === e.currentTarget) onClose(); pressed.current = false }}>
       <div class={`panel w-full ${width} mt-10 flex flex-col`} role="dialog" aria-modal="true">
         <div class="flex items-center justify-between px-5 py-4 border-b border-border">
@@ -60,13 +79,13 @@ export function Dialog({ title, onClose, children, width = 'max-w-lg', footer }:
         <div class="px-5 py-4 flex flex-col gap-4">{children}</div>
         {footer && <div class="px-5 py-3 border-t border-border flex justify-end gap-2">{footer}</div>}
       </div>
-    </div>
+    </div>,
+    document.body,
   )
 }
 
-export function ConfirmDialog({ title, impact, action, tone = 'primary', onConfirm, onClose, typed }: { title: string; impact: ComponentChildren; action: string; tone?: 'primary' | 'danger'; onConfirm: () => void | Promise<unknown>; onClose: () => void; typed?: string }) {
+export function ConfirmDialog({ title, impact, action, tone = 'primary', onConfirm, onClose }: { title: string; impact: ComponentChildren; action: string; tone?: 'primary' | 'danger'; onConfirm: () => void | Promise<unknown>; onClose: () => void }) {
   const [busy, setBusy] = useState(false)
-  const [value, setValue] = useState('')
   const confirm = () => {
     if (busy) return
     const r = onConfirm()
@@ -75,25 +94,18 @@ export function ConfirmDialog({ title, impact, action, tone = 'primary', onConfi
       ;(r as Promise<unknown>).finally(() => setBusy(false))
     }
   }
-  const blocked = !!typed && value.trim().toLowerCase() !== typed.toLowerCase()
   return (
     <Dialog title={title} onClose={onClose} footer={
       <>
         <button class="btn" onClick={onClose}>Cancel</button>
-        <button class={`btn ${tone === 'danger' ? 'btn-danger' : 'btn-primary'}`} disabled={blocked || busy} onClick={confirm}>{busy ? 'Working' : action}</button>
+        <button class={`btn ${tone === 'danger' ? 'btn-danger' : 'btn-primary'}`} disabled={busy} onClick={confirm}>{busy ? 'Working' : action}</button>
       </>
     }>
       <div class="text-[13px] flex flex-col gap-2">{impact}</div>
-      {typed && <Field label="To confirm, type"><input class="input mono" placeholder={typed} value={value} onInput={(e) => setValue((e.target as HTMLInputElement).value)} /></Field>}
     </Dialog>
   )
 }
 
-
-export function AlertPill({ e }: { e?: { severity: string; message: string; kind: string } }) {
-  if (!e) return null
-  return <Pill tone={severityTone(e.severity)} title={e.message}>{e.kind.split('.')[1]}</Pill>
-}
 
 function copy(text: string) {
   return navigator.clipboard ? navigator.clipboard.writeText(text) : Promise.reject(new Error('Clipboard unavailable'))
@@ -159,13 +171,13 @@ export function Breadcrumbs({ items }: { items: { label: string; href?: string }
   )
 }
 
-export function Section({ title, children, actions, help }: { title: string; children: ComponentChildren; actions?: ComponentChildren; help?: string }) {
+export function Section({ title, children, actions, help }: { title?: string; children: ComponentChildren; actions?: ComponentChildren; help?: string }) {
   return (
     <section class="flex flex-col gap-3">
       <div class="flex items-start justify-between gap-4">
         <div>
-          <h2 class="font-semibold">{title}</h2>
-          {help && <p class="text-[12px] text-muted mt-0.5 max-w-prose">{help}</p>}
+          {title && <h2 class="font-semibold">{title}</h2>}
+          {help && <p class={`text-[12px] text-muted max-w-prose ${title ? 'mt-0.5' : ''}`}>{help}</p>}
         </div>
         {actions && <div class="flex gap-2 shrink-0">{actions}</div>}
       </div>
@@ -176,17 +188,17 @@ export function Section({ title, children, actions, help }: { title: string; chi
 
 const tileSize = { lg: 'text-lg', xl: 'text-xl', '2xl': 'text-2xl' }
 
-export function Tile({ label, value, sub, tone, href, title, size = '2xl', compact, plain, children }: { label: string; value: ComponentChildren; sub?: string; tone?: Tone; href?: string; title?: string; size?: keyof typeof tileSize; compact?: boolean; plain?: boolean; children?: ComponentChildren }) {
-  const box = plain ? '' : compact ? 'panel px-3 py-2 gap-0.5' : 'panel p-3 gap-1'
-  const cls = `${box} flex flex-col min-w-0 ${plain ? 'gap-1' : ''} ${href ? 'hover:border-accent' : ''}`
+export function Tile({ label, value, sub, tone, href, title, size = '2xl', compact }: { label: string; value: ComponentChildren; sub?: string; tone?: Tone; href?: string; title?: string; size?: keyof typeof tileSize; compact?: boolean }) {
+  const box = compact ? 'panel px-3 py-2 gap-0.5' : 'panel p-3 gap-1'
+  const cls = `${box} flex flex-col min-w-0 ${href ? 'hover:border-accent' : ''}`
   const body = (
     <>
       <span class="label">{label}</span>
       <span class={`${tileSize[size]} font-semibold truncate ${tone ? toneText[tone] : ''}`} title={title ?? (typeof value === 'string' ? value : undefined)}>{value}</span>
       {sub && <span class="text-[12px] text-muted truncate" title={sub}>{sub}</span>}
-      {children}
     </>
   )
   return href ? <a href={href} class={cls}>{body}</a> : <div class={cls}>{body}</div>
 }
 
+export const inputValue = (e: Event) => (e.target as HTMLInputElement).value

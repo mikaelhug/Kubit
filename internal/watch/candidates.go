@@ -2,6 +2,7 @@ package watch
 
 import (
 	"context"
+	"sync"
 	"time"
 
 	"github.com/mikael/kubit/internal/cluster"
@@ -9,51 +10,79 @@ import (
 	"github.com/mikael/kubit/internal/talos"
 )
 
+const (
+	PingEvery     = 10 * time.Second
+	missesOffline = 2
+)
+
 func (w *Watcher) candidateLoop(ctx context.Context) {
-	w.every(ctx, w.ServiceInterval, w.candidateTick)
+	go w.pingLoop(ctx)
+	w.every(ctx, w.ScanInterval, w.candidateTick)
 }
 
 func (w *Watcher) candidateTick(ctx context.Context) {
-	w.scanSubnets(ctx)
-	rows, err := w.Store.ListNodes(ctx, "")
-	if err != nil {
-		return
+	if w.ScanSubnets != nil {
+		w.ScanSubnets(ctx)
 	}
-	for _, m := range rows {
-		if m.IP == "" {
-			continue
-		}
-		switch m.Kind() {
-		case store.KindMaintenance, store.KindConfigured:
-			pctx, cancel := context.WithTimeout(ctx, 6*time.Second)
-			res := talos.Probe(pctx, m.IP, 2*time.Second)
-			cancel()
-			if res.Err == nil {
-				_ = w.Store.UpsertNode(ctx, cluster.RowFromScan(res))
-			} else if ctx.Err() == nil {
-				_ = w.Store.SetNodeState(ctx, m.IP, "offline")
-			}
+	for _, m := range w.Store.ListNodes("") {
+		if k := m.Kind(); m.IP != "" && (k == store.KindMaintenance || k == store.KindConfigured) {
+			w.reprobe(ctx, m)
 		}
 	}
 }
 
-func (w *Watcher) scanSubnets(ctx context.Context) {
-	if w.Subnets == nil {
-		return
+func (w *Watcher) reprobe(ctx context.Context, m store.Machine) {
+	pctx, cancel := context.WithTimeout(ctx, 6*time.Second)
+	defer cancel()
+	if res := talos.Probe(pctx, m.IP, 2*time.Second); res.Err == nil {
+		w.Store.UpsertNode(cluster.RowFromScan(res))
 	}
-	targets := w.Subnets(ctx)
-	if len(targets) == 0 {
-		return
+}
+
+type misses struct {
+	mu sync.Mutex
+	n  map[string]int
+}
+
+func (ms *misses) record(key string, up bool) int {
+	ms.mu.Lock()
+	defer ms.mu.Unlock()
+	if up {
+		delete(ms.n, key)
+		return 0
 	}
-	addrs, err := talos.ExpandTargets(targets)
-	if err != nil {
-		return
-	}
-	var found []talos.ScanResult
-	for _, r := range talos.Scan(ctx, addrs, 64, 2*time.Second) {
-		if r.Err == nil && r.State == talos.StateMaintenance {
-			found = append(found, r)
+	ms.n[key]++
+	return ms.n[key]
+}
+
+func (w *Watcher) pingLoop(ctx context.Context) {
+	ms := &misses{n: map[string]int{}}
+	w.every(ctx, PingEvery, func(ctx context.Context) { w.ping(ctx, ms) })
+}
+
+func (w *Watcher) ping(ctx context.Context, ms *misses) {
+	var wg sync.WaitGroup
+	for _, m := range w.Store.ListNodes("") {
+		if m.IP == "" || m.Kind() == store.KindMember {
+			continue
 		}
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			up := talos.PortOpen(ctx, m.IP, 2*time.Second)
+			if ctx.Err() != nil {
+				return
+			}
+			n := ms.record(m.MAC, up)
+			switch {
+			case up && m.Kind() == store.KindOffline:
+				w.reprobe(ctx, m)
+			case up:
+				w.Store.Touch(m.MAC)
+			case n >= missesOffline && m.Kind() != store.KindOffline:
+				w.Store.SetNodeState(m.IP, "offline")
+			}
+		}()
 	}
-	_, _ = cluster.RecordScan(ctx, w.Store, found, nil)
+	wg.Wait()
 }

@@ -73,7 +73,8 @@ body { background: var(--bg); color: var(--text); font-family: var(--font-sans);
   .btn-sm { @apply px-2 py-0.5 text-[12px]; }
   .btn-primary { @apply border-accent bg-accent text-accent-ink hover:brightness-110; }
   .btn-danger { @apply border-bad/60 text-bad hover:bg-bad/10; }
-  .input { @apply w-full rounded-[var(--r)] border border-border bg-bg px-2 py-1 text-[12.5px] text-text outline-none focus:border-accent; }
+  .no-scrollbar { scrollbar-width: none; }
+  .input { @apply w-full rounded-[var(--r)] border border-border bg-bg px-2 py-1 text-[12.5px] text-text outline-none focus:border-accent disabled:text-muted disabled:bg-panel-2; }
   .panel { @apply rounded-[var(--r)] border border-border bg-panel; }
   .pill { @apply inline-flex items-center gap-1 rounded-[var(--r-sm)] px-1.5 py-px text-[10.5px] font-medium uppercase tracking-[0.04em] whitespace-nowrap; }
   .scroll-x { overflow-x: auto; overflow-y: hidden; }

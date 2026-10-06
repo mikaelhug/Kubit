@@ -9,6 +9,7 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/watch"
 	"k8s.io/client-go/discovery/cached/memory"
 	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/kubernetes"
@@ -93,15 +94,37 @@ type NodeStatus struct {
 }
 
 func (c *Client) Nodes(ctx context.Context) ([]NodeStatus, error) {
-	list, err := c.CoreV1().Nodes().List(ctx, metav1.ListOptions{})
+	list, err := c.nodes(ctx)
 	if err != nil {
 		return nil, err
 	}
-	out := make([]NodeStatus, 0, len(list.Items))
-	for _, n := range list.Items {
+	out := make([]NodeStatus, 0, len(list))
+	for _, n := range list {
 		out = append(out, statusOf(&n))
 	}
 	return out, nil
+}
+
+func (c *Client) Ready(ctx context.Context) error {
+	return c.Discovery().RESTClient().Get().AbsPath("/readyz").Do(ctx).Error()
+}
+
+func (c *Client) LoadBalancerIP(ctx context.Context, namespace, name string) string {
+	svcs, err := c.services(ctx)
+	if err != nil {
+		return ""
+	}
+	for _, svc := range svcs {
+		if svc.Namespace != namespace || svc.Name != name {
+			continue
+		}
+		for _, in := range svc.Status.LoadBalancer.Ingress {
+			if in.IP != "" {
+				return in.IP
+			}
+		}
+	}
+	return ""
 }
 
 func statusOf(n *corev1.Node) NodeStatus {
@@ -191,3 +214,11 @@ func (c *Client) WaitNodes(ctx context.Context, names []string, timeout time.Dur
 }
 
 func (c *Client) ResetDiscovery() { c.restMapper().Reset() }
+
+func (c *Client) WatchLease(ctx context.Context, namespace, name, resourceVersion string) (watch.Interface, error) {
+	cs, err := c.streamClient()
+	if err != nil {
+		return nil, err
+	}
+	return cs.CoordinationV1().Leases(namespace).Watch(ctx, metav1.ListOptions{FieldSelector: "metadata.name=" + name, ResourceVersion: resourceVersion})
+}

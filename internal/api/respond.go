@@ -18,11 +18,29 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 	_ = json.NewEncoder(w).Encode(v)
 }
 
+func reply(w http.ResponseWriter, v any, err error) {
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, v)
+}
+
+func textStream(w http.ResponseWriter) func([]byte) {
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	fl, _ := w.(http.Flusher)
+	return func(b []byte) {
+		w.Write(b)
+		if fl != nil {
+			fl.Flush()
+		}
+	}
+}
+
 type statusError struct {
-	Status  int
-	Msg     string
-	Code    string
-	Command string
+	Status int
+	Msg    string
 }
 
 func (e *statusError) Error() string { return e.Msg }
@@ -34,9 +52,7 @@ func conflict(msg string) error { return &statusError{Status: http.StatusConflic
 func invalid(err error) error { return badRequest(err.Error()) }
 
 type errorBody struct {
-	Error   string `json:"error"`
-	Code    string `json:"code,omitempty"`
-	Command string `json:"command,omitempty"`
+	Error string `json:"error"`
 }
 
 func writeErr(w http.ResponseWriter, err error) {
@@ -45,11 +61,9 @@ func writeErr(w http.ResponseWriter, err error) {
 	body := errorBody{Error: err.Error()}
 	switch {
 	case errors.As(err, &se):
-		status, body = se.Status, errorBody{Error: se.Msg, Code: se.Code, Command: se.Command}
+		status, body = se.Status, errorBody{Error: se.Msg}
 	case errors.Is(err, store.ErrNotFound):
 		status = http.StatusNotFound
-	case errors.Is(err, store.ErrInvalid):
-		status = http.StatusBadRequest
 	case grpcstatus.Code(err) != codes.Unknown && grpcstatus.Code(err) != codes.OK:
 		status, body.Error = talos.HTTPStatus(err), talos.ShortGRPC(err).Error()
 	}

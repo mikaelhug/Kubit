@@ -24,7 +24,7 @@ type CertInfo struct {
 }
 
 func (m *Manager) Certificates(ctx context.Context, name string) ([]CertInfo, error) {
-	sec, bundle, err := m.loadSecrets(ctx, name)
+	sec, bundle, err := m.loadSecrets(name)
 	if err != nil {
 		return nil, err
 	}

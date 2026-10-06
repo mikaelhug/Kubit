@@ -2,7 +2,6 @@ package main
 
 import (
 	"fmt"
-	"strconv"
 	"text/tabwriter"
 
 	"github.com/mikael/kubit/internal/cluster"
@@ -10,13 +9,13 @@ import (
 )
 
 func etcdCmd() *cobra.Command {
-	cmd := &cobra.Command{Use: "etcd", Short: "Local etcd snapshots for disaster recovery: take, list, restore"}
+	cmd := &cobra.Command{Use: "etcd", Short: "etcd snapshots in the repo's snapshots/ directory: take, list, restore"}
 	snapshot := &cobra.Command{
-		Use:   "snapshot <dir|cluster>",
-		Short: "Take and store a verified, sealed etcd snapshot now",
-		Args:  cobra.ExactArgs(1),
+		Use:   "snapshot [dir]",
+		Short: "Take a verified etcd snapshot, encrypted to the repo's age recipients",
+		Args:  cobra.MaximumNArgs(1),
 		RunE: withManager(func(cmd *cobra.Command, args []string, m *cluster.Manager) error {
-			name, err := useCluster(cmd, m, args[0])
+			name, err := useCluster(cmd, m, dirArg(args))
 			if err != nil {
 				return err
 			}
@@ -24,49 +23,41 @@ func etcdCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			fmt.Fprintf(cmd.OutOrStdout(), "snapshot #%d: %d bytes, %d keys, from %s\n", sn.ID, sn.SizeBytes, sn.Keys, sn.Node)
+			fmt.Fprintf(cmd.OutOrStdout(), "snapshot %s: %d bytes\n", sn.ID, sn.SizeBytes)
 			return nil
 		}),
 	}
 	list := &cobra.Command{
-		Use:   "list <dir|cluster>",
-		Short: "List stored snapshots",
-		Args:  cobra.ExactArgs(1),
-		RunE: withManager(func(cmd *cobra.Command, args []string, m *cluster.Manager) error {
-			name, err := nameOf(args[0])
-			if err != nil {
-				return err
-			}
-			list, err := m.Store.ListSnapshots(cmd.Context(), name)
+		Use:   "list [dir]",
+		Short: "List the repo's snapshots",
+		Args:  cobra.MaximumNArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			list, err := cluster.SnapshotsIn(dirArg(args))
 			if err != nil {
 				return err
 			}
 			tw := tabwriter.NewWriter(cmd.OutOrStdout(), 0, 4, 2, ' ', 0)
-			fmt.Fprintln(tw, "ID\tTIME\tNODE\tSIZE\tKEYS\tSOURCE\tSTATUS")
+			fmt.Fprintln(tw, "ID\tTIME\tSIZE")
 			for _, s := range list {
-				fmt.Fprintf(tw, "%d\t%s\t%s\t%d\t%d\t%s\t%s\n", s.ID, s.TS, s.Node, s.SizeBytes, s.Keys, s.Source, s.Status)
+				fmt.Fprintf(tw, "%s\t%s\t%d\n", s.ID, s.TS, s.SizeBytes)
 			}
 			return tw.Flush()
-		}),
+		},
 	}
 	var yes bool
 	restore := &cobra.Command{
-		Use:   "restore <dir|cluster> <id>",
+		Use:   "restore <dir> <id>",
 		Short: "DESTRUCTIVE: wipe etcd on every control plane and rebuild it from the snapshot",
 		Args:  cobra.ExactArgs(2),
 		RunE: withManager(func(cmd *cobra.Command, args []string, m *cluster.Manager) error {
 			if !yes {
 				return fmt.Errorf("restore wipes etcd state on every control plane of %s; re-run with --yes", args[0])
 			}
-			id, err := strconv.ParseInt(args[1], 10, 64)
-			if err != nil {
-				return err
-			}
 			name, err := useCluster(cmd, m, args[0])
 			if err != nil {
 				return err
 			}
-			return m.RestoreEtcd(cmd.Context(), name, id, printEvents(cmd))
+			return m.RestoreEtcd(cmd.Context(), name, args[1], printEvents(cmd))
 		}),
 	}
 	restore.Flags().BoolVar(&yes, "yes", false, "confirm the destructive restore")

@@ -15,6 +15,7 @@ import (
 
 	"filippo.io/age"
 	"github.com/mikael/kubit/internal/config"
+	"github.com/mikael/kubit/internal/fsx"
 	"github.com/mikael/kubit/internal/sops"
 	talosconfig "github.com/siderolabs/talos/pkg/machinery/config"
 	"github.com/siderolabs/talos/pkg/machinery/config/generate/secrets"
@@ -25,15 +26,17 @@ const (
 	ClusterFile = "cluster.yaml"
 	SecretsFile = "secrets.sops.yaml"
 	StateDir    = "state"
+	SnapshotDir = "snapshots"
 )
 
-var ignored = []string{"talosconfig", "kubeconfig", "*.plain.yaml", ".terraform/"}
+var ignored = []string{"talosconfig", "kubeconfig", "*.plain.yaml", ".terraform/", SnapshotDir + "/", ".DS_Store"}
 
 type Repo struct {
 	Dir     string
 	Spec    []byte
 	Cluster *config.Cluster
 	Secrets *Secrets
+	Digest  string
 }
 
 type Secrets struct {
@@ -105,7 +108,7 @@ func LoadWith(dir string, ids []age.Identity) (*Repo, error) {
 	if err != nil {
 		return nil, fmt.Errorf("%s: %w", SecretsFile, err)
 	}
-	return &Repo{Dir: dir, Spec: spec, Cluster: c, Secrets: s}, nil
+	return &Repo{Dir: dir, Spec: spec, Cluster: c, Secrets: s, Digest: Fingerprint(append(slices.Clone(spec), enc...))}, nil
 }
 
 func parseSecrets(plain []byte) (*Secrets, error) {
@@ -130,7 +133,7 @@ func parseSecrets(plain []byte) (*Secrets, error) {
 	return &Secrets{Bundle: b, BundleYAML: raw, FluxKey: doc.Flux.AgeKey, StatePassphrase: doc.Platform.StatePassphrase, BackupKeyID: doc.Backup.AccessKeyID, BackupSecret: doc.Backup.SecretAccessKey}, nil
 }
 
-func NewPassphrase() (string, error) {
+func newPassphrase() (string, error) {
 	pass := make([]byte, 32)
 	if _, err := rand.Read(pass); err != nil {
 		return "", err
@@ -138,7 +141,7 @@ func NewPassphrase() (string, error) {
 	return base64.RawURLEncoding.EncodeToString(pass), nil
 }
 
-func NewSecrets(talosVersion string) (*Secrets, error) {
+func newSecrets(talosVersion string) (*Secrets, error) {
 	contract, err := talosconfig.ParseContractFromVersion(talosVersion)
 	if err != nil {
 		return nil, fmt.Errorf("talosVersion: %w", err)
@@ -155,7 +158,7 @@ func NewSecrets(talosVersion string) (*Secrets, error) {
 	if err != nil {
 		return nil, err
 	}
-	pass, err := NewPassphrase()
+	pass, err := newPassphrase()
 	if err != nil {
 		return nil, err
 	}
@@ -184,23 +187,19 @@ func (s *Secrets) FluxRecipient() string {
 }
 
 func Init(dir string, c *config.Cluster, recipients []string) (*Repo, error) {
-	s, err := NewSecrets(c.Spec.TalosVersion)
-	if err != nil {
-		return nil, err
-	}
-	return Write(dir, c, s, recipients)
-}
-
-func Write(dir string, c *config.Cluster, s *Secrets, recipients []string) (*Repo, error) {
 	for _, f := range []string{ClusterFile, SecretsFile} {
 		if _, err := os.Stat(filepath.Join(dir, f)); err == nil {
 			return nil, fmt.Errorf("%s already exists; kubit init never overwrites it", filepath.Join(dir, f))
 		}
 	}
+	s, err := newSecrets(c.Spec.TalosVersion)
+	if err != nil {
+		return nil, err
+	}
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return nil, err
 	}
-	rule, err := sopsRule(dir, recipients)
+	rule, err := sopsRule(dir, recipients, s.FluxRecipient())
 	if err != nil {
 		return nil, err
 	}
@@ -211,23 +210,32 @@ func Write(dir string, c *config.Cluster, s *Secrets, recipients []string) (*Rep
 	if err != nil {
 		return nil, err
 	}
-	if err := os.WriteFile(filepath.Join(dir, ClusterFile), spec, 0o644); err != nil {
+	if err := create(filepath.Join(dir, ClusterFile), 0o644, spec); err != nil {
 		return nil, err
 	}
-	if err := ensureIgnored(dir); err != nil {
+	if err := Ignore(dir); err != nil {
 		return nil, err
 	}
 	return &Repo{Dir: dir, Spec: spec, Cluster: c, Secrets: s}, nil
 }
 
-func sopsRule(dir string, recipients []string) (sops.Rule, error) {
+func sopsRule(dir string, recipients []string, flux string) (sops.Rule, error) {
 	if _, err := os.Stat(filepath.Join(dir, sops.ConfigFile)); err == nil {
+		if flux != "" {
+			if _, err := sops.AddRecipient(dir, flux, SecretsFile); err != nil {
+				return sops.Rule{}, err
+			}
+		}
 		return sops.RuleFor(dir, filepath.Join(dir, SecretsFile))
 	}
 	if len(recipients) == 0 {
 		return sops.Rule{}, errors.New("no age recipient; pass --age or create " + sops.DefaultKeyFile())
 	}
-	if err := sops.WriteConfig(dir, recipients); err != nil {
+	var apps []string
+	if flux != "" {
+		apps = []string{flux}
+	}
+	if err := sops.WriteConfig(dir, recipients, apps, SecretsFile); err != nil {
 		return sops.Rule{}, err
 	}
 	return sops.Rule{Age: recipients}, nil
@@ -242,11 +250,13 @@ func writeSecrets(dir string, s *Secrets, rule sops.Rule) error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(filepath.Join(dir, SecretsFile), enc, 0o644)
+	return create(filepath.Join(dir, SecretsFile), 0o644, enc)
 }
 
-func ensureIgnored(dir string) error {
+func Ignore(dir string) error {
 	p := filepath.Join(dir, ".gitignore")
+	unlock := fsx.Lock(p)
+	defer unlock()
 	b, err := os.ReadFile(p)
 	if err != nil && !errors.Is(err, fs.ErrNotExist) {
 		return err
@@ -265,7 +275,7 @@ func ensureIgnored(dir string) error {
 		b = append(b, '\n')
 	}
 	b = append(b, strings.Join(add, "\n")+"\n"...)
-	return os.WriteFile(p, b, 0o644)
+	return fsx.WriteFile(p, b, 0o644)
 }
 
 func (r *Repo) StatePath() string { return filepath.Join(r.Dir, StateDir, "platform.tfstate") }

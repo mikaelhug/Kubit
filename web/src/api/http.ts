@@ -2,10 +2,7 @@ import { readText } from '../local'
 
 class ApiError extends Error {
   status: number
-  code?: string
-  command?: string
-  body?: any
-  constructor(status: number, message: string, extra?: { code?: string; command?: string; body?: any }) { super(message); this.status = status; this.code = extra?.code; this.command = extra?.command; this.body = extra?.body }
+  constructor(status: number, message: string) { super(message); this.status = status }
 }
 
 const token = readText('kubit.token')
@@ -20,7 +17,7 @@ async function send<T>(method: string, path: string, body?: string, contentType?
   const text = await res.text()
   let data: any = text
   try { data = JSON.parse(text) } catch {}
-  if (!res.ok) throw new ApiError(res.status, (data && data.error) || text || res.statusText, data && typeof data === 'object' ? { code: data.code, command: data.command, body: data } : undefined)
+  if (!res.ok) throw new ApiError(res.status, (data && data.error) || text || res.statusText)
   return data as T
 }
 

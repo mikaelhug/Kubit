@@ -18,6 +18,7 @@ import (
 
 	"filippo.io/age"
 	"filippo.io/age/armor"
+	"github.com/mikael/kubit/internal/yamlx"
 	"go.yaml.in/yaml/v4"
 )
 
@@ -88,7 +89,7 @@ func Encrypt(plain []byte, r Rule) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	if _, i := find(root, "sops"); i >= 0 {
+	if _, i := yamlx.Lookup(root, "sops"); i >= 0 {
 		return nil, errors.New("sops: the file is already encrypted")
 	}
 	stripComments(root)
@@ -211,7 +212,7 @@ func Encrypted(data []byte) bool {
 	if err != nil {
 		return false
 	}
-	_, i := find(root, "sops")
+	_, i := yamlx.Lookup(root, "sops")
 	return i >= 0
 }
 
@@ -220,7 +221,7 @@ func split(data []byte) (*yaml.Node, *metadata, error) {
 	if err != nil {
 		return nil, nil, err
 	}
-	n, i := find(root, "sops")
+	n, i := yamlx.Lookup(root, "sops")
 	if i < 0 {
 		return nil, nil, errors.New("sops: not an encrypted file (no sops metadata)")
 	}
@@ -244,15 +245,6 @@ func parseMapping(data []byte) (*yaml.Node, error) {
 		return nil, errors.New("sops: the document must be a YAML mapping")
 	}
 	return doc.Content[0], nil
-}
-
-func find(m *yaml.Node, key string) (*yaml.Node, int) {
-	for i := 0; i+1 < len(m.Content); i += 2 {
-		if m.Content[i].Value == key {
-			return m.Content[i+1], i
-		}
-	}
-	return nil, -1
 }
 
 func render(root *yaml.Node) ([]byte, error) {

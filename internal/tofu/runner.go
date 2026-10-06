@@ -54,51 +54,104 @@ func (s Summary) String() string {
 	return fmt.Sprintf("%d to add, %d to change, %d to destroy", s.Add, s.Change, s.Remove)
 }
 
+const (
+	StateNamespace = "kube-system"
+	StateSuffix    = "kubit-platform"
+	StateSecret    = "tfstate-default-" + StateSuffix
+	migrateFile    = "kubit_migrate_override.tf"
+)
+
 type Runner struct {
-	Bin          string
-	Dir          string
-	StatePath    string
-	Passphrase   string
-	Env          []string
-	Log          func(Line)
-	lastWarnings []string
+	Bin         string
+	Dir         string
+	Kubeconfig  string
+	Passphrase  string
+	PluginCache string
+	Env         []string
+	Log         func(Line)
+	ReadOnly    bool
+	unlocked    bool
 }
 
-func (r *Runner) Warnings() []string {
-	seen := map[string]bool{}
-	var out []string
-	for _, w := range r.lastWarnings {
-		if !seen[w] {
-			seen[w] = true
-			out = append(out, w)
-		}
+func New(bin, pluginCache string, log func(Line)) (*Runner, error) {
+	if err := os.MkdirAll(pluginCache, 0o700); err != nil {
+		return nil, err
 	}
-	return out
+	dir, err := os.MkdirTemp("", "kubit-platform-")
+	if err != nil {
+		return nil, err
+	}
+	return &Runner{Bin: bin, Dir: dir, PluginCache: pluginCache, Log: log}, nil
+}
+
+func (r *Runner) Close() error { return os.RemoveAll(r.Dir) }
+
+func (r *Runner) WriteKubeconfig(kubeconfig []byte) error {
+	path := filepath.Join(r.Dir, "kubeconfig")
+	if err := os.WriteFile(path, kubeconfig, 0o600); err != nil {
+		return err
+	}
+	r.Kubeconfig = path
+	return nil
+}
+
+func (r *Runner) backendConfig() []string {
+	return []string{
+		"-backend-config=secret_suffix=" + StateSuffix,
+		"-backend-config=namespace=" + StateNamespace,
+		"-backend-config=config_path=" + r.Kubeconfig,
+	}
+}
+
+func (r *Runner) init(ctx context.Context, extra ...string) error {
+	unlock, err := lockFile(filepath.Join(r.PluginCache, ".lock"))
+	if err != nil {
+		return err
+	}
+	defer unlock()
+	_, err = r.run(ctx, append([]string{"init", "-input=false", "-no-color", "-lockfile=readonly"}, extra...)...)
+	return err
 }
 
 func (r *Runner) Init(ctx context.Context) error {
-	args := []string{"init", "-input=false", "-no-color", "-reconfigure"}
-	if r.StatePath != "" {
-		if err := os.MkdirAll(filepath.Dir(r.StatePath), 0o755); err != nil {
-			return err
-		}
-		args = append(args, "-backend-config=path="+r.StatePath)
-	}
-	_, err := r.run(ctx, args...)
-	return err
+	return r.init(ctx, r.backendConfig()...)
 }
 
-func (r *Runner) PushState(ctx context.Context, file string) error {
-	_, err := r.output(ctx, "state", "push", file)
-	return err
+func (r *Runner) InitFrom(ctx context.Context, statePath string) error {
+	override := fmt.Sprintf("terraform {\n  backend \"local\" {\n    path = %q\n  }\n}\n", statePath)
+	if err := os.WriteFile(filepath.Join(r.Dir, migrateFile), []byte(override), 0o600); err != nil {
+		return err
+	}
+	r.unlocked = true
+	return r.init(ctx)
+}
+
+func (r *Runner) MigrateFrom(ctx context.Context, statePath string) error {
+	if err := r.InitFrom(ctx, statePath); err != nil {
+		return err
+	}
+	if err := os.Remove(filepath.Join(r.Dir, migrateFile)); err != nil {
+		return err
+	}
+	r.unlocked = false
+	return r.init(ctx, append([]string{"-migrate-state", "-force-copy"}, r.backendConfig()...)...)
 }
 
 func (r *Runner) Plan(ctx context.Context) (Summary, error) {
-	return r.run(ctx, "plan", "-input=false", "-json", "-out=plan.tfplan")
+	return r.run(ctx, append([]string{"plan", "-input=false", "-json", "-out=plan.tfplan"}, r.lockArgs()...)...)
 }
 
 func (r *Runner) Apply(ctx context.Context) (Summary, error) {
-	return r.run(ctx, "apply", "-input=false", "-json", "plan.tfplan")
+	return r.run(ctx, append(append([]string{"apply", "-input=false", "-json"}, r.lockArgs()...), "plan.tfplan")...)
+}
+
+const lockTimeout = "-lock-timeout=60s"
+
+func (r *Runner) lockArgs() []string {
+	if r.unlocked || r.ReadOnly {
+		return []string{"-lock=false"}
+	}
+	return []string{lockTimeout}
 }
 
 func (r *Runner) Outputs(ctx context.Context) (map[string]string, error) {
@@ -138,6 +191,9 @@ func (r *Runner) output(ctx context.Context, args ...string) ([]byte, error) {
 
 func (r *Runner) env() []string {
 	env := append(childEnv(), "TF_IN_AUTOMATION=1", "TF_INPUT=0")
+	if r.PluginCache != "" {
+		env = append(env, "TF_PLUGIN_CACHE_DIR="+r.PluginCache)
+	}
 	if r.Passphrase != "" {
 		env = append(env, "TF_ENCRYPTION="+Encryption(r.Passphrase))
 	}
@@ -151,12 +207,8 @@ func Encryption(passphrase string) string {
 method "aes_gcm" "kubit" {
   keys = key_provider.pbkdf2.kubit
 }
-method "unencrypted" "migrate" {}
 state {
   method = method.aes_gcm.kubit
-  fallback {
-    method = method.unencrypted.migrate
-  }
 }
 plan {
   method = method.aes_gcm.kubit
@@ -164,7 +216,7 @@ plan {
 `, passphrase)
 }
 
-var secretEnv = []string{"KUBIT_MASTER_KEY", "KUBIT_TOKEN", "TF_ENCRYPTION", "SOPS_AGE_KEY", "KUBIT_SMTP_PASSWORD", "TF_VAR_backup_access_key_id", "TF_VAR_backup_secret_access_key"}
+var secretEnv = []string{"KUBIT_TOKEN", "TF_ENCRYPTION", "TF_PLUGIN_CACHE_DIR", "SOPS_AGE_KEY", "SOPS_AGE_KEY_FILE", "TF_VAR_backup_access_key_id", "TF_VAR_backup_secret_access_key"}
 
 func childEnv() []string {
 	var out []string
@@ -193,7 +245,6 @@ func (r *Runner) run(ctx context.Context, args ...string) (Summary, error) {
 		diags []string
 		plain strings.Builder
 	)
-	r.lastWarnings = nil
 	sc := bufio.NewScanner(stdout)
 	sc.Buffer(make([]byte, 1024*1024), 16*1024*1024)
 	for sc.Scan() {
@@ -212,9 +263,6 @@ func (r *Runner) run(ctx context.Context, args ...string) (Summary, error) {
 		}
 		if l.Diagnostic != nil && l.Diagnostic.Severity == "error" {
 			diags = append(diags, strings.TrimSpace(l.Diagnostic.Summary+": "+l.Diagnostic.Detail))
-		}
-		if l.Diagnostic != nil && l.Diagnostic.Severity == "warning" {
-			r.lastWarnings = append(r.lastWarnings, strings.TrimSpace(strings.TrimSpace(l.Diagnostic.Summary)+": "+strings.TrimSpace(l.Diagnostic.Detail)))
 		}
 		if r.Log != nil {
 			r.Log(l)

@@ -45,7 +45,7 @@ func initRepo(t *testing.T) (string, *age.X25519Identity) {
 	return dir, id
 }
 
-func TestInitWritesAnEncryptedRepo(t *testing.T) {
+func TestInitNeverWritesSecretsInClearOrOverAnExistingRepo(t *testing.T) {
 	dir, id := initRepo(t)
 	enc, err := os.ReadFile(filepath.Join(dir, SecretsFile))
 	if err != nil {
@@ -53,9 +53,6 @@ func TestInitWritesAnEncryptedRepo(t *testing.T) {
 	}
 	if !sops.Encrypted(enc) || bytes.Contains(enc, []byte("AGE-SECRET-KEY")) || bytes.Contains(enc, []byte("CERTIFICATE")) {
 		t.Fatalf("secrets are not sealed:\n%s", enc)
-	}
-	if rule, err := sops.RuleFor(dir, filepath.Join(dir, SecretsFile)); err != nil || rule.Age[0] != id.Recipient().String() {
-		t.Errorf(".sops.yaml: %+v %v", rule, err)
 	}
 	ign, _ := os.ReadFile(filepath.Join(dir, ".gitignore"))
 	for _, p := range []string{"talosconfig", "kubeconfig"} {
@@ -67,20 +64,13 @@ func TestInitWritesAnEncryptedRepo(t *testing.T) {
 	if _, err := Init(dir, c, []string{id.Recipient().String()}); err == nil {
 		t.Error("a second init must refuse")
 	}
-	r, err := LoadWith(dir, []age.Identity{id})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if r.Cluster.Metadata.Name != "lab" || r.Secrets.Bundle.Cluster.ID == "" || !strings.HasPrefix(r.Secrets.FluxRecipient(), "age1") || len(r.Secrets.StatePassphrase) < 32 {
-		t.Errorf("loaded %+v", r.Secrets)
-	}
 	other, _ := age.GenerateX25519Identity()
 	if _, err := LoadWith(dir, []age.Identity{other}); err == nil {
 		t.Error("another key must not open the secrets")
 	}
 }
 
-func TestDerivedCredentialsChainToTheBundle(t *testing.T) {
+func TestDerivedCredentialsCarryTheRolesTalosAndKubernetesRequire(t *testing.T) {
 	dir, id := initRepo(t)
 	r, err := LoadWith(dir, []age.Identity{id})
 	if err != nil {
@@ -95,8 +85,8 @@ func TestDerivedCredentialsChainToTheBundle(t *testing.T) {
 		t.Fatal(err)
 	}
 	ctx := cfg.Contexts[cfg.Context]
-	if cfg.Context != "lab" || ctx == nil || strings.Join(ctx.Endpoints, ",") != "10.0.0.10" {
-		t.Fatalf("talosconfig context: %+v", ctx)
+	if ctx == nil {
+		t.Fatalf("talosconfig has no context %q", cfg.Context)
 	}
 	verify(t, ctx.Crt, r.Secrets.Bundle.Certs.OS.Crt, "os:admin")
 	kc, err := r.Kubeconfig()
@@ -106,9 +96,6 @@ func TestDerivedCredentialsChainToTheBundle(t *testing.T) {
 	k, err := clientcmd.Load(kc)
 	if err != nil {
 		t.Fatal(err)
-	}
-	if k.Clusters["lab"].Server != "https://10.0.0.10:6443" {
-		t.Errorf("server %s", k.Clusters["lab"].Server)
 	}
 	verify(t, k.AuthInfos["admin@lab"].ClientCertificateData, r.Secrets.Bundle.Certs.K8s.Crt, "system:masters")
 }

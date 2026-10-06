@@ -23,15 +23,12 @@ interface Props<T> {
   empty?: ComponentChildren
   search?: boolean
   defaultSort?: { id: string; dir: 'asc' | 'desc' }
-  onRowClick?: (row: T) => void
-  rowClass?: (row: T) => string
   id?: string
-  toolbar?: ComponentChildren
-  title?: ComponentChildren
   loading?: boolean
+  toolbar?: ComponentChildren
 }
 
-export function DataTable<T>({ columns, rows, rowKey, empty = 'Nothing to show.', search = true, defaultSort, onRowClick, rowClass, id, toolbar, title, loading }: Props<T>) {
+export function DataTable<T>({ columns, rows, rowKey, empty = 'Nothing to show.', search = true, defaultSort, id, loading, toolbar }: Props<T>) {
   const pref = id ? `kubit.table.${id}` : ''
   const [sort, setSort] = useState<{ id: string; dir: 'asc' | 'desc' } | undefined>(pref ? read(pref + '.sort', defaultSort) : defaultSort)
   const [q, setQ] = useState('')
@@ -74,12 +71,11 @@ export function DataTable<T>({ columns, rows, rowKey, empty = 'Nothing to show.'
 
   return (
     <div class="panel flex flex-col overflow-hidden">
-      {(search || toolbar || title) && (
+      {search && (
         <div class="flex items-center gap-2 px-3 py-2 border-b border-border">
-          {title}
-          {search && <input class="input !w-64" placeholder="Filter" data-table-filter value={q} onInput={(e) => { setQ((e.target as HTMLInputElement).value); setPage(0) }} aria-label="Filter rows" />}
-          {(search || !title) && <span class="text-[12px] text-muted">{filtered.length === rows.length ? `${rows.length} rows` : `${filtered.length} of ${rows.length}`}</span>}
-          {toolbar && <div class="ml-auto flex items-center gap-2">{toolbar}</div>}
+          <input class="input !w-64" placeholder="Filter" data-table-filter value={q} onInput={(e) => { setQ((e.target as HTMLInputElement).value); setPage(0) }} aria-label="Filter rows" />
+          <span class="text-[12px] text-muted">{filtered.length === rows.length ? `${rows.length} rows` : `${filtered.length} of ${rows.length}`}</span>
+          {toolbar && <span class="ml-auto flex items-center gap-2">{toolbar}</span>}
         </div>
       )}
       <div class="scroll-x">
@@ -97,7 +93,7 @@ export function DataTable<T>({ columns, rows, rowKey, empty = 'Nothing to show.'
             {visible.length === 0 && loading && [0, 1, 2].map((i) => <tr key={`sk${i}`} aria-hidden="true">{columns.map((c) => <td key={c.id}><span class="inline-block h-3 rounded bg-panel-2 animate-pulse" style={{ width: `${40 + ((i * 7 + c.id.length * 13) % 50)}%` }} /></td>)}</tr>)}
             {visible.length === 0 && !loading && <tr><td colSpan={columns.length} class="text-muted !py-6 text-center">{empty}</td></tr>}
             {visible.map((r) => (
-              <tr key={rowKey(r)} class={`${onRowClick ? 'cursor-pointer hover:bg-panel-2' : ''} ${rowClass?.(r) ?? ''}`} onClick={() => onRowClick?.(r)}>
+              <tr key={rowKey(r)}>
                 {columns.map((c) => <td key={c.id} class={`${c.align === 'right' ? 'text-right' : ''} ${c.mono ? 'mono' : ''} ${c.wrap ? '!whitespace-normal' : ''}`}>{c.cell(r)}</td>)}
               </tr>
             ))}

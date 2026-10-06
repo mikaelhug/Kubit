@@ -6,11 +6,13 @@ import (
 	"fmt"
 	"net"
 	"net/url"
-	"os"
+	"regexp"
 	"slices"
 	"strings"
 	"time"
 
+	"github.com/mikael/kubit/internal/netx"
+	"github.com/mikael/kubit/internal/yamlx"
 	"github.com/siderolabs/talos/pkg/machinery/constants"
 	"github.com/siderolabs/talos/pkg/machinery/gendata"
 	"go.yaml.in/yaml/v4"
@@ -52,11 +54,9 @@ type Spec struct {
 	SchematicID       string           `yaml:"schematicID,omitempty" json:"schematicID,omitempty"`
 	ControlPlane      ControlPlane     `yaml:"controlPlane" json:"controlPlane"`
 	Network           Network          `yaml:"network" json:"network"`
-	Pools             []Pool           `yaml:"pools,omitempty" json:"pools,omitempty"`
 	Nodes             []Node           `yaml:"nodes" json:"nodes"`
 	Platform          Platform         `yaml:"platform" json:"platform"`
 	Backup            Backup           `yaml:"backup,omitempty" json:"backup"`
-	LegacyMaintenance any              `yaml:"maintenance,omitempty" json:"-"`
 	Auth              ClusterAuth      `yaml:"auth,omitempty" json:"auth,omitempty"`
 	Storage           Storage          `yaml:"storage,omitempty" json:"storage,omitempty"`
 	Patches           []map[string]any `yaml:"patches,omitempty" json:"patches,omitempty"`
@@ -120,11 +120,6 @@ type Backup struct {
 	S3            BackupS3 `yaml:"s3,omitempty" json:"s3,omitempty"`
 	AgeRecipients []string `yaml:"ageRecipients,omitempty" json:"ageRecipients,omitempty"`
 	Compression   bool     `yaml:"compression,omitempty" json:"compression,omitempty"`
-
-	LegacyEtcd *struct {
-		Interval string `yaml:"interval,omitempty"`
-		Keep     int    `yaml:"keep,omitempty"`
-	} `yaml:"etcd,omitempty" json:"-"`
 }
 
 type BackupS3 struct {
@@ -141,18 +136,6 @@ func (b Backup) Enabled() bool {
 
 const BackupNamespace = "talos-backup"
 
-type Pool struct {
-	Name        string            `yaml:"name" json:"name"`
-	Role        Role              `yaml:"role" json:"role"`
-	Labels      map[string]string `yaml:"labels,omitempty" json:"labels,omitempty"`
-	Taints      map[string]string `yaml:"taints,omitempty" json:"taints,omitempty"`
-	Annotations map[string]string `yaml:"annotations,omitempty" json:"annotations,omitempty"`
-	Extensions  []string          `yaml:"extensions,omitempty" json:"extensions,omitempty"`
-	SchematicID string            `yaml:"schematicID,omitempty" json:"schematicID,omitempty"`
-	InstallDisk *InstallDisk      `yaml:"installDisk,omitempty" json:"installDisk,omitempty"`
-	Patches     []map[string]any  `yaml:"patches,omitempty" json:"patches,omitempty"`
-}
-
 type ControlPlane struct {
 	Endpoint        string `yaml:"endpoint,omitempty" json:"endpoint,omitempty"`
 	VIP             string `yaml:"vip,omitempty" json:"vip,omitempty"`
@@ -164,14 +147,11 @@ type Node struct {
 	IP          string            `yaml:"ip" json:"ip"`
 	MAC         string            `yaml:"mac,omitempty" json:"mac,omitempty"`
 	UUID        string            `yaml:"uuid,omitempty" json:"uuid,omitempty"`
-	Pool        string            `yaml:"pool,omitempty" json:"pool,omitempty"`
 	Role        Role              `yaml:"role,omitempty" json:"role,omitempty"`
 	Arch        Arch              `yaml:"arch,omitempty" json:"arch,omitempty"`
 	InstallDisk InstallDisk       `yaml:"installDisk,omitempty" json:"installDisk,omitempty"`
 	DataDisks   []string          `yaml:"dataDisks,omitempty" json:"dataDisks,omitempty"`
 	KVM         bool              `yaml:"kvm,omitempty" json:"kvm,omitempty"`
-	TPM         bool              `yaml:"tpm,omitempty" json:"tpm,omitempty"`
-	Watchdog    bool              `yaml:"watchdog,omitempty" json:"watchdog,omitempty"`
 	Network     *NodeNetwork      `yaml:"network,omitempty" json:"network,omitempty"`
 	Labels      map[string]string `yaml:"labels,omitempty" json:"labels,omitempty"`
 	Taints      map[string]string `yaml:"taints,omitempty" json:"taints,omitempty"`
@@ -182,19 +162,20 @@ type Node struct {
 type Platform struct {
 	MetalLB       MetalLB `yaml:"metallb" json:"metallb"`
 	Traefik       Addon   `yaml:"traefik" json:"traefik"`
-	GVisor        Addon   `yaml:"gvisor" json:"gvisor"`
+	GVisor        Toggle  `yaml:"gvisor" json:"gvisor"`
 	MetricsServer Addon   `yaml:"metricsServer" json:"metricsServer"`
 	CertManager   Addon   `yaml:"certManager" json:"certManager"`
 	Flux          Flux    `yaml:"flux" json:"flux"`
 	Longhorn      Addon   `yaml:"longhorn" json:"longhorn"`
-	Builds        Addon   `yaml:"builds" json:"builds"`
-
-	LegacyArgoCD       *Addon `yaml:"argocd,omitempty" json:"-"`
-	LegacyIngressNginx *Addon `yaml:"ingressNginx,omitempty" json:"-"`
+	Builds        Toggle  `yaml:"builds" json:"builds"`
 }
 
 func (p Platform) AddOns() bool {
 	return p.MetalLB.Enabled || p.Traefik.Enabled || p.MetricsServer.Enabled || p.CertManager.Enabled || p.Flux.Enabled || p.Longhorn.Enabled || p.Builds.Enabled
+}
+
+type Toggle struct {
+	Enabled bool `yaml:"enabled" json:"enabled"`
 }
 
 type Addon struct {
@@ -250,20 +231,12 @@ type MetalLB struct {
 	Values  map[string]any `yaml:"values,omitempty" json:"values,omitempty"`
 }
 
-func Load(path string) (*Cluster, error) {
-	b, err := os.ReadFile(path)
-	if err != nil {
-		return nil, err
-	}
-	return Parse(b)
-}
-
 func Parse(b []byte) (*Cluster, error) {
 	var c Cluster
 	dec := yaml.NewDecoder(bytes.NewReader(b))
 	dec.KnownFields(true)
 	if err := dec.Decode(&c); err != nil {
-		return nil, fmt.Errorf("parse cluster.yaml: %w", err)
+		return nil, fmt.Errorf("cluster.yaml: %w", explainParse(err))
 	}
 	c.applyDefaults()
 	if err := c.Validate(); err != nil {
@@ -272,7 +245,38 @@ func Parse(b []byte) (*Cluster, error) {
 	return &c, nil
 }
 
-func (c *Cluster) Marshal() ([]byte, error) { return yaml.Marshal(c) }
+var removedFields = map[string]string{
+	"pools":        "set role, labels and taints on each node",
+	"pool":         "set role, labels and taints on the node",
+	"encryption":   "add a VolumeConfig patch",
+	"firewall":     "add NetworkRuleConfig patches",
+	"watchdog":     "add a WatchdogTimerConfig patch",
+	"tpm":          "delete it",
+	"maintenance":  "delete it",
+	"etcd":         "use backup.schedule",
+	"argocd":       "use platform.flux",
+	"ingressNginx": "use platform.traefik",
+}
+
+var (
+	unknownField = regexp.MustCompile(`field (\S+) not found in type \S+`)
+	yamlPrefix   = regexp.MustCompile(`yaml: (construct|unmarshal) errors:\s*`)
+)
+
+func explainParse(err error) error {
+	msg := unknownField.ReplaceAllStringFunc(err.Error(), func(m string) string {
+		f := unknownField.FindStringSubmatch(m)[1]
+		if hint, ok := removedFields[f]; ok {
+			return f + " is removed; " + hint
+		}
+		return "unknown field " + f
+	})
+	return errors.New(strings.TrimSpace(yamlPrefix.ReplaceAllString(msg, "")))
+}
+
+func (c *Cluster) Marshal() ([]byte, error) {
+	return yamlx.Encode(c)
+}
 
 func (c *Cluster) Clone() *Cluster {
 	b, err := c.Marshal()
@@ -290,8 +294,6 @@ func (c *Cluster) applyDefaults() {
 	if c.Spec.TalosVersion == "" {
 		c.Spec.TalosVersion = gendata.VersionTag
 	}
-	c.Spec.Backup.LegacyEtcd = nil
-	c.Spec.LegacyMaintenance = nil
 	if c.Spec.Backup.Enabled() && c.Spec.Backup.S3.Region == "" {
 		c.Spec.Backup.S3.Region = "us-east-1"
 	}
@@ -303,14 +305,6 @@ func (c *Cluster) applyDefaults() {
 	}
 	if c.Spec.Network.ServiceCIDR == "" {
 		c.Spec.Network.ServiceCIDR = constants.DefaultIPv4ServiceCIDR
-	}
-	if p := &c.Spec.Platform; p.LegacyArgoCD != nil {
-		p.Flux.Enabled = p.Flux.Enabled || p.LegacyArgoCD.Enabled
-		p.LegacyArgoCD = nil
-	}
-	if p := &c.Spec.Platform; p.LegacyIngressNginx != nil {
-		p.Traefik.Enabled = p.Traefik.Enabled || p.LegacyIngressNginx.Enabled
-		p.LegacyIngressNginx = nil
 	}
 	if c.Spec.Network.Policies == nil {
 		c.Spec.Network.Policies = new(true)
@@ -341,23 +335,16 @@ func (c *Cluster) applyDefaults() {
 		v := len(c.Spec.Nodes) < 6
 		c.Spec.ControlPlane.AllowScheduling = &v
 	}
-	c.defaultPools()
 	for i := range c.Spec.Nodes {
 		n := &c.Spec.Nodes[i]
 		if n.Arch == "" {
 			n.Arch = ArchAMD64
 		}
-		if n.Pool == "" {
-			if n.Role == "" {
-				n.Role = RoleWorker
-			}
-			n.Pool = c.defaultPoolFor(n.Role)
+		if n.Role == "" {
+			n.Role = RoleWorker
 		}
-		if p := c.poolByName(n.Pool); p != nil {
-			n.Role = p.Role
-			if n.InstallDisk.Path == "" && n.InstallDisk.Selector == nil && p.InstallDisk != nil {
-				n.InstallDisk = *p.InstallDisk
-			}
+		if mac := netx.Normalize(n.MAC); mac != "" {
+			n.MAC = mac
 		}
 	}
 	if c.Spec.ControlPlane.Endpoint == "" {
@@ -373,85 +360,6 @@ func (c *Cluster) applyDefaults() {
 	}
 }
 
-func (c *Cluster) defaultPools() {
-	have := map[string]bool{}
-	for i := range c.Spec.Pools {
-		if c.Spec.Pools[i].Role == "" {
-			c.Spec.Pools[i].Role = RoleWorker
-		}
-		have[c.Spec.Pools[i].Name] = true
-	}
-	if c.ControlPlanePool() == nil && !have[string(RoleControlPlane)] {
-		c.Spec.Pools = append([]Pool{{Name: string(RoleControlPlane), Role: RoleControlPlane}}, c.Spec.Pools...)
-	}
-	if !have[string(RoleWorker)] {
-		c.Spec.Pools = append(c.Spec.Pools, Pool{Name: string(RoleWorker), Role: RoleWorker})
-	}
-}
-
-func (c *Cluster) ControlPlanePool() *Pool {
-	for i := range c.Spec.Pools {
-		if c.Spec.Pools[i].Role == RoleControlPlane {
-			return &c.Spec.Pools[i]
-		}
-	}
-	return nil
-}
-
-func (c *Cluster) defaultPoolFor(r Role) string {
-	if p := c.ControlPlanePool(); r == RoleControlPlane && p != nil {
-		return p.Name
-	}
-	return string(r)
-}
-
-func (c *Cluster) poolByName(name string) *Pool {
-	for i := range c.Spec.Pools {
-		if c.Spec.Pools[i].Name == name {
-			return &c.Spec.Pools[i]
-		}
-	}
-	return nil
-}
-
-func (c *Cluster) PoolOf(n Node) Pool {
-	if p := c.poolByName(n.Pool); p != nil {
-		return *p
-	}
-	return Pool{Name: n.Pool, Role: n.Role}
-}
-
-func (c *Cluster) SchematicFor(p Pool) string {
-	if len(p.Extensions) > 0 && p.SchematicID != "" {
-		return p.SchematicID
-	}
-	if len(p.Extensions) > 0 {
-		return ""
-	}
-	return c.Spec.SchematicID
-}
-
-func (c *Cluster) NodeLabels(n Node) map[string]string {
-	return merge(c.PoolOf(n).Labels, n.Labels)
-}
-
-func (c *Cluster) NodeTaints(n Node) map[string]string { return merge(c.PoolOf(n).Taints, n.Taints) }
-
-func (c *Cluster) NodeAnnotations(n Node) map[string]string {
-	return merge(c.PoolOf(n).Annotations, n.Annotations)
-}
-
-func merge(base, over map[string]string) map[string]string {
-	out := map[string]string{}
-	for k, v := range base {
-		out[k] = v
-	}
-	for k, v := range over {
-		out[k] = v
-	}
-	return out
-}
-
 func (c *Cluster) NodeIndex(host string) int {
 	for i := range c.Spec.Nodes {
 		if c.Spec.Nodes[i].Hostname == host {
@@ -461,13 +369,21 @@ func (c *Cluster) NodeIndex(host string) int {
 	return -1
 }
 
+func EndpointHost(endpoint string) string {
+	u, err := url.Parse(endpoint)
+	if err != nil {
+		return ""
+	}
+	return u.Hostname()
+}
+
 func (c *Cluster) EndpointNode() (Node, bool) {
 	u, err := url.Parse(c.Spec.ControlPlane.Endpoint)
 	if err != nil || u.Hostname() == "" || u.Hostname() == c.Spec.ControlPlane.VIP {
 		return Node{}, false
 	}
 	for _, n := range c.ControlPlanes() {
-		if n.IP == u.Hostname() {
+		if n.IP == u.Hostname() || n.TargetIP() == u.Hostname() {
 			return n, true
 		}
 	}

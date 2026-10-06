@@ -7,7 +7,7 @@ import (
 	"github.com/mikael/kubit/internal/config"
 )
 
-func TestControlPlaneOnlyPatchRejectedOnWorker(t *testing.T) {
+func TestTalosRejectsAControlPlanePatchOnAWorker(t *testing.T) {
 	b := bundle(t)
 	decl := "apiVersion: kubit.dev/v1\nkind: Cluster\nmetadata: {name: c}\nspec:\n%s  nodes:\n" +
 		"    - {hostname: cp, ip: 10.0.0.1, role: controlplane, installDisk: {path: /dev/sda}}\n" +
@@ -29,8 +29,11 @@ func TestControlPlaneOnlyPatchRejectedOnWorker(t *testing.T) {
 	if msg := err.Error(); !strings.Contains(msg, "node w (worker)") || !strings.Contains(msg, "only allowed on control plane") || strings.Contains(msg, "node cp ") {
 		t.Errorf("error = %v", err)
 	}
-	cpOnly := "  pools: [ { name: controlplane, role: controlplane, patches: [ { apiVersion: v1alpha1, kind: KubeAPIServerConfig, extraArgs: { audit-log-maxage: \"7\" } } ] }, { name: worker, role: worker } ]\n"
-	if err := CheckDeclaration(parse(cpOnly), b); err != nil {
-		t.Errorf("the same patch on the control-plane pool checks: %v", err)
+	cpOnly, err := config.Parse([]byte(strings.Replace(strings.Replace(decl, "%s", "", 1), "installDisk: {path: /dev/sda}}", "installDisk: {path: /dev/sda}, patches: [ { apiVersion: v1alpha1, kind: KubeAPIServerConfig, extraArgs: { audit-log-maxage: \"7\" } } ]}", 1)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := CheckDeclaration(cpOnly, b); err != nil {
+		t.Errorf("the same patch on the control plane node checks: %v", err)
 	}
 }

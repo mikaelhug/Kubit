@@ -3,7 +3,7 @@ import { fmt, type ClusterSpec, type Inventory, type NodeDetail, type NodeRow, t
 import { Elapsed } from '../../components/Time'
 import { identityRows } from '../../components/Machine'
 import { KeyValue, Meter, Notice, Pill, Section } from '../../components/ui'
-import { kindLabel, modelOf } from '../../machine'
+import { kindLabel, modelName } from '../../machine'
 
 type Row = [string, ComponentChildren]
 
@@ -11,20 +11,19 @@ export function OverviewTab({ inv, invErr, k8s, k8sErr, node, spec, storage }: {
   if (!node) return <div class="text-muted">Loading</div>
   const rows: Row[] = [
     ['Kind', kindLabel[node.kind]],
-    ['Model', [modelOf(node), inv?.platform].filter(Boolean).join(' · ')],
+    ['Model', [modelName(inv ?? node?.inventory), inv?.platform].filter(Boolean).join(' · ')],
     ...identityRows(node),
-    ...(spec ? [['Install disk', <span class="mono">{spec.installDisk?.path ?? (spec.installDisk?.selector ? JSON.stringify(spec.installDisk.selector) : 'pool policy')}</span>] as Row] : []),
+    ...(spec ? [['Install disk', <span class="mono">{spec.installDisk?.path ?? (spec.installDisk?.selector ? JSON.stringify(spec.installDisk.selector) : '—')}</span>] as Row] : []),
     ...(spec?.dataDisks?.length ? [['Data disks', <span class="mono">{spec.dataDisks.map((d, i) => `${d} → /var/mnt/data-${i + 1}`).join(' · ')}</span>] as Row] : []),
     ...(spec && !spec.dataDisks?.length && storage?.systemDisk ? [['System disk', <span class="mono">/var {storage.ephemeralSize ?? '40GiB'} · rest → /var/mnt/data-system</span>] as Row] : []),
   ]
   const identity = (
-    <Section title="Machine" help="What Kubit has recorded about this machine.">
+    <Section title="Machine">
       <div class="panel p-3"><KeyValue rows={rows} /></div>
     </Section>
   )
   if (!node.talos) {
-    const next = node.kind === 'configured' ? 'Runs Talos with a config Kubit did not apply; reset it to maintenance mode to use it.'
-      : 'Not answering; boot it into Talos from the ISO or with kubit pxe.'
+    const next = node.kind === 'configured' ? 'Configured by another cluster; reset it to use it.' : 'Not answering.'
     return (
       <div class="grid grid-cols-1 lg:grid-cols-2 gap-4">
         {identity}
@@ -37,7 +36,7 @@ export function OverviewTab({ inv, invErr, k8s, k8sErr, node, spec, storage }: {
   return (
     <div class="grid grid-cols-1 lg:grid-cols-2 gap-4">
       {identity}
-      <Section title="Talos" help="Read live over the Talos API.">
+      <Section title="Talos">
         <div class="panel p-3">
           {invErr && <Notice tone="bad">{invErr}</Notice>}
           {!inv && !invErr && <div class="text-muted">Loading</div>}
@@ -62,7 +61,7 @@ export function OverviewTab({ inv, invErr, k8s, k8sErr, node, spec, storage }: {
         </div>
       </Section>
       {node.kind === 'member' ? (
-        <Section title="Kubernetes" help="What the API server knows about this node.">
+        <Section title="Kubernetes">
           <div class="panel p-3 flex flex-col gap-4">
             {k8sErr && <Notice tone="bad">{k8sErr}</Notice>}
             {k8s && (
@@ -82,8 +81,8 @@ export function OverviewTab({ inv, invErr, k8s, k8sErr, node, spec, storage }: {
           </div>
         </Section>
       ) : (
-        <Section title="Kubernetes" help="Joins a cluster from the Actions tab.">
-          <Notice tone="muted">In maintenance mode; not a cluster member.</Notice>
+        <Section title="Kubernetes">
+          <Notice tone="muted">Not a cluster member.</Notice>
         </Section>
       )}
     </div>

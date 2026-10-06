@@ -1,8 +1,8 @@
 import { getToken, type Message } from './api'
 import { editMap, setIn } from './maps'
 import {
-  bumpAllRefreshes, bumpRefresh, clusters, connected, daemon, health, loadAllHealth, loadMachines, loadObserver, loadSnapshots, loadVersions, machineKey, machines, observer,
-  reconnectAttempt, reloadClusters, resyncing, snapshots, statuses, stopped, toast, upsertCluster,
+  applyRuns, bumpAllRefreshes, bumpRefresh, connected, daemon, health, loadApplyRun, loadMachines, loadPlans, loadVersions, machineKey, machines, plans,
+  reconnectAttempt, reloadClusters, resyncing, statuses, stopped, toast, upsertCluster,
 } from './store'
 
 let ws: WebSocket | null = null
@@ -55,10 +55,7 @@ async function runResync() {
   try {
     while (resyncDone < resyncWanted) {
       resyncDone = resyncWanted
-      await Promise.all([
-        reloadClusters(), loadMachines(), loadObserver(), loadVersions(),
-        loadAllHealth([...health.value.keys()]), ...[...snapshots.value.keys()].map(loadSnapshots),
-      ])
+      await Promise.all([reloadClusters(), loadMachines(), loadVersions(), loadPlans()])
       bumpAllRefreshes()
     }
   } finally {
@@ -97,29 +94,8 @@ function apply(m: Message) {
     case 'cluster':
       if (m.clusterRow) upsertCluster(m.clusterRow)
       break
-    case 'clusterRemoved': {
-      const key = m.key ?? ''
-      clusters.value = clusters.value.filter((c) => c.name !== key)
-      editMap(health, (hm) => hm.delete(key))
-      editMap(statuses, (sm) => sm.delete(key))
-      editMap(snapshots, (sm) => sm.delete(key))
-      break
-    }
     case 'machine':
       if (m.machine) setIn(machines, machineKey(m.machine), m.machine)
-      break
-    case 'machineRemoved':
-      editMap(machines, (mm) => { for (const [k, v] of mm) if (k === m.key || v.ip === m.key) mm.delete(k) })
-      break
-    case 'snapshot': {
-      const snap = m.snapshot
-      const cluster = m.cluster
-      if (!snap || !cluster) break
-      editMap(snapshots, (sm) => sm.set(cluster, [snap, ...(sm.get(cluster) ?? []).filter((s) => s.id !== snap.id)].sort((a, b) => b.id - a.id)))
-      break
-    }
-    case 'snapshotRemoved':
-      editMap(snapshots, (sm) => { for (const [c, list] of sm) sm.set(c, list.filter((s) => String(s.id) !== m.key)) })
       break
     case 'versions':
       loadVersions()
@@ -130,25 +106,24 @@ function apply(m: Message) {
     case 'health':
       if (m.health) {
         const h = m.health
-        editMap(health, (hm) => hm.set(h.cluster, [h, ...(hm.get(h.cluster) ?? []).filter((e) => e.id !== h.id)].slice(0, 200)))
-        if (h.severity !== 'info' && !h.acked && !replayed) toast(`${h.cluster}: ${h.message}`, 'error')
+        editMap(health, (hm) => {
+          const list = hm.get(h.cluster) ?? []
+          hm.set(h.cluster, list.some((e) => e.id === h.id) ? list.map((e) => e.id === h.id ? h : e) : [h, ...list].slice(0, 200))
+        })
+        if (h.open && !replayed) toast(`${h.cluster}: ${h.message}`, 'error')
       }
       break
-    case 'observer':
-      if (m.observer) observer.value = m.observer
-      break
-    case 'healthAck': {
-      const c = m.cluster ?? ''
-      editMap(health, (hm) => hm.set(c, (hm.get(c) ?? []).map((e) => m.key === '*' || String(e.id) === m.key ? { ...e, acked: true } : e)))
+    case 'apply': {
+      const c = m.cluster ?? '', line = m.line
+      if (line) editMap(applyRuns, (rm) => { const r = rm.get(c) ?? { running: true, lines: [] }; rm.set(c, { ...r, running: true, lines: [...r.lines, line] }) })
       break
     }
-    case 'healthResolved': {
-      const c = m.cluster ?? ''
-      editMap(health, (hm) => hm.set(c, (hm.get(c) ?? []).map((e) => e.kind === m.key && (e.node ?? '') === (m.node ?? '') ? { ...e, acked: true } : e)))
+    case 'plan':
+      if (m.plan && m.cluster) setIn(plans, m.cluster, m.plan)
       break
-    }
     case 'refresh':
       if (m.scope === 'machines') loadMachines()
+      if (m.scope === 'apply' && m.cluster) loadApplyRun(m.cluster)
       bumpRefresh(m.cluster ?? '', m.scope ?? '')
       break
   }

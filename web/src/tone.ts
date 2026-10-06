@@ -9,9 +9,9 @@ export function stateTone(state: string): Tone {
   switch (state) {
     case 'ready': case 'running': case 'maintenance': case 'succeeded': return 'good'
     case 'failed': case 'error': case 'down': return 'bad'
-    case 'disabled': case 'offline': return 'muted'
+    case 'disabled': case 'offline': case 'connecting': return 'muted'
     case 'provisioning': case 'bootstrapped': case 'pending': case 'degraded': case 'deploying': case 'orphaned': return 'warn'
-    case 'configured': return 'info'
+    case 'configured': case 'declared': return 'info'
     default: return 'muted'
   }
 }

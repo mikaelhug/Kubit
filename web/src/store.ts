@@ -1,5 +1,5 @@
-import { batch, computed, signal, type ReadonlySignal, type Signal } from '@preact/signals'
-import { api, type ClusterRow, type HealthEvent, type NodeRow, type ObserverState, type Snapshot, type Status, type Versions } from './api'
+import { batch, computed, signal, type Signal } from '@preact/signals'
+import { api, type ApplyRun, type ClusterRow, type HealthEvent, type NodeRow, type PlanSummary, type Status, type Versions } from './api'
 import { editMap, setIn } from './maps'
 
 export const kubitKey = 'kubit'
@@ -7,7 +7,6 @@ export const kubitKey = 'kubit'
 export const clusters = signal<ClusterRow[]>([])
 export const machines = signal<Map<string, NodeRow>>(new Map())
 export const machineList = computed(() => [...machines.value.values()].sort((a, b) => a.ip.localeCompare(b.ip, undefined, { numeric: true })))
-export const snapshots = signal<Map<string, Snapshot[]>>(new Map())
 export const versions = signal<Versions | null>(null)
 export const daemon = signal<{ version: string; startedAt: string; os?: string } | null>(null)
 export const connected = signal(false)
@@ -17,8 +16,17 @@ export const live = computed(() => connected.value && !resyncing.value)
 export const reconnectAttempt = signal(0)
 export const toasts = signal<{ id: number; text: string; tone: 'info' | 'error' | 'good' }[]>([])
 export const statuses = signal<Map<string, Status>>(new Map())
-export const observer = signal<ObserverState>({ online: true, gaps24h: 0 })
 export const health = signal<Map<string, HealthEvent[]>>(new Map())
+export const applyRuns = signal<Map<string, ApplyRun>>(new Map())
+export const plans = signal<Map<string, PlanSummary>>(new Map())
+
+export async function loadPlans() {
+  try { plans.value = new Map((await api.plans()).map((p) => [p.cluster, p])) } catch {}
+}
+
+export async function loadApplyRun(name: string) {
+  try { setIn(applyRuns, name, await api.applyRun(name)) } catch {}
+}
 
 const refreshes = new Map<string, Signal<number>>()
 function refreshSignal(key: string) {
@@ -35,47 +43,17 @@ export function bumpAllRefreshes() {
   })
 }
 
-
-export async function loadObserver() {
-  try { observer.value = await api.observer() } catch {}
-}
-
 export async function loadVersions() {
   try { versions.value = await api.versions() } catch {}
 }
 
-const isOpen = (e: HealthEvent) => !e.acked && e.severity !== 'info'
+const isOpen = (e: HealthEvent) => e.open
 
 export function openAlerts(key: string) { return (health.value.get(key) ?? []).filter(isOpen) }
-
-const alertIndexes = new Map<string, ReadonlySignal<Map<string, HealthEvent>>>()
-
-export function alertIndex(cluster: string) {
-  let index = alertIndexes.get(cluster)
-  if (!index) {
-    index = computed(() => {
-      const m = new Map<string, HealthEvent>()
-      for (const e of health.value.get(cluster) ?? []) if (isOpen(e) && e.node && !m.has(e.node)) m.set(e.node, e)
-      return m
-    })
-    alertIndexes.set(cluster, index)
-  }
-  return index.value
-}
-
-export const objectKey = (kind: string, ns: string, name: string) => `${kind}/${ns}/${name}`
 
 export async function loadAllHealth(keys: string[]) {
   const lists = await Promise.all(keys.map((k) => api.events(k).catch(() => null)))
   editMap(health, (m) => lists.forEach((list, i) => { if (list) m.set(keys[i], list) }))
-}
-
-export async function loadHealth(name: string) {
-  try { setIn(health, name, await api.events(name)) } catch {}
-}
-
-export function ack(name: string, id?: number) {
-  return (id === undefined ? api.ackAll(name) : api.ackEvent(id)).catch((e) => toast(e.message, 'error'))
 }
 
 export function upsertCluster(row: ClusterRow) {
@@ -92,12 +70,6 @@ export async function loadMachines() {
   } catch {}
 }
 
-export async function loadSnapshots(name: string) {
-  try { setIn(snapshots, name, await api.snapshots(name)) } catch {}
-}
-
-
-
 let toastSeq = 0
 export function toast(text: string, tone: 'info' | 'error' | 'good' = 'info') {
   const id = ++toastSeq
@@ -108,7 +80,17 @@ export function toast(text: string, tone: 'info' | 'error' | 'good' = 'info') {
 export async function reloadClusters() {
   try {
     clusters.value = await api.clusters()
-    const rows = await Promise.all(clusters.value.map((c) => api.status(c.name).catch(() => null)))
-    editMap(statuses, (m) => rows.forEach((s, i) => { if (s) m.set(clusters.value[i].name, s) }))
+    const names = clusters.value.map((c) => c.name)
+    const rows = await Promise.all(names.map((n) => api.status(n).catch(() => null)))
+    editMap(statuses, (m) => rows.forEach((s, i) => { if (s) m.set(names[i], s) }))
+    await loadAllHealth([kubitKey, ...names])
   } catch {}
+}
+
+export function checkNow(name: string) {
+  return api.status(name, true).then((st) => {
+    const prev = statuses.value.get(name)
+    const contact = st.apiReachable || st.nodes.some((n) => n.talosReachable) ? st.observedAt : prev?.lastContactAt
+    setIn(statuses, name, { ...(prev ?? st), ...st, health: prev?.health, openAlerts: prev?.openAlerts, lastContactAt: contact })
+  })
 }

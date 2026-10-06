@@ -7,22 +7,20 @@ import (
 
 	"github.com/mikael/kubit/internal/config"
 	"github.com/mikael/kubit/internal/k8s"
-	"github.com/mikael/kubit/internal/store"
 	"github.com/mikael/kubit/internal/talos"
 )
 
 func (m *Manager) ApplyConfigs(ctx context.Context, c *config.Cluster, wantKubelet string, sink Sink) error {
-	sec, gen, err := m.generateNodeConfigs(ctx, c)
+	sec, gen, err := m.generateNodeConfigs(c)
 	if err != nil {
 		return err
 	}
-	kc, err := m.KubeClientFor(c.Metadata.Name, sec)
+	kc, err := m.KubeClientFor(c.Metadata.Name, sec.Kubeconfig)
 	if err != nil {
 		return err
 	}
-	nodes := orderedNodes(c)
+	nodes := orderedNodes(declared(c))
 	if wantKubelet == "" {
-		sink.Plan(append(nodeSteps(nodes, "Apply"), manifestsStep)...)
 	}
 	for _, n := range nodes {
 		step := nodeStep(n)
@@ -38,12 +36,12 @@ func (m *Manager) ApplyConfigs(ctx context.Context, c *config.Cluster, wantKubel
 					return err
 				}
 			case wantKubelet == "":
-				if err := kc.WaitReady(ctx, []string{n.Hostname}, m.Timeouts.Ready, nil); err != nil {
+				if err := kc.WaitReady(ctx, []string{n.Hostname}, readyTimeout, nil); err != nil {
 					return err
 				}
 			}
 			if wantKubelet != "" {
-				if err := waitKubeletVersion(ctx, kc, n.Hostname, wantKubelet, m.Timeouts.Ready); err != nil {
+				if err := waitKubeletVersion(ctx, kc, n.Hostname, wantKubelet, readyTimeout); err != nil {
 					return err
 				}
 			}
@@ -61,7 +59,7 @@ func (m *Manager) ApplyConfigs(ctx context.Context, c *config.Cluster, wantKubel
 }
 
 func (m *Manager) syncManifestsStep(ctx context.Context, c *config.Cluster, kc *k8s.Client, sink Sink) error {
-	return sink.Run(manifestsStep.ID, func() error {
+	return sink.Run(manifestsStep, func() error {
 		if _, err := kc.Nodes(ctx); err != nil {
 			return fmt.Errorf("Kubernetes API unreachable; bootstrap manifests not synced: %w", err)
 		}
@@ -69,12 +67,12 @@ func (m *Manager) syncManifestsStep(ctx context.Context, c *config.Cluster, kc *
 	})
 }
 
-func (m *Manager) generateNodeConfigs(ctx context.Context, c *config.Cluster) (*store.ClusterSecrets, *config.Generated, error) {
-	sec, bundle, err := m.loadSecrets(ctx, c.Metadata.Name)
+func (m *Manager) generateNodeConfigs(c *config.Cluster) (*Desired, *config.Generated, error) {
+	sec, bundle, err := m.loadSecrets(c.Metadata.Name)
 	if err != nil {
 		return nil, nil, err
 	}
-	gen, err := config.Generate(c, bundle, m.installer(c))
+	gen, err := m.machineConfigs(c, bundle)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -94,26 +92,23 @@ func (m *Manager) applyNodeConfig(ctx context.Context, n config.Node, cfg []byte
 	if configDiff(details) == "" {
 		tc.Close()
 		sink.Emit(Info, step, n.Hostname, "unchanged")
-		return false, m.Store.PutNodeMachineConfig(ctx, n.IP, cfg, config.HasSystemVolume(cfg))
+		return false, nil
 	}
 	bootID, err := readBootID(ctx, tc)
 	if err != nil {
 		tc.Close()
 		return false, fmt.Errorf("boot id: %w", err)
 	}
-	err = applyConfig(ctx, tc, cfg, applyTimeout)
+	err = applyConfig(ctx, tc, cfg)
 	tc.Close()
 	if err != nil {
 		return false, fmt.Errorf("apply: %w", err)
-	}
-	if err := m.Store.PutNodeMachineConfig(ctx, n.IP, cfg, config.HasSystemVolume(cfg)); err != nil {
-		return false, err
 	}
 	sink.Emit(Info, step, n.Hostname, "applied: %s", summarizeDryRun(details))
 	if !wantReboot(details) {
 		return false, nil
 	}
-	return true, talos.WaitForReboot(ctx, n.IP, talosconfig, bootID, m.Timeouts.Install)
+	return true, talos.WaitForReboot(ctx, n.IP, talosconfig, bootID, installTimeout)
 }
 
 func summarizeDryRun(details string) string {

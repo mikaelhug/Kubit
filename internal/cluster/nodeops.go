@@ -131,12 +131,12 @@ func (m *Manager) installTalos(ctx context.Context, n config.Node, talosconfig [
 	defer tc.Close()
 	progress := func(line string) { sink.Emit(Info, step, n.Hostname, "%s", line) }
 	sink.Emit(Info, step, n.Hostname, "pulling %s", image)
-	name, err := pullImage(ctx, tc, image, m.Timeouts.Install, progress)
+	name, err := pullImage(ctx, tc, image, installTimeout, progress)
 	if err != nil {
 		return fmt.Errorf("pull: %w", err)
 	}
 	sink.Emit(Info, step, n.Hostname, "installing Talos %s into the inactive boot slot", version)
-	if err := installImage(ctx, tc, name, m.Timeouts.Install, progress); err != nil {
+	if err := installImage(ctx, tc, name, installTimeout, progress); err != nil {
 		return fmt.Errorf("install: %w", err)
 	}
 	sink.Emit(Info, step, n.Hostname, "installed; draining before the reboot")
@@ -205,7 +205,7 @@ func kubeBootID(ctx context.Context, kc *k8s.Client, hostname string) string {
 }
 
 func (m *Manager) waitBack(ctx context.Context, c *config.Cluster, kc *k8s.Client, n config.Node, kubeBoot string, talosconfig []byte) error {
-	if err := kc.WaitRebooted(ctx, map[string]string{n.Hostname: kubeBoot}, m.Timeouts.Ready); err != nil {
+	if err := kc.WaitRebooted(ctx, map[string]string{n.Hostname: kubeBoot}, readyTimeout); err != nil {
 		return err
 	}
 	if n.Role != config.RoleControlPlane {

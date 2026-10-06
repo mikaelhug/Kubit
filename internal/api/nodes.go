@@ -2,6 +2,7 @@ package api
 
 import (
 	"net/http"
+	"strings"
 
 	"github.com/mikael/kubit/internal/store"
 )
@@ -13,7 +14,7 @@ func (s *Server) nodeRoutes() {
 }
 
 func (s *Server) handleNodeInventory(w http.ResponseWriter, r *http.Request) {
-	tc, err := s.nodeClient(r)
+	tc, row, err := s.nodeClient(r)
 	if err != nil {
 		writeErr(w, err)
 		return
@@ -24,14 +25,17 @@ func (s *Server) handleNodeInventory(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, err)
 		return
 	}
-	if row, err := s.store.GetNode(r.Context(), r.PathValue("ip")); err == nil && row.Role == "controlplane" {
+	if len(row.Hardware) <= 2 && !strings.HasPrefix(row.MAC, "ip:") {
+		s.manager.RecordInventory(row.MAC, row.IP, inv)
+	}
+	if row.Role == "controlplane" {
 		inv.Etcd, _ = tc.EtcdMemberInfo(r.Context())
 	}
 	writeJSON(w, http.StatusOK, inv)
 }
 
 func (s *Server) handleNodeKubernetes(w http.ResponseWriter, r *http.Request) {
-	row, err := s.store.GetNode(r.Context(), r.PathValue("ip"))
+	row, err := s.store.GetNode(r.PathValue("ip"))
 	if err != nil {
 		writeErr(w, err)
 		return
@@ -46,9 +50,5 @@ func (s *Server) handleNodeKubernetes(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	d, err := kc.NodeDetail(r.Context(), row.Hostname)
-	if err != nil {
-		writeErr(w, err)
-		return
-	}
-	writeJSON(w, http.StatusOK, d)
+	reply(w, d, err)
 }

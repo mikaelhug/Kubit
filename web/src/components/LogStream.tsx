@@ -6,7 +6,7 @@ function errorText(body: string) {
   try { return JSON.parse(body).error ?? body } catch { return body }
 }
 
-export function LogStream({ url, follow, onFollow, toolbar, className = '', height = '!max-h-[60vh]' }: { url: string; follow: boolean; onFollow: (f: boolean) => void; toolbar?: ComponentChildren; className?: string; height?: string }) {
+export function LogStream({ url, follow, onFollow, toolbar, height = '!max-h-[60vh]' }: { url: string; follow: boolean; onFollow: (f: boolean) => void; toolbar?: ComponentChildren; height?: string }) {
   const [log, setLog] = useState('')
   const [q, setQ] = useState('')
   const [error, setError] = useState<string | null>(null)
@@ -29,7 +29,7 @@ export function LogStream({ url, follow, onFollow, toolbar, className = '', heig
   }, [url])
   const lines = q ? log.split('\n').filter((l) => l.toLowerCase().includes(q.toLowerCase())).join('\n') : log
   return (
-    <div class={`flex flex-col gap-2 min-w-0 ${className}`}>
+    <div class="flex flex-col gap-2 min-w-0">
       <div class="flex items-center gap-2">
         {toolbar}
         <input class="input !w-56" placeholder="Search" value={q} onInput={(e) => setQ((e.target as HTMLInputElement).value)} />

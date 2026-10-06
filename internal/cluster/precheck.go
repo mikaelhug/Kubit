@@ -22,8 +22,6 @@ import (
 
 const minVarFree = 1 << 30
 
-var upgradePrechecks = Steps("precheck", "Pre-flight: etcd, node health, disk headroom", "snapshot", "Take a pre-upgrade etcd snapshot")
-
 func (m *Manager) precheckUpgrade(ctx context.Context, c *config.Cluster, kc *k8s.Client, talosconfig []byte, kind, kubeFrom, target string, sink Sink) error {
 	if err := checkUpgradeVersions(c, kind, kubeFrom, target, sink); err != nil {
 		return err
@@ -290,7 +288,7 @@ func (m *Manager) preUpgradeSnapshot(ctx context.Context, name string, sink Sink
 	if err != nil {
 		return fmt.Errorf("pre-upgrade snapshot: %w", err)
 	}
-	sink.Emit(Info, "snapshot", "", "etcd snapshot #%d stored (%d keys); restore from Backups if the upgrade goes wrong", sn.ID, sn.Keys)
+	sink.Emit(Info, "snapshot", "", "etcd snapshot %s written; kubit etcd restore undoes a failed upgrade", sn.ID)
 	return nil
 }
 

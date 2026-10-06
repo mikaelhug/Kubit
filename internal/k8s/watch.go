@@ -23,7 +23,6 @@ const (
 	ScopeNodes     = "nodes"
 	ScopeFlux      = "flux"
 	ScopeAddons    = "addons"
-	ScopeServices  = "services"
 )
 
 func (c *Client) WatchScopes(ctx context.Context, changed func(scope, namespace string)) {
@@ -43,7 +42,11 @@ func (c *Client) WatchScopes(ctx context.Context, changed func(scope, namespace 
 		_, _ = is.informer(f).AddEventHandler(hook(is.scope))
 	}
 	k := NewCache(f)
-	go c.watchFlux(ctx, k, hook(ScopeFlux))
+	watches := []crdWatch{{gvr: httpRouteGVR, handler: hook(ScopeNetwork)}}
+	for _, fk := range fluxKinds {
+		watches = append(watches, crdWatch{gvr: fk.gvr, handler: hook(ScopeFlux), flux: true})
+	}
+	go c.watchCRDs(ctx, k, watches)
 	c.UseCache(k)
 	f.Start(ctx.Done())
 	f.WaitForCacheSync(ctx.Done())
@@ -121,7 +124,13 @@ func (d *Debouncer) Stop() {
 	}
 }
 
-func (c *Client) watchFlux(ctx context.Context, tracked *Cache, handler cache.ResourceEventHandler) {
+type crdWatch struct {
+	gvr     schema.GroupVersionResource
+	handler cache.ResourceEventHandler
+	flux    bool
+}
+
+func (c *Client) watchCRDs(ctx context.Context, tracked *Cache, watches []crdWatch) {
 	cfg := c.streamConfig()
 	dyn, err := dynamic.NewForConfig(cfg)
 	if err != nil {
@@ -131,28 +140,32 @@ func (c *Client) watchFlux(ctx context.Context, tracked *Cache, handler cache.Re
 	if err != nil {
 		return
 	}
-	byCRD := map[string]schema.GroupVersionResource{}
-	for _, k := range fluxKinds {
-		byCRD[k.gvr.Resource+"."+k.gvr.Group] = k.gvr
+	byCRD := map[string]crdWatch{}
+	for _, w := range watches {
+		byCRD[w.gvr.Resource+"."+w.gvr.Group] = w
 	}
 	running := map[string]context.CancelFunc{}
 	start := func(obj any) {
 		name, _ := cache.DeletionHandlingMetaNamespaceKeyFunc(obj)
-		gvr, ok := byCRD[name]
+		w, ok := byCRD[name]
 		if !ok || running[name] != nil {
 			return
 		}
 		ictx, cancel := context.WithCancel(ctx)
 		running[name] = cancel
-		inf := dynamicinformer.NewFilteredDynamicInformer(dyn, gvr, "", 0, cache.Indexers{}, nil).Informer()
-		_, _ = inf.AddEventHandler(handler)
-		tracked.trackFlux(gvr, inf)
+		inf := dynamicinformer.NewFilteredDynamicInformer(dyn, w.gvr, "", 0, cache.Indexers{}, nil).Informer()
+		_, _ = inf.AddEventHandler(w.handler)
+		if w.flux {
+			tracked.trackFlux(w.gvr, inf)
+		}
 		go inf.Run(ictx.Done())
 	}
 	stop := func(obj any) {
 		name, _ := cache.DeletionHandlingMetaNamespaceKeyFunc(obj)
 		if cancel := running[name]; cancel != nil {
-			tracked.untrackFlux(byCRD[name])
+			if w := byCRD[name]; w.flux {
+				tracked.untrackFlux(w.gvr)
+			}
 			cancel()
 			delete(running, name)
 		}

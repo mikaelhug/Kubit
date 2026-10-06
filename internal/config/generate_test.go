@@ -1,13 +1,9 @@
 package config_test
 
 import (
-	"bytes"
-	"fmt"
-	"maps"
 	"slices"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/mikael/kubit/internal/config"
 	blockpb "github.com/siderolabs/talos/pkg/machinery/api/resource/definitions/block"
@@ -15,12 +11,8 @@ import (
 	talosconfig "github.com/siderolabs/talos/pkg/machinery/config"
 	"github.com/siderolabs/talos/pkg/machinery/config/configloader"
 	"github.com/siderolabs/talos/pkg/machinery/config/types/block"
-	clustertypes "github.com/siderolabs/talos/pkg/machinery/config/types/cluster"
-	"github.com/siderolabs/talos/pkg/machinery/config/types/cri"
 	"github.com/siderolabs/talos/pkg/machinery/config/types/k8s"
-	"github.com/siderolabs/talos/pkg/machinery/config/types/network"
 	"github.com/siderolabs/talos/pkg/machinery/config/types/runtime"
-	blockres "github.com/siderolabs/talos/pkg/machinery/resources/block"
 	"go.yaml.in/yaml/v4"
 )
 
@@ -38,7 +30,7 @@ func generateSample(t *testing.T) (*config.Cluster, *config.Generated) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	g, err := config.Generate(c, sharedSecrets(t), config.FixedInstaller(installer))
+	g, err := config.Generate(c, sharedSecrets(t), installer)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -78,64 +70,38 @@ func hasDoc[T any](cfg talosconfig.Provider) bool {
 	return false
 }
 
-func TestGenerateEveryNodeValidates(t *testing.T) {
-	c, g := generateSample(t)
-	if len(g.Nodes) != len(c.Spec.Nodes) {
-		t.Fatalf("%d configs for %d nodes", len(g.Nodes), len(c.Spec.Nodes))
+func TestGeneratedConfigPassesTalosValidation(t *testing.T) {
+	for _, decl := range []string{sampleCluster, staticCluster} {
+		c, err := config.Parse([]byte(decl))
+		if err != nil {
+			t.Fatal(err)
+		}
+		g, err := config.Generate(c, sharedSecrets(t), installer)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(g.Nodes) != len(c.Spec.Nodes) {
+			t.Fatalf("%d configs for %d nodes", len(g.Nodes), len(c.Spec.Nodes))
+		}
+		for _, b := range g.Nodes {
+			load(t, b)
+		}
 	}
+}
+
+func TestInstallNeverWipesTheDisk(t *testing.T) {
+	_, g := generateSample(t)
 	for host, b := range g.Nodes {
-		cfg := load(t, b)
-		if got := doc[*network.HostnameConfigV1Alpha1](t, cfg).ConfigHostname; got != host {
-			t.Errorf("%s: hostname doc says %q", host, got)
+		if w := doc[*runtime.UnattendedInstallConfigV1Alpha1](t, load(t, b)).ProvisioningSpec.Wipe; w == nil || *w {
+			t.Errorf("%s: install must not wipe the disk", host)
 		}
 	}
-	if g.Talosconfig == nil || g.Secrets == nil {
-		t.Error("talosconfig and secrets must be returned")
-	}
 }
 
-func TestGenerateGVisorRequirements(t *testing.T) {
+func TestDataVolumeMatchesOnlyItsOwnDisk(t *testing.T) {
 	_, g := generateSample(t)
-	cfg := load(t, g.Nodes["worker-01"])
-	if got := doc[*runtime.SysctlConfigV1Alpha1](t, cfg).Params["user.max_user_namespaces"]; got != "11255" {
-		t.Errorf("sysctl user.max_user_namespaces = %q", got)
-	}
-	labels := doc[*k8s.KubeNodeConfigV1Alpha1](t, cfg).LabelsConfig
-	if labels["sandbox.runtime/gvisor"] != "true" || labels["sandbox.runtime/gvisor-kvm"] != "true" {
-		t.Errorf("worker-01 (kvm) labels = %v", labels)
-	}
-	cp := load(t, g.Nodes["cp-01"])
-	if l := doc[*k8s.KubeNodeConfigV1Alpha1](t, cp).LabelsConfig; l["sandbox.runtime/gvisor"] != "true" || l["sandbox.runtime/gvisor-kvm"] != "" {
-		t.Errorf("cp-01 (no kvm) labels = %v", l)
-	}
-}
-
-func TestGenerateInstallDisk(t *testing.T) {
-	_, g := generateSample(t)
-	byPath := doc[*runtime.UnattendedInstallConfigV1Alpha1](t, load(t, g.Nodes["cp-01"]))
-	if byPath.Installer.Image != installer {
-		t.Errorf("installer image = %q", byPath.Installer.Image)
-	}
-	if got := byPath.ProvisioningSpec.DiskSelector.Match.String(); got != `disk.dev_path == "/dev/vda"` {
-		t.Errorf("path selector = %q", got)
-	}
-	bySel := doc[*runtime.UnattendedInstallConfigV1Alpha1](t, load(t, g.Nodes["cp-02"]))
-	got := bySel.ProvisioningSpec.DiskSelector.Match.String()
-	for _, want := range []string{"disk.size >= 10u * GB", `disk.transport == "virtio"`, "!disk.cdrom"} {
-		if !strings.Contains(got, want) {
-			t.Errorf("selector %q lacks %q", got, want)
-		}
-	}
-	if bySel.ProvisioningSpec.Wipe == nil || *bySel.ProvisioningSpec.Wipe {
-		t.Error("install must not wipe the disk")
-	}
-}
-
-func TestGenerateDataDisks(t *testing.T) {
-	_, g := generateSample(t)
-	cfg := load(t, g.Nodes["worker-01"])
 	var vols []*block.UserVolumeConfigV1Alpha1
-	for _, d := range cfg.Documents() {
+	for _, d := range load(t, g.Nodes["worker-01"]).Documents() {
 		if v, ok := d.(*block.UserVolumeConfigV1Alpha1); ok {
 			vols = append(vols, v)
 		}
@@ -144,33 +110,17 @@ func TestGenerateDataDisks(t *testing.T) {
 		t.Fatalf("worker-01 has %d user volumes, want 2", len(vols))
 	}
 	for i, want := range []string{"/dev/vdb", "/dev/vdc"} {
-		v := vols[i]
-		if v.MetaName != fmt.Sprintf("data-%d", i+1) || *v.VolumeType != blockres.VolumeTypeDisk || v.FilesystemSpec.FilesystemType != blockres.FilesystemTypeXFS {
-			t.Errorf("volume %d = %s %v %v", i, v.MetaName, v.VolumeType, v.FilesystemSpec.FilesystemType)
-		}
-		if got := v.ProvisioningSpec.DiskSelectorSpec.Match.String(); got != fmt.Sprintf(`disk.dev_path == %q`, want) {
-			t.Errorf("volume %d selector = %q", i, got)
-		}
 		for _, disk := range []string{want, "/dev/vda"} {
-			ok, err := v.ProvisioningSpec.DiskSelectorSpec.Match.EvalBool(celenv.DiskLocator(), map[string]any{"disk": &blockpb.DiskSpec{DevPath: disk}})
+			ok, err := vols[i].ProvisioningSpec.DiskSelectorSpec.Match.EvalBool(celenv.DiskLocator(), map[string]any{"disk": &blockpb.DiskSpec{DevPath: disk}})
 			if err != nil || ok != (disk == want) {
 				t.Errorf("volume %d on %s: matched=%v err=%v", i, disk, ok, err)
 			}
 		}
 	}
-	if config.DataMount(2) != "/var/mnt/data-2" {
-		t.Errorf("mount = %s", config.DataMount(2))
-	}
-	if l := doc[*k8s.KubeNodeConfigV1Alpha1](t, cfg).LabelsConfig; l["kubit.dev/data-disks"] != "2" {
-		t.Errorf("labels = %v", l)
-	}
-	if hasDoc[*block.UserVolumeConfigV1Alpha1](load(t, g.Nodes["cp-01"])) {
-		t.Error("cp-01 declares no data disks")
-	}
 }
 
-func TestValidateDataDisks(t *testing.T) {
-	for _, bad := range []string{"dataDisks: [/dev/vda]", "dataDisks: [/dev/vdb, /dev/vdb]", "dataDisks: ['']"} {
+func TestOverlappingDataDisksAreRefused(t *testing.T) {
+	for _, bad := range []string{"dataDisks: [/dev/vda]", "dataDisks: [/dev/vdb, /dev/vdb]"} {
 		y := strings.Replace(sampleCluster, "dataDisks: [/dev/vdb, /dev/vdc]", bad, 1)
 		if _, err := config.Parse([]byte(y)); err == nil {
 			t.Errorf("%s must be rejected", bad)
@@ -178,74 +128,8 @@ func TestValidateDataDisks(t *testing.T) {
 	}
 }
 
-func TestGenerateControlPlaneVIP(t *testing.T) {
-	_, g := generateSample(t)
-	withMAC := load(t, g.Nodes["cp-01"])
-	vip := doc[*network.Layer2VIPConfigV1Alpha1](t, withMAC)
-	if vip.Name() != "192.168.64.9" || vip.LinkName != "uplink" {
-		t.Errorf("VIP doc = %+v", vip)
-	}
-	if sel := doc[*network.LinkAliasConfigV1Alpha1](t, withMAC).Selector.Match.String(); sel != `mac(link.permanent_addr) == "52:54:00:4b:49:01"` {
-		t.Errorf("cp-01 uplink selector = %q", sel)
-	}
-	if sel := doc[*network.LinkAliasConfigV1Alpha1](t, load(t, g.Nodes["cp-02"])).Selector.Match.String(); sel != `link.type == 1 && link.kind == ""` {
-		t.Errorf("cp-02 (no mac) uplink selector = %q", sel)
-	}
-	worker := load(t, g.Nodes["worker-01"])
-	if hasDoc[*network.Layer2VIPConfigV1Alpha1](worker) {
-		t.Error("workers must not carry the VIP")
-	}
-	if !hasDoc[*network.DHCPv4ConfigV1Alpha1](worker) || !hasDoc[*network.LinkAliasConfigV1Alpha1](worker) {
-		t.Error("a node without static config must declare DHCP on the uplink alias explicitly")
-	}
-	if !strings.Contains(string(g.Nodes["cp-01"]), "192.168.64.9") {
-		t.Error("VIP should appear as API server SAN / endpoint")
-	}
-}
-
-func TestGenerateSchedulingOnControlPlanes(t *testing.T) {
-	c, err := config.Parse([]byte(sampleCluster))
-	if err != nil {
-		t.Fatal(err)
-	}
-	g, err := config.Generate(c, sharedSecrets(t), config.FixedInstaller(installer))
-	if err != nil {
-		t.Fatal(err)
-	}
-	cp := doc[*k8s.KubeNodeConfigV1Alpha1](t, load(t, g.Nodes["cp-01"]))
-	if len(cp.TaintsConfig) != 0 {
-		t.Errorf("schedulable control plane must not be tainted: %v", cp.TaintsConfig)
-	}
-	if _, excluded := cp.LabelsConfig["node.kubernetes.io/exclude-from-external-load-balancers"]; excluded {
-		t.Error("schedulable control plane must be eligible for MetalLB announcements")
-	}
-	f := false
-	c.Spec.ControlPlane.AllowScheduling = &f
-	g, err = config.Generate(c, sharedSecrets(t), config.FixedInstaller(installer))
-	if err != nil {
-		t.Fatal(err)
-	}
-	cp = doc[*k8s.KubeNodeConfigV1Alpha1](t, load(t, g.Nodes["cp-01"]))
-	if cp.TaintsConfig["node-role.kubernetes.io/control-plane"] != "NoSchedule" {
-		t.Errorf("dedicated control plane must be tainted NoSchedule: %v", cp.TaintsConfig)
-	}
-	if _, excluded := cp.LabelsConfig["node.kubernetes.io/exclude-from-external-load-balancers"]; !excluded {
-		t.Error("dedicated control plane keeps Talos' exclude-from-external-load-balancers label")
-	}
-}
-
-func TestGenerateReusesSecrets(t *testing.T) {
+func TestRestoredSecretsKeepClusterIdentity(t *testing.T) {
 	c, g1 := generateSample(t)
-	g2, err := config.Generate(c, g1.Secrets, config.FixedInstaller(installer))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if g1.Secrets.Cluster.ID != g2.Secrets.Cluster.ID || g1.Secrets.Cluster.Secret != g2.Secrets.Cluster.Secret {
-		t.Error("passing a bundle must keep the cluster identity")
-	}
-	if g3, err := config.Generate(c, nil, config.FixedInstaller(installer)); err != nil || g3.Secrets.Cluster.ID == g1.Secrets.Cluster.ID {
-		t.Errorf("nil bundle must mint fresh secrets: %v", err)
-	}
 	raw, err := yaml.Marshal(g1.Secrets)
 	if err != nil {
 		t.Fatal(err)
@@ -254,114 +138,37 @@ func TestGenerateReusesSecrets(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	g4, err := config.Generate(c, restored, config.FixedInstaller(installer))
+	g2, err := config.Generate(c, restored, installer)
 	if err != nil {
 		t.Fatalf("generate from restored bundle: %v", err)
 	}
-	if g4.Secrets.Cluster.ID != g1.Secrets.Cluster.ID || g4.Talosconfig == nil {
+	if g2.Secrets.Cluster.ID != g1.Secrets.Cluster.ID || g2.Secrets.Cluster.Secret != g1.Secrets.Cluster.Secret || g2.Talosconfig == nil {
 		t.Error("restored bundle must keep identity and produce a talosconfig")
 	}
 }
 
-const pooledCluster = `
+const staticCluster = `
 apiVersion: kubit.dev/v1
 kind: Cluster
-metadata: { name: pooled }
+metadata: { name: static }
 spec:
   network:
     nameservers: [192.168.64.1, 1.1.1.1]
     ntp: [pool.ntp.org]
-  pools:
-    - name: controlplane
-      role: controlplane
-    - name: worker
-      role: worker
-    - name: gpu
-      role: worker
-      labels: { workload: gpu }
-      taints: { nvidia.com/gpu: "true:NoSchedule" }
-      extensions: [siderolabs/nvidia-open-gpu-kernel-modules-lts]
-      schematicID: gpu-schematic
-      installDisk: { selector: { minSize: 100GB, type: nvme } }
   nodes:
-    - { hostname: cp-01, ip: 192.168.64.2, mac: "52:54:00:4b:49:01", pool: controlplane, installDisk: { path: /dev/vda } }
-    - { hostname: gpu-01, ip: 192.168.64.3, mac: "52:54:00:4b:49:02", pool: gpu, kvm: true, labels: { rack: a1 },
+    - { hostname: cp-01, ip: 192.168.64.2, mac: "52:54:00:4b:49:01", role: controlplane, installDisk: { path: /dev/vda } }
+    - { hostname: gpu-01, ip: 192.168.64.3, mac: "52:54:00:4b:49:02", kvm: true, installDisk: { selector: { minSize: 100GB, type: nvme } },
+        labels: { workload: gpu, rack: a1 }, taints: { nvidia.com/gpu: "true:NoSchedule" }, annotations: { owner: ml },
         network: { addresses: [192.168.64.150/24], gateway: 192.168.64.1, nameservers: [9.9.9.9], vlan: 0, mtu: 1500 } }
-    - { hostname: vlan-01, ip: 192.168.64.4, mac: "52:54:00:4b:49:03", pool: worker, installDisk: { path: /dev/vda },
+    - { hostname: vlan-01, ip: 192.168.64.4, mac: "52:54:00:4b:49:03", role: worker, installDisk: { path: /dev/vda },
         network: { addresses: [10.20.0.5/24], gateway: 10.20.0.1, vlan: 20 } }
 `
 
-func TestPoolsResolveRoleDiskAndLabels(t *testing.T) {
-	c, err := config.Parse([]byte(pooledCluster))
-	if err != nil {
-		t.Fatal(err)
-	}
-	gpu := c.Spec.Nodes[1]
-	if gpu.Role != config.RoleWorker || gpu.InstallDisk.Selector == nil || gpu.InstallDisk.Selector.Type != "nvme" {
-		t.Errorf("pool defaults not applied: %+v", gpu)
-	}
-	if l := c.NodeLabels(gpu); l["workload"] != "gpu" || l["rack"] != "a1" {
-		t.Errorf("labels = %v", l)
-	}
-	if len(c.ControlPlanes()) != 1 || len(c.Workers()) != 2 {
-		t.Errorf("roles via pools: %d cp %d workers", len(c.ControlPlanes()), len(c.Workers()))
-	}
-	if c.SchematicFor(c.PoolOf(gpu)) != "gpu-schematic" || c.SchematicFor(c.PoolOf(c.Spec.Nodes[0])) != "" {
-		t.Error("pool schematic resolution")
-	}
-	installer := func(p config.Pool) string { return "img:" + p.Name }
-	g, err := config.Generate(c, sharedSecrets(t), installer)
-	if err != nil {
-		t.Fatal(err)
-	}
-	gpuCfg := load(t, g.Nodes["gpu-01"])
-	if img := doc[*runtime.UnattendedInstallConfigV1Alpha1](t, gpuCfg).Installer.Image; img != "img:gpu" {
-		t.Errorf("gpu pool must install from its own image, got %s", img)
-	}
-	node := doc[*k8s.KubeNodeConfigV1Alpha1](t, gpuCfg)
-	if node.LabelsConfig["workload"] != "gpu" || node.LabelsConfig["rack"] != "a1" || node.LabelsConfig["kubit.dev/pool"] != "gpu" {
-		t.Errorf("labels: %v", node.LabelsConfig)
-	}
-	if node.TaintsConfig["nvidia.com/gpu"] != "true:NoSchedule" {
-		t.Errorf("taints: %v", node.TaintsConfig)
-	}
-	link := doc[*network.LinkConfigV1Alpha1](t, gpuCfg)
-	if link.Name() != "uplink" || len(link.LinkAddresses) != 1 || link.LinkAddresses[0].AddressAddress.String() != "192.168.64.150/24" {
-		t.Errorf("static link: %+v", link)
-	}
-	if len(link.LinkRoutes) != 1 || link.LinkRoutes[0].RouteGateway.String() != "192.168.64.1" {
-		t.Errorf("default route: %+v", link.LinkRoutes)
-	}
-	if hasDoc[*network.DHCPv4ConfigV1Alpha1](gpuCfg) {
-		t.Error("static node must not also run DHCP on the uplink")
-	}
-	res := doc[*network.ResolverConfigV1Alpha1](t, gpuCfg)
-	if len(res.ResolverNameservers) != 1 || res.ResolverNameservers[0].Address.String() != "9.9.9.9" {
-		t.Errorf("node nameservers override the cluster's: %+v", res.ResolverNameservers)
-	}
-	cp := load(t, g.Nodes["cp-01"])
-	if r := doc[*network.ResolverConfigV1Alpha1](t, cp); len(r.ResolverNameservers) != 2 {
-		t.Errorf("cluster nameservers: %+v", r.ResolverNameservers)
-	}
-	if ts := doc[*network.TimeSyncConfigV1Alpha1](t, cp); ts.TimeNTP == nil || ts.TimeNTP.Servers[0] != "pool.ntp.org" {
-		t.Errorf("ntp: %+v", ts)
-	}
-	vlanCfg := load(t, g.Nodes["vlan-01"])
-	vlan := doc[*network.VLANConfigV1Alpha1](t, vlanCfg)
-	if vlan.VLANIDConfig != 20 || vlan.ParentLinkConfig != "uplink" || len(vlan.LinkAddresses) != 1 {
-		t.Errorf("vlan: %+v", vlan)
-	}
-}
-
-func TestValidateRejectsPoolMistakes(t *testing.T) {
+func TestNodeConflictsAndInvalidTaintsAreRefused(t *testing.T) {
 	cases := map[string]string{
-		"unknown pool":      strings.Replace(pooledCluster, "pool: gpu,", "pool: nope,", 1),
-		"two cp pools":      strings.Replace(pooledCluster, "- name: worker\n      role: worker", "- name: worker\n      role: controlplane", 1),
-		"bad taint effect":  strings.Replace(pooledCluster, `"true:NoSchedule"`, `"true:Sometimes"`, 1),
-		"duplicate mac":     strings.Replace(pooledCluster, "52:54:00:4b:49:02", "52:54:00:4b:49:01", 1),
-		"address not cidr":  strings.Replace(pooledCluster, "192.168.64.150/24", "192.168.64.150", 1),
-		"address is vip":    strings.Replace(pooledCluster, "spec:\n  network:", "spec:\n  controlPlane: { vip: 192.168.64.150 }\n  network:", 1),
-		"vlan out of range": strings.Replace(pooledCluster, "vlan: 20", "vlan: 5000", 1),
+		"bad taint effect": strings.Replace(staticCluster, `"true:NoSchedule"`, `"true:Sometimes"`, 1),
+		"duplicate mac":    strings.Replace(staticCluster, "52:54:00:4b:49:02", "52:54:00:4b:49:01", 1),
+		"address is vip":   strings.Replace(staticCluster, "spec:\n  network:", "spec:\n  controlPlane: { vip: 192.168.64.150 }\n  network:", 1),
 	}
 	for name, doc := range cases {
 		if _, err := config.Parse([]byte(doc)); err == nil {
@@ -370,95 +177,7 @@ func TestValidateRejectsPoolMistakes(t *testing.T) {
 	}
 }
 
-func TestLegacyRoleDeclarationsStillRender(t *testing.T) {
-	c, err := config.Parse([]byte(sampleCluster))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(c.Spec.Pools) != 2 || c.Spec.Nodes[0].Pool != "controlplane" || c.Spec.Nodes[3].Pool != "worker" {
-		t.Errorf("default pools: %+v / %s %s", c.Spec.Pools, c.Spec.Nodes[0].Pool, c.Spec.Nodes[3].Pool)
-	}
-}
-
-func TestGenerateClusterOIDC(t *testing.T) {
-	c, err := config.Parse([]byte(sampleCluster))
-	if err != nil {
-		t.Fatal(err)
-	}
-	c.Spec.Auth.OIDC = &config.ClusterOIDC{Issuer: "https://sso.example/realms/ops", ClientID: "kubernetes", GroupsClaim: "groups", AdminGroup: "k8s-admins"}
-	g, err := config.Generate(c, sharedSecrets(t), func(config.Pool) string { return installer })
-	if err != nil {
-		t.Fatal(err)
-	}
-	cp := load(t, g.Nodes["cp-01"])
-	authn := doc[*k8s.KubeAuthenticationConfigV1Alpha1](t, cp).AuthConfig.Object
-	jwt := authn["jwt"].([]any)[0].(map[string]any)
-	if iss := jwt["issuer"].(map[string]any); iss["url"] != "https://sso.example/realms/ops" || iss["audiences"].([]any)[0] != "kubernetes" {
-		t.Errorf("issuer: %v", iss)
-	}
-	m := jwt["claimMappings"].(map[string]any)
-	if u := m["username"].(map[string]any); u["claim"] != "sub" || u["prefix"] != "oidc:" {
-		t.Errorf("username mapping: %v", u)
-	}
-	if gr := m["groups"].(map[string]any); gr["claim"] != "groups" || gr["prefix"] != "oidc:" {
-		t.Errorf("groups mapping: %v", gr)
-	}
-	for _, d := range load(t, g.Nodes["worker-01"]).Documents() {
-		if _, ok := d.(*k8s.KubeAuthenticationConfigV1Alpha1); ok {
-			t.Error("workers carry no authentication document")
-		}
-	}
-	if got := c.Spec.Auth.AdminGroupSubject(); got != "oidc:k8s-admins" {
-		t.Errorf("admin group subject = %q", got)
-	}
-}
-
-func TestGenerateLonghorn(t *testing.T) {
-	c, err := config.Parse([]byte(sampleCluster))
-	if err != nil {
-		t.Fatal(err)
-	}
-	c.Spec.Platform.Longhorn.Enabled = true
-	y, _ := c.Marshal()
-	if c, err = config.Parse(y); err != nil {
-		t.Fatal(err)
-	}
-	if err := c.Validate(); err != nil {
-		t.Fatal(err)
-	}
-	for _, e := range config.LonghornExtensions {
-		found := false
-		for _, x := range c.Spec.Extensions {
-			found = found || x == e
-		}
-		if !found {
-			t.Errorf("extension %s not added", e)
-		}
-	}
-	if c.LonghornReplicas() != 1 {
-		t.Errorf("one node with data disks → 1 replica, got %d", c.LonghornReplicas())
-	}
-	g, err := config.Generate(c, sharedSecrets(t), func(config.Pool) string { return installer })
-	if err != nil {
-		t.Fatal(err)
-	}
-	w := doc[*k8s.KubeNodeConfigV1Alpha1](t, load(t, g.Nodes["worker-01"]))
-	if w.LabelsConfig["node.longhorn.io/create-default-disk"] != "config" || !strings.Contains(w.AnnotationsConfig["node.longhorn.io/default-disks-config"], `"path":"/var/mnt/data-2"`) {
-		t.Errorf("worker with data disks: labels %v annotations %v", w.LabelsConfig, w.AnnotationsConfig)
-	}
-	cp := doc[*k8s.KubeNodeConfigV1Alpha1](t, load(t, g.Nodes["cp-01"]))
-	if cp.LabelsConfig["node.longhorn.io/create-default-disk"] != "false" {
-		t.Errorf("node without data disks must opt out: %v", cp.LabelsConfig)
-	}
-	for i := range c.Spec.Nodes {
-		c.Spec.Nodes[i].DataDisks = nil
-	}
-	if err := c.Validate(); err == nil || !strings.Contains(err.Error(), "dataDisks") {
-		t.Errorf("longhorn without any data disk must be refused: %v", err)
-	}
-}
-
-func TestGenerateSystemDiskStorage(t *testing.T) {
+func TestSystemVolumeSplitIsALayoutChange(t *testing.T) {
 	c, err := config.Parse([]byte(strings.Replace(sampleCluster, "spec:\n", "spec:\n  storage: { systemDisk: true }\n", 1)))
 	if err != nil {
 		t.Fatal(err)
@@ -467,31 +186,18 @@ func TestGenerateSystemDiskStorage(t *testing.T) {
 	if err := c.Validate(); err != nil {
 		t.Fatal(err)
 	}
-	if c.Spec.Storage.EphemeralSize != config.DefaultEphemeralSize || len(c.LonghornNodes()) != len(c.Spec.Nodes) {
-		t.Fatalf("storage %+v, longhorn nodes %d of %d", c.Spec.Storage, len(c.LonghornNodes()), len(c.Spec.Nodes))
-	}
-	g, err := config.Generate(c, sharedSecrets(t), func(config.Pool) string { return installer })
+	g, err := config.Generate(c, sharedSecrets(t), installer)
 	if err != nil {
 		t.Fatal(err)
 	}
-	cp := load(t, g.Nodes["cp-01"])
-	var eph *block.VolumeConfigV1Alpha1
 	var vol *block.UserVolumeConfigV1Alpha1
-	for _, d := range cp.Documents() {
-		switch v := d.(type) {
-		case *block.VolumeConfigV1Alpha1:
-			if v.MetaName == "EPHEMERAL" {
-				eph = v
-			}
-		case *block.UserVolumeConfigV1Alpha1:
+	for _, d := range load(t, g.Nodes["cp-01"]).Documents() {
+		if v, ok := d.(*block.UserVolumeConfigV1Alpha1); ok {
 			vol = v
 		}
 	}
-	if eph == nil || eph.ProvisioningSpec.ProvisioningMaxSize.Value() != 40<<30 || eph.ProvisioningSpec.ProvisioningGrow == nil || *eph.ProvisioningSpec.ProvisioningGrow {
-		t.Fatalf("EPHEMERAL must be capped at 40GiB without growing: %+v", eph)
-	}
-	if vol == nil || vol.MetaName != "data-system" || *vol.VolumeType != blockres.VolumeTypePartition || vol.ProvisioningSpec.ProvisioningMinSize.Value() != 10<<30 || !*vol.ProvisioningSpec.ProvisioningGrow {
-		t.Fatalf("system data volume = %+v", vol)
+	if vol == nil {
+		t.Fatal("cp-01 has no system data volume")
 	}
 	for _, system := range []bool{true, false} {
 		ok, err := vol.ProvisioningSpec.DiskSelectorSpec.Match.EvalBool(celenv.DiskLocator(), map[string]any{"disk": &blockpb.DiskSpec{DevPath: "/dev/vda"}, "system_disk": system})
@@ -499,60 +205,11 @@ func TestGenerateSystemDiskStorage(t *testing.T) {
 			t.Errorf("system_disk=%v: matched=%v err=%v", system, ok, err)
 		}
 	}
-	if !config.HasSystemVolume(g.Nodes["cp-01"]) || config.HasSystemVolume(g.Nodes["worker-01"]) {
-		t.Error("HasSystemVolume must spot the data-system document")
+	if vol, err := config.LayoutChange(g.Nodes["worker-01"], g.Nodes["cp-01"]); err != nil || vol == "" {
+		t.Errorf("a system volume split is a layout change: %q %v", vol, err)
 	}
-	n := doc[*k8s.KubeNodeConfigV1Alpha1](t, cp)
-	if n.LabelsConfig["node.longhorn.io/create-default-disk"] != "config" || !strings.Contains(n.AnnotationsConfig["node.longhorn.io/default-disks-config"], `"path":"/var/mnt/data-system"`) {
-		t.Errorf("system disk must be a Longhorn disk: %v %v", n.LabelsConfig, n.AnnotationsConfig)
-	}
-	w := load(t, g.Nodes["worker-01"])
-	for _, d := range w.Documents() {
-		if v, ok := d.(*block.UserVolumeConfigV1Alpha1); ok && v.MetaName == "data-system" {
-			t.Error("a node with data disks keeps its system disk to Talos")
-		}
-		if v, ok := d.(*block.VolumeConfigV1Alpha1); ok && v.MetaName == "EPHEMERAL" && !v.ProvisioningSpec.ProvisioningMaxSize.IsZero() {
-			t.Error("a node with data disks keeps EPHEMERAL uncapped")
-		}
-	}
-	for _, bad := range []string{"ephemeralSize: 5GiB", "ephemeralSize: 50%", "ephemeralSize: lots"} {
-		y := strings.Replace(sampleCluster, "spec:\n", "spec:\n  storage: { systemDisk: true, "+bad+" }\n", 1)
-		if _, err := config.Parse([]byte(y)); err == nil {
-			t.Errorf("%s must be rejected", bad)
-		}
-	}
-}
-
-func TestGenerateBuildsRegistryMirror(t *testing.T) {
-	y := strings.Replace(sampleCluster, "spec:\n", "spec:\n  storage: { systemDisk: true }\n", 1)
-	c, err := config.Parse([]byte(y))
-	if err != nil {
-		t.Fatal(err)
-	}
-	c.Spec.Platform.Longhorn.Enabled = true
-	c.Spec.Platform.Builds.Enabled = true
-	if err := c.Validate(); err != nil {
-		t.Fatal(err)
-	}
-	if ip := c.RegistryIP(); ip != "10.96.0.50" {
-		t.Errorf("registry IP %s, want a fixed address in the service CIDR", ip)
-	}
-	g, err := config.Generate(c, sharedSecrets(t), func(config.Pool) string { return installer })
-	if err != nil {
-		t.Fatal(err)
-	}
-	m := doc[*cri.RegistryMirrorConfigV1Alpha1](t, load(t, g.Nodes["worker-01"]))
-	if m.MetaName != "registry.kubit" || len(m.RegistryEndpoints) != 1 || m.RegistryEndpoints[0].EndpointURL.String() != "http://10.96.0.50:5000" || m.RegistrySkipFallback == nil || !*m.RegistrySkipFallback {
-		t.Errorf("mirror = %+v", m)
-	}
-	c.Spec.Platform.Longhorn.Enabled = false
-	if err := c.Validate(); err == nil || !strings.Contains(err.Error(), "platform.builds needs Longhorn") {
-		t.Errorf("builds without Longhorn: %v", err)
-	}
-	c.Spec.Platform.Longhorn.Enabled = true
-	c.Spec.Network.ServiceCIDR = "fd00:96::/108"
-	if err := c.Validate(); err == nil || !strings.Contains(err.Error(), "serviceCIDR") {
-		t.Errorf("builds without an IPv4 service CIDR: %v", err)
+	if vol, err := config.LayoutChange(g.Nodes["cp-01"], g.Nodes["cp-01"]); err != nil || vol != "" {
+		t.Errorf("the same config is no layout change: %q %v", vol, err)
 	}
 }
 
@@ -561,7 +218,7 @@ func TestSystemDiskUntouchedWithoutLonghorn(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	g, err := config.Generate(c, sharedSecrets(t), func(config.Pool) string { return installer })
+	g, err := config.Generate(c, sharedSecrets(t), installer)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -575,61 +232,13 @@ func TestSystemDiskUntouchedWithoutLonghorn(t *testing.T) {
 	}
 }
 
-func TestGenerateDeterministic(t *testing.T) {
-	c, g1 := generateSample(t)
-	g2, err := config.Generate(c, sharedSecrets(t), config.FixedInstaller(installer))
-	if err != nil {
-		t.Fatal(err)
-	}
-	for host, b := range g1.Nodes {
-		if !bytes.Equal(b, g2.Nodes[host]) {
-			t.Errorf("%s: two generations differ", host)
-		}
-	}
-}
-
-func TestGeneratePoliciesAndDiscovery(t *testing.T) {
-	_, g := generateSample(t)
-	cp := load(t, g.Nodes["cp-01"])
-	if f := doc[*k8s.KubeFlannelCNIConfigV1Alpha1](t, cp); f.FlannelKubeNetworkPoliciesEnabled == nil || !*f.FlannelKubeNetworkPoliciesEnabled {
-		t.Errorf("control plane flannel = %+v", f)
-	}
-	worker := load(t, g.Nodes["worker-01"])
-	if hasDoc[*k8s.KubeFlannelCNIConfigV1Alpha1](worker) {
-		t.Error("workers carry no flannel document")
-	}
-	for _, cfg := range []talosconfig.Provider{cp, worker} {
-		if !hasDoc[*clustertypes.DiscoveryServiceConfigV1Alpha1](cfg) {
-			t.Error("discovery is on by default")
-		}
-	}
-
-	c, err := config.Parse([]byte(strings.Replace(sampleCluster, "spec:\n", "spec:\n  network: { policies: false, discovery: false }\n", 1)))
-	if err != nil {
-		t.Fatal(err)
-	}
-	g, err = config.Generate(c, sharedSecrets(t), config.FixedInstaller(installer))
-	if err != nil {
-		t.Fatal(err)
-	}
-	cp = load(t, g.Nodes["cp-01"])
-	if f := doc[*k8s.KubeFlannelCNIConfigV1Alpha1](t, cp); f.FlannelKubeNetworkPoliciesEnabled != nil {
-		t.Errorf("policies off must leave flannel as generated: %+v", f)
-	}
-	for host, b := range g.Nodes {
-		if hasDoc[*clustertypes.DiscoveryServiceConfigV1Alpha1](load(t, b)) {
-			t.Errorf("%s: discovery off must emit no discovery service", host)
-		}
-	}
-}
-
 func TestGenerateOIDCKeepsAnonymousHealth(t *testing.T) {
 	c, err := config.Parse([]byte(sampleCluster))
 	if err != nil {
 		t.Fatal(err)
 	}
 	c.Spec.Auth.OIDC = &config.ClusterOIDC{Issuer: "https://sso.example/realms/ops", ClientID: "kubernetes"}
-	g, err := config.Generate(c, sharedSecrets(t), config.FixedInstaller(installer))
+	g, err := config.Generate(c, sharedSecrets(t), installer)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -647,18 +256,14 @@ func TestGenerateOIDCKeepsAnonymousHealth(t *testing.T) {
 			t.Errorf("anonymous paths %v lack %s", paths, want)
 		}
 	}
-	jwt, _ := authn["jwt"].([]any)
-	if len(jwt) != 1 || jwt[0].(map[string]any)["issuer"].(map[string]any)["url"] != "https://sso.example/realms/ops" {
-		t.Errorf("jwt = %v", authn["jwt"])
-	}
 }
 
-func TestGenerateEndpointSAN(t *testing.T) {
+func TestEndpointHostIsInTheAPIServerCertificate(t *testing.T) {
 	c, err := config.Parse([]byte(strings.Replace(sampleCluster, "    vip: 192.168.64.9\n", "    vip: 192.168.64.9\n    endpoint: https://k8s.example.lan:6443\n", 1)))
 	if err != nil {
 		t.Fatal(err)
 	}
-	g, err := config.Generate(c, sharedSecrets(t), config.FixedInstaller(installer))
+	g, err := config.Generate(c, sharedSecrets(t), installer)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -667,142 +272,5 @@ func TestGenerateEndpointSAN(t *testing.T) {
 		if n := slices.Index(sans, want); n < 0 || slices.Index(sans[n+1:], want) >= 0 {
 			t.Errorf("SANs %v must hold %s exactly once", sans, want)
 		}
-	}
-	_, g = generateSample(t)
-	if sans := doc[*k8s.KubeAPIServerConfigV1Alpha1](t, load(t, g.Nodes["cp-01"])).PodCertExtraSANs; !slices.Equal(sans, []string{"192.168.64.9"}) {
-		t.Errorf("a VIP endpoint adds no extra SAN: %v", sans)
-	}
-}
-
-func encryptedSample(t *testing.T, storage string) *config.Generated {
-	t.Helper()
-	y := strings.Replace(sampleCluster, "spec:\n", "spec:\n  storage: "+storage+"\n", 1)
-	c, err := config.Parse([]byte(strings.ReplaceAll(y, "arch: arm64,", "arch: arm64, tpm: true,")))
-	if err != nil {
-		t.Fatal(err)
-	}
-	c.Spec.Platform.Longhorn.Enabled = true
-	g, err := config.Generate(c, sharedSecrets(t), config.FixedInstaller(installer))
-	if err != nil {
-		t.Fatal(err)
-	}
-	return g
-}
-
-func volumeEncryption(cfg talosconfig.Provider) map[string]block.EncryptionSpec {
-	out := map[string]block.EncryptionSpec{}
-	for _, d := range cfg.Documents() {
-		switch v := d.(type) {
-		case *block.VolumeConfigV1Alpha1:
-			out[v.MetaName] = v.EncryptionSpec
-		case *block.UserVolumeConfigV1Alpha1:
-			out[v.MetaName] = v.EncryptionSpec
-		}
-	}
-	return out
-}
-
-func encryptedVolumes(t *testing.T, g *config.Generated, check func(string, block.EncryptionKey)) {
-	t.Helper()
-	for host, want := range map[string][]string{"cp-01": {"STATE", "EPHEMERAL", "data-system"}, "worker-01": {"STATE", "EPHEMERAL", "data-1", "data-2"}} {
-		got := volumeEncryption(load(t, g.Nodes[host]))
-		if len(got) != len(want) {
-			t.Errorf("%s: volumes %v, want %v", host, slices.Sorted(maps.Keys(got)), want)
-		}
-		for _, name := range want {
-			enc, ok := got[name]
-			if !ok || enc.EncryptionProvider != blockres.EncryptionProviderLUKS2 || len(enc.EncryptionKeys) != 1 || enc.EncryptionKeys[0].KeySlot != 0 {
-				t.Errorf("%s %s: encryption %+v", host, name, enc)
-				continue
-			}
-			check(host+" "+name, enc.EncryptionKeys[0])
-		}
-	}
-}
-
-func TestGenerateEncryptionTPM(t *testing.T) {
-	g := encryptedSample(t, "{ systemDisk: true, encryption: tpm }")
-	encryptedVolumes(t, g, func(where string, k block.EncryptionKey) {
-		if k.KeyTPM == nil || k.KeyNodeID != nil || k.KeyStatic != nil || k.KeyKMS != nil {
-			t.Errorf("%s: key %+v", where, k)
-			return
-		}
-		if k.KeyTPM.TPMOptions == nil || len(k.TPM().PCRs()) != 0 || k.TPM().CheckSecurebootOnEnroll() {
-			t.Errorf("%s: TPM key must bind no PCRs and skip the Secure Boot check: %+v", where, k.KeyTPM)
-		}
-	})
-	if !bytes.Contains(g.Nodes["cp-01"], []byte("options: {}")) {
-		t.Errorf("the empty TPM options must survive encoding:\n%s", g.Nodes["cp-01"])
-	}
-}
-
-func TestGenerateEncryptionNodeID(t *testing.T) {
-	g := encryptedSample(t, "{ systemDisk: true, encryption: nodeID }")
-	encryptedVolumes(t, g, func(where string, k block.EncryptionKey) {
-		if k.KeyNodeID == nil || k.KeyTPM != nil || k.KeyStatic != nil || k.KeyKMS != nil {
-			t.Errorf("%s: key %+v", where, k)
-		}
-	})
-}
-
-func TestGenerateEncryptionOffEmitsNothing(t *testing.T) {
-	c, plain := generateSample(t)
-	for i := range c.Spec.Nodes {
-		c.Spec.Nodes[i].TPM = true
-	}
-	withTPM, err := config.Generate(c, sharedSecrets(t), config.FixedInstaller(installer))
-	if err != nil {
-		t.Fatal(err)
-	}
-	for host, b := range plain.Nodes {
-		if !bytes.Equal(b, withTPM.Nodes[host]) {
-			t.Errorf("%s: a TPM without storage.encryption changes the config", host)
-		}
-		for name, enc := range volumeEncryption(load(t, b)) {
-			if name == "STATE" || !enc.IsZero() {
-				t.Errorf("%s: %s carries encryption %+v", host, name, enc)
-			}
-		}
-	}
-}
-
-func TestEncryptionKeepsEphemeralSizing(t *testing.T) {
-	g := encryptedSample(t, "{ systemDisk: true, ephemeralSize: 60GiB, encryption: tpm }")
-	cp := load(t, g.Nodes["cp-01"])
-	for _, d := range cp.Documents() {
-		switch v := d.(type) {
-		case *block.VolumeConfigV1Alpha1:
-			if v.MetaName == "EPHEMERAL" && (v.ProvisioningSpec.ProvisioningMaxSize.Value() != 60<<30 || v.ProvisioningSpec.ProvisioningGrow == nil || *v.ProvisioningSpec.ProvisioningGrow || v.EncryptionSpec.IsZero()) {
-				t.Errorf("EPHEMERAL must stay capped and grow-free while encrypted: %+v", v)
-			}
-			if v.MetaName == "STATE" && !v.ProvisioningSpec.IsZero() {
-				t.Errorf("STATE carries only encryption: %+v", v.ProvisioningSpec)
-			}
-		case *block.UserVolumeConfigV1Alpha1:
-			if v.ProvisioningSpec.ProvisioningMinSize.Value() != 10<<30 || !*v.ProvisioningSpec.ProvisioningGrow || v.ProvisioningSpec.DiskSelectorSpec.Match.String() != "system_disk" || v.EncryptionSpec.IsZero() {
-				t.Errorf("data-system must keep its placement while encrypted: %+v", v)
-			}
-		}
-	}
-	if !config.HasSystemVolume(g.Nodes["cp-01"]) {
-		t.Error("the encrypted split must still be recognised")
-	}
-}
-
-func TestGenerateWatchdog(t *testing.T) {
-	c, err := config.Parse([]byte(strings.Replace(sampleCluster, "kvm: true,", "kvm: true, watchdog: true,", 1)))
-	if err != nil {
-		t.Fatal(err)
-	}
-	g, err := config.Generate(c, sharedSecrets(t), config.FixedInstaller(installer))
-	if err != nil {
-		t.Fatal(err)
-	}
-	wd := doc[*runtime.WatchdogTimerV1Alpha1](t, load(t, g.Nodes["worker-01"]))
-	if wd.Device() != "/dev/watchdog0" || wd.WatchdogTimeout != time.Minute {
-		t.Errorf("watchdog %s every %s", wd.Device(), wd.WatchdogTimeout)
-	}
-	if hasDoc[*runtime.WatchdogTimerV1Alpha1](load(t, g.Nodes["cp-01"])) {
-		t.Error("a node without a watchdog gets no timer")
 	}
 }

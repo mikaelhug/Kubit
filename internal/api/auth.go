@@ -27,13 +27,9 @@ func loopbackPeer(r *http.Request) bool {
 	return ip != nil && ip.IsLoopback()
 }
 
-func openPath(p string) bool {
-	return p == "/api/v1/version"
-}
-
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	if strings.HasPrefix(r.URL.Path, "/api/") && !openPath(r.URL.Path) && !s.authorized(r) {
-		writeErr(w, &statusError{Status: http.StatusUnauthorized, Msg: "unauthorized", Code: "unauthorized"})
+	if strings.HasPrefix(r.URL.Path, "/api/") && !s.authorized(r) {
+		writeErr(w, &statusError{Status: http.StatusUnauthorized, Msg: "unauthorized"})
 		return
 	}
 	s.mux.ServeHTTP(w, r)

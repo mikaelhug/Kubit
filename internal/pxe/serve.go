@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/mikael/kubit/internal/factory"
+	"github.com/mikael/kubit/internal/fsx"
 	"github.com/pin/tftp/v3"
 )
 
@@ -36,6 +37,7 @@ type Server struct {
 	Profile Profile
 	Cache   *Cache
 	Factory *factory.Client
+	RunFile string
 	track   *tracker
 }
 
@@ -64,6 +66,9 @@ func (s *Server) Run(ctx context.Context) error {
 	}
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
+	if s.RunFile != "" {
+		defer os.Remove(s.RunFile)
+	}
 	errc := make(chan error, 3)
 	if s.HTTPOnly {
 		go func() { errc <- s.serveHTTP(ctx) }()
@@ -183,14 +188,23 @@ func (s *Server) Handler() http.Handler {
 }
 
 func (s *Server) serveHTTP(ctx context.Context) error {
-	srv := &http.Server{Addr: fmt.Sprintf(":%d", s.HTTPPort), Handler: s.Handler(), ReadHeaderTimeout: 10 * time.Second}
+	ln, err := net.Listen("tcp", fmt.Sprintf(":%d", s.HTTPPort))
+	if err != nil {
+		return err
+	}
+	srv := &http.Server{Handler: s.Handler(), ReadHeaderTimeout: 10 * time.Second, BaseContext: func(net.Listener) context.Context { return ctx }}
 	go func() {
 		<-ctx.Done()
 		shutdown, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 		defer cancel()
 		_ = srv.Shutdown(shutdown)
 	}()
-	if err := srv.ListenAndServe(); err != http.ErrServerClosed {
+	if s.RunFile != "" {
+		if err := fsx.WriteFile(s.RunFile, []byte(s.BaseURL()+"\n"), 0o644); err != nil {
+			s.Log.Printf("pxe: %v", err)
+		}
+	}
+	if err := srv.Serve(ln); err != http.ErrServerClosed {
 		return err
 	}
 	return nil

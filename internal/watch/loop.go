@@ -3,10 +3,7 @@ package watch
 import (
 	"bytes"
 	"context"
-	"fmt"
 	"log"
-	"reflect"
-	"slices"
 	"time"
 
 	"github.com/mikael/kubit/internal/cluster"
@@ -21,27 +18,7 @@ func (w *Watcher) loop(ctx context.Context, name string) {
 		w.watchKubernetes(ctx, name)
 	}()
 	defer func() { <-kube }()
-	w.tick(ctx, name)
-	w.serviceTick(ctx, name)
-	t := time.NewTicker(w.Interval())
-	defer t.Stop()
-	every := w.serviceEvery()
-	for i := 1; ; {
-		select {
-		case <-ctx.Done():
-			return
-		case <-t.C:
-			w.tick(ctx, name)
-			if i%every == 0 {
-				w.serviceTick(ctx, name)
-			}
-			i++
-		}
-	}
-}
-
-func (w *Watcher) serviceEvery() int {
-	return max(int(w.ServiceInterval/w.Interval()), 1)
+	w.every(ctx, w.interval, func(ctx context.Context) { w.tick(ctx, name) })
 }
 
 func (w *Watcher) watchKubernetes(ctx context.Context, name string) {
@@ -85,11 +62,11 @@ func (w *Watcher) watchKubernetes(ctx context.Context, name string) {
 }
 
 func (w *Watcher) kubeClient(ctx context.Context, name string) (*k8s.Client, []byte, error) {
-	sec, err := w.Store.GetClusterSecrets(ctx, name)
+	sec, err := w.Store.GetClusterSecrets(name)
 	if err != nil {
 		return nil, nil, err
 	}
-	kc, err := w.Manager.KubeClientFor(name, sec)
+	kc, err := w.Manager.KubeClientFor(name, sec.Kubeconfig)
 	return kc, sec.Kubeconfig, err
 }
 
@@ -116,7 +93,7 @@ func (w *Watcher) runInformers(ctx context.Context, name string, kc *k8s.Client,
 				<-done
 				return false
 			}
-			sec, err := w.Store.GetClusterSecrets(ctx, name)
+			sec, err := w.Store.GetClusterSecrets(name)
 			if err != nil || bytes.Equal(sec.Kubeconfig, kubeconfig) {
 				continue
 			}
@@ -129,7 +106,7 @@ func (w *Watcher) runInformers(ctx context.Context, name string, kc *k8s.Client,
 }
 
 func informable(st *cluster.Status) bool {
-	return st != nil && st.APIReachable && cluster.Observable(st.State)
+	return st != nil && st.APIReachable
 }
 
 func kubeScopes(scope, namespace string) []string {
@@ -164,15 +141,8 @@ func (w *Watcher) dropKubeSignal(name string, ch chan struct{}) {
 }
 
 func (w *Watcher) onStoreChange(c store.Change) {
-	if c.Table != "secrets" && c.Table != "*" {
-		return
-	}
-	w.sigMu.Lock()
-	defer w.sigMu.Unlock()
-	for name, ch := range w.kubeSignals {
-		if c.Table == "*" || c.Cluster == name {
-			nudge(ch)
-		}
+	if c.Table == "secrets" {
+		w.signalKube(c.Cluster)
 	}
 }
 
@@ -206,101 +176,6 @@ func (w *Watcher) every(ctx context.Context, d time.Duration, tick func(context.
 
 const quietAfterOperation = 10 * time.Minute
 
-const serviceTickTimeout = 45 * time.Second
-
-func (w *Watcher) serviceTick(ctx context.Context, name string) {
-	if st := w.Latest(name); st == nil || !st.APIReachable || st.State != cluster.StateReady {
-		return
-	}
-	ctx, cancel := context.WithTimeout(ctx, serviceTickTimeout)
-	defer cancel()
-	sh, err := w.Manager.ServiceHealth(ctx, name)
-	if err != nil {
-		log.Printf("watch %s: services: %v", name, err)
-		return
-	}
-	w.mu.Lock()
-	changed := !sameServices(w.lastServices[name], sh)
-	w.lastServices[name] = sh
-	w.mu.Unlock()
-	if changed {
-		w.refresh(name, k8s.ScopeServices)
-	}
-	if w.Manager.ApplyQuiet(ctx, name, quietAfterOperation) {
-		return
-	}
-	w.mu.Lock()
-	tr := w.trackers[name]
-	w.mu.Unlock()
-	if tr == nil {
-		fresh := newServiceTracker()
-		if open, err := w.Store.OpenAlerts(ctx, name); err == nil {
-			fresh.Seed(open)
-		}
-		w.mu.Lock()
-		if tr = w.trackers[name]; tr == nil {
-			tr = fresh
-			w.trackers[name] = tr
-		}
-		w.mu.Unlock()
-	}
-	var ignore []string
-	if set, err := w.Store.GetSettings(ctx); err == nil {
-		ignore = set.Alerts.IgnoreNamespaces
-	}
-	w.emit(ctx, name, tr.Derive(name, sh, time.Now(), ignore))
-}
-
-func sameServices(a, b *cluster.ServiceHealth) bool {
-	if a == nil || b == nil {
-		return a == b
-	}
-	return reflect.DeepEqual(ageless(a), ageless(b))
-}
-
-func ageless(sh *cluster.ServiceHealth) cluster.ServiceHealth {
-	out := *sh
-	out.CollectedAt = time.Time{}
-	out.Workloads = zeroed(sh.Workloads, func(w *cluster.WorkloadHealth) { w.AgeSec = 0 })
-	out.Pods = zeroed(sh.Pods, func(p *cluster.PodHealth) { p.AgeSec = 0 })
-	out.Claims = zeroed(sh.Claims, func(c *cluster.ClaimHealth) { c.AgeSec = 0 })
-	out.Services = zeroed(sh.Services, func(s *cluster.ServiceRow) { s.AgeSec = 0 })
-	out.Ingresses = zeroed(sh.Ingresses, func(i *cluster.IngressHealth) { i.AgeSec = 0 })
-	return out
-}
-
-func zeroed[T any](in []T, zero func(*T)) []T {
-	out := slices.Clone(in)
-	for i := range out {
-		zero(&out[i])
-	}
-	return out
-}
-
-func (w *Watcher) emit(ctx context.Context, name string, events []store.EventRow) {
-	now := time.Now()
-	for _, e := range events {
-		if alert, ok := resolves[e.Kind]; ok {
-			_ = w.Store.ResolveEvents(ctx, name, e.Node, alert)
-		}
-		if e.Kind == "node.removed" {
-			for _, k := range []string{"talos.unreachable", "node.notready", "machine.ip-changed"} {
-				_ = w.Store.ResolveEvents(ctx, name, e.Node, k)
-			}
-		}
-		if e.Severity != "info" && w.Store.HasOpenEvent(ctx, name, e.Node, e.Kind) {
-			continue
-		}
-		if id, err := w.Store.AddEvent(ctx, e); err == nil {
-			e.ID = id
-			e.TS = now.UTC().Format(time.RFC3339)
-			if w.OnEvent != nil {
-				w.OnEvent(e)
-			}
-		}
-	}
-}
-
 func (w *Watcher) tick(ctx context.Context, name string) {
 	start := time.Now()
 	st, err := w.Manager.Status(ctx, name)
@@ -311,7 +186,7 @@ func (w *Watcher) tick(ctx context.Context, name string) {
 	now := time.Now()
 	w.mu.Lock()
 	prev := w.last[name]
-	gap := isGap(w.lastTick[name], start, now, w.Interval())
+	gap := isGap(w.lastTick[name], start, now, w.interval)
 	if st.Observer == cluster.ObserverOnline && (st.APIReachable || anyReachable(st)) {
 		w.lastContact[name] = now
 	}
@@ -319,28 +194,23 @@ func (w *Watcher) tick(ctx context.Context, name string) {
 		st.LastContactAt = lc.UTC().Format(time.RFC3339)
 	}
 	c := w.confirms[name]
+	if c == nil {
+		c = newConfirm()
+		if open := w.Alerts.Open(name); len(open) > 0 {
+			c.Seed(open)
+		}
+		w.confirms[name] = c
+	}
 	w.mu.Unlock()
 	if gap {
 		w.noteGap(now)
 	}
-	if c == nil {
-		fresh := newConfirm()
-		if open, err := w.Store.OpenAlerts(ctx, name); err == nil {
-			fresh.Seed(open)
-		}
-		w.mu.Lock()
-		if c = w.confirms[name]; c == nil {
-			c = fresh
-			w.confirms[name] = c
-		}
-		w.mu.Unlock()
-	}
 
-	samples := []store.Sample{{CPUMilli: st.Totals.CPUMilli, CPUCap: st.Totals.CPUCapMilli, MemBytes: st.Totals.MemBytes, MemCap: st.Totals.MemCapBytes, Pods: st.Totals.Pods, Ready: st.Totals.NodesReady == st.Totals.Nodes, Reachable: st.APIReachable}}
+	samples := []Sample{{CPUMilli: st.Totals.CPUMilli, CPUCap: st.Totals.CPUCapMilli, MemBytes: st.Totals.MemBytes, MemCap: st.Totals.MemCapBytes, Pods: st.Totals.Pods, Ready: st.Totals.NodesReady == st.Totals.Nodes, Reachable: st.APIReachable}}
 	for _, n := range st.Nodes {
-		samples = append(samples, store.Sample{Node: n.Hostname, CPUMilli: n.CPUMilli, CPUCap: n.CPUCapMilli, MemBytes: n.MemBytes, MemCap: n.MemCapBytes, Pods: n.Pods, Ready: n.Ready, Reachable: n.TalosReachable})
+		samples = append(samples, Sample{Node: n.Hostname, CPUMilli: n.CPUMilli, CPUCap: n.CPUCapMilli, MemBytes: n.MemBytes, MemCap: n.MemCapBytes, Pods: n.Pods, Ready: n.Ready, Reachable: n.TalosReachable})
 	}
-	_ = w.Store.AddSamples(ctx, name, now, samples)
+	w.samples.add(name, now, samples)
 
 	offline := st.Observer == cluster.ObserverOffline
 	switch {
@@ -356,20 +226,21 @@ func (w *Watcher) tick(ctx context.Context, name string) {
 	case st.State != cluster.StateReady:
 	case offline:
 		c.Reset()
-		st.Health, st.OpenAlerts = cluster.HealthUnknown, w.Store.OpenEventCount(ctx, name)
+		st.Health, st.OpenAlerts = cluster.HealthUnknown, w.Alerts.OpenCount(name)
 	case gap || (prev != nil && prev.Observer == cluster.ObserverOffline):
 		c.Reset()
-		health, open := w.health(ctx, name, st, c)
-		st.Health, st.OpenAlerts = health, open
+		st.Health, st.OpenAlerts = w.health(name, st, c)
 	default:
-		events := unconfirmed(Derive(name, prev, st))
-		if prev == nil {
-			events = append(events, w.reconcileOpen(ctx, name, st)...)
+		for _, e := range Derive(name, prev, st) {
+			w.Alerts.Record(e)
 		}
-		events = append(events, c.Apply(name, st)...)
-		w.emit(ctx, name, events)
-		health, open := w.health(ctx, name, st, c)
-		st.Health, st.OpenAlerts = health, open
+		facts := badFacts(name, st)
+		if len(facts) > 0 && w.Manager.ApplyQuiet(ctx, name, quietAfterOperation) {
+			c.Reset()
+		} else {
+			w.apply(c.Apply(name, facts))
+		}
+		st.Health, st.OpenAlerts = w.health(name, st, c)
 	}
 	w.mu.Lock()
 	if ctx.Err() == nil {
@@ -386,7 +257,16 @@ func (w *Watcher) tick(ctx context.Context, name string) {
 	if w.OnStatus != nil {
 		w.OnStatus(name, st)
 	}
-	w.syncStageWatches(ctx, name, st, gap)
+}
+
+func (w *Watcher) apply(transitions []transition) {
+	for _, t := range transitions {
+		if t.raise != nil {
+			w.Alerts.Raise(*t.raise)
+			continue
+		}
+		w.Alerts.Resolve(t.recovery.Cluster, t.recovery.Node, t.resolves, t.recovery)
+	}
 }
 
 type talosFacts struct {
@@ -426,8 +306,8 @@ func anyReachable(st *cluster.Status) bool {
 	return false
 }
 
-func (w *Watcher) health(ctx context.Context, name string, st *cluster.Status, c *confirm) (string, int) {
-	open := w.Store.OpenEventCount(ctx, name)
+func (w *Watcher) health(name string, st *cluster.Status, c *confirm) (string, int) {
+	open := w.Alerts.OpenCount(name)
 	for key := range badFacts(name, st) {
 		if c.open[key] {
 			return cluster.HealthDown, open
@@ -437,22 +317,4 @@ func (w *Watcher) health(ctx context.Context, name string, st *cluster.Status, c
 		return cluster.HealthDegraded, open
 	}
 	return cluster.HealthHealthy, open
-}
-
-func (w *Watcher) reconcileOpen(ctx context.Context, name string, st *cluster.Status) []store.EventRow {
-	var out []store.EventRow
-	rec := func(kind, node, msg string) {
-		if alert := resolves[kind]; alert != "" && w.Store.HasOpenEvent(ctx, name, node, alert) {
-			out = append(out, store.EventRow{Cluster: name, Node: node, Severity: "info", Kind: kind, Message: msg})
-		}
-	}
-	for _, n := range st.Nodes {
-		if st.APIReachable && n.MemAllocBytes >= minAllocatableBytes {
-			rec("node.memory-ok", n.Hostname, fmt.Sprintf("%s has %d MiB allocatable for pods", n.Hostname, n.MemAllocBytes>>20))
-		}
-	}
-	if st.Platform != nil && st.Platform.Outputs["ingress_ip"] != "" {
-		rec("lb.assigned", "", "ingress LoadBalancer IP "+st.Platform.Outputs["ingress_ip"])
-	}
-	return out
 }

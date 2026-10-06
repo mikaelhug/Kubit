@@ -1,14 +1,17 @@
 import { useMemo } from 'preact/hooks'
+import { addonCatalog } from '../../addons'
 import { api, fmt, type StorageView } from '../../api'
+import { AddonToggle } from '../../components/AddonToggle'
 import { DataTable, withoutColumn, type Column } from '../../components/DataTable'
 import { NamespaceScope, useNamespaceScope } from '../../components/NamespaceScope'
 import { Age } from '../../components/Time'
-import { AlertPill, ErrorBox, Notice, Pill, Section } from '../../components/ui'
-import { alertIndex, objectKey } from '../../store'
+import { ErrorBox, Notice, Pill, Section } from '../../components/ui'
 import { createdSort } from '../../time'
 import { phaseTone } from '../../tone'
 import { useLive } from '../../useLive'
 import type { ClusterCtx } from './ClusterPage'
+
+const longhorn = addonCatalog.find((a) => a.key === 'longhorn')
 
 type SC = StorageView['classes'][number]
 type PV = StorageView['volumes'][number]
@@ -34,26 +37,33 @@ const vcols: Column<PV>[] = [
 ]
 
 export function Storage({ ctx }: { ctx: ClusterCtx }) {
-  const { name } = ctx
+  const { name, cluster } = ctx
+  const platform = cluster.spec.spec.platform
   const { data: view, error } = useLive(() => api.storage(name), [name], [[name, 'storage']])
   const s = useNamespaceScope(name)
-  const alerts = alertIndex(name)
   const claims = useMemo(() => (view?.claims ?? []).filter((c) => s.keep(c.namespace)), [view, s.keep])
   const ccols = useMemo(() => withoutColumn<PVC>([
     { id: 'ns', header: 'Namespace', sort: (c) => c.namespace, cell: (c) => c.namespace },
-    { id: 'name', header: 'Claim', sort: (c) => c.name, cell: (c) => <span class="flex items-center gap-2"><span class="font-medium">{c.name}</span><AlertPill e={alerts.get(objectKey('PersistentVolumeClaim', c.namespace, c.name))} /></span> },
+    { id: 'name', header: 'Claim', sort: (c) => c.name, cell: (c) => <span class="font-medium">{c.name}</span> },
     { id: 'phase', header: 'Phase', cell: (c) => <Pill tone={phaseTone(c.phase)}>{c.phase}</Pill> },
     { id: 'req', header: 'Requested', align: 'right', cell: (c) => fmt.bytes(c.requestedBytes) },
     { id: 'cap', header: 'Capacity', align: 'right', cell: (c) => c.capacityBytes ? fmt.bytes(c.capacityBytes) : '—' },
     { id: 'class', header: 'Class', cell: (c) => c.class || '—' },
     { id: 'vol', header: 'Volume', mono: true, cell: (c) => c.volume || <span class="text-muted">unbound</span> },
     { id: 'age', header: 'Age', sort: createdSort, cell: (c) => <span class="text-muted"><Age at={c.createdAt} fallback={c.age} /></span> },
-  ], 'ns', !!s.ns), [alerts, s.ns])
+  ], 'ns', !!s.ns), [s.ns])
   const loading = !view && !error
   return (
     <div class="flex flex-col gap-5">
       <ErrorBox error={error} />
-      {view && view.classes.length === 0 && <Notice tone="warn"><span class="flex items-center gap-2">No StorageClass: claims cannot be provisioned.<a href={`/clusters/${name}/addons`} class="ml-auto text-accent hover:underline text-[12px]">Enable Longhorn →</a></span></Notice>}
+      {view && view.classes.length === 0 && (
+        <Notice tone="warn">
+          <span class="flex flex-wrap items-center gap-2">
+            No StorageClass.
+            <span class="ml-auto">{longhorn && !platform.longhorn.enabled ? <AddonToggle cluster={name} info={longhorn} platform={platform} label="Enable Longhorn" /> : <a href={`/clusters/${name}/changes`} class="text-accent hover:underline text-[12px]">Review changes</a>}</span>
+          </span>
+        </Notice>
+      )}
       <Section title={`Storage classes (${view?.classes.length ?? 0})`}>
         <DataTable loading={loading} search={false} columns={scols} rows={view?.classes ?? []} rowKey={(c) => c.name} empty="None." />
       </Section>

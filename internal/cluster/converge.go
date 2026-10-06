@@ -2,43 +2,38 @@ package cluster
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"net/netip"
 	"slices"
 	"sort"
 	"strings"
 	"sync"
 	"time"
 
-	"filippo.io/age"
 	"github.com/mikael/kubit/internal/config"
 	"github.com/mikael/kubit/internal/k8s"
-	"github.com/mikael/kubit/internal/store"
+	"github.com/mikael/kubit/internal/netx"
 	"github.com/mikael/kubit/internal/talos"
-	"github.com/mikael/kubit/internal/tofu"
 	"github.com/siderolabs/talos/pkg/machinery/config/generate/secrets"
 	utilversion "k8s.io/apimachinery/pkg/util/version"
 )
 
 type Desired struct {
+	Dir         string
 	Cluster     *config.Cluster
 	Bundle      *secrets.Bundle
-	BundleYAML  []byte
 	Talosconfig []byte
 	Kubeconfig  []byte
 	FluxKey     string
-	StatePath   string
+	RepoState   string
 	Passphrase  string
 	BackupKey   string
 	BackupSec   string
-}
-
-func (d *Desired) platform() PlatformState {
-	st := PlatformState{Path: d.StatePath, Passphrase: d.Passphrase}
-	if d.BackupKey != "" || d.BackupSec != "" {
-		st.Env = []string{"TF_VAR_backup_access_key_id=" + d.BackupKey, "TF_VAR_backup_secret_access_key=" + d.BackupSec}
-	}
-	return st
+	Digest      string
 }
 
 const (
@@ -49,6 +44,8 @@ const (
 	ActKubernetes = "upgrade kubernetes"
 	ActRemove     = "remove"
 	ActPlatform   = "platform"
+	ActAddress    = "address"
+	ActEndpoint   = "endpoint"
 )
 
 type Change struct {
@@ -58,15 +55,40 @@ type Change struct {
 	Blocked string `json:"blocked,omitempty"`
 }
 
+type Install struct {
+	Hostname string      `json:"hostname"`
+	Role     config.Role `json:"role"`
+	IP       string      `json:"ip"`
+	Disk     string      `json:"disk"`
+}
+
+type ConfigStatus struct {
+	Behind []string `json:"behind"`
+}
+
+func (p *Plan) ConfigStatus() ConfigStatus {
+	st := ConfigStatus{Behind: []string{}}
+	for _, c := range p.Changes {
+		if c.Action == ActConfig {
+			st.Behind = append(st.Behind, c.Target)
+		}
+	}
+	return st
+}
+
+func (c Change) OneTime() bool { return c.Action == ActPlatform && c.Target == "state" }
+
 type Plan struct {
-	Cluster  string   `json:"cluster"`
-	Changes  []Change `json:"changes"`
-	Problems []string `json:"problems,omitempty"`
+	Hash     string    `json:"hash"`
+	Cluster  string    `json:"cluster"`
+	Changes  []Change  `json:"changes"`
+	Installs []Install `json:"installs,omitempty"`
+	Problems []string  `json:"problems,omitempty"`
 	applied  *config.Cluster
 	target   *config.Cluster
-	recreate bool
 	adds     []config.Node
 	removes  []string
+	moves    []addrChange
 }
 
 func (p *Plan) Empty() bool { return len(p.Changes) == 0 && len(p.Problems) == 0 }
@@ -77,6 +99,7 @@ func (p *Plan) has(action string) bool {
 
 type ConvergeOptions struct {
 	AllowRemoval bool
+	ReadOnly     bool
 }
 
 type liveNode struct {
@@ -84,22 +107,45 @@ type liveNode struct {
 	member bool
 	maint  bool
 	image  nodeImage
+	live   config.LiveConfig
 	err    error
 }
 
 type liveState struct {
-	exists bool
-	api    bool
-	nodes  map[string]*liveNode
-	kube   map[string]k8s.NodeStatus
+	exists   bool
+	api      bool
+	etcd     bool
+	endpoint string
+	nodes    map[string]*liveNode
+	kube     map[string]k8s.NodeStatus
 }
 
 func (m *Manager) Plan(ctx context.Context, d *Desired, opts ConvergeOptions) (*Plan, error) {
+	p, err := m.plan(ctx, d, opts)
+	if err == nil {
+		p.seal(d.Digest)
+	}
+	return p, err
+}
+
+func (p *Plan) seal(digest string) {
+	changes := slices.Clone(p.Changes)
+	for i := range changes {
+		changes[i].Blocked = ""
+	}
+	b, _ := json.Marshal(struct {
+		Digest   string
+		Changes  []Change
+		Installs []Install
+		Problems []string
+	}{digest, changes, p.Installs, p.Problems})
+	sum := sha256.Sum256(b)
+	p.Hash = hex.EncodeToString(sum[:12])
+}
+
+func (m *Manager) plan(ctx context.Context, d *Desired, opts ConvergeOptions) (*Plan, error) {
 	c := d.Cluster
 	name := c.Metadata.Name
-	if err := m.checkCachedSecrets(ctx, d); err != nil {
-		return nil, err
-	}
 	p := &Plan{Cluster: name, Changes: []Change{}}
 	if err := CheckDeclaration(c, d.Bundle); err != nil {
 		p.Problems = append(p.Problems, "cluster.yaml: "+err.Error())
@@ -109,31 +155,36 @@ func (m *Manager) Plan(ctx context.Context, d *Desired, opts ConvergeOptions) (*
 		p.Problems = append(p.Problems, "backup is declared but secrets.sops.yaml has no backup.accessKeyID and backup.secretAccessKey; add them with sops")
 		return p, nil
 	}
-	ls := m.observe(ctx, d)
-	if row, err := m.Store.GetCluster(ctx, name); err == nil && !Observable(row.State) {
-		p.Changes = append(p.Changes, Change{Action: ActCreate, Target: name, Detail: "resume the " + row.State + " create"})
-		p.target = c
+	if c.Spec.Platform.Flux.Enabled && d.FluxKey == "" {
+		p.Problems = append(p.Problems, "Flux is on but secrets.sops.yaml has no flux.ageKey; add one with sops")
 		return p, nil
 	}
+	return m.planWith(ctx, d, p, m.observe(ctx, d), opts)
+}
+
+func (m *Manager) planWith(ctx context.Context, d *Desired, p *Plan, ls *liveState, opts ConvergeOptions) (*Plan, error) {
+	c := d.Cluster
+	name := c.Metadata.Name
+	if ls.exists && !ls.api && !ls.etcd {
+		return p.resume(c, ls), nil
+	}
 	if !ls.exists {
-		var missing []string
 		for _, n := range c.Spec.Nodes {
 			if ln := ls.nodes[n.Hostname]; !ln.maint {
-				missing = append(missing, fmt.Sprintf("%s (%s): %s", n.Hostname, n.IP, reason(ln)))
+				p.Problems = append(p.Problems, notInMaintenance(n, n.IP, ln))
 			}
 		}
-		if len(missing) > 0 {
-			p.Problems = append(p.Problems, "not in maintenance mode: "+strings.Join(missing, "; "))
+		if len(p.Problems) > 0 {
 			return p, nil
 		}
-		detail := fmt.Sprintf("%d control plane(s), %d worker(s), Talos %s, Kubernetes %s", len(c.ControlPlanes()), len(c.Workers()), c.Spec.TalosVersion, c.Spec.KubernetesVersion)
-		if _, err := m.Store.GetCluster(ctx, name); err == nil {
-			detail = "again: every node is back in maintenance mode"
-			p.recreate = true
+		if v := c.Spec.ControlPlane.VIP; v != "" && netx.InUse(ctx, v, 3*time.Second) {
+			p.Problems = append(p.Problems, fmt.Sprintf("the control plane VIP %s is already in use on the network; set a free address in cluster.yaml", v))
 		}
+		detail := fmt.Sprintf("%d control plane(s), %d worker(s), Talos %s, Kubernetes %s", len(c.ControlPlanes()), len(c.Workers()), c.Spec.TalosVersion, c.Spec.KubernetesVersion)
 		p.target = c.Clone()
 		for i, n := range p.target.Spec.Nodes {
 			p.target.Spec.Nodes[i].IP = p.addressOf(n, ls.nodes[n.Hostname])
+			p.install(p.target.Spec.Nodes[i])
 		}
 		if len(p.Problems) > 0 {
 			return p, nil
@@ -145,11 +196,17 @@ func (m *Manager) Plan(ctx context.Context, d *Desired, opts ConvergeOptions) (*
 		return p, nil
 	}
 	if !ls.api {
-		p.Problems = append(p.Problems, "the Kubernetes API at "+c.Spec.ControlPlane.Endpoint+" does not answer")
+		endpoint := c.Spec.ControlPlane.Endpoint
+		if ls.endpoint != "" {
+			endpoint = ls.endpoint
+		}
+		p.Problems = append(p.Problems, "the Kubernetes API at "+endpoint+" does not answer")
 		return p, nil
 	}
-	cached, _, _ := m.LoadCluster(ctx, name)
-	p.applied = appliedSpec(c, ls, cached)
+	p.applied = appliedSpec(c, ls)
+	if cps := len(c.ControlPlanes()); cps < len(p.applied.ControlPlanes()) && cps < 3 {
+		p.Problems = append(p.Problems, fmt.Sprintf("cluster.yaml leaves %d control plane(s); etcd needs 3 to survive a failure", cps))
+	}
 	for _, n := range c.Spec.Nodes {
 		ln := ls.nodes[n.Hostname]
 		switch {
@@ -157,11 +214,13 @@ func (m *Manager) Plan(ctx context.Context, d *Desired, opts ConvergeOptions) (*
 		case ln.maint:
 			n.IP = p.addressOf(n, ln)
 			p.adds = append(p.adds, n)
+			p.install(n)
 			p.Changes = append(p.Changes, Change{Action: ActAdd, Target: n.Hostname, Detail: fmt.Sprintf("%s at %s", n.Role, ln.addr)})
 		default:
-			p.Problems = append(p.Problems, fmt.Sprintf("%s (%s): %s", n.Hostname, n.TargetIP(), reason(ln)))
+			p.Problems = append(p.Problems, notInMaintenance(n, n.TargetIP(), ln))
 		}
 	}
+	m.planAddresses(ctx, p, d, ls)
 	if len(p.applied.Spec.Nodes) > 0 {
 		if err := m.EnsureSchematic(ctx, p.applied); err != nil {
 			return nil, err
@@ -171,12 +230,22 @@ func (m *Manager) Plan(ctx context.Context, d *Desired, opts ConvergeOptions) (*
 			return nil, err
 		}
 		for _, h := range sortedKeys(drift) {
-			p.Changes = append(p.Changes, Change{Action: ActConfig, Target: h, Detail: drift[h]})
+			switch nd := drift[h]; {
+			case nd.err != nil:
+				p.Problems = append(p.Problems, fmt.Sprintf("%s: dry run failed: %v", h, nd.err))
+			case nd.layout != "":
+				p.Problems = append(p.Problems, fmt.Sprintf("%s: the %s volume is fixed at install; keep its storage settings or add a patch that restores them", h, nd.layout))
+			case p.moving(h) && nd.reboot:
+				p.Problems = append(p.Problems, fmt.Sprintf("%s: other changes in its config need a reboot; apply them before changing its address", h))
+			case p.moving(h):
+			default:
+				p.Changes = append(p.Changes, Change{Action: ActConfig, Target: h, Detail: nd.diff})
+			}
 		}
 	}
 	if from := p.applied.Spec.TalosVersion; from != c.Spec.TalosVersion {
 		p.Changes = append(p.Changes, Change{Action: ActTalos, Detail: from + " → " + c.Spec.TalosVersion})
-	} else if id, pools, err := m.desiredSchematics(ctx, c); err == nil && imageOutdated(p.applied, id, pools) {
+	} else if id, err := m.Factory.CreateSchematic(ctx, c.Spec.Extensions); err == nil && id != p.applied.Spec.SchematicID {
 		p.Changes = append(p.Changes, Change{Action: ActTalos, Detail: "new image for extensions " + strings.Join(c.Spec.Extensions, ", ")})
 	}
 	if from := p.applied.Spec.KubernetesVersion; from != c.Spec.KubernetesVersion {
@@ -194,16 +263,61 @@ func (m *Manager) Plan(ctx context.Context, d *Desired, opts ConvergeOptions) (*
 		p.Changes = append(p.Changes, ch)
 	}
 	if ls.api && len(p.Problems) == 0 {
-		diff, err := m.planPlatformFor(ctx, d, p.applied)
+		groups, err := m.planPlatformFor(ctx, d, p.applied, opts.ReadOnly)
 		if err != nil {
 			p.Problems = append(p.Problems, "platform: "+err.Error())
-		} else {
-			for _, g := range diff.Groups {
-				p.Changes = append(p.Changes, Change{Action: ActPlatform, Target: g.Addon, Detail: countActions(g.Changes)})
-			}
+		}
+		for _, g := range groups {
+			p.Changes = append(p.Changes, Change{Action: ActPlatform, Target: g.Addon, Detail: g.Actions})
 		}
 	}
 	return p, nil
+}
+
+func (p *Plan) resume(c *config.Cluster, ls *liveState) *Plan {
+	installed := 0
+	for _, n := range c.Spec.Nodes {
+		if ls.nodes[n.Hostname].member {
+			installed++
+		}
+	}
+	p.target = c.Clone()
+	for i, n := range p.target.Spec.Nodes {
+		if ln := ls.nodes[n.Hostname]; ln.maint {
+			p.target.Spec.Nodes[i].IP = p.addressOf(n, ln)
+			p.install(p.target.Spec.Nodes[i])
+		} else if !ln.member {
+			p.Problems = append(p.Problems, notInMaintenance(n, n.TargetIP(), ln))
+		}
+	}
+	if len(p.Problems) == 0 {
+		p.Changes = append(p.Changes, Change{Action: ActCreate, Target: c.Metadata.Name, Detail: fmt.Sprintf("resume: %d of %d nodes installed, etcd not running", installed, len(c.Spec.Nodes))})
+	}
+	return p
+}
+
+func (m *Manager) etcdRunning(ctx context.Context, d *Desired, ls *liveState) bool {
+	for _, n := range d.Cluster.ControlPlanes() {
+		ln := ls.nodes[n.Hostname]
+		if !ln.member {
+			continue
+		}
+		call, cancel := context.WithTimeout(ctx, 10*time.Second)
+		tc, err := talos.Dial(call, ln.addr, d.Talosconfig)
+		if err == nil {
+			_, err = tc.EtcdMemberCount(call)
+			tc.Close()
+		}
+		cancel()
+		if err == nil {
+			return true
+		}
+	}
+	return false
+}
+
+func (p *Plan) install(n config.Node) {
+	p.Installs = append(p.Installs, Install{Hostname: n.Hostname, Role: n.Role, IP: n.IP, Disk: n.InstallDisk.String()})
 }
 
 func (p *Plan) addressOf(n config.Node, ln *liveNode) string {
@@ -213,27 +327,12 @@ func (p *Plan) addressOf(n config.Node, ln *liveNode) string {
 	return ln.addr
 }
 
-func countActions(changes []tofu.Change) string {
-	n := map[string]int{}
-	var order []string
-	for _, c := range changes {
-		if n[c.Action] == 0 {
-			order = append(order, c.Action)
-		}
-		n[c.Action]++
+func notInMaintenance(n config.Node, ip string, ln *liveNode) string {
+	var other otherMachine
+	if errors.As(ln.err, &other) || errors.Is(ln.err, errOtherCluster) {
+		return fmt.Sprintf("%s (%s) %v", n.Hostname, ip, ln.err)
 	}
-	parts := make([]string, 0, len(order))
-	for _, a := range order {
-		parts = append(parts, fmt.Sprintf("%d to %s", n[a], a))
-	}
-	return strings.Join(parts, ", ")
-}
-
-func reason(ln *liveNode) string {
-	if ln.err != nil {
-		return ln.err.Error()
-	}
-	return "does not answer"
+	return fmt.Sprintf("%s (%s) %s; boot it into Talos maintenance mode", n.Hostname, ip, talos.Describe(ln.err))
 }
 
 func sortedKeys[V any](m map[string]V) []string {
@@ -245,21 +344,37 @@ func sortedKeys[V any](m map[string]V) []string {
 	return out
 }
 
+func (ls *liveState) inMaintenance() bool {
+	for _, ln := range ls.nodes {
+		if ln.maint {
+			return true
+		}
+	}
+	return false
+}
+
 func (m *Manager) observe(ctx context.Context, d *Desired) *liveState {
 	c := d.Cluster
 	ls := &liveState{nodes: map[string]*liveNode{}, kube: map[string]k8s.NodeStatus{}}
 	var mu sync.Mutex
 	var wg sync.WaitGroup
+	lans := &lanScans{byPrefix: map[netip.Prefix]*lanScan{}}
 	for _, n := range c.Spec.Nodes {
 		wg.Go(func() {
-			ln := m.observeNode(ctx, n, d.Talosconfig)
+			ln := m.observeNode(ctx, n, d.Talosconfig, lans)
 			mu.Lock()
 			ls.nodes[n.Hostname] = ln
 			mu.Unlock()
 		})
 	}
 	wg.Wait()
-	if kc, err := m.KubeClientFor(c.Metadata.Name, &store.ClusterSecrets{Kubeconfig: d.Kubeconfig}); err == nil {
+	for _, n := range c.ControlPlanes() {
+		if ln := ls.nodes[n.Hostname]; ln.member && ln.live.Endpoint != "" {
+			ls.endpoint = ln.live.Endpoint
+			break
+		}
+	}
+	if kc, err := m.KubeClientFor(c.Metadata.Name, m.followEndpoint(d, ls.endpoint)); err == nil {
 		call, cancel := context.WithTimeout(ctx, 10*time.Second)
 		nodes, err := kc.Nodes(call)
 		cancel()
@@ -271,51 +386,129 @@ func (m *Manager) observe(ctx context.Context, d *Desired) *liveState {
 		}
 	}
 	ls.exists = ls.api || slices.ContainsFunc(c.Spec.Nodes, func(n config.Node) bool { return ls.nodes[n.Hostname].member })
+	ls.etcd = ls.api || (ls.exists && m.etcdRunning(ctx, d, ls))
 	return ls
 }
 
-func (m *Manager) observeNode(ctx context.Context, n config.Node, talosconfig []byte) *liveNode {
+func (m *Manager) observeNode(ctx context.Context, n config.Node, talosconfig []byte, lans *lanScans) *liveNode {
 	ln := &liveNode{}
-	probe, cancel := context.WithTimeout(ctx, 10*time.Second)
-	stage, err := talos.Stage(probe, n.TargetIP(), talosconfig)
-	cancel()
-	if err == nil && stage != "maintenance" {
-		ln.member, ln.addr = true, n.TargetIP()
-		call, cancel := context.WithTimeout(ctx, 20*time.Second)
-		ln.image, ln.err = readNodeImage(call, ln.addr, talosconfig)
-		cancel()
+	if m.memberAt(ctx, ln, n, n.TargetIP(), talosconfig) {
 		return ln
 	}
-	for _, ip := range m.candidateIPs(ctx, n) {
-		r := talos.Probe(ctx, ip, 3*time.Second)
-		switch {
-		case r.Err == nil && r.State == talos.StateMaintenance:
-			ln.maint, ln.addr, ln.err = true, ip, nil
+	if n.TargetIP() != n.IP && m.memberAt(ctx, ln, n, n.IP, talosconfig) {
+		return ln
+	}
+	r := talos.Probe(ctx, n.IP, 3*time.Second)
+	if r.Err == nil && r.State == talos.StateMaintenance && sameMachine(r, n) {
+		ln.settle(r, n.IP)
+		return ln
+	}
+	ln.err = r.Err
+	if r.Err == nil {
+		ln.err = otherMachine{ip: n.IP}
+		if r.Inventory != nil {
+			ln.err = otherMachine{ip: n.IP, mac: r.Inventory.PrimaryMAC()}
+		}
+		if r.State != talos.StateMaintenance && n.MAC == "" {
+			ln.err = errOtherCluster
+		}
+	}
+	lan, ok := config.Slash24(n.IP)
+	if !ok {
+		return ln
+	}
+	for _, s := range lans.of(ctx, lan) {
+		if s.Err != nil || s.IP == n.IP || s.IP == n.TargetIP() {
+			continue
+		}
+		if s.State == talos.StateMaintenance && n.MAC != "" && sameMachine(s, n) {
+			ln.settle(s, s.IP)
 			return ln
-		case r.Err == nil:
-			ln.err = fmt.Errorf("Talos at %s has another cluster's configuration", ip)
-		case ln.err == nil:
-			ln.err = r.Err
+		}
+		if s.State != talos.StateMaintenance && m.memberAt(ctx, ln, n, s.IP, talosconfig) {
+			return ln
 		}
 	}
 	return ln
 }
 
-func (m *Manager) candidateIPs(ctx context.Context, n config.Node) []string {
-	ips := []string{n.IP}
-	if n.MAC != "" {
-		if mc, err := m.Store.GetMachine(ctx, n.MAC); err == nil && mc.IP != "" && !slices.Contains(ips, mc.IP) {
-			ips = append(ips, mc.IP)
-		}
+func (m *Manager) memberAt(ctx context.Context, ln *liveNode, n config.Node, ip string, talosconfig []byte) bool {
+	call, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	tc, err := talos.Dial(call, ip, talosconfig)
+	if err != nil {
+		return false
 	}
-	return ips
+	defer tc.Close()
+	if stage, err := tc.Stage(call); err != nil || stage == "maintenance" {
+		return false
+	}
+	if h, err := tc.Hostname(call); err != nil || h != n.Hostname {
+		return false
+	}
+	ln.member, ln.addr, ln.err = true, ip, nil
+	if cfg, err := tc.MachineConfig(call); err == nil {
+		ln.live, _ = config.ReadLive(cfg)
+	}
+	img, cancelImg := context.WithTimeout(ctx, 20*time.Second)
+	defer cancelImg()
+	ln.image, ln.err = readNodeImage(img, ip, talosconfig)
+	return true
 }
 
-func appliedSpec(d *config.Cluster, ls *liveState, cached *config.Cluster) *config.Cluster {
+var errOtherCluster = errors.New("runs Talos with another cluster's configuration; reset it first")
+
+type otherMachine struct{ ip, mac string }
+
+func (e otherMachine) Error() string {
+	if e.mac == "" {
+		return fmt.Sprintf("is not on the network; another machine answers at %s", e.ip)
+	}
+	return fmt.Sprintf("is not on the network; %s now answers as %s", e.ip, e.mac)
+}
+
+func (ln *liveNode) settle(r talos.ScanResult, ip string) {
+	ln.maint, ln.addr, ln.err = true, ip, nil
+}
+
+func sameMachine(r talos.ScanResult, n config.Node) bool {
+	if n.MAC == "" {
+		return true
+	}
+	return r.Inventory != nil && netx.MACKey(r.Inventory.PrimaryMAC()) == netx.MACKey(n.MAC)
+}
+
+type lanScan struct {
+	once  sync.Once
+	found []talos.ScanResult
+}
+
+type lanScans struct {
+	mu       sync.Mutex
+	byPrefix map[netip.Prefix]*lanScan
+}
+
+func (l *lanScans) of(ctx context.Context, lan netip.Prefix) []talos.ScanResult {
+	l.mu.Lock()
+	s, ok := l.byPrefix[lan]
+	if !ok {
+		s = &lanScan{}
+		l.byPrefix[lan] = s
+	}
+	l.mu.Unlock()
+	s.once.Do(func() {
+		if addrs, err := talos.ExpandTargets([]string{lan.String()}); err == nil {
+			s.found = talos.Scan(ctx, addrs, 64, 2*time.Second)
+		}
+	})
+	return s.found
+}
+
+func appliedSpec(d *config.Cluster, ls *liveState) *config.Cluster {
 	a := d.Clone()
 	a.Spec.Nodes = nil
 	var talosVersions, kubelets []string
-	schematics := map[string]string{}
+	schematic := ""
 	for _, n := range d.Spec.Nodes {
 		ln := ls.nodes[n.Hostname]
 		if !ln.member {
@@ -326,8 +519,8 @@ func appliedSpec(d *config.Cluster, ls *liveState, cached *config.Cluster) *conf
 		if ln.image.version != "" {
 			talosVersions = append(talosVersions, ln.image.version)
 		}
-		if ln.image.schematic != "" {
-			schematics[d.PoolOf(n).Name] = ln.image.schematic
+		if ln.image.schematic != "" && schematic == "" {
+			schematic = ln.image.schematic
 		}
 		if kn, ok := ls.kube[n.Hostname]; ok && kn.KubeletVersion != "" {
 			kubelets = append(kubelets, kn.KubeletVersion)
@@ -337,7 +530,7 @@ func appliedSpec(d *config.Cluster, ls *liveState, cached *config.Cluster) *conf
 		if d.NodeIndex(h) >= 0 {
 			continue
 		}
-		a.Spec.Nodes = append(a.Spec.Nodes, undeclaredNode(h, ls.kube[h], cached))
+		a.Spec.Nodes = append(a.Spec.Nodes, undeclaredNode(h, ls.kube[h]))
 	}
 	if v := lowest(talosVersions); v != "" {
 		a.Spec.TalosVersion = v
@@ -345,37 +538,11 @@ func appliedSpec(d *config.Cluster, ls *liveState, cached *config.Cluster) *conf
 	if v := lowest(kubelets); v != "" {
 		a.Spec.KubernetesVersion = v
 	}
-	a.Spec.SchematicID = ""
-	for i := range a.Spec.Pools {
-		p := &a.Spec.Pools[i]
-		p.SchematicID = ""
-		if len(p.Extensions) > 0 {
-			p.SchematicID = schematics[p.Name]
-		} else if id := schematics[p.Name]; id != "" {
-			a.Spec.SchematicID = id
-		}
-	}
-	if a.Spec.SchematicID == "" {
-		for _, n := range a.Spec.Nodes {
-			if id := schematics[a.PoolOf(n).Name]; id != "" && len(a.PoolOf(n).Extensions) == 0 {
-				a.Spec.SchematicID = id
-				break
-			}
-		}
-	}
+	a.Spec.SchematicID = schematic
 	return a
 }
 
-func undeclaredNode(hostname string, kn k8s.NodeStatus, cached *config.Cluster) config.Node {
-	if cached != nil {
-		if i := cached.NodeIndex(hostname); i >= 0 {
-			n := cached.Spec.Nodes[i]
-			if kn.InternalIP != "" {
-				n.IP = kn.InternalIP
-			}
-			return n
-		}
-	}
+func undeclaredNode(hostname string, kn k8s.NodeStatus) config.Node {
 	role := config.RoleWorker
 	if _, ok := kn.Labels["node-role.kubernetes.io/control-plane"]; ok {
 		role = config.RoleControlPlane
@@ -401,12 +568,18 @@ func lowest(versions []string) string {
 	return out
 }
 
-func (m *Manager) configDrift(ctx context.Context, a *config.Cluster, d *Desired) (map[string]string, error) {
-	gen, err := config.Generate(a, d.Bundle, m.installer(a))
+type nodeDrift struct {
+	diff, layout string
+	reboot       bool
+	err          error
+}
+
+func (m *Manager) configDrift(ctx context.Context, a *config.Cluster, d *Desired) (map[string]nodeDrift, error) {
+	gen, err := m.machineConfigs(a, d.Bundle)
 	if err != nil {
 		return nil, err
 	}
-	out := map[string]string{}
+	out := map[string]nodeDrift{}
 	var mu sync.Mutex
 	var wg sync.WaitGroup
 	for _, n := range a.Spec.Nodes {
@@ -415,32 +588,43 @@ func (m *Manager) configDrift(ctx context.Context, a *config.Cluster, d *Desired
 			continue
 		}
 		wg.Go(func() {
-			diff, err := dryRunDiff(ctx, n.IP, cfg, d.Talosconfig)
-			mu.Lock()
-			defer mu.Unlock()
-			switch {
-			case err != nil:
-				out[n.Hostname] = "dry run failed: " + err.Error()
-			case diff != "":
-				out[n.Hostname] = diff
+			nd := driftOf(ctx, n.IP, cfg, d.Talosconfig)
+			if nd.err == nil && nd.diff == "" {
+				return
 			}
+			mu.Lock()
+			out[n.Hostname] = nd
+			mu.Unlock()
 		})
 	}
 	wg.Wait()
 	return out, nil
 }
 
-func dryRunDiff(ctx context.Context, ip string, cfg, talosconfig []byte) (string, error) {
+func driftOf(ctx context.Context, ip string, cfg, talosconfig []byte) nodeDrift {
 	tc, err := talos.Dial(ctx, ip, talosconfig)
 	if err != nil {
-		return "", err
+		return nodeDrift{err: err}
 	}
 	defer tc.Close()
 	details, err := applyDryRun(ctx, tc, cfg)
 	if err != nil {
-		return "", err
+		return nodeDrift{err: err}
 	}
-	return configDiff(details), nil
+	nd := nodeDrift{diff: configDiff(details), reboot: wantReboot(details)}
+	if nd.diff == "" {
+		return nd
+	}
+	call, cancel := context.WithTimeout(ctx, rpcTimeout)
+	defer cancel()
+	live, err := tc.MachineConfig(call)
+	if err != nil {
+		return nodeDrift{err: err}
+	}
+	if nd.layout, err = config.LayoutChange(live, cfg); err != nil {
+		return nodeDrift{err: err}
+	}
+	return nd
 }
 
 func configDiff(details string) string {
@@ -455,24 +639,6 @@ func configDiff(details string) string {
 	return diff
 }
 
-func (m *Manager) checkCachedSecrets(ctx context.Context, d *Desired) error {
-	name := d.Cluster.Metadata.Name
-	sec, err := m.Store.GetClusterSecrets(ctx, name)
-	if errors.Is(err, store.ErrNotFound) {
-		return nil
-	}
-	if err != nil {
-		return err
-	}
-	if stored, err := config.ParseSecrets(sec.SecretsBundle); err != nil || stored.Cluster == nil {
-		return nil
-	}
-	if !sameBundle(sec.SecretsBundle, d.Bundle) {
-		return fmt.Errorf("~/.kubit holds another cluster named %s with other secrets; move it with kubit export %s --repo <dir>, or rename this one", name, name)
-	}
-	return nil
-}
-
 func (m *Manager) Converge(ctx context.Context, d *Desired, p *Plan, opts ConvergeOptions, sink Sink) error {
 	if len(p.Problems) > 0 {
 		return errors.New(strings.Join(p.Problems, "\n"))
@@ -484,16 +650,10 @@ func (m *Manager) Converge(ctx context.Context, d *Desired, p *Plan, opts Conver
 	}
 	c := d.Cluster
 	name := c.Metadata.Name
-	m.UsePlatformState(name, d.platform())
+	m.converging.Store(name, true)
+	defer m.converging.Delete(name)
+	m.use(d)
 	if p.has(ActCreate) {
-		if p.recreate {
-			if err := m.Store.DeleteCluster(ctx, name); err != nil {
-				return err
-			}
-		}
-		if err := m.cacheSecrets(ctx, d); err != nil {
-			return err
-		}
 		if err := m.Create(ctx, p.target, d.Bundle, sink); err != nil {
 			return err
 		}
@@ -502,13 +662,16 @@ func (m *Manager) Converge(ctx context.Context, d *Desired, p *Plan, opts Conver
 	if err := m.adopt(ctx, d, p.applied, true); err != nil {
 		return err
 	}
+	if err := m.ApplyAddresses(ctx, d, p, sink); err != nil {
+		return err
+	}
 	for _, n := range p.adds {
 		if err := m.AddNode(ctx, name, n, sink); err != nil {
 			return fmt.Errorf("add %s: %w", n.Hostname, err)
 		}
 	}
 	if p.has(ActConfig) {
-		cur, _, err := m.LoadCluster(ctx, name)
+		cur, _, err := m.LoadCluster(name)
 		if err != nil {
 			return err
 		}
@@ -527,108 +690,72 @@ func (m *Manager) Converge(ctx context.Context, d *Desired, p *Plan, opts Conver
 		}
 	}
 	for _, h := range p.removes {
-		if err := m.RemoveNode(ctx, name, h, RemoveOptions{}, sink); err != nil {
+		if err := m.RemoveNode(ctx, name, h, sink); err != nil {
 			return fmt.Errorf("remove %s: %w", h, err)
 		}
 	}
-	if err := m.ApplyPlatform(ctx, name, sink); err != nil {
-		return err
+	return m.ApplyPlatform(ctx, name, sink)
+}
+
+func (m *Manager) Register(d *Desired) {
+	m.use(d)
+	if _, err := m.Store.GetCluster(d.Cluster.Metadata.Name); err != nil {
+		m.saveCluster(d.Cluster, StateConnecting)
 	}
-	return m.settle(ctx, d)
+}
+
+func (m *Manager) Declare(d *Desired) {
+	m.use(d)
+	if row, err := m.Store.GetCluster(d.Cluster.Metadata.Name); err != nil || row.State == StateConnecting {
+		m.saveCluster(d.Cluster, StateDeclared)
+	}
 }
 
 func (m *Manager) Track(ctx context.Context, d *Desired) (bool, error) {
-	if err := m.checkCachedSecrets(ctx, d); err != nil {
-		return false, err
-	}
 	name := d.Cluster.Metadata.Name
-	m.UsePlatformState(name, d.platform())
-	if row, err := m.Store.GetCluster(ctx, name); err == nil && Observable(row.State) {
-		return true, m.cacheSecrets(ctx, d)
+	if _, busy := m.converging.Load(name); busy {
+		m.use(d)
+		return true, nil
 	}
+	m.Register(d)
 	ls := m.observe(ctx, d)
+	if ls.endpoint != "" {
+		m.pinEndpoint(name, ls.endpoint)
+	}
 	if !ls.exists {
+		if row, err := m.Store.GetCluster(name); err == nil && Live(row.State) {
+			return true, nil
+		}
+		state := StateConnecting
+		if ls.inMaintenance() {
+			state = StateDeclared
+		}
+		m.saveCluster(d.Cluster, state)
 		return false, nil
 	}
-	return true, m.adopt(ctx, d, appliedSpec(d.Cluster, ls, nil), ls.api)
+	return true, m.adopt(ctx, d, appliedSpec(d.Cluster, ls), ls.api)
 }
 
 func (m *Manager) adopt(ctx context.Context, d *Desired, applied *config.Cluster, ready bool) error {
-	name := applied.Metadata.Name
 	if err := m.EnsureSchematic(ctx, applied); err != nil {
-		return err
-	}
-	spec, err := applied.Marshal()
-	if err != nil {
 		return err
 	}
 	state := StateBootstrapped
 	if ready {
 		state = StateReady
 	}
-	if err := m.Store.PutCluster(ctx, store.ClusterRow{Name: name, Spec: spec, SchematicID: applied.Spec.SchematicID, State: state}); err != nil {
-		return err
-	}
-	if err := m.cacheSecrets(ctx, d); err != nil {
-		return err
-	}
-	for _, n := range applied.Spec.Nodes {
-		if d.Cluster.NodeIndex(n.Hostname) < 0 {
-			continue
+	if prev, _, err := m.LoadCluster(d.Cluster.Metadata.Name); err == nil && prev != nil {
+		for _, n := range d.Cluster.Spec.Nodes {
+			if i := prev.NodeIndex(n.Hostname); applied.NodeIndex(n.Hostname) < 0 && i >= 0 {
+				applied.Spec.Nodes = append(applied.Spec.Nodes, prev.Spec.Nodes[i])
+			}
 		}
-		row := storeRow(applied, n)
-		row.State = NodeReady
-		if err := m.Store.UpsertNode(ctx, row); err != nil {
-			return err
+	}
+	m.saveCluster(applied, state)
+	for _, n := range applied.Spec.Nodes {
+		if d.Cluster.NodeIndex(n.Hostname) >= 0 {
+			m.recordNode(applied, n)
 		}
 	}
 	return nil
-}
-
-func (m *Manager) cacheSecrets(ctx context.Context, d *Desired) error {
-	name := d.Cluster.Metadata.Name
-	sec := store.ClusterSecrets{SecretsBundle: d.BundleYAML, Talosconfig: d.Talosconfig, Kubeconfig: d.Kubeconfig}
-	if cur, err := m.Store.GetClusterSecrets(ctx, name); err == nil && cur.Talosconfig != nil && cur.Kubeconfig != nil && sameBundle(cur.SecretsBundle, d.Bundle) {
-		sec.Talosconfig, sec.Kubeconfig = cur.Talosconfig, cur.Kubeconfig
-	}
-	m.Store.HoldClusterSecrets(name, sec)
-	recipient := ""
-	if d.FluxKey != "" {
-		id, err := age.ParseX25519Identity(d.FluxKey)
-		if err != nil {
-			return fmt.Errorf("flux age key: %w", err)
-		}
-		recipient = id.Recipient().String()
-		m.Store.HoldSOPSKey(name, keysFile(id), recipient)
-	}
-	return m.Store.DropStoredSecrets(ctx, name, recipient)
-}
-
-func sameBundle(raw []byte, b *secrets.Bundle) bool {
-	stored, err := config.ParseSecrets(raw)
-	return err == nil && stored.Cluster != nil && b != nil && b.Cluster != nil && stored.Cluster.ID == b.Cluster.ID && stored.Cluster.Secret == b.Cluster.Secret
-}
-
-func (m *Manager) settle(ctx context.Context, d *Desired) error {
-	cur, row, err := m.LoadCluster(ctx, d.Cluster.Metadata.Name)
-	if err != nil {
-		return err
-	}
-	final := d.Cluster.Clone()
-	final.Spec.SchematicID = cur.Spec.SchematicID
-	for i := range final.Spec.Pools {
-		if j := slices.IndexFunc(cur.Spec.Pools, func(p config.Pool) bool { return p.Name == final.Spec.Pools[i].Name }); j >= 0 {
-			final.Spec.Pools[i].SchematicID = cur.Spec.Pools[j].SchematicID
-		}
-	}
-	for i, n := range final.Spec.Nodes {
-		if j := cur.NodeIndex(n.Hostname); j >= 0 {
-			final.Spec.Nodes[i].IP = cur.Spec.Nodes[j].IP
-		}
-	}
-	spec, err := final.Marshal()
-	if err != nil {
-		return err
-	}
-	return m.Store.PutCluster(ctx, store.ClusterRow{Name: final.Metadata.Name, Spec: spec, SchematicID: final.Spec.SchematicID, State: row.State})
 }

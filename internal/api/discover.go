@@ -1,15 +1,42 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
+	"sync"
 	"time"
 
 	"github.com/mikael/kubit/internal/cluster"
 	"github.com/mikael/kubit/internal/talos"
+	"github.com/mikael/kubit/internal/watch"
 )
 
+const scopeDiscovery = "discovery"
+
+type scanState struct {
+	mu       sync.Mutex
+	running  int
+	lastScan time.Time
+}
+
+type discoverView struct {
+	Subnets    []string  `json:"subnets"`
+	Scanning   bool      `json:"scanning"`
+	LastScanAt time.Time `json:"lastScanAt,omitzero"`
+	Every      int       `json:"everySeconds"`
+	Ping       int       `json:"pingSeconds"`
+}
+
 func (s *Server) discoverRoutes() {
+	s.mux.HandleFunc("GET /api/v1/discover", func(w http.ResponseWriter, r *http.Request) {
+		s.scans.mu.Lock()
+		v := discoverView{Scanning: s.scans.running > 0, LastScanAt: s.scans.lastScan, Ping: int(watch.PingEvery.Seconds())}
+		s.scans.mu.Unlock()
+		v.Subnets = s.discoverySubnets(r.Context())
+		v.Every = int(s.watcher.ScanInterval.Seconds())
+		writeJSON(w, http.StatusOK, v)
+	})
 	s.mux.HandleFunc("POST /api/v1/discover", s.handleDiscover)
 }
 
@@ -19,19 +46,47 @@ type discoverRequest struct {
 
 func (s *Server) handleDiscover(w http.ResponseWriter, r *http.Request) {
 	var req discoverRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || len(req.Targets) == 0 {
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeErr(w, badRequest(`body must be {"targets": ["cidr or ip", ...]}`))
 		return
 	}
-	addrs, err := talos.ExpandTargets(req.Targets)
+	if len(req.Targets) == 0 {
+		req.Targets = s.discoverySubnets(r.Context())
+	}
+	found, err := s.scan(r.Context(), req.Targets, true)
 	if err != nil {
 		writeErr(w, invalid(err))
 		return
 	}
-	found, err := cluster.RecordScan(r.Context(), s.store, talos.Scan(r.Context(), addrs, 64, 2*time.Second), nil)
-	if err != nil {
-		writeErr(w, err)
-		return
-	}
 	writeJSON(w, http.StatusOK, map[string]int{"found": found})
+}
+
+func (s *Server) scanSubnets(ctx context.Context) {
+	if targets := s.discoverySubnets(ctx); len(targets) > 0 {
+		s.scan(ctx, targets, false)
+	}
+}
+
+func (s *Server) scan(ctx context.Context, targets []string, all bool) (int, error) {
+	addrs, err := talos.ExpandTargets(targets)
+	if err != nil {
+		return 0, err
+	}
+	s.scans.mu.Lock()
+	s.scans.running++
+	s.scans.mu.Unlock()
+	s.refresh("", scopeDiscovery)
+	var found []talos.ScanResult
+	for _, r := range talos.Scan(ctx, addrs, 64, 2*time.Second) {
+		if all || r.State == talos.StateMaintenance {
+			found = append(found, r)
+		}
+	}
+	n := cluster.RecordScan(s.store, found)
+	s.scans.mu.Lock()
+	s.scans.running--
+	s.scans.lastScan = time.Now().UTC()
+	s.scans.mu.Unlock()
+	s.refresh("", scopeDiscovery)
+	return n, nil
 }

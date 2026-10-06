@@ -4,129 +4,78 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"reflect"
 	"sort"
 	"strings"
 )
 
-type PlanDiff struct {
-	Summary   Summary  `json:"summary"`
-	Groups    []Group  `json:"groups"`
-	Warnings  []string `json:"warnings,omitempty"`
-	Timestamp string   `json:"timestamp"`
-}
-
 type Group struct {
-	Addon   string   `json:"addon"`
-	Changes []Change `json:"changes"`
-}
-
-type Change struct {
-	Address string     `json:"address"`
-	Type    string     `json:"type"`
-	Name    string     `json:"name"`
-	Action  string     `json:"action"`
-	Attrs   []AttrDiff `json:"attrs,omitempty"`
-}
-
-type AttrDiff struct {
-	Key       string `json:"key"`
-	Before    string `json:"before,omitempty"`
-	After     string `json:"after,omitempty"`
-	Unknown   bool   `json:"unknown,omitempty"`
-	Sensitive bool   `json:"sensitive,omitempty"`
+	Addon   string
+	Actions string
 }
 
 type showPlan struct {
-	Timestamp       string `json:"timestamp"`
 	ResourceChanges []struct {
 		Address string `json:"address"`
-		Type    string `json:"type"`
-		Name    string `json:"name"`
 		Mode    string `json:"mode"`
 		Change  struct {
-			Actions        []string       `json:"actions"`
-			Before         map[string]any `json:"before"`
-			After          map[string]any `json:"after"`
-			AfterUnknown   map[string]any `json:"after_unknown"`
-			AfterSensitive any            `json:"after_sensitive"`
+			Actions []string `json:"actions"`
 		} `json:"change"`
 	} `json:"resource_changes"`
 }
 
-func (r *Runner) ShowPlan(ctx context.Context, warnings []string) (*PlanDiff, error) {
+func (r *Runner) ShowPlan(ctx context.Context) ([]Group, error) {
 	out, err := r.output(ctx, "show", "-json", "plan.tfplan")
 	if err != nil {
 		return nil, err
 	}
-	return ParseShowPlan(out, warnings)
+	return ParseShowPlan(out)
 }
 
-func ParseShowPlan(raw []byte, warnings []string) (*PlanDiff, error) {
+func ParseShowPlan(raw []byte) ([]Group, error) {
 	var sp showPlan
 	if err := json.Unmarshal(raw, &sp); err != nil {
 		return nil, fmt.Errorf("parse plan: %w", err)
 	}
-	groups := map[string]*Group{}
-	diff := PlanDiff{Groups: []Group{}}
-	diff.Timestamp = sp.Timestamp
-	diff.Warnings = warnings
+	counts := map[string]map[string]int{}
+	order := map[string][]string{}
 	for _, rc := range sp.ResourceChanges {
 		action := actionOf(rc.Change.Actions)
-		if rc.Mode == "data" || action == "no-op" {
+		if rc.Mode == "data" || action == "" {
 			continue
 		}
-		switch action {
-		case "create":
-			diff.Summary.Add++
-		case "update":
-			diff.Summary.Change++
-		case "replace":
-			diff.Summary.Add++
-			diff.Summary.Remove++
-		case "delete":
-			diff.Summary.Remove++
-		}
 		addon := AddonOf(rc.Address)
-		g, ok := groups[addon]
-		if !ok {
-			g = &Group{Addon: addon}
-			groups[addon] = g
+		if counts[addon] == nil {
+			counts[addon] = map[string]int{}
 		}
-		sensitive, _ := rc.Change.AfterSensitive.(map[string]any)
-		g.Changes = append(g.Changes, Change{
-			Address: rc.Address, Type: rc.Type, Name: rc.Name, Action: action,
-			Attrs: attrDiffs(rc.Change.Before, rc.Change.After, rc.Change.AfterUnknown, sensitive),
-		})
+		if counts[addon][action] == 0 {
+			order[addon] = append(order[addon], action)
+		}
+		counts[addon][action]++
 	}
-	for _, g := range groups {
-		sort.Slice(g.Changes, func(i, j int) bool { return g.Changes[i].Address < g.Changes[j].Address })
-		diff.Groups = append(diff.Groups, *g)
+	out := make([]Group, 0, len(counts))
+	for addon, n := range counts {
+		parts := make([]string, 0, len(order[addon]))
+		for _, a := range order[addon] {
+			parts = append(parts, fmt.Sprintf("%d to %s", n[a], a))
+		}
+		out = append(out, Group{Addon: addon, Actions: strings.Join(parts, ", ")})
 	}
-	sort.Slice(diff.Groups, func(i, j int) bool { return diff.Groups[i].Addon < diff.Groups[j].Addon })
-	return &diff, nil
+	sort.Slice(out, func(i, j int) bool { return out[i].Addon < out[j].Addon })
+	return out, nil
 }
 
 func actionOf(actions []string) string {
 	switch strings.Join(actions, ",") {
-	case "create":
-		return "create"
-	case "update":
-		return "update"
-	case "delete":
-		return "delete"
+	case "create", "update", "delete":
+		return actions[0]
 	case "delete,create", "create,delete":
 		return "replace"
-	case "read":
-		return "read"
-	default:
-		return "no-op"
 	}
+	return ""
 }
 
 func AddonOf(address string) string {
-	addr := strings.TrimPrefix(address, "data.")
-	_, name, ok := strings.Cut(addr, ".")
+	_, name, ok := strings.Cut(address, ".")
 	if !ok {
 		return address
 	}
@@ -134,7 +83,7 @@ func AddonOf(address string) string {
 		name = name[:i]
 	}
 	for prefix, addon := range map[string]string{
-		"metallb": "metallb", "traefik": "traefik", "ingress_nginx": "traefik", "runtimeclass": "gvisor",
+		"metallb": "metallb", "traefik": "traefik", "gateway_api": "traefik", "ingress_nginx": "traefik", "runtimeclass": "gvisor",
 		"metrics_server": "metrics-server", "cert_manager": "cert-manager", "flux": "flux", "longhorn": "longhorn", "builds": "builds", "backup": "backup",
 	} {
 		if name == prefix || strings.HasPrefix(name, prefix+"_") {
@@ -142,83 +91,4 @@ func AddonOf(address string) string {
 		}
 	}
 	return name
-}
-
-var hiddenAttrs = map[string]bool{"id": true, "metadata": true, "status": true, "timeouts": true, "yaml_incluster": true, "live_manifest_incluster": true, "wait_for": true}
-
-func attrDiffs(before, after, unknown map[string]any, sensitive map[string]any) []AttrDiff {
-	keys := map[string]bool{}
-	for k := range before {
-		keys[k] = true
-	}
-	for k := range after {
-		keys[k] = true
-	}
-	for k := range unknown {
-		keys[k] = true
-	}
-	if keys["yaml_body_parsed"] {
-		delete(keys, "yaml_body")
-	}
-	var out []AttrDiff
-	for k := range keys {
-		if hiddenAttrs[k] {
-			continue
-		}
-		b, a := before[k], after[k]
-		_, isUnknown := unknown[k]
-		if isUnknown {
-			if v, ok := unknown[k].(bool); ok && !v {
-				isUnknown = false
-			}
-		}
-		if !isUnknown && reflect.DeepEqual(b, a) {
-			continue
-		}
-		if isNil(b) && isNil(a) && !isUnknown {
-			continue
-		}
-		d := AttrDiff{Key: k, Unknown: isUnknown}
-		if v, ok := sensitive[k].(bool); ok && v {
-			d.Sensitive = true
-		} else {
-			d.Before, d.After = render(b), render(a)
-		}
-		out = append(out, d)
-	}
-	sort.Slice(out, func(i, j int) bool { return out[i].Key < out[j].Key })
-	return out
-}
-
-func isNil(v any) bool {
-	if v == nil {
-		return true
-	}
-	switch t := v.(type) {
-	case string:
-		return t == ""
-	case []any:
-		return len(t) == 0
-	case map[string]any:
-		return len(t) == 0
-	case bool:
-		return !t
-	}
-	return false
-}
-
-func render(v any) string {
-	switch t := v.(type) {
-	case nil:
-		return ""
-	case string:
-		return t
-	case bool, float64:
-		return fmt.Sprint(t)
-	}
-	b, err := json.MarshalIndent(v, "", "  ")
-	if err != nil {
-		return fmt.Sprint(v)
-	}
-	return string(b)
 }

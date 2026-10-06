@@ -5,7 +5,6 @@ import (
 	"strings"
 
 	"github.com/mikael/kubit/internal/cluster"
-	"github.com/mikael/kubit/internal/store"
 )
 
 const confirmAfter = 3
@@ -13,15 +12,26 @@ const confirmAfter = 3
 var confirmedKinds = map[string]string{"talos.unreachable": "talos.back", "api.unreachable": "api.back", "etcd.unhealthy": "etcd.healthy", "node.notready": "node.ready"}
 
 type confirm struct {
-	bad  map[string]int
-	open map[string]bool
+	started bool
+	bad     map[string]int
+	open    map[string]bool
+	quiet   map[string]bool
 }
 
-func newConfirm() *confirm { return &confirm{bad: map[string]int{}, open: map[string]bool{}} }
+type transition struct {
+	raise    *Event
+	resolves string
+	recovery Event
+}
+
+func newConfirm() *confirm {
+	return &confirm{bad: map[string]int{}, open: map[string]bool{}, quiet: map[string]bool{}}
+}
 
 func factKey(kind, node string) string { return kind + "|" + node }
 
-func (c *confirm) Seed(open []store.EventRow) {
+func (c *confirm) Seed(open []Event) {
+	c.started = true
 	for _, e := range open {
 		if _, ok := confirmedKinds[e.Kind]; ok {
 			c.open[factKey(e.Kind, e.Node)] = true
@@ -31,19 +41,26 @@ func (c *confirm) Seed(open []store.EventRow) {
 
 func (c *confirm) Reset() { c.bad = map[string]int{} }
 
-func (c *confirm) Apply(name string, cur *cluster.Status) []store.EventRow {
-	facts := badFacts(name, cur)
-	var out []store.EventRow
+func (c *confirm) Apply(name string, facts map[string]Event) []transition {
+	if !c.started {
+		c.started = true
+		for key := range facts {
+			c.quiet[key] = true
+		}
+	}
+	var out []transition
 	for key, ev := range facts {
 		c.bad[key]++
 		if c.bad[key] >= confirmAfter && !c.open[key] {
 			c.open[key] = true
-			out = append(out, ev)
+			ev.Notify = !c.quiet[key]
+			out = append(out, transition{raise: &ev})
 		}
 	}
 	for key := range c.bad {
 		if _, still := facts[key]; !still {
 			delete(c.bad, key)
+			delete(c.quiet, key)
 		}
 	}
 	for key := range c.open {
@@ -52,7 +69,7 @@ func (c *confirm) Apply(name string, cur *cluster.Status) []store.EventRow {
 		}
 		delete(c.open, key)
 		kind, node := splitKey(key)
-		out = append(out, recovery(name, kind, node))
+		out = append(out, transition{resolves: kind, recovery: recovery(name, kind, node)})
 	}
 	return out
 }
@@ -62,16 +79,16 @@ func splitKey(key string) (kind, node string) {
 	return kind, node
 }
 
-func recovery(name, kind, node string) store.EventRow {
+func recovery(name, kind, node string) Event {
 	msg := map[string]string{"talos.back": node + ": Talos API reachable again", "api.back": "Kubernetes API reachable again", "etcd.healthy": "etcd healthy again", "node.ready": node + " is Ready"}
 	rk := confirmedKinds[kind]
-	return store.EventRow{Cluster: name, Node: node, Severity: "info", Kind: rk, Message: msg[rk]}
+	return Event{Cluster: name, Node: node, Severity: "info", Kind: rk, Message: msg[rk]}
 }
 
-func badFacts(name string, cur *cluster.Status) map[string]store.EventRow {
-	out := map[string]store.EventRow{}
+func badFacts(name string, cur *cluster.Status) map[string]Event {
+	out := map[string]Event{}
 	ev := func(sev, kind, node, msg string) {
-		out[factKey(kind, node)] = store.EventRow{Cluster: name, Node: node, Severity: sev, Kind: kind, Message: msg}
+		out[factKey(kind, node)] = Event{Cluster: name, Node: node, Severity: sev, Kind: kind, Message: msg}
 	}
 	for _, n := range cur.Nodes {
 		if !n.TalosReachable {
@@ -86,21 +103,6 @@ func badFacts(name string, cur *cluster.Status) map[string]store.EventRow {
 	}
 	if cur.Etcd.Expected > 0 && !cur.Etcd.Healthy {
 		ev("critical", "etcd.unhealthy", "", fmt.Sprintf("etcd unhealthy (%d/%d members)", cur.Etcd.Members, cur.Etcd.Expected))
-	}
-	return out
-}
-
-func unconfirmed(events []store.EventRow) []store.EventRow {
-	rec := map[string]bool{}
-	for _, r := range confirmedKinds {
-		rec[r] = true
-	}
-	out := events[:0]
-	for _, e := range events {
-		if _, ok := confirmedKinds[e.Kind]; ok || rec[e.Kind] {
-			continue
-		}
-		out = append(out, e)
 	}
 	return out
 }

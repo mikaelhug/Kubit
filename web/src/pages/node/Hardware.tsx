@@ -1,7 +1,7 @@
 import { fmt, type Inventory, type NodeRow } from '../../api'
 import { DataTable, type Column } from '../../components/DataTable'
 import { Notice, Pill, Section, Tile } from '../../components/ui'
-import { modelOf } from '../../machine'
+import { modelName } from '../../machine'
 
 type Disk = Inventory['disks'][number]
 type Link = Inventory['links'][number]
@@ -32,7 +32,7 @@ export function HardwareTab({ inv: live, invErr, node }: { inv: Inventory | null
     : stored ? `Recorded ${fmt.when(node.lastSeen)}; not running Talos now.`
     : ''
   if (!inv || (!inv.cpus && inv.disks.length === 0)) {
-    return <Notice tone="muted">{inv ? `${modelOf(node)}. ` : ''}Hardware details arrive when the machine boots Talos.</Notice>
+    return <Notice tone="muted">{inv ? `${modelName(inv)}. ` : ''}No hardware details yet.</Notice>
   }
   return (
     <div class="flex flex-col gap-5">
@@ -40,19 +40,16 @@ export function HardwareTab({ inv: live, invErr, node }: { inv: Inventory | null
       <div class="grid grid-cols-2 lg:grid-cols-3 gap-4">
         <Tile label="CPUs" value={String(inv.cpus)} sub={inv.arch} />
         <Tile label="Memory" value={fmt.bytes(inv.memoryBytes)} />
-        <Tile label="KVM" value={inv.kvm ? 'available' : 'absent'} sub={inv.kvm ? 'runsc-kvm eligible' : 'gVisor uses systrap'} />
-        <Tile label="TPM" value={presence(inv.tpm)} sub={inv.tpm === undefined ? undefined : inv.tpm ? 'TPM disk encryption eligible' : 'Node ID encryption only'} />
-        <Tile label="Watchdog" value={presence(inv.watchdog)} sub={inv.watchdog === undefined ? undefined : inv.watchdog ? 'Resets a hung node' : 'No hardware reset'} />
+        <Tile label="KVM" value={inv.kvm ? 'available' : 'absent'} />
         <Tile label="Disks" value={String(inv.disks.length)} sub={fmt.bytes(inv.disks.reduce((a, d) => a + d.sizeBytes, 0)) + ' total'} />
       </div>
       <Section title="Disks">
         <DataTable search={false} columns={diskColumns} rows={inv.disks} rowKey={(d) => d.devPath} />
       </Section>
-      <Section title="Network links" help="Physical links only.">
+      <Section title="Network links">
         <DataTable search={false} columns={linkColumns} rows={inv.links} rowKey={(l) => l.name} />
       </Section>
     </div>
   )
 }
 
-const presence = (v?: boolean) => v === undefined ? '—' : v ? 'available' : 'absent'

@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"filippo.io/age"
+	"github.com/mikael/kubit/internal/yamlx"
 	"go.yaml.in/yaml/v4"
 )
 
@@ -105,7 +106,7 @@ func Set(root *yaml.Node, path []string, value string) error {
 		if n.Kind != yaml.MappingNode {
 			return fmt.Errorf("%s is not a mapping", strings.Join(path[:i], "."))
 		}
-		child, idx := find(n, k)
+		child, idx := yamlx.Lookup(n, k)
 		last := i == len(path)-1
 		switch {
 		case child == nil && last:
@@ -134,7 +135,7 @@ func Delete(root *yaml.Node, path []string) error {
 	if parent == nil || parent.Kind != yaml.MappingNode {
 		return fmt.Errorf("no value at %s", strings.Join(path, "."))
 	}
-	_, i := find(parent, path[len(path)-1])
+	_, i := yamlx.Lookup(parent, path[len(path)-1])
 	if i < 0 {
 		return fmt.Errorf("no value at %s", strings.Join(path, "."))
 	}
@@ -147,7 +148,7 @@ func lookup(n *yaml.Node, path []string) *yaml.Node {
 		if n.Kind != yaml.MappingNode {
 			return nil
 		}
-		if n, _ = find(n, k); n == nil {
+		if n, _ = yamlx.Lookup(n, k); n == nil {
 			return nil
 		}
 	}
@@ -160,4 +161,34 @@ func scalarNode(v string) *yaml.Node {
 		n.Style = yaml.LiteralStyle
 	}
 	return n
+}
+
+type Entry struct {
+	Path  []string `json:"path"`
+	Value string   `json:"value"`
+}
+
+func Values(data []byte, ids []age.Identity) ([]Entry, error) {
+	plain, err := Decrypt(data, ids)
+	if err != nil {
+		return nil, err
+	}
+	root, err := parseMapping(plain)
+	if err != nil {
+		return nil, err
+	}
+	out := []Entry{}
+	var collect func(n *yaml.Node, path []string)
+	collect = func(n *yaml.Node, path []string) {
+		switch n.Kind {
+		case yaml.MappingNode:
+			for i := 0; i+1 < len(n.Content); i += 2 {
+				collect(n.Content[i+1], append(slices.Clip(path), n.Content[i].Value))
+			}
+		case yaml.ScalarNode:
+			out = append(out, Entry{Path: path, Value: n.Value})
+		}
+	}
+	collect(root, nil)
+	return out, nil
 }

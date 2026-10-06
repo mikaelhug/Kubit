@@ -39,7 +39,6 @@ const (
 
 	LabelGVisor             = "sandbox.runtime/gvisor"
 	LabelGVisorKVM          = "sandbox.runtime/gvisor-kvm"
-	LabelPool               = "kubit.dev/pool"
 	LabelDataDisks          = "kubit.dev/data-disks"
 	LabelLonghornDisk       = "node.longhorn.io/create-default-disk"
 	AnnotationLonghornDisks = "node.longhorn.io/default-disks-config"
@@ -53,11 +52,7 @@ type Generated struct {
 	Nodes       map[string][]byte
 }
 
-type Installer func(p Pool) string
-
-func FixedInstaller(image string) Installer { return func(Pool) string { return image } }
-
-func Generate(c *Cluster, bundle *secrets.Bundle, installer Installer) (*Generated, error) {
+func Generate(c *Cluster, bundle *secrets.Bundle, installer string) (*Generated, error) {
 	contract, err := talosconfig.ParseContractFromVersion(c.Spec.TalosVersion)
 	if err != nil {
 		return nil, fmt.Errorf("talosVersion: %w", err)
@@ -70,13 +65,13 @@ func Generate(c *Cluster, bundle *secrets.Bundle, installer Installer) (*Generat
 	}
 	var cpIPs []string
 	for _, n := range c.ControlPlanes() {
-		cpIPs = append(cpIPs, n.IP)
+		cpIPs = append(cpIPs, n.TargetIP())
 	}
 	opts := []generate.Option{
 		generate.WithVersionContract(contract),
 		generate.WithSecretsBundle(bundle),
 		generate.WithEndpointList(cpIPs),
-		generate.WithInstallImage(installer(c.controlPlaneInstallPool())),
+		generate.WithInstallImage(installer),
 		generate.WithAllowSchedulingOnControlPlanes(*c.Spec.ControlPlane.AllowScheduling),
 		generate.WithSkipUnattendedInstallConfig(true),
 		generate.WithClusterDiscovery(c.DiscoveryOn()),
@@ -96,7 +91,7 @@ func Generate(c *Cluster, bundle *secrets.Bundle, installer Installer) (*Generat
 
 	out := &Generated{Secrets: bundle, Nodes: make(map[string][]byte, len(c.Spec.Nodes))}
 	for _, n := range c.Spec.Nodes {
-		b, err := generateNode(c, in, n, installer(c.PoolOf(n)))
+		b, err := generateNode(c, in, n, installer)
 		if err != nil {
 			return nil, fmt.Errorf("node %s: %w", n.Hostname, err)
 		}
@@ -119,13 +114,6 @@ func (c *Cluster) apiServerSANs(cpIPs []string) []string {
 		}
 	}
 	return sans
-}
-
-func (c *Cluster) controlPlaneInstallPool() Pool {
-	if p := c.ControlPlanePool(); p != nil {
-		return *p
-	}
-	return Pool{Name: string(RoleControlPlane), Role: RoleControlPlane}
 }
 
 func generateNode(c *Cluster, in *generate.Input, n Node, installerImage string) ([]byte, error) {
@@ -191,10 +179,6 @@ func generateNode(c *Cluster, in *generate.Input, n Node, installerImage string)
 		}
 		docs = append(docs, vol)
 	}
-	encryptVolumes(&docs, c.Spec.Storage)
-	if n.Watchdog {
-		docs = append(docs, watchdogTimer())
-	}
 
 	host := findOrAppend(&docs, network.NewHostnameConfigV1Alpha1)
 	host.ConfigAuto = nil
@@ -208,7 +192,6 @@ func generateNode(c *Cluster, in *generate.Input, n Node, installerImage string)
 			node.LabelsConfig[LabelGVisorKVM] = "true"
 		}
 	}
-	node.LabelsConfig[LabelPool] = n.Pool
 	if len(n.DataDisks) > 0 {
 		node.LabelsConfig[LabelDataDisks] = fmt.Sprint(len(n.DataDisks))
 	}
@@ -220,12 +203,12 @@ func generateNode(c *Cluster, in *generate.Input, n Node, installerImage string)
 			node.LabelsConfig[LabelLonghornDisk] = "false"
 		}
 	}
-	maps.Copy(node.LabelsConfig, c.NodeLabels(n))
-	if taints := c.NodeTaints(n); len(taints) > 0 {
-		maps.Copy(orEmpty(&node.TaintsConfig), taints)
+	maps.Copy(node.LabelsConfig, n.Labels)
+	if len(n.Taints) > 0 {
+		maps.Copy(orEmpty(&node.TaintsConfig), n.Taints)
 	}
-	if ann := c.NodeAnnotations(n); len(ann) > 0 {
-		maps.Copy(orEmpty(&node.AnnotationsConfig), ann)
+	if len(n.Annotations) > 0 {
+		maps.Copy(orEmpty(&node.AnnotationsConfig), n.Annotations)
 	}
 	if n.Role == RoleControlPlane && *c.Spec.ControlPlane.AllowScheduling {
 		delete(node.LabelsConfig, constants.LabelExcludeFromExternalLB)
@@ -282,8 +265,6 @@ func generateNode(c *Cluster, in *generate.Input, n Node, installerImage string)
 		ts := findOrAppend(&docs, network.NewTimeSyncConfigV1Alpha1)
 		ts.TimeNTP = &network.NTPConfig{Servers: c.Spec.Network.NTP}
 	}
-
-	docs = append(docs, firewallDocs(c, n)...)
 
 	cfg, err := container.New(docs...)
 	if err != nil {
@@ -434,29 +415,6 @@ func volumeConfig(docs *[]config.Document, name string) *block.VolumeConfigV1Alp
 	return v
 }
 
-func encryptVolumes(docs *[]config.Document, s Storage) {
-	spec, ok := s.encryptionSpec()
-	if !ok {
-		return
-	}
-	volumeConfig(docs, constants.StatePartitionLabel).EncryptionSpec = spec
-	volumeConfig(docs, constants.EphemeralPartitionLabel).EncryptionSpec = spec
-	for _, d := range *docs {
-		if v, ok := d.(*block.UserVolumeConfigV1Alpha1); ok {
-			v.EncryptionSpec = spec
-		}
-	}
-}
-
-const watchdogDevice = "/dev/watchdog0"
-
-func watchdogTimer() *runtime.WatchdogTimerV1Alpha1 {
-	wd := runtime.NewWatchdogTimerV1Alpha1()
-	wd.WatchdogDevice = watchdogDevice
-	wd.WatchdogTimeout = runtime.DefaultWatchdogTimeout
-	return wd
-}
-
 func diskSelector(d InstallDisk) (cel.Expression, error) {
 	var terms []string
 	switch {
@@ -464,7 +422,11 @@ func diskSelector(d InstallDisk) (cel.Expression, error) {
 		terms = append(terms, fmt.Sprintf("disk.dev_path == %q", d.Path))
 	case d.Selector != nil:
 		if d.Selector.MinSize != "" {
-			terms = append(terms, "disk.size >= "+celSize(d.Selector.MinSize))
+			size, err := minSize(d.Selector.MinSize)
+			if err != nil {
+				return cel.Expression{}, err
+			}
+			terms = append(terms, fmt.Sprintf("disk.size >= %du", size))
 		}
 		if d.Selector.Type != "" {
 			terms = append(terms, fmt.Sprintf("disk.transport == %q", d.Selector.Type))
@@ -479,17 +441,12 @@ func diskSelector(d InstallDisk) (cel.Expression, error) {
 	return cel.ParseBooleanExpression(strings.Join(terms, " && "), celenv.DiskLocator())
 }
 
-func celSize(s string) string {
-	s = strings.TrimSpace(s)
-	i := len(s)
-	for i > 0 && (s[i-1] < '0' || s[i-1] > '9') {
-		i--
+func minSize(s string) (uint64, error) {
+	var b block.ByteSize
+	if err := b.UnmarshalText([]byte(strings.TrimSpace(s))); err != nil {
+		return 0, fmt.Errorf("minSize %q: %w", s, err)
 	}
-	num, unit := s[:i], strings.ToUpper(strings.TrimSpace(s[i:]))
-	if unit == "" {
-		return num + "u"
-	}
-	return num + "u * " + unit
+	return b.Value(), nil
 }
 
 func ParseSecrets(b []byte) (*secrets.Bundle, error) {

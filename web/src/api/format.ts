@@ -13,8 +13,6 @@ export const fmt = {
     return (i >= 3 && v < 100 ? v.toFixed(1) : Math.round(v)) + u[i]
   },
   cores(m: number) { return m >= 1000 ? (m / 1000).toFixed(1) : `${m}m` },
-  pct(a: number, b: number) { return b ? Math.round((a / b) * 100) : 0 },
-  int(n: number) { return n.toLocaleString() },
   date(iso: string) { return iso ? new Date(iso).toLocaleDateString() : '' },
   datetime(iso: string) { return iso ? new Date(iso).toLocaleString() : '' },
   when(iso: string) {

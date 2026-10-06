@@ -21,7 +21,7 @@ variable "ingress_ip_pin" {
 }
 
 variable "gvisor" {
-  type = object({ enabled = bool, values = optional(any, {}) })
+  type = object({ enabled = bool })
 }
 
 variable "metrics_server" {

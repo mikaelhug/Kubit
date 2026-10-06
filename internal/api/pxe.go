@@ -1,6 +1,7 @@
 package api
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"errors"
@@ -8,8 +9,12 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"path/filepath"
+	"strings"
+	"syscall"
 	"time"
 
+	"github.com/fsnotify/fsnotify"
 	"github.com/mikael/kubit/internal/httpx"
 )
 
@@ -20,30 +25,22 @@ func (s *Server) pxeRoutes() {
 
 const pxeStatusWait = 2 * time.Second
 
-func pxeCommand(host string, httpOnly bool) string {
+func (s *Server) pxeCommand() string {
 	bin := "kubit"
 	if p, err := os.Executable(); err == nil {
 		bin = p
 	}
-	if httpOnly {
-		return fmt.Sprintf("%s pxe --http-only --iface en0 --kubit-url http://%s", bin, host)
+	cmd := "sudo " + bin + " pxe"
+	for _, r := range s.servedRepos() {
+		cmd += " " + r.Dir
 	}
-	return fmt.Sprintf("sudo %s pxe --iface en0 --kubit-url http://%s", bin, host)
-}
-
-func (s *Server) pxeFetch(ctx context.Context) (string, []byte, error) {
-	v, err := s.store.GetSettings(ctx)
-	if err != nil {
-		return "", nil, err
-	}
-	if v.PXEStatusURL == "" {
-		return "", nil, errors.New("no PXE status URL")
-	}
-	body, err := fetchPXE(ctx, v.PXEStatusURL)
-	return v.PXEStatusURL, body, err
+	return cmd
 }
 
 func fetchPXE(ctx context.Context, statusURL string) ([]byte, error) {
+	if statusURL == "" {
+		return nil, errors.New("no PXE status URL")
+	}
 	resp, err := httpx.Get(ctx, statusURL, pxeStatusWait)
 	if err != nil {
 		return nil, err
@@ -56,66 +53,154 @@ func fetchPXE(ctx context.Context, statusURL string) ([]byte, error) {
 }
 
 type pxeSnapshot struct {
-	url  string
 	body []byte
 	err  error
 	at   time.Time
 }
 
-const pxeSnapshotFresh = 15 * time.Second
+var errPXEStopped = errors.New("not running")
 
-func (s *Server) latestPXE(ctx context.Context, statusURL string) ([]byte, error) {
+func (s *Server) latestPXE(ctx context.Context) ([]byte, error) {
 	s.pxeMu.Lock()
 	last := s.pxeLast
 	s.pxeMu.Unlock()
-	if last.url == statusURL && time.Since(last.at) < pxeSnapshotFresh {
+	if !last.at.IsZero() {
 		return last.body, last.err
 	}
-	return fetchPXE(ctx, statusURL)
+	return fetchPXE(ctx, s.settings.PXEStatusURL)
 }
 
 func (s *Server) handlePXEStatus(w http.ResponseWriter, r *http.Request) {
-	v, err := s.store.GetSettings(r.Context())
+	statusURL := s.settings.PXEStatusURL
+	body, err := s.latestPXE(r.Context())
 	if err != nil {
-		writeErr(w, err)
-		return
-	}
-	body, err := s.latestPXE(r.Context(), v.PXEStatusURL)
-	if err != nil {
-		writeJSON(w, http.StatusOK, map[string]any{"running": false, "statusUrl": v.PXEStatusURL, "error": err.Error(),
-			"command": pxeCommand(r.Host, false), "serviceCommand": fmt.Sprintf("sudo kubit service install --pxe --iface en0 --kubit-url http://%s", r.Host)})
+		off := map[string]any{"running": false, "statusUrl": statusURL, "command": s.pxeCommand()}
+		if !errors.Is(err, syscall.ECONNREFUSED) && !errors.Is(err, errPXEStopped) {
+			off["error"] = err.Error()
+		}
+		writeJSON(w, http.StatusOK, off)
 		return
 	}
 	var st map[string]any
 	if err := json.Unmarshal(body, &st); err != nil {
-		writeJSON(w, http.StatusOK, map[string]any{"running": false, "statusUrl": v.PXEStatusURL, "error": "unexpected response from " + v.PXEStatusURL})
+		writeJSON(w, http.StatusOK, map[string]any{"running": false, "statusUrl": statusURL, "error": "unexpected response from " + statusURL, "command": s.pxeCommand()})
 		return
 	}
 	st["running"] = true
-	st["statusUrl"] = v.PXEStatusURL
+	st["statusUrl"] = statusURL
 	writeJSON(w, http.StatusOK, st)
 }
 
 func (s *Server) watchPXE(ctx context.Context) {
-	var last string
-	t := time.NewTicker(5 * time.Second)
-	defer t.Stop()
+	if s.settings.PXEStatusURL == "" {
+		return
+	}
+	starts := make(chan struct{}, 1)
+	start := func() {
+		select {
+		case starts <- struct{}{}:
+		default:
+		}
+	}
+	s.watchPXERunFile(ctx, start)
+	start()
 	for {
 		select {
 		case <-ctx.Done():
 			return
-		case <-t.C:
+		case <-starts:
 		}
-		statusURL, b, err := s.pxeFetch(ctx)
-		if statusURL == "" {
-			continue
+		s.followPXE(ctx)
+		s.setPXE(nil, errPXEStopped)
+	}
+}
+
+func (s *Server) watchPXERunFile(ctx context.Context, start func()) {
+	dir := s.settings.PXERunDir
+	if dir == "" {
+		return
+	}
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return
+	}
+	w, err := fsnotify.NewWatcher()
+	if err != nil {
+		return
+	}
+	if err := w.Add(dir); err != nil {
+		w.Close()
+		return
+	}
+	go func() {
+		defer w.Close()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case e, ok := <-w.Events:
+				if !ok {
+					return
+				}
+				if filepath.Base(e.Name) == pxeRunFile && e.Has(fsnotify.Create|fsnotify.Write) {
+					start()
+				}
+			case _, ok := <-w.Errors:
+				if !ok {
+					return
+				}
+			}
 		}
-		s.pxeMu.Lock()
-		s.pxeLast = pxeSnapshot{url: statusURL, body: b, err: err, at: time.Now()}
-		s.pxeMu.Unlock()
-		if body := string(b); body != last {
-			last = body
-			s.refresh("", "pxe")
+	}()
+}
+
+const (
+	pxeRunFile     = "pxe"
+	pxeConnectTry  = 5
+	pxeConnectWait = 300 * time.Millisecond
+)
+
+func (s *Server) followPXE(ctx context.Context) {
+	for try := 0; try < pxeConnectTry; try++ {
+		if s.streamPXE(ctx) {
+			return
 		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(pxeConnectWait):
+		}
+	}
+}
+
+func (s *Server) streamPXE(ctx context.Context) bool {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, s.settings.PXEStatusURL+"?watch", nil)
+	if err != nil {
+		return false
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return false
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return false
+	}
+	sc := bufio.NewScanner(resp.Body)
+	sc.Buffer(make([]byte, 64<<10), 4<<20)
+	for sc.Scan() {
+		if data, ok := strings.CutPrefix(sc.Text(), "data: "); ok {
+			s.setPXE([]byte(data), nil)
+		}
+	}
+	return true
+}
+
+func (s *Server) setPXE(body []byte, err error) {
+	s.pxeMu.Lock()
+	changed := string(s.pxeLast.body) != string(body) || (s.pxeLast.err == nil) != (err == nil) || s.pxeLast.at.IsZero()
+	s.pxeLast = pxeSnapshot{body: body, err: err, at: time.Now()}
+	s.pxeMu.Unlock()
+	if changed {
+		s.refresh("", "pxe")
 	}
 }

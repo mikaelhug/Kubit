@@ -4,8 +4,9 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"time"
 
-	"github.com/mikael/kubit/internal/store"
+	"github.com/mikael/kubit/internal/watch"
 )
 
 func (s *Server) certRoutes() {
@@ -15,23 +16,34 @@ func (s *Server) certRoutes() {
 
 func (s *Server) handleCertificates(w http.ResponseWriter, r *http.Request) {
 	certs, err := s.manager.Certificates(r.Context(), r.PathValue("name"))
-	if err != nil {
-		writeErr(w, err)
-		return
-	}
-	writeJSON(w, http.StatusOK, certs)
+	reply(w, certs, err)
 }
 
+const certCheckEvery = time.Hour
+
 func (s *Server) checkCertificates(ctx context.Context, name string) {
+	a := s.alerts()
 	certs, err := s.manager.Certificates(ctx, name)
 	if err != nil {
 		return
 	}
+	s.certsMu.Lock()
+	last, seen := s.certsSeen[name]
+	due := !seen || time.Since(last) >= certCheckEvery
+	if due {
+		s.certsSeen[name] = time.Now()
+	}
+	s.certsMu.Unlock()
+	if !due {
+		return
+	}
+	notify := seen
 	for _, c := range certs {
-		if c.Error != "" || c.DaysLeft > 30 {
+		if c.Error != "" {
 			continue
 		}
-		if s.store.HasOpenEvent(ctx, name, c.Name, "cert.expiring") {
+		if c.DaysLeft > 30 {
+			a.Resolve(name, c.Name, "cert.expiring", watch.Event{Cluster: name, Node: c.Name, Severity: "info", Kind: "cert.renewed", Message: c.Name + " renewed"})
 			continue
 		}
 		sev := "warn"
@@ -39,11 +51,9 @@ func (s *Server) checkCertificates(ctx context.Context, name string) {
 			sev = "critical"
 		}
 		msg := fmt.Sprintf("%s expires in %d days (%s).", c.Name, c.DaysLeft, c.NotAfter.Format("2006-01-02"))
-		if c.Rotatable {
-			msg += " Rotate it under Settings → Credentials."
-		} else {
-			msg += " This CA cannot be rotated by Kubit; plan a cluster rebuild before it expires."
+		if !c.Rotatable {
+			msg += " Kubit cannot rotate this CA; rebuild the cluster before it expires."
 		}
-		s.raiseEvent(ctx, store.EventRow{Cluster: name, Node: c.Name, Severity: sev, Kind: "cert.expiring", Message: msg})
+		a.Raise(watch.Event{Cluster: name, Node: c.Name, Severity: sev, Kind: "cert.expiring", Message: msg, Notify: notify})
 	}
 }

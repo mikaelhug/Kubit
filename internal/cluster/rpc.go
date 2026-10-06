@@ -15,7 +15,6 @@ const (
 	manifestsTimeout = time.Minute
 	snapshotTimeout  = 10 * time.Minute
 	cleanupTimeout   = 15 * time.Second
-	reachTimeout     = 5 * time.Second
 )
 
 func cleanupCtx(ctx context.Context) (context.Context, context.CancelFunc) {
@@ -28,8 +27,8 @@ func readBootID(ctx context.Context, tc *talos.Client) (string, error) {
 	return tc.BootID(call)
 }
 
-func applyConfig(ctx context.Context, tc *talos.Client, cfg []byte, timeout time.Duration) error {
-	call, cancel := context.WithTimeout(ctx, timeout)
+func applyConfig(ctx context.Context, tc *talos.Client, cfg []byte) error {
+	call, cancel := context.WithTimeout(ctx, applyTimeout)
 	defer cancel()
 	return tc.Apply(call, cfg)
 }
@@ -82,12 +81,6 @@ func installedSchematic(ctx context.Context, tc *talos.Client) (string, error) {
 	return tc.InstalledSchematic(call)
 }
 
-func adminKubeconfig(ctx context.Context, tc *talos.Client, timeout time.Duration) ([]byte, error) {
-	call, cancel := context.WithTimeout(ctx, timeout)
-	defer cancel()
-	return tc.AdminKubeconfig(call)
-}
-
 func bootstrapManifests(ctx context.Context, tc *talos.Client) ([]map[string]any, error) {
 	call, cancel := context.WithTimeout(ctx, manifestsTimeout)
 	defer cancel()
@@ -107,5 +100,5 @@ func (m *Manager) rebootingAction(ctx context.Context, ip string, talosconfig []
 	if err != nil {
 		return err
 	}
-	return talos.WaitForReboot(ctx, ip, talosconfig, bootID, m.Timeouts.Install)
+	return talos.WaitForReboot(ctx, ip, talosconfig, bootID, installTimeout)
 }

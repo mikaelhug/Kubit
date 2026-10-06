@@ -2,24 +2,18 @@ package config
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/siderolabs/talos/pkg/machinery/config/configloader"
+	"github.com/siderolabs/talos/pkg/machinery/config/encoder"
 	"github.com/siderolabs/talos/pkg/machinery/config/types/block"
-	blockres "github.com/siderolabs/talos/pkg/machinery/resources/block"
+	"github.com/siderolabs/talos/pkg/machinery/constants"
 )
 
 type Storage struct {
-	SystemDisk    bool       `yaml:"systemDisk,omitempty" json:"systemDisk,omitempty"`
-	EphemeralSize string     `yaml:"ephemeralSize,omitempty" json:"ephemeralSize,omitempty"`
-	Encryption    Encryption `yaml:"encryption,omitempty" json:"encryption,omitempty"`
+	SystemDisk    bool   `yaml:"systemDisk,omitempty" json:"systemDisk,omitempty"`
+	EphemeralSize string `yaml:"ephemeralSize,omitempty" json:"ephemeralSize,omitempty"`
 }
-
-type Encryption string
-
-const (
-	EncryptionTPM    Encryption = "tpm"
-	EncryptionNodeID Encryption = "nodeID"
-)
 
 const (
 	DefaultEphemeralSize = "40GiB"
@@ -27,26 +21,6 @@ const (
 	MinSystemDataSize    = "10GiB"
 	SystemDataVolume     = "data-system"
 )
-
-func (c *Cluster) DefaultEncryption() Encryption {
-	if len(c.Spec.Nodes) == 0 {
-		return ""
-	}
-	return EncryptionNodeID
-}
-
-func (s Storage) encryptionSpec() (block.EncryptionSpec, bool) {
-	key := block.EncryptionKey{KeySlot: 0}
-	switch s.Encryption {
-	case EncryptionTPM:
-		key.KeyTPM = &block.EncryptionKeyTPM{TPMOptions: &block.EncryptionKeyTPMOptions{}}
-	case EncryptionNodeID:
-		key.KeyNodeID = &block.EncryptionKeyNodeID{}
-	default:
-		return block.EncryptionSpec{}, false
-	}
-	return block.EncryptionSpec{EncryptionProvider: blockres.EncryptionProviderLUKS2, EncryptionKeys: []block.EncryptionKey{key}}, true
-}
 
 func (s Storage) EphemeralBytes() (uint64, error) {
 	var size block.Size
@@ -81,6 +55,26 @@ type InstallDisk struct {
 	Selector *DiskSelector `yaml:"selector,omitempty" json:"selector,omitempty"`
 }
 
+func (d InstallDisk) String() string {
+	if d.Path != "" || d.Selector == nil {
+		return d.Path
+	}
+	var parts []string
+	if d.Selector.Type != "" {
+		parts = append(parts, d.Selector.Type)
+	}
+	if d.Selector.Model != "" {
+		parts = append(parts, d.Selector.Model)
+	}
+	if d.Selector.MinSize != "" {
+		parts = append(parts, "≥ "+d.Selector.MinSize)
+	}
+	if len(parts) == 0 {
+		return "first disk"
+	}
+	return strings.Join(parts, " ")
+}
+
 type DiskSelector struct {
 	MinSize string `yaml:"minSize,omitempty" json:"minSize,omitempty"`
 	Type    string `yaml:"type,omitempty" json:"type,omitempty"`
@@ -110,38 +104,44 @@ func (c *Cluster) LonghornReplicas() int {
 	return n
 }
 
-func HasSystemVolume(machineConfig []byte) bool {
-	cfg, err := configloader.NewFromBytes(machineConfig)
+func LayoutChange(applied, next []byte) (string, error) {
+	a, err := layout(applied)
 	if err != nil {
-		return false
+		return "", err
 	}
-	for _, d := range cfg.Documents() {
-		if v, ok := d.(*block.UserVolumeConfigV1Alpha1); ok && v.MetaName == SystemDataVolume {
-			return true
+	b, err := layout(next)
+	if err != nil {
+		return "", err
+	}
+	for _, name := range []string{constants.StatePartitionLabel, constants.EphemeralPartitionLabel, SystemDataVolume} {
+		if a[name] != b[name] {
+			return name, nil
 		}
 	}
-	return false
+	return "", nil
 }
 
-func CheckChange(old, next *Cluster, installed, split map[string]bool) error {
-	anySplit := false
-	for _, s := range split {
-		anySplit = anySplit || s
+func layout(machineConfig []byte) (map[string]string, error) {
+	cfg, err := configloader.NewFromBytes(machineConfig)
+	if err != nil {
+		return nil, err
 	}
-	if anySplit && old.Spec.Storage != next.Spec.Storage {
-		return fmt.Errorf("storage must stay: nodes hold a system-disk volume")
-	}
-	if old.Spec.Storage.Encryption != next.Spec.Storage.Encryption {
-		for _, n := range old.Spec.Nodes {
-			if installed[n.IP] {
-				return fmt.Errorf("storage.encryption must stay: %s is installed", n.Hostname)
-			}
+	out := map[string]string{}
+	for _, d := range cfg.Documents() {
+		var name string
+		switch v := d.(type) {
+		case *block.VolumeConfigV1Alpha1:
+			name = v.MetaName
+		case *block.UserVolumeConfigV1Alpha1:
+			name = v.MetaName
+		default:
+			continue
 		}
-	}
-	for _, nn := range next.Spec.Nodes {
-		if installed[nn.IP] && !split[nn.IP] && next.SharesSystemDisk(nn) {
-			return fmt.Errorf("%s must keep its system disk to Talos: it was installed without a storage volume", nn.Hostname)
+		b, err := encoder.NewEncoder(d, encoder.WithComments(encoder.CommentsDisabled)).Encode()
+		if err != nil {
+			return nil, err
 		}
+		out[name] = string(b)
 	}
-	return nil
+	return out, nil
 }
