@@ -13,17 +13,14 @@ import (
 )
 
 type appsFlags struct {
-	env, path string
-	envs      []string
+	path string
 }
 
 func (f *appsFlags) register(cmd *cobra.Command) {
-	cmd.Flags().StringVar(&f.env, "env", "", "environment this cluster serves")
-	cmd.Flags().StringSliceVar(&f.envs, "envs", nil, "environments to create in an empty apps checkout (default: --env)")
 	cmd.Flags().StringVar(&f.path, "path", "./", "Flux path, for a checkout without Kubit's layout")
 }
 
-func (f *appsFlags) connect(ctx context.Context, checkout, cluster, fluxRecipient string) (repo.AppsRepo, repo.AppsConnect, []repo.AppsFile, error) {
+func (f *appsFlags) connect(ctx context.Context, checkout, cluster, fluxRecipient string, imageAutomation bool) (repo.AppsRepo, repo.AppsConnect, []repo.AppsFile, error) {
 	dir, err := filepath.Abs(checkout)
 	if err != nil {
 		return repo.AppsRepo{}, repo.AppsConnect{}, nil, err
@@ -32,11 +29,7 @@ func (f *appsFlags) connect(ctx context.Context, checkout, cluster, fluxRecipien
 	if err != nil {
 		return a, repo.AppsConnect{}, nil, err
 	}
-	envs := f.envs
-	if len(envs) == 0 && f.env != "" {
-		envs = []string{f.env}
-	}
-	c := repo.AppsConnect{Cluster: cluster, Environment: f.env, Environments: envs, Path: f.path, FluxRecipient: fluxRecipient}
+	c := repo.AppsConnect{Cluster: cluster, Path: f.path, FluxRecipient: fluxRecipient, ImageAutomation: imageAutomation}
 	files, err := a.Files(c)
 	return a, c, files, err
 }
@@ -65,7 +58,7 @@ func connectCmd() *cobra.Command {
 	var f appsFlags
 	cmd := &cobra.Command{
 		Use:   "connect <cluster-dir> <apps-checkout>",
-		Short: "Connect a cluster to an environment of a Flux apps repository and write the layout Flux needs",
+		Short: "Connect a cluster to a Flux apps repository and write the layout Flux needs",
 		Args:  cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()
@@ -73,7 +66,7 @@ func connectCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			a, c, files, err := f.connect(ctx, args[1], r.Cluster.Metadata.Name, r.Secrets.FluxRecipient())
+			a, c, files, err := f.connect(ctx, args[1], r.Cluster.Metadata.Name, r.Secrets.FluxRecipient(), r.Cluster.Spec.Platform.Flux.ImageAutomation)
 			if err != nil {
 				return err
 			}

@@ -86,7 +86,7 @@ spec:
     builds: { enabled: false }
     flux:
       enabled: true
-      repository: { url: ssh://git@github.com/you/apps.git, branch: main, path: ./clusters/lab }
+      repository: { url: ssh://git@github.com/you/apps.git, branch: main, path: ./clusters/lab, checkout: ../apps }
 ```
 
 The Discovery page copies a node entry for any machine in maintenance mode.

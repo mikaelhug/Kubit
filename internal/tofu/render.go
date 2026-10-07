@@ -55,9 +55,10 @@ type longhornVars struct {
 }
 
 type fluxVars struct {
-	Enabled    bool                   `json:"enabled"`
-	Values     map[string]any         `json:"values"`
-	Repository *config.FluxRepository `json:"repository"`
+	Enabled         bool                   `json:"enabled"`
+	ImageAutomation bool                   `json:"image_automation"`
+	Values          map[string]any         `json:"values"`
+	Repository      *config.FluxRepository `json:"repository"`
 }
 
 type backupVars struct {
@@ -175,6 +176,15 @@ func ingressPin(p config.Platform, recorded string) string {
 	return ip.String()
 }
 
+func fluxSource(r *config.FluxRepository) *config.FluxRepository {
+	if r == nil {
+		return nil
+	}
+	s := *r
+	s.Checkout = ""
+	return &s
+}
+
 func Vars(c *config.Cluster, kubeconfigPath, ingressIP string) map[string]any {
 	p := c.Spec.Platform
 	return map[string]any{
@@ -186,7 +196,7 @@ func Vars(c *config.Cluster, kubeconfigPath, ingressIP string) map[string]any {
 		"metrics_server":   addonVars{p.MetricsServer.Enabled, merged(metricsDefaults, p.MetricsServer.Values)},
 		"cert_manager":     addonVars{p.CertManager.Enabled, vals(p.CertManager.Values)},
 		"builds":           buildsVars{Enabled: p.Builds.Enabled, IP: c.RegistryIP()},
-		"flux":             fluxVars{Enabled: p.Flux.Enabled, Values: vals(p.Flux.Values), Repository: p.Flux.Repository},
+		"flux":             fluxVars{Enabled: p.Flux.Enabled, ImageAutomation: p.Flux.ImageAutomation, Values: vals(p.Flux.Values), Repository: fluxSource(p.Flux.Repository)},
 		"longhorn":         longhornVars{Enabled: p.Longhorn.Enabled, Values: vals(p.Longhorn.Values), Replicas: c.LonghornReplicas()},
 		"oidc_admin_group": c.Spec.Auth.AdminGroupSubject(),
 		"backup":           backupVarsOf(c),

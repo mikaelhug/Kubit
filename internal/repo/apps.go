@@ -2,7 +2,6 @@ package repo
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"maps"
 	"os"
@@ -26,29 +25,22 @@ const (
 	AppsOther  AppsKind = "other"
 )
 
-type AppsCluster struct {
-	Name        string `json:"name"`
-	Environment string `json:"environment,omitempty"`
-}
-
 type AppsRepo struct {
-	Dir          string        `json:"dir"`
-	Display      string        `json:"display"`
-	Kind         AppsKind      `json:"kind"`
-	Environments []string      `json:"environments"`
-	Clusters     []AppsCluster `json:"clusters"`
-	Branch       string        `json:"branch"`
-	Remote       string        `json:"remote"`
-	URL          string        `json:"url"`
+	Dir      string   `json:"dir"`
+	Display  string   `json:"display"`
+	Kind     AppsKind `json:"kind"`
+	Clusters []string `json:"clusters"`
+	Branch   string   `json:"branch"`
+	Remote   string   `json:"remote"`
+	URL      string   `json:"url"`
 }
 
 type AppsConnect struct {
-	Cluster       string
-	Environment   string
-	Environments  []string
-	Path          string
-	Operator      []string
-	FluxRecipient string
+	Cluster         string
+	Path            string
+	ImageAutomation bool
+	Operator        []string
+	FluxRecipient   string
 }
 
 type AppsFile struct {
@@ -68,7 +60,7 @@ var (
 )
 
 func InspectApps(ctx context.Context, dir string) (AppsRepo, error) {
-	a := AppsRepo{Dir: dir, Display: Tilde(dir), Environments: []string{}, Clusters: []AppsCluster{}}
+	a := AppsRepo{Dir: dir, Display: Tilde(dir), Clusters: []string{}}
 	top, err := git(ctx, dir, "rev-parse", "--show-toplevel")
 	if err != nil {
 		return a, fmt.Errorf("%s is not a git checkout", Tilde(dir))
@@ -106,21 +98,9 @@ func InspectApps(ctx context.Context, dir string) (AppsRepo, error) {
 	}
 	if isDir(filepath.Join(dir, "apps")) && isDir(filepath.Join(dir, "clusters")) {
 		a.Kind = AppsLayout
-		a.Environments = subdirs(filepath.Join(dir, "apps"), "base")
-		for _, c := range subdirs(filepath.Join(dir, "clusters")) {
-			a.Clusters = append(a.Clusters, AppsCluster{Name: c, Environment: a.envOf(c)})
-		}
+		a.Clusters = subdirs(filepath.Join(dir, "clusters"))
 	}
 	return a, nil
-}
-
-func (a AppsRepo) envOf(cluster string) string {
-	for _, p := range fluxPaths(filepath.Join(a.Dir, "clusters", cluster, "apps.yaml")) {
-		if env, ok := strings.CutPrefix(p, "apps/"); ok {
-			return env
-		}
-	}
-	return ""
 }
 
 func (a AppsRepo) FluxPath(c AppsConnect) string {
@@ -140,60 +120,39 @@ func (a AppsRepo) check(c AppsConnect) error {
 		}
 		return nil
 	}
-	envs := a.Environments
-	if a.Kind == AppsEmpty {
-		envs = c.Environments
-		if len(envs) == 0 {
-			return errors.New("choose at least one environment")
-		}
-	}
-	for _, e := range append(slices.Clone(envs), c.Environment) {
-		if !envRE.MatchString(e) || e == "base" {
-			return fmt.Errorf("environment %q: use lowercase letters, digits and hyphens", e)
-		}
-	}
-	if a.Kind == AppsEmpty && !slices.Contains(envs, c.Environment) {
-		return fmt.Errorf("environment %q is not one of %s", c.Environment, strings.Join(envs, ", "))
-	}
-	for _, cl := range a.Clusters {
-		if cl.Name == c.Cluster && cl.Environment != "" && cl.Environment != c.Environment {
-			return fmt.Errorf("clusters/%s already serves %s", c.Cluster, cl.Environment)
-		}
+	if !envRE.MatchString(c.Cluster) || c.Cluster == "base" {
+		return fmt.Errorf("cluster name %q cannot name a folder in the apps repository", c.Cluster)
 	}
 	return nil
 }
 
-func (a AppsRepo) contents(c AppsConnect) (map[string][]byte, []string, error) {
+func (a AppsRepo) contents(c AppsConnect) (map[string][]byte, error) {
 	files := map[string][]byte{}
-	envs := []string{c.Environment}
-	if a.Kind == AppsEmpty {
-		envs = c.Environments
-	}
-	base, err := kustomizationFile(nil)
+	empty, err := kustomizationFile(nil)
 	if err != nil {
-		return nil, nil, err
-	}
-	overlay, err := kustomizationFile([]string{"../base"})
-	if err != nil {
-		return nil, nil, err
+		return nil, err
 	}
 	for _, area := range []string{"infrastructure", "apps"} {
-		files[area+"/base/kustomization.yaml"] = base
-		for _, env := range envs {
-			files[area+"/"+env+"/kustomization.yaml"] = overlay
-		}
+		files[area+"/"+c.Cluster+"/kustomization.yaml"] = empty
 	}
 	dirC := "clusters/" + c.Cluster
-	if files[dirC+"/kustomization.yaml"], err = kustomizationFile([]string{"infrastructure.yaml", "apps.yaml"}); err != nil {
-		return nil, nil, err
+	listed := []string{"infrastructure.yaml", "apps.yaml"}
+	if c.ImageAutomation {
+		listed = append(listed, imageAutomationFile)
+		if files[dirC+"/"+imageAutomationFile], err = imageAutomation(c.Cluster, a.Branch); err != nil {
+			return nil, err
+		}
 	}
-	if files[dirC+"/infrastructure.yaml"], err = fluxKustomization("infrastructure", "infrastructure/"+c.Environment, ""); err != nil {
-		return nil, nil, err
+	if files[dirC+"/kustomization.yaml"], err = kustomizationFile(listed); err != nil {
+		return nil, err
 	}
-	if files[dirC+"/apps.yaml"], err = fluxKustomization("apps", "apps/"+c.Environment, "infrastructure"); err != nil {
-		return nil, nil, err
+	if files[dirC+"/infrastructure.yaml"], err = fluxKustomization("infrastructure", "infrastructure/"+c.Cluster, ""); err != nil {
+		return nil, err
 	}
-	return files, envs, nil
+	if files[dirC+"/apps.yaml"], err = fluxKustomization("apps", "apps/"+c.Cluster, "infrastructure"); err != nil {
+		return nil, err
+	}
+	return files, nil
 }
 
 func (a AppsRepo) Files(c AppsConnect) ([]AppsFile, error) {
@@ -203,7 +162,7 @@ func (a AppsRepo) Files(c AppsConnect) ([]AppsFile, error) {
 	if a.Kind == AppsOther {
 		return []AppsFile{}, nil
 	}
-	files, _, err := a.contents(c)
+	files, err := a.contents(c)
 	if err != nil {
 		return nil, err
 	}
@@ -212,7 +171,7 @@ func (a AppsRepo) Files(c AppsConnect) ([]AppsFile, error) {
 	switch {
 	case !exists(cfg):
 		out = append(out, AppsFile{Repo: "apps", Path: sops.ConfigFile, Action: FileCreate})
-	case !a.envReads(c):
+	case !a.clusterReads(c):
 		out = append(out, AppsFile{Repo: "apps", Path: sops.ConfigFile, Action: FileEdit})
 	}
 	for _, p := range sortedKeys(files) {
@@ -223,9 +182,9 @@ func (a AppsRepo) Files(c AppsConnect) ([]AppsFile, error) {
 	return out, nil
 }
 
-func (a AppsRepo) envReads(c AppsConnect) bool {
+func (a AppsRepo) clusterReads(c AppsConnect) bool {
 	for _, area := range []string{"apps", "infrastructure"} {
-		r, err := sops.RuleFor(a.Dir, filepath.Join(a.Dir, area, c.Environment, "example.sops.yaml"))
+		r, err := sops.RuleFor(a.Dir, filepath.Join(a.Dir, area, c.Cluster, "example.sops.yaml"))
 		if err != nil || !slices.Contains(r.Age, c.FluxRecipient) {
 			return false
 		}
@@ -240,13 +199,13 @@ func ConnectApps(a AppsRepo, c AppsConnect) error {
 	if a.Kind == AppsOther {
 		return nil
 	}
-	files, envs, err := a.contents(c)
+	files, err := a.contents(c)
 	if err != nil {
 		return err
 	}
 	cfg := filepath.Join(a.Dir, sops.ConfigFile)
 	if !exists(cfg) {
-		b, err := sops.AppsConfig(c.Operator, envs, SecretsFile)
+		b, err := sops.AppsConfig(c.Operator, SecretsFile)
 		if err != nil {
 			return err
 		}
@@ -254,10 +213,10 @@ func ConnectApps(a AppsRepo, c AppsConnect) error {
 			return err
 		}
 	}
-	if _, err := sops.AddEnvRule(a.Dir, c.Environment, c.Operator); err != nil {
+	if _, err := sops.AddClusterRule(a.Dir, c.Cluster, c.Operator); err != nil {
 		return err
 	}
-	samples := []string{"apps/" + c.Environment + "/" + sampleSecret, "infrastructure/" + c.Environment + "/" + sampleSecret}
+	samples := []string{"apps/" + c.Cluster + "/" + sampleSecret, "infrastructure/" + c.Cluster + "/" + sampleSecret}
 	if _, err := sops.AddRecipient(a.Dir, c.FluxRecipient, SecretsFile, samples); err != nil {
 		return err
 	}
@@ -273,7 +232,82 @@ func ConnectApps(a AppsRepo, c AppsConnect) error {
 			return err
 		}
 	}
+	if c.ImageAutomation {
+		_, err := ListResource(a.Dir, "clusters/"+c.Cluster+"/"+imageAutomationFile)
+		return err
+	}
 	return nil
+}
+
+const imageAutomationFile = "image-automation.yaml"
+
+func imageAutomation(cluster, branch string) ([]byte, error) {
+	type ref struct {
+		Branch string `yaml:"branch"`
+	}
+	type author struct {
+		Name  string `yaml:"name"`
+		Email string `yaml:"email"`
+	}
+	var doc struct {
+		APIVersion string `yaml:"apiVersion"`
+		Kind       string `yaml:"kind"`
+		Metadata   struct {
+			Name      string `yaml:"name"`
+			Namespace string `yaml:"namespace"`
+		} `yaml:"metadata"`
+		Spec struct {
+			Interval  string `yaml:"interval"`
+			SourceRef struct {
+				Kind string `yaml:"kind"`
+				Name string `yaml:"name"`
+			} `yaml:"sourceRef"`
+			Git struct {
+				Checkout struct {
+					Ref ref `yaml:"ref"`
+				} `yaml:"checkout"`
+				Commit struct {
+					Author author `yaml:"author"`
+				} `yaml:"commit"`
+				Push ref `yaml:"push"`
+			} `yaml:"git"`
+			Update struct {
+				Path     string `yaml:"path"`
+				Strategy string `yaml:"strategy"`
+			} `yaml:"update"`
+		} `yaml:"spec"`
+	}
+	doc.APIVersion, doc.Kind = "image.toolkit.fluxcd.io/v1", "ImageUpdateAutomation"
+	doc.Metadata.Name, doc.Metadata.Namespace = "apps", tofu.SOPSNamespace
+	doc.Spec.Interval = "1m"
+	doc.Spec.SourceRef.Kind, doc.Spec.SourceRef.Name = "GitRepository", tofu.FluxSource
+	doc.Spec.Git.Checkout.Ref.Branch, doc.Spec.Git.Push.Branch = branch, branch
+	doc.Spec.Git.Commit.Author = author{Name: "flux-" + cluster, Email: "flux-" + cluster + "@users.noreply.github.com"}
+	doc.Spec.Update.Path, doc.Spec.Update.Strategy = "./apps/"+cluster, "Setters"
+	return yamlx.Encode(doc)
+}
+
+func SetImageAutomation(dir, cluster, branch string, on bool) error {
+	rel := "clusters/" + cluster + "/" + imageAutomationFile
+	full := filepath.Join(dir, filepath.FromSlash(rel))
+	if !on {
+		if err := os.Remove(full); err != nil && !os.IsNotExist(err) {
+			return err
+		}
+		_, err := UnlistResource(dir, rel)
+		return err
+	}
+	if !exists(full) {
+		b, err := imageAutomation(cluster, branch)
+		if err != nil {
+			return err
+		}
+		if err := create(full, 0o644, b); err != nil {
+			return err
+		}
+	}
+	_, err := ListResource(dir, rel)
+	return err
 }
 
 func kustomizationFile(resources []string) ([]byte, error) {
@@ -324,6 +358,38 @@ func fluxKustomization(name, path, dependsOn string) ([]byte, error) {
 		Name      string `yaml:"name"`
 		Namespace string `yaml:"namespace"`
 	}{name, tofu.SOPSNamespace}, Spec: s})
+}
+
+func ClusterDirs(dir string) []string {
+	if exists(filepath.Join(dir, ClusterFile)) {
+		return []string{dir}
+	}
+	var out []string
+	for _, sub := range subdirs(dir) {
+		if p := filepath.Join(dir, sub); exists(filepath.Join(p, ClusterFile)) {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
+func CheckoutDir(clusterDir, checkout string) string {
+	if rest, ok := strings.CutPrefix(checkout, "~/"); ok {
+		if home, err := os.UserHomeDir(); err == nil {
+			return filepath.Join(home, rest)
+		}
+	}
+	if filepath.IsAbs(checkout) {
+		return filepath.Clean(checkout)
+	}
+	return filepath.Join(clusterDir, checkout)
+}
+
+func RelCheckout(clusterDir, appsDir string) string {
+	if rel, err := filepath.Rel(clusterDir, appsDir); err == nil {
+		return filepath.ToSlash(rel)
+	}
+	return Tilde(appsDir)
 }
 
 func Tilde(p string) string {
@@ -388,7 +454,7 @@ func Connect(ctx context.Context, clusterDir, hash string, a AppsRepo, c AppsCon
 		if err != nil {
 			return err
 		}
-		fr := &config.FluxRepository{URL: a.URL, Branch: a.Branch, Path: a.FluxPath(c)}
+		fr := &config.FluxRepository{URL: a.URL, Branch: a.Branch, Path: a.FluxPath(c), Checkout: RelCheckout(clusterDir, a.Dir)}
 		if old := cur.Spec.Platform.Flux.Repository; old != nil {
 			fr.Interval = old.Interval
 		}

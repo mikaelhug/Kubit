@@ -13,10 +13,8 @@ import (
 )
 
 type appsRequest struct {
-	Dir          string   `json:"dir"`
-	Environment  string   `json:"environment"`
-	Environments []string `json:"environments"`
-	Path         string   `json:"path"`
+	Dir  string `json:"dir"`
+	Path string `json:"path"`
 }
 
 type appsReview struct {
@@ -29,9 +27,9 @@ type appsReview struct {
 }
 
 type appsCheckout struct {
-	Dir         string        `json:"dir"`
-	Environment string        `json:"environment,omitempty"`
-	Git         repo.GitState `json:"git"`
+	Dir     string        `json:"dir"`
+	Missing bool          `json:"missing,omitempty"`
+	Git     repo.GitState `json:"git"`
 }
 
 type appsStatus struct {
@@ -71,7 +69,7 @@ func (s *Server) handleInspectApps(w http.ResponseWriter, r *http.Request) {
 
 func reviewApps(ctx context.Context, req appsRequest, cluster, fluxRecipient string, hasKey bool) (*appsReview, repo.AppsRepo, repo.AppsConnect, error) {
 	a, err := inspectApps(ctx, req.Dir)
-	c := repo.AppsConnect{Cluster: cluster, Environment: req.Environment, Environments: req.Environments, Path: req.Path, FluxRecipient: fluxRecipient}
+	c := repo.AppsConnect{Cluster: cluster, Path: req.Path, FluxRecipient: fluxRecipient}
 	if err != nil {
 		return nil, a, c, err
 	}
@@ -98,6 +96,10 @@ func (s *Server) clusterApps(ctx context.Context, name string, req appsRequest) 
 		}
 	}
 	rv, a, c, err := reviewApps(ctx, req, name, k.Recipient, hasKey)
+	if d, derr := s.manager.Desired(name); derr == nil && err == nil {
+		c.ImageAutomation = d.Cluster.Spec.Platform.Flux.ImageAutomation
+		rv.Files, err = a.Files(c)
+	}
 	return dir, rv, a, c, err
 }
 
@@ -167,15 +169,30 @@ func (s *Server) handleAppsStatus(w http.ResponseWriter, r *http.Request) {
 		out.URL, out.Branch, out.Path = fr.URL, fr.Branch, fr.Path
 		if dir := s.checkoutOf(fr.URL); dir != "" {
 			co := &appsCheckout{Dir: repo.Tilde(dir), Git: repo.Status(r.Context(), dir)}
-			if a, err := repo.InspectApps(r.Context(), dir); err == nil {
-				for _, c := range a.Clusters {
-					if c.Name == name {
-						co.Environment = c.Environment
-					}
-				}
-			}
 			out.Checkout = co
+		} else if fr.Checkout != "" {
+			out.Checkout = &appsCheckout{Dir: repo.Tilde(repo.CheckoutDir(d.Dir, fr.Checkout)), Missing: true}
 		}
 	}
 	writeJSON(w, http.StatusOK, out)
+}
+
+func (s *Server) writeImageAutomation(clusterDir string, on bool) error {
+	c, _, err := repo.LoadSpec(clusterDir)
+	if err != nil {
+		return err
+	}
+	fr := c.Spec.Platform.Flux.Repository
+	if fr == nil {
+		return nil
+	}
+	checkout := s.checkoutOf(fr.URL)
+	if checkout == "" {
+		return nil
+	}
+	if err := repo.SetImageAutomation(checkout, c.Metadata.Name, fr.Branch, on); err != nil {
+		return err
+	}
+	s.refresh(c.Metadata.Name, scopeApps)
+	return nil
 }

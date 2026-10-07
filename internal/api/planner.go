@@ -111,6 +111,14 @@ func (s *Server) planLoop(name string) {
 	}
 }
 
+func (s *Server) cancelPlan(name string) {
+	s.plans.mu.Lock()
+	defer s.plans.mu.Unlock()
+	if sl := s.slot(name); sl.running && sl.cancel != nil {
+		sl.cancel()
+	}
+}
+
 func (s *Server) applying(name string) bool {
 	s.runsMu.Lock()
 	defer s.runsMu.Unlock()
@@ -135,6 +143,9 @@ func (s *Server) planOnce(ctx context.Context, name string) {
 	}
 	started := time.Now()
 	p, err := run(ctx, name)
+	if s.applying(name) {
+		return
+	}
 	switch {
 	case errors.Is(ctx.Err(), context.DeadlineExceeded):
 		err = fmt.Errorf("the plan did not finish within %s", planDeadline)

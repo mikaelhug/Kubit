@@ -13,8 +13,8 @@ resource "helm_release" "flux" {
   timeout          = 600
 
   set = [
-    { name = "imageAutomationController.create", value = "false" },
-    { name = "imageReflectionController.create", value = "false" },
+    { name = "imageAutomationController.create", value = tostring(var.flux.image_automation) },
+    { name = "imageReflectionController.create", value = tostring(var.flux.image_automation) },
     { name = "crds.annotations.helm\\.sh/resource-policy", value = "keep" },
   ]
 }

@@ -136,22 +136,35 @@ func hostKey(ctx context.Context, addr, algo string) (ssh.PublicKey, error) {
 }
 
 func Probe(ctx context.Context, rawURL, branch, key, knownHosts string) error {
-	u, err := url.Parse(rawURL)
+	refs, err := advertise(ctx, rawURL, key, knownHosts, "git-upload-pack")
 	if err != nil {
 		return err
 	}
+	return hasBranch(rawURL, refs, branch)
+}
+
+func ProbeWrite(ctx context.Context, rawURL, key, knownHosts string) error {
+	_, err := advertise(ctx, rawURL, key, knownHosts, "git-receive-pack")
+	return err
+}
+
+func advertise(ctx context.Context, rawURL, key, knownHosts, service string) ([]string, error) {
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return nil, err
+	}
 	addr, err := HostOf(rawURL)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	host := u.Hostname()
 	signer, err := ssh.ParsePrivateKey([]byte(key))
 	if err != nil {
-		return &Refusal{"flux.deployKey: " + err.Error()}
+		return nil, &Refusal{"flux.deployKey: " + err.Error()}
 	}
 	want := keysFor(knownHosts, addr)
 	if len(want) == 0 {
-		return &Refusal{fmt.Sprintf("flux.knownHosts has no key for %s; rescan the host keys", host)}
+		return nil, &Refusal{fmt.Sprintf("flux.knownHosts has no key for %s; rescan the host keys", host)}
 	}
 	cfg := &ssh.ClientConfig{
 		User:              u.User.Username(),
@@ -166,39 +179,39 @@ func Probe(ctx context.Context, rawURL, branch, key, knownHosts string) error {
 	}
 	conn, err := dial(ctx, addr)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	defer conn.Close()
 	c, chans, reqs, err := ssh.NewClientConn(conn, addr, cfg)
 	if err != nil {
 		var r *Refusal
 		if errors.As(err, &r) {
-			return r
+			return nil, r
 		}
 		if strings.Contains(err.Error(), "unable to authenticate") {
-			return &Refusal{fmt.Sprintf("%s refused flux.deployKey; add it to the repository's deploy keys", host)}
+			return nil, &Refusal{fmt.Sprintf("%s refused flux.deployKey; add it to the repository's deploy keys", host)}
 		}
-		return err
+		return nil, err
 	}
 	client := ssh.NewClient(c, chans, reqs)
 	defer client.Close()
 	sess, err := client.NewSession()
 	if err != nil {
-		return err
+		return nil, err
 	}
 	defer sess.Close()
 	var stderr bytes.Buffer
 	sess.Stderr = &stderr
 	stdout, err := sess.StdoutPipe()
 	if err != nil {
-		return err
+		return nil, err
 	}
 	stdin, err := sess.StdinPipe()
 	if err != nil {
-		return err
+		return nil, err
 	}
-	if err := sess.Start("git-upload-pack " + shellQuote(u.Path)); err != nil {
-		return err
+	if err := sess.Start(service + " " + shellQuote(u.Path)); err != nil {
+		return nil, err
 	}
 	refs, readErr := readRefs(bufio.NewReader(stdout))
 	_, _ = stdin.Write([]byte("0000"))
@@ -206,11 +219,11 @@ func Probe(ctx context.Context, rawURL, branch, key, knownHosts string) error {
 	_ = sess.Wait()
 	if readErr != nil && len(refs) == 0 {
 		if msg := firstLine(stderr.String()); msg != "" {
-			return &Refusal{fmt.Sprintf("%s: %s", rawURL, msg)}
+			return nil, &Refusal{fmt.Sprintf("%s: %s", rawURL, msg)}
 		}
-		return readErr
+		return nil, readErr
 	}
-	return hasBranch(rawURL, refs, branch)
+	return refs, nil
 }
 
 func infoRefs(ctx context.Context, rawURL string) (*http.Response, error) {

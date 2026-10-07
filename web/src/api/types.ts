@@ -38,7 +38,7 @@ export interface NodeNetwork { addresses: string[]; gateway?: string; nameserver
 export interface NodeSpec { hostname: string; ip: string; mac?: string; uuid?: string; role?: 'controlplane' | 'worker'; arch: string; kvm?: boolean; installDisk?: InstallDisk; dataDisks?: string[]; network?: NodeNetwork; labels?: Record<string, string>; taints?: Record<string, string>; annotations?: Record<string, string>; patches?: Record<string, unknown>[] }
 export interface AddonSpec { enabled: boolean; values?: Record<string, unknown> }
 export interface Snapshot { id: string; ts: string; source: string; sizeBytes: number }
-export interface PlatformSpec { metallb: AddonSpec & { range?: string }; traefik: AddonSpec; gvisor: { enabled: boolean }; metricsServer: AddonSpec; certManager: AddonSpec; flux: AddonSpec & { repository?: FluxRepository }; longhorn: AddonSpec; builds: { enabled: boolean } }
+export interface PlatformSpec { metallb: AddonSpec & { range?: string }; traefik: AddonSpec; gvisor: { enabled: boolean }; metricsServer: AddonSpec; certManager: AddonSpec; flux: AddonSpec & { repository?: FluxRepository; imageAutomation?: boolean }; longhorn: AddonSpec; builds: { enabled: boolean } }
 export interface ClusterSpec {
   apiVersion: string; kind: string; metadata: { name: string }
   spec: {
@@ -135,11 +135,11 @@ export interface DesignRequest {
   apps?: AppsRequest
 }
 
-export interface AppsRequest { dir: string; environment?: string; environments?: string[]; path?: string }
-export interface AppsRepo { dir: string; display: string; kind: 'empty' | 'layout' | 'other'; environments: string[]; clusters: { name: string; environment?: string }[]; branch: string; remote: string; url: string }
+export interface AppsRequest { dir: string; path?: string }
+export interface AppsRepo { dir: string; display: string; kind: 'empty' | 'layout' | 'other'; clusters: string[]; branch: string; remote: string; url: string }
 export interface AppsFile { repo: string; path: string; action: 'create' | 'edit' }
 export interface AppsReview { repo: AppsRepo; url: string; branch: string; path: string; files: AppsFile[]; deployKey: boolean }
-export interface AppsStatus { url?: string; branch?: string; path?: string; checkout?: { dir: string; environment?: string; git: GitState } }
+export interface AppsStatus { url?: string; branch?: string; path?: string; checkout?: { dir: string; missing?: boolean; git?: GitState } }
 
 export interface DesignNode { hostname: string; ip: string; mac: string; role: string; disk: string; diskBytes?: number; network?: NodeNetwork; live: LiveNet; inUse?: boolean }
 
@@ -162,6 +162,8 @@ export interface GitState { repo: boolean; branch?: string; upstream?: string; a
 export interface RepoView { dir: string; git: GitState }
 
 export interface DiscoverState {
+  newCluster?: string
+  apps?: string
   subnets: string[]
   scanning: boolean
   lastScanAt?: string

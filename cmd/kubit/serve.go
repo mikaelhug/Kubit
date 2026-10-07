@@ -110,14 +110,19 @@ func consoleURL(addr net.Addr) string {
 func consolePath(dirs []string) string {
 	var names []string
 	for _, d := range dirs {
-		if c, _, err := repo.LoadSpec(d); err == nil {
-			names = append(names, c.Metadata.Name)
+		for _, cd := range repo.ClusterDirs(d) {
+			if c, _, err := repo.LoadSpec(cd); err == nil {
+				names = append(names, c.Metadata.Name)
+			}
 		}
 	}
-	if len(names) != 1 {
+	switch {
+	case len(names) == 1:
+		return "/clusters/" + url.PathEscape(names[0]) + "/overview"
+	case len(names) > 0 || len(dirs) == 0:
 		return "/"
 	}
-	return "/clusters/" + url.PathEscape(names[0]) + "/overview"
+	return "/discovery"
 }
 
 func openBrowser(url string) error {

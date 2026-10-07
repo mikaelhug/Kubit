@@ -249,7 +249,7 @@ func (s *Server) design(ctx context.Context, req designRequest, probe bool) (*de
 		redesign = func(vip string) *config.Cluster {
 			c, _ := config.Design(name, ms, config.DesignOptions{Roles: roles, VIP: vip, Networks: ch.networks})
 			if rv := d.view.Apps; rv != nil {
-				c.Spec.Platform.Flux = config.Flux{Enabled: true, Repository: &config.FluxRepository{URL: rv.URL, Branch: rv.Branch, Path: rv.Path}}
+				c.Spec.Platform.Flux = config.Flux{Enabled: true, Repository: &config.FluxRepository{URL: rv.URL, Branch: rv.Branch, Path: rv.Path, Checkout: repo.RelCheckout(dir, rv.Repo.Dir)}}
 			}
 			return c
 		}

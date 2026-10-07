@@ -6,6 +6,9 @@ import (
 	"encoding/binary"
 	"slices"
 	"strings"
+
+	"github.com/cosi-project/runtime/pkg/safe"
+	"github.com/siderolabs/talos/pkg/machinery/resources/hardware"
 )
 
 type MemoryModule struct {
@@ -40,11 +43,25 @@ func dmiText(s string) string {
 }
 
 func (c *Client) memoryModules(ctx context.Context) []MemoryModule {
-	b, err := c.readAll(ctx, dmiTable)
+	if b, err := c.readAll(ctx, dmiTable); err == nil {
+		return decodeMemoryDevices(b)
+	}
+	mods, err := safe.StateListAll[*hardware.MemoryModule](ctx, c.COSI)
 	if err != nil {
 		return nil
 	}
-	return decodeMemoryDevices(b)
+	var out []MemoryModule
+	for m := range mods.All() {
+		s := m.TypedSpec()
+		if s.Size == 0 && dmiText(s.DeviceLocator) == "" {
+			continue
+		}
+		out = append(out, MemoryModule{
+			Slot: dmiText(s.DeviceLocator), Bank: dmiText(s.BankLocator), SizeBytes: uint64(s.Size) << 20, Empty: s.Size == 0,
+			SpeedMTs: s.Speed, Manufacturer: dmiText(s.Manufacturer), Part: dmiText(s.ProductName), Serial: dmiText(s.SerialNumber),
+		})
+	}
+	return out
 }
 
 // Offsets follow the SMBIOS memory device (type 17) layout, DMTF DSP0134 7.18.

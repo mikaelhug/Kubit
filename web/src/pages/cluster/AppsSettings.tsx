@@ -49,10 +49,12 @@ export function AppsSettings({ ctx }: { ctx: ClusterCtx }) {
           <dl class="grid grid-cols-[max-content_1fr] gap-x-6 items-center">
             <Row label="Repository">{connected ? <span class="mono truncate" title={status.url}>{status.url} · {status.branch}</span> : <span class="text-muted">Not connected</span>}</Row>
             {connected && <Row label="Flux path"><span class="mono">{status.path}</span></Row>}
-            {status.checkout?.environment && <Row label="Environment"><span class="mono">{status.checkout.environment}</span></Row>}
+            {connected && <ImageAutomationRow cluster={name} on={!!flux?.imageAutomation} />}
             {connected && (
               <Row label="Checkout">
-                {status.checkout
+                {status.checkout?.missing
+                  ? <><span class="mono truncate" title={status.checkout.dir}>{status.checkout.dir}</span><Pill tone="warn">not found</Pill></>
+                  : status.checkout
                   ? <><span class="mono truncate" title={status.checkout.dir}>{status.checkout.dir}</span>
                       {uncommitted > 0 && <Pill tone="warn">{uncommitted} uncommitted</Pill>}
                       {unpushed && <Pill tone="warn">not pushed</Pill>}
@@ -65,8 +67,23 @@ export function AppsSettings({ ctx }: { ctx: ClusterCtx }) {
           </dl>
         </div>
       )}
-      {connecting && <ConnectApps cluster={name} start={status?.checkout?.dir ?? ''} environment={status?.checkout?.environment ?? ''} connected={connected} onClose={() => setConnecting(false)} />}
+      {connecting && <ConnectApps cluster={name} start={status?.checkout?.dir ?? ''} connected={connected} onClose={() => setConnecting(false)} />}
     </Section>
+  )
+}
+
+function ImageAutomationRow({ cluster, on }: { cluster: string; on: boolean }) {
+  const [busy, setBusy] = useState(false)
+  const toggle = () => {
+    setBusy(true)
+    writeClusterYaml(cluster, (hash) => api.setAddon(cluster, 'flux', { hash, enabled: true, imageAutomation: !on }))
+      .catch((e) => toast(e.message, 'error'))
+      .finally(() => setBusy(false))
+  }
+  return (
+    <Row label="Image automation" actions={<button class="btn btn-sm" disabled={busy} onClick={toggle}>{on ? 'Disable' : 'Enable'}</button>}>
+      <Pill tone={on ? 'good' : 'muted'}>{on ? 'on' : 'off'}</Pill>
+    </Row>
   )
 }
 
@@ -101,8 +118,8 @@ function DeployKeyRows({ cluster, url, deployKey, onChange }: { cluster: string;
   )
 }
 
-function ConnectApps({ cluster, start, environment, connected, onClose }: { cluster: string; start: string; environment: string; connected: boolean; onClose: () => void }) {
-  const [choice, setChoice] = useState<AppsChoice>({ ...noApps, dir: start, environment })
+function ConnectApps({ cluster, start, connected, onClose }: { cluster: string; start: string; connected: boolean; onClose: () => void }) {
+  const [choice, setChoice] = useState<AppsChoice>({ ...noApps, dir: start })
   const { repo, error: repoError } = useAppsRepo(choice.dir)
   const [review, setReview] = useState<AppsReview | null>(null)
   const [busy, setBusy] = useState(false)

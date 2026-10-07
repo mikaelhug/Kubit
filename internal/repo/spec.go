@@ -12,9 +12,10 @@ import (
 var AddonKeys = []string{"metallb", "traefik", "gvisor", "metricsServer", "certManager", "flux", "longhorn", "builds"}
 
 type AddonEdit struct {
-	Enabled    bool                   `json:"enabled"`
-	Range      string                 `json:"range,omitempty"`
-	Repository *config.FluxRepository `json:"repository,omitempty"`
+	Enabled         bool                   `json:"enabled"`
+	Range           string                 `json:"range,omitempty"`
+	Repository      *config.FluxRepository `json:"repository,omitempty"`
+	ImageAutomation *bool                  `json:"imageAutomation,omitempty"`
 }
 
 func SetAddon(dir, hash, key string, e AddonEdit) error {
@@ -29,6 +30,13 @@ func SetAddon(dir, hash, key string, e AddonEdit) error {
 		setKey(addon, "enabled", &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!bool", Value: fmt.Sprint(e.Enabled)})
 		if key == "metallb" && e.Range != "" {
 			setKey(addon, "range", &yaml.Node{Kind: yaml.ScalarNode, Value: e.Range})
+		}
+		if key == "flux" && e.ImageAutomation != nil {
+			if *e.ImageAutomation {
+				setKey(addon, "imageAutomation", &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!bool", Value: "true"})
+			} else {
+				deleteKey(addon, "imageAutomation")
+			}
 		}
 		if key == "flux" && e.Repository != nil {
 			if e.Repository.URL == "" {

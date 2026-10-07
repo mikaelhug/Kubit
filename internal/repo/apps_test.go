@@ -43,18 +43,18 @@ func recipient(t *testing.T) string {
 	return id.Recipient().String()
 }
 
-func TestConnectGivesAClusterKeyOnlyToItsEnvironment(t *testing.T) {
+func TestConnectGivesAClusterKeyOnlyToItsOwnFolders(t *testing.T) {
 	dir := appsCheckout(t)
 	me, prod, stage := recipient(t), recipient(t), recipient(t)
-	connect(t, dir, AppsConnect{Cluster: "prod", Environment: "production", Environments: []string{"staging", "production"}, Operator: []string{me}, FluxRecipient: prod})
-	connect(t, dir, AppsConnect{Cluster: "stage", Environment: "staging", Operator: []string{me}, FluxRecipient: stage})
+	connect(t, dir, AppsConnect{Cluster: "production", Operator: []string{me}, FluxRecipient: prod})
+	connect(t, dir, AppsConnect{Cluster: "staging", Operator: []string{me}, FluxRecipient: stage})
 	for file, want := range map[string]string{
 		"apps/production/db.sops.yaml":          prod,
 		"infrastructure/production/s.sops.yaml": prod,
 		"apps/staging/db.sops.yaml":             stage,
 		"infrastructure/staging/s.sops.yaml":    stage,
 		"apps/base/db.sops.yaml":                "",
-		"clusters/prod/x.sops.yaml":             "",
+		"clusters/production/x.sops.yaml":       "",
 	} {
 		r, err := sops.RuleFor(dir, filepath.Join(dir, file))
 		if err != nil {
@@ -77,17 +77,17 @@ func TestAppsLayoutBuildsWithKustomize(t *testing.T) {
 		t.Skip("kubectl not installed")
 	}
 	dir := appsCheckout(t)
-	connect(t, dir, AppsConnect{Cluster: "prod", Environment: "production", Environments: []string{"production"}, Operator: []string{recipient(t)}, FluxRecipient: recipient(t)})
-	for _, p := range []string{"clusters/prod", "apps/production", "infrastructure/production"} {
+	connect(t, dir, AppsConnect{Cluster: "production", Operator: []string{recipient(t)}, FluxRecipient: recipient(t)})
+	for _, p := range []string{"clusters/production", "apps/production", "infrastructure/production"} {
 		out, err := exec.Command(kubectl, "kustomize", filepath.Join(dir, p)).CombinedOutput()
 		if err != nil {
 			t.Fatalf("kustomize %s: %v\n%s", p, err, out)
 		}
-		if p == "clusters/prod" && strings.Count(string(out), "kind: Kustomization") != 2 {
-			t.Errorf("clusters/prod must hold the infrastructure and apps Kustomizations:\n%s", out)
+		if p == "clusters/production" && strings.Count(string(out), "kind: Kustomization") != 2 {
+			t.Errorf("clusters/production must hold the infrastructure and apps Kustomizations:\n%s", out)
 		}
 	}
-	if got := FluxRoots(dir, "clusters/prod"); !slices.Equal(got, []string{"infrastructure/production", "apps/production"}) {
+	if got := FluxRoots(dir, "clusters/production"); !slices.Equal(got, []string{"infrastructure/production", "apps/production"}) {
 		t.Errorf("Flux roots %v", got)
 	}
 }

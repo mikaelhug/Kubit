@@ -4,10 +4,12 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"path/filepath"
 	"sync"
 	"time"
 
 	"github.com/mikaelhug/kubit/internal/cluster"
+	"github.com/mikaelhug/kubit/internal/repo"
 	"github.com/mikaelhug/kubit/internal/talos"
 )
 
@@ -24,6 +26,29 @@ type discoverView struct {
 	Scanning   bool      `json:"scanning"`
 	LastScanAt time.Time `json:"lastScanAt,omitzero"`
 	Every      int       `json:"everySeconds"`
+	NewCluster string    `json:"newCluster,omitempty"`
+	Apps       string    `json:"apps,omitempty"`
+}
+
+func (s *Server) newClusterDirs() (string, string) {
+	if len(s.startDirs) == 0 || exists(filepath.Join(s.startDirs[0], repo.ClusterFile)) {
+		return "", ""
+	}
+	apps := ""
+	if len(s.startDirs) > 1 {
+		apps = repo.Tilde(s.startDirs[1])
+	}
+	for _, r := range s.servedRepos() {
+		if apps != "" || r.Cluster == "" {
+			continue
+		}
+		if d, err := s.manager.Desired(r.Cluster); err == nil {
+			if fr := d.Cluster.Spec.Platform.Flux.Repository; fr != nil && fr.Checkout != "" {
+				apps = repo.Tilde(repo.CheckoutDir(d.Dir, fr.Checkout))
+			}
+		}
+	}
+	return repo.Tilde(s.startDirs[0]), apps
 }
 
 func (s *Server) discoverRoutes() {
@@ -33,6 +58,7 @@ func (s *Server) discoverRoutes() {
 		s.scans.mu.Unlock()
 		v.Subnets = s.discoverySubnets(r.Context())
 		v.Every = int(s.watcher.ScanInterval.Seconds())
+		v.NewCluster, v.Apps = s.newClusterDirs()
 		writeJSON(w, http.StatusOK, v)
 	})
 	s.mux.HandleFunc("POST /api/v1/discover", s.handleDiscover)

@@ -80,24 +80,22 @@ func AddRecipient(dir, recipient, protected string, samples []string) (bool, err
 	})
 }
 
-func EnvRegex(env string) string {
-	return `^(apps|infrastructure)/` + regexp.QuoteMeta(env) + `/.*\.sops\.ya?ml$`
+func ClusterRegex(cluster string) string {
+	return `^(apps|infrastructure)/` + regexp.QuoteMeta(cluster) + `/.*\.sops\.ya?ml$`
 }
 
 const catchAll = `\.sops\.ya?ml$`
 
-func AppsConfig(operator, envs []string, protected string) ([]byte, error) {
+func AppsConfig(operator []string, protected string) ([]byte, error) {
 	age := strings.Join(operator, ",")
-	cf := configFile{CreationRules: []creationRule{{PathRegex: protectedRegex(protected), Age: age}}}
-	for _, env := range envs {
-		cf.CreationRules = append(cf.CreationRules, creationRule{PathRegex: EnvRegex(env), Age: age})
-	}
-	cf.CreationRules = append(cf.CreationRules, creationRule{PathRegex: catchAll, Age: age})
-	return yamlx.Encode(cf)
+	return yamlx.Encode(configFile{CreationRules: []creationRule{
+		{PathRegex: protectedRegex(protected), Age: age},
+		{PathRegex: catchAll, Age: age},
+	}})
 }
 
-func AddEnvRule(dir, env string, operator []string) (bool, error) {
-	re := EnvRegex(env)
+func AddClusterRule(dir, cluster string, operator []string) (bool, error) {
+	re := ClusterRegex(cluster)
 	return editRules(dir, func(rules *yaml.Node) (bool, error) {
 		at := len(rules.Content)
 		for i, r := range rules.Content {

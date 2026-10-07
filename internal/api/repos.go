@@ -2,7 +2,9 @@ package api
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"io/fs"
 	"log"
 	"net/http"
 	"os"
@@ -33,15 +35,26 @@ type repoSet struct {
 
 func (s *Server) ServeRepos(ctx context.Context, dirs []string) error {
 	var abs []string
-	for _, d := range dirs {
+	for i, d := range dirs {
 		a, err := filepath.Abs(d)
 		if err != nil {
 			return err
 		}
-		if st, err := os.Stat(a); err != nil || !st.IsDir() {
+		s.startDirs = append(s.startDirs, a)
+		st, err := os.Stat(a)
+		switch {
+		case errors.Is(err, fs.ErrNotExist):
+			continue
+		case err != nil || !st.IsDir():
 			return fmt.Errorf("%s: not a directory", d)
 		}
-		abs = append(abs, a)
+		clusters := repo.ClusterDirs(a)
+		switch {
+		case len(clusters) > 0:
+			abs = append(abs, clusters...)
+		case i > 0:
+			abs = append(abs, a)
+		}
 	}
 	s.serveCtx = ctx
 	for _, a := range abs {
@@ -62,6 +75,7 @@ func (s *Server) serveRepo(dir string) (*cluster.Desired, error) {
 	s.repos.mu.Unlock()
 	d := s.readRepo(dir)
 	if d != nil {
+		s.serveCheckout(d)
 		go s.trackRepo(ctx, dir, d, true)
 	}
 	if served {
@@ -157,7 +171,20 @@ func (s *Server) machineSeen(ctx context.Context, m store.Machine) {
 
 func (s *Server) loadRepo(ctx context.Context, dir string, replan bool) {
 	if d := s.readRepo(dir); d != nil {
+		s.serveCheckout(d)
 		s.trackRepo(ctx, dir, d, replan)
+	}
+}
+
+func (s *Server) serveCheckout(d *cluster.Desired) {
+	fr := d.Cluster.Spec.Platform.Flux.Repository
+	if fr == nil || fr.Checkout == "" {
+		return
+	}
+	if dir := repo.CheckoutDir(d.Dir, fr.Checkout); isDir(dir) {
+		if _, err := s.serveRepo(dir); err != nil {
+			log.Printf("apps checkout %s: %v", dir, err)
+		}
 	}
 }
 

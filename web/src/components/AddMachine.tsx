@@ -54,17 +54,30 @@ function AddDialog({ machines, onClose }: { machines: NodeRow[]; onClose: (done:
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [apps, setApps] = useState<AppsChoice>(noApps)
+  const [root, setRoot] = useState('')
+  const [dirEdited, setDirEdited] = useState(false)
+  useEffect(() => {
+    api.discoverState().then((d) => {
+      if (!d.newCluster) return
+      setRoot(d.newCluster)
+      if (list.length === 0) setTarget(newCluster)
+      if (d.apps) setApps((a) => a.dir ? a : { ...a, dir: d.apps! })
+    }).catch(() => {})
+  }, [])
   const { repo: appsRepo, error: appsError } = useAppsRepo(apps.dir)
   const creating = target === newCluster
   const dirInput = useRef<HTMLInputElement>(null)
-  useEffect(() => { if (creating && !preview) dirInput.current?.focus() }, [creating, !preview])
+  const nameInput = useRef<HTMLInputElement>(null)
+  useEffect(() => { if (creating && !preview) (root ? nameInput : dirInput).current?.focus() }, [creating, !preview, root])
   const typedName = name.trim()
-  const defaultName = nameFrom(dir.trim().replace(/\/+$/, '').split('/').pop() ?? '')
+  const followsName = !!root && !dirEdited
+  const effectiveDir = followsName ? (typedName ? `${root.replace(/\/+$/, '')}/${typedName}` : '') : dir
+  const defaultName = root ? '' : nameFrom(dir.trim().replace(/\/+$/, '').split('/').pop() ?? '')
   const effectiveName = typedName || defaultName
   const badName = creating && !!effectiveName && !nameOk(effectiveName)
   const roleOf = (m: NodeRow) => roles[m.mac] ?? (creating ? auto : 'worker')
   const request = (withVip: string): DesignRequest => ({
-    dir: creating ? dir.trim() : undefined,
+    dir: creating ? effectiveDir.trim() : undefined,
     name: creating ? name.trim() || undefined : undefined,
     vip: creating ? withVip.trim() || undefined : undefined,
     apps: creating ? appsRequest(apps) : undefined,
@@ -188,7 +201,7 @@ function AddDialog({ machines, onClose }: { machines: NodeRow[]; onClose: (done:
     <Dialog title={title} width="max-w-2xl" onClose={() => onClose(false)} footer={
       <>
         <button class="btn" onClick={() => onClose(false)}>Cancel</button>
-        <button class="btn btn-primary" disabled={busy || (creating && (!dir.trim() || !effectiveName || badName || !!appsError || !appsReady(apps, appsRepo)))} onClick={() => review()}>{busy ? 'Designing' : 'Review'}</button>
+        <button class="btn btn-primary" disabled={busy || (creating && (!effectiveDir.trim() || !effectiveName || badName || !!appsError || !appsReady(apps, appsRepo)))} onClick={() => review()}>{busy ? 'Designing' : 'Review'}</button>
       </>
     }>
       <ErrorBox error={error} />
@@ -198,19 +211,22 @@ function AddDialog({ machines, onClose }: { machines: NodeRow[]; onClose: (done:
           <option value={newCluster}>New cluster</option>
         </select>
       </Field>
-      {creating && (
-        <>
+      {creating && (() => {
+        const repoDir = (
           <Field label="Repo directory">
             <div class="flex items-center gap-2">
-              <input ref={dirInput} class="input mono" value={dir} placeholder="~/git/home" onInput={(e) => setDir((e.target as HTMLInputElement).value)} />
-              <DirPicker value={dir} onPick={setDir} />
+              <input ref={dirInput} class="input mono" value={effectiveDir} placeholder={root ? `${root}/production` : '~/git/home'} onInput={(e) => { setDir((e.target as HTMLInputElement).value); setDirEdited(true) }} />
+              <DirPicker value={effectiveDir || root} onPick={(d) => { setDir(d); setDirEdited(true) }} />
             </div>
           </Field>
+        )
+        const clusterName = (
           <Field label="Name" hint={badName ? <span class="text-bad">Lowercase letters, digits and hyphens{nameFrom(effectiveName) ? `, e.g. ${nameFrom(effectiveName)}` : ''}.</span> : undefined}>
-            <input class="input mono" value={name} placeholder={defaultName} onInput={(e) => setName((e.target as HTMLInputElement).value)} />
+            <input ref={nameInput} class="input mono" value={name} placeholder={defaultName || 'production'} onInput={(e) => setName((e.target as HTMLInputElement).value)} />
           </Field>
-        </>
-      )}
+        )
+        return root ? <>{clusterName}{repoDir}</> : <>{repoDir}{clusterName}</>
+      })()}
       <Field label="Roles">
         <div class="panel divide-y divide-border/60">
           {machines.map((m) => (

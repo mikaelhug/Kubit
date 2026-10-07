@@ -31,6 +31,12 @@ func (s *Server) handleAddonPut(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, editErr(err))
 		return
 	}
+	if req.ImageAutomation != nil {
+		if err := s.writeImageAutomation(dir, *req.ImageAutomation); err != nil {
+			writeErr(w, editErr(err))
+			return
+		}
+	}
 	writeHash(w, dir)
 }
 

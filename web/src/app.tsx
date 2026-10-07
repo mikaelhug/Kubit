@@ -13,6 +13,7 @@ import { Discovery } from './pages/Discovery'
 import { Home } from './pages/Home'
 import { NodePage } from './pages/node/NodePage'
 import { Secrets } from './pages/Secrets'
+import { sameView } from './routes'
 import { clusters, connected, daemon, machineList, plans, reconnectAttempt, resyncing, statuses, stopped, toast } from './store'
 
 export function App() {
@@ -88,10 +89,11 @@ function PendingBadge({ name }: { name: string }) {
 }
 
 function ClusterNav({ active }: { active?: string }) {
+  const { path, query } = useLocation()
   return (
     <>
       {clusters.value.map((c) => (
-        <a key={c.name} href={`/clusters/${c.name}/overview`} class={`${navCls(active === c.name)} flex flex-col items-start gap-1`}>
+        <a key={c.name} href={sameView(c.name, path, query)} class={`${navCls(active === c.name)} flex flex-col items-start gap-1`}>
           <span class="truncate font-medium max-w-full">{c.name}</span>
           <span class="flex flex-wrap items-center gap-1">
             <ClusterPill state={c.state} status={statuses.value.get(c.name)} />

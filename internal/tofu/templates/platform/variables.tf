@@ -34,9 +34,10 @@ variable "cert_manager" {
 
 variable "flux" {
   type = object({
-    enabled    = bool
-    values     = optional(any, {})
-    repository = optional(object({ url = string, branch = string, path = string, interval = string }))
+    enabled          = bool
+    image_automation = optional(bool, false)
+    values           = optional(any, {})
+    repository       = optional(object({ url = string, branch = string, path = string, interval = string }))
   })
 }
 

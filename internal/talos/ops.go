@@ -355,6 +355,7 @@ func WaitForReboot(ctx context.Context, ip string, talosconfig []byte, prevBootI
 	deadline := time.Now().Add(timeout)
 	var last error
 	sawCreds := false
+	inPlace := 0
 	for time.Now().Before(deadline) {
 		if err := ctx.Err(); err != nil {
 			return err
@@ -367,6 +368,13 @@ func WaitForReboot(ctx context.Context, ip string, talosconfig []byte, prevBootI
 			case err == nil && id != prevBootID:
 				return nil
 			case err == nil:
+				if st, err := Stage(ctx, ip, talosconfig); err == nil && (st == runtime.MachineStageRunning.String() || st == runtime.MachineStageBooting.String()) {
+					if inPlace++; inPlace >= 3 {
+						return nil
+					}
+				} else {
+					inPlace = 0
+				}
 				sawCreds = true
 				last = NotReady("still on the pre-install boot")
 			default:

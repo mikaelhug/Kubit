@@ -77,11 +77,15 @@ age recipients in .sops.yaml (or --age, or your own key). Never overwrites.`,
 			var conn repo.AppsConnect
 			var files []repo.AppsFile
 			if apps != "" {
-				if a, conn, files, err = af.connect(cmd.Context(), apps, name, ""); err != nil {
+				if a, conn, files, err = af.connect(cmd.Context(), apps, name, "", false); err != nil {
 					return err
 				}
 				c.Spec.Platform.Flux.Enabled = true
-				c.Spec.Platform.Flux.Repository = &config.FluxRepository{URL: a.URL, Branch: a.Branch, Path: a.FluxPath(conn)}
+				abs, err := filepath.Abs(dir)
+				if err != nil {
+					return err
+				}
+				c.Spec.Platform.Flux.Repository = &config.FluxRepository{URL: a.URL, Branch: a.Branch, Path: a.FluxPath(conn), Checkout: repo.RelCheckout(abs, a.Dir)}
 			}
 			r, err := repo.Init(dir, c, recipients)
 			if err != nil {

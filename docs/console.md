@@ -7,8 +7,10 @@ is live, and every change it makes goes into the cluster repo, never around it.
 
 `kubit lab apps` runs the daemon in the foreground for those repos and opens the console,
 straight on the cluster's page when exactly one cluster repo is given;
-`kubit serve lab apps` does the same without a browser. A dir with `cluster.yaml` is a
-cluster repo: Kubit decrypts it with your age key, adopts the cluster when its nodes
+`kubit serve lab apps` does the same without a browser. A dir without `cluster.yaml` whose
+subfolders have one (`akrell-cluster/staging`, `akrell-cluster/production`) serves each of
+them; with none yet, the console opens on Discovery and *Add* creates new clusters there, the
+repo directory following the name. A dir with `cluster.yaml` is a cluster repo: Kubit decrypts it with your age key, adopts the cluster when its nodes
 answer (again whenever discovery sees one of its machines), and watches the files
 (fsnotify) to reload on change. A dir without one only feeds the secrets
 editor. It binds `127.0.0.1:8090`; a non-loopback bind requires a bearer token
@@ -127,8 +129,8 @@ result without writing), `POST design/checks` (the same with the VIP and address
 `POST secrets/move` (`{repo, file, to, hash}`), `POST secrets/files` (`{repo, file, name, namespace,
 type, stringData}`), `POST clusters/{n}/sops/flux[?repo=i]`, `POST clusters/{n}/destroy` (`{name}`, 202; lines arrive as `apply` messages),
 `GET|POST clusters/{n}/flux/key`, `GET apps?dir=` (inspect a checkout),
-`GET clusters/{n}/apps` (repository, checkout, environment), `POST clusters/{n}/apps/review`
-and `POST clusters/{n}/apps` (`{dir, environment, environments, path, hash}`); `POST design`
+`GET clusters/{n}/apps` (repository, checkout), `POST clusters/{n}/apps/review`
+and `POST clusters/{n}/apps` (`{dir, path, hash}`); `POST design`
 and `POST repos` take the same `apps` object
 (`{hash, hostsOnly}`; public key, fingerprint, host keys). Unknown `/api/`
 paths answer 404 JSON.
@@ -161,7 +163,7 @@ on a write.
 `.sops.yaml` holds two rules: `(^|/)secrets\.sops\.yaml$` for your keys only (the Talos
 bundle, the Flux key, the state passphrase), and `\.sops\.ya?ml$` for your keys plus the
 cluster's Flux recipient, so Flux can decrypt app secrets; an apps repository adds a rule per
-environment ([Apps repository](apps-repository.md#environments)). The `sops` CLI picks the same rule
+cluster ([Apps repository](apps-repository.md)). The `sops` CLI picks the same rule
 for relative and absolute paths. Repos with a single shared rule show a notice on the cluster's
 Secrets tab; *Let Flux decrypt* adds the Flux key to the rule its paths use in that repo's
 `.sops.yaml` (splitting a shared rule) and re-encrypts the app secrets Flux can't read.

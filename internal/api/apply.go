@@ -120,6 +120,7 @@ func (s *Server) startRun(name, kind string, fn func(context.Context, cluster.Si
 	run := &applyRun{Kind: kind, Running: true, Started: time.Now().UTC().Format(time.RFC3339), Lines: []applyLine{}}
 	s.runs[name] = run
 	s.runsMu.Unlock()
+	s.cancelPlan(name)
 	s.setSummary(name, func(sum *planSummary) { sum.State, sum.Holder = planApplying, "" })
 	s.refresh(name, scopeApply)
 	go s.run(name, run, fn)

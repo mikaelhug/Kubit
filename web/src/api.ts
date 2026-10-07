@@ -20,7 +20,7 @@ export const api = {
   nodeNetwork: (cluster: string, host: string) => req<NodeNetworkView>('GET', `/clusters/${cluster}/nodes/${host}/network`),
   setNodeNetwork: (cluster: string, host: string, body: { static: boolean; address?: string; gateway?: string; nameservers?: string[]; hash: string }) => req<{ hash: string }>('PUT', `/clusters/${cluster}/nodes/${host}/network`, body),
   removeNode: (cluster: string, hostname: string, hash: string) => req<{ hash: string }>('DELETE', `/clusters/${cluster}/nodes/${hostname}?hash=${hash}`),
-  setAddon: (cluster: string, key: string, body: { enabled: boolean; range?: string; repository?: FluxRepository; hash: string }) => req<{ hash: string }>('PUT', `/clusters/${cluster}/platform/${key}`, body),
+  setAddon: (cluster: string, key: string, body: { enabled: boolean; range?: string; repository?: FluxRepository; imageAutomation?: boolean; hash: string }) => req<{ hash: string }>('PUT', `/clusters/${cluster}/platform/${key}`, body),
   setVersions: (cluster: string, body: { talosVersion?: string; kubernetesVersion?: string; hash: string }) => req<{ hash: string }>('PUT', `/clusters/${cluster}/versions`, body),
   plans: () => req<PlanSummary[]>('GET', '/plans'),
   plan: (cluster: string) => req<{ summary: PlanSummary; plan: Plan | null }>('GET', `/clusters/${cluster}/plan`),

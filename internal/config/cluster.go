@@ -184,9 +184,10 @@ type Addon struct {
 }
 
 type Flux struct {
-	Enabled    bool            `yaml:"enabled" json:"enabled"`
-	Repository *FluxRepository `yaml:"repository,omitempty" json:"repository,omitempty"`
-	Values     map[string]any  `yaml:"values,omitempty" json:"values,omitempty"`
+	Enabled         bool            `yaml:"enabled" json:"enabled"`
+	ImageAutomation bool            `yaml:"imageAutomation,omitempty" json:"imageAutomation,omitempty"`
+	Repository      *FluxRepository `yaml:"repository,omitempty" json:"repository,omitempty"`
+	Values          map[string]any  `yaml:"values,omitempty" json:"values,omitempty"`
 }
 
 type FluxRepository struct {
@@ -194,6 +195,7 @@ type FluxRepository struct {
 	Branch   string `yaml:"branch,omitempty" json:"branch,omitempty"`
 	Path     string `yaml:"path,omitempty" json:"path,omitempty"`
 	Interval string `yaml:"interval,omitempty" json:"interval,omitempty"`
+	Checkout string `yaml:"checkout,omitempty" json:"checkout,omitempty"`
 }
 
 func (r *FluxRepository) Default() {

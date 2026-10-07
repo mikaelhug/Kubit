@@ -37,6 +37,7 @@ type Server struct {
 	certsMu     sync.Mutex
 	certsSeen   map[string]time.Time
 	serveCtx    context.Context
+	startDirs   []string
 	runsMu      sync.Mutex
 	runs        map[string]*applyRun
 }
