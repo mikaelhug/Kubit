@@ -1,7 +1,7 @@
 # Kubit
 
-Stack, layout, commands and design: [README.md](README.md), the source of truth; keep it
-current. Open work goes to [NOTES/backlog.md](NOTES/backlog.md).
+Stack, layout, commands and design: [README.md](README.md) and [docs/](docs/README.md), the
+source of truth; keep them current. Open work goes to [NOTES/backlog.md](NOTES/backlog.md).
 
 The rules below override your defaults. Follow them unless I say otherwise in the session.
 
@@ -30,7 +30,7 @@ them:
 - keep a warning only for data loss ("Apply erases each install disk.")
 - no ellipses in action labels
 
-Background, reasons and examples belong in README.md.
+Background, reasons and examples belong in README.md or docs/.
 
 ## 3. No tests without a motivation
 

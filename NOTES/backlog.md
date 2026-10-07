@@ -13,6 +13,7 @@
 - Longhorn on data disks: shared mount propagation of `/var/mnt/data-N`.
 - Webhook: one POST per raise and per resolve; none for faults present at start.
 - QEMU lab (`hack/qemu`) has never booted a VM.
+- Traefik and the Gateway API CRDs are unit-tested only.
 - Console create: *Add* on a maintenance machine to a new repo dir, then *Apply* creates
   the cluster.
 - Address moves on `lab` (each needs a go): pin cp-01 static at .240; move a worker; move
@@ -31,7 +32,7 @@
 - Console edits cover nodes, addresses, add-on toggles, versions and secrets; roles,
   labels, patches and add-on values are edited in the cluster.yaml editor.
 - Machine page Services and Logs tabs each fetch the service list when shown.
-- A declared cluster's page shows Changes, Secrets and Repository only, so a wrongly added
+- A declared cluster's page shows Changes, Secrets and Settings only, so a wrongly added
   node is removed in the cluster.yaml editor; a Nodes view for declared clusters would allow
   *Remove*.
 - A declared (not yet installed) node whose DHCP lease moved is still a plan problem; the
