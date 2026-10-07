@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/mikael/kubit/internal/config"
+	"github.com/mikaelhug/kubit/internal/config"
 )
 
 const backupBase = "apiVersion: kubit.dev/v1\nkind: Cluster\nmetadata: {name: lab}\nspec:\n  nodes:\n    - {hostname: cp, ip: 10.0.0.1, role: controlplane, installDisk: {path: /dev/sda}}\n    - {hostname: w, ip: 10.0.0.2, role: worker, installDisk: {path: /dev/sda}}\n"

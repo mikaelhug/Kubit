@@ -9,11 +9,11 @@ import (
 	"sync"
 	"time"
 
-	"github.com/mikael/kubit/internal/config"
-	"github.com/mikael/kubit/internal/k8s"
-	"github.com/mikael/kubit/internal/netx"
-	"github.com/mikael/kubit/internal/repo"
-	"github.com/mikael/kubit/internal/talos"
+	"github.com/mikaelhug/kubit/internal/config"
+	"github.com/mikaelhug/kubit/internal/k8s"
+	"github.com/mikaelhug/kubit/internal/netx"
+	"github.com/mikaelhug/kubit/internal/repo"
+	"github.com/mikaelhug/kubit/internal/talos"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )

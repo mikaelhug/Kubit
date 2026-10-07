@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/mikael/kubit/internal/cluster"
+	"github.com/mikaelhug/kubit/internal/cluster"
 )
 
 const confirmAfter = 3

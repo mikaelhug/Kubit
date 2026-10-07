@@ -1,6 +1,6 @@
 package cluster
 
-import "github.com/mikael/kubit/internal/repo"
+import "github.com/mikaelhug/kubit/internal/repo"
 
 func FromRepo(r *repo.Repo) (*Desired, error) {
 	tc, err := r.Talosconfig()

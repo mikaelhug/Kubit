@@ -6,6 +6,8 @@ import { addressOf } from '../net'
 import { clusters, toast, upsertCluster } from '../store'
 import { Dialog, ErrorBox, Field, Notice, Pill } from './ui'
 import { DnsFields, dnsList, dnsPair, type DnsPair } from './DnsFields'
+import { DirPicker } from './DirPicker'
+import { AppsRepoFields, AppsReviewBlock, appsReady, appsRequest, noApps, useAppsRepo, type AppsChoice } from './AppsRepo'
 
 const newCluster = ''
 const auto = ''
@@ -51,7 +53,11 @@ function AddDialog({ machines, onClose }: { machines: NodeRow[]; onClose: (done:
   const seq = useRef(0)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [apps, setApps] = useState<AppsChoice>(noApps)
+  const { repo: appsRepo, error: appsError } = useAppsRepo(apps.dir)
   const creating = target === newCluster
+  const dirInput = useRef<HTMLInputElement>(null)
+  useEffect(() => { if (creating && !preview) dirInput.current?.focus() }, [creating, !preview])
   const typedName = name.trim()
   const defaultName = nameFrom(dir.trim().replace(/\/+$/, '').split('/').pop() ?? '')
   const effectiveName = typedName || defaultName
@@ -61,6 +67,7 @@ function AddDialog({ machines, onClose }: { machines: NodeRow[]; onClose: (done:
     dir: creating ? dir.trim() : undefined,
     name: creating ? name.trim() || undefined : undefined,
     vip: creating ? withVip.trim() || undefined : undefined,
+    apps: creating ? appsRequest(apps) : undefined,
     machines: machines.map((m) => {
       const a = addr[m.mac]?.trim()
       return { mac: m.mac, role: roleOf(m) || undefined, address: a || undefined, gateway: a ? gateway.trim() : undefined, nameservers: a ? dnsList(dns) : undefined }
@@ -118,7 +125,7 @@ function AddDialog({ machines, onClose }: { machines: NodeRow[]; onClose: (done:
       <Dialog title={title} width="max-w-2xl" onClose={() => onClose(false)} footer={
         <>
           <button class="btn" onClick={() => { seq.current++; setChecking(false); setPreview(null) }}>Back</button>
-          <button class="btn btn-primary" disabled={busy || checking || !!preview.vipInUse || taken} onClick={write}>{busy ? 'Writing' : checking ? 'Checking addresses' : 'Write cluster.yaml'}</button>
+          <button class="btn btn-primary" disabled={busy || checking || !!preview.vipInUse || taken} onClick={write}>{busy ? 'Writing' : checking ? 'Checking addresses' : preview.apps ? 'Write files' : 'Write cluster.yaml'}</button>
         </>
       }>
         <ErrorBox error={error} />
@@ -166,6 +173,12 @@ function AddDialog({ machines, onClose }: { machines: NodeRow[]; onClose: (done:
           </Field>
         )}
         {preview.vipInUse ? <Notice tone="bad">{preview.vip} is in use.</Notice> : <div class="text-[13px]"><span class="text-muted">API </span><span class="mono">{preview.endpoint}</span></div>}
+        {preview.apps && (
+          <div class="flex flex-col gap-2 border-t border-border pt-4">
+            <span class="text-[13px] font-medium">Apps repository</span>
+            <AppsReviewBlock review={preview.apps} />
+          </div>
+        )}
         {preview.warnings.length > 0 && <Notice tone="warn"><ul class="flex flex-col gap-1">{preview.warnings.map((w) => <li key={w}>{w}</li>)}</ul></Notice>}
         <Notice tone="warn">Apply erases each install disk.</Notice>
       </Dialog>
@@ -175,7 +188,7 @@ function AddDialog({ machines, onClose }: { machines: NodeRow[]; onClose: (done:
     <Dialog title={title} width="max-w-2xl" onClose={() => onClose(false)} footer={
       <>
         <button class="btn" onClick={() => onClose(false)}>Cancel</button>
-        <button class="btn btn-primary" disabled={busy || (creating && (!dir.trim() || !effectiveName || badName))} onClick={() => review()}>{busy ? 'Designing' : 'Review'}</button>
+        <button class="btn btn-primary" disabled={busy || (creating && (!dir.trim() || !effectiveName || badName || !!appsError || !appsReady(apps, appsRepo)))} onClick={() => review()}>{busy ? 'Designing' : 'Review'}</button>
       </>
     }>
       <ErrorBox error={error} />
@@ -188,7 +201,10 @@ function AddDialog({ machines, onClose }: { machines: NodeRow[]; onClose: (done:
       {creating && (
         <>
           <Field label="Repo directory">
-            <input class="input mono" value={dir} placeholder="~/git/home" autofocus onInput={(e) => setDir((e.target as HTMLInputElement).value)} />
+            <div class="flex items-center gap-2">
+              <input ref={dirInput} class="input mono" value={dir} placeholder="~/git/home" onInput={(e) => setDir((e.target as HTMLInputElement).value)} />
+              <DirPicker value={dir} onPick={setDir} />
+            </div>
           </Field>
           <Field label="Name" hint={badName ? <span class="text-bad">Lowercase letters, digits and hyphens{nameFrom(effectiveName) ? `, e.g. ${nameFrom(effectiveName)}` : ''}.</span> : undefined}>
             <input class="input mono" value={name} placeholder={defaultName} onInput={(e) => setName((e.target as HTMLInputElement).value)} />
@@ -213,6 +229,12 @@ function AddDialog({ machines, onClose }: { machines: NodeRow[]; onClose: (done:
           ))}
         </div>
       </Field>
+      {creating && (
+        <div class="flex flex-col gap-4 border-t border-border pt-4">
+          <span class="text-[13px] font-medium">Apps repository</span>
+          <AppsRepoFields choice={apps} onChange={setApps} repo={appsRepo} error={appsError} optional />
+        </div>
+      )}
     </Dialog>
   )
 }

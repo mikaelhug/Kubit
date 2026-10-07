@@ -1,4 +1,4 @@
-module github.com/mikael/kubit
+module github.com/mikaelhug/kubit
 
 go 1.26.5
 

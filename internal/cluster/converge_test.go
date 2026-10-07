@@ -10,9 +10,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mikael/kubit/internal/config"
-	"github.com/mikael/kubit/internal/k8s"
-	"github.com/mikael/kubit/internal/store"
+	"github.com/mikaelhug/kubit/internal/config"
+	"github.com/mikaelhug/kubit/internal/k8s"
+	"github.com/mikaelhug/kubit/internal/store"
 	talosconfig "github.com/siderolabs/talos/pkg/machinery/config"
 	"github.com/siderolabs/talos/pkg/machinery/config/generate/secrets"
 	"k8s.io/client-go/kubernetes/fake"

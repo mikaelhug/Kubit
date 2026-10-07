@@ -13,8 +13,8 @@ import (
 	"strings"
 
 	"filippo.io/age"
-	"github.com/mikael/kubit/internal/fsx"
-	"github.com/mikael/kubit/internal/sops"
+	"github.com/mikaelhug/kubit/internal/fsx"
+	"github.com/mikaelhug/kubit/internal/sops"
 	"go.yaml.in/yaml/v4"
 )
 
@@ -129,17 +129,17 @@ type SecretSpec struct {
 	StringData map[string]string `json:"stringData"`
 }
 
-func NewSecret(dir, rel string, spec SecretSpec) (string, error) {
+func NewSecret(dir, rel string, spec SecretSpec) ([]string, error) {
 	path, err := SecretPath(dir, rel)
 	if err != nil {
-		return "", err
+		return nil, err
 	}
 	if _, err := os.Stat(path); err == nil {
-		return "", fmt.Errorf("%s already exists", rel)
+		return nil, fmt.Errorf("%s already exists", rel)
 	}
 	rule, err := sops.RuleFor(dir, path)
 	if err != nil {
-		return "", err
+		return nil, err
 	}
 	if spec.Type == "" {
 		spec.Type = TypeOpaque
@@ -147,38 +147,38 @@ func NewSecret(dir, rel string, spec SecretSpec) (string, error) {
 	if spec.StringData == nil {
 		spec.StringData = map[string]string{}
 	}
-	meta := map[string]string{"name": spec.Name}
-	if spec.Namespace != "" {
-		meta["namespace"] = spec.Namespace
+	if spec.Namespace == "" {
+		spec.Namespace = "default"
 	}
+	meta := map[string]string{"name": spec.Name, "namespace": spec.Namespace}
 	plain, err := yaml.Marshal(map[string]any{"apiVersion": "v1", "kind": "Secret", "metadata": meta, "type": spec.Type, "stringData": spec.StringData})
 	if err != nil {
-		return "", err
+		return nil, err
 	}
 	var doc yaml.Node
 	if err := yaml.Unmarshal(plain, &doc); err != nil {
-		return "", err
+		return nil, err
 	}
 	if err := ValidateSecret(doc.Content[0]); err != nil {
-		return "", err
+		return nil, err
 	}
 	if rule.EncryptedRegex == "" && rule.UnencryptedRegex == "" && rule.EncryptedSuffix == "" && rule.UnencryptedSuffix == "" {
 		rule.EncryptedRegex = "^(data|stringData)$"
 	}
 	enc, err := sops.Encrypt(plain, rule)
 	if err != nil {
-		return "", err
+		return nil, err
 	}
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return "", err
+		return nil, err
 	}
 	if err := create(path, 0o644, enc); err != nil {
 		if errors.Is(err, os.ErrExist) {
-			return "", fmt.Errorf("%s already exists", rel)
+			return nil, fmt.Errorf("%s already exists", rel)
 		}
-		return "", err
+		return nil, err
 	}
-	return ListResource(dir, filepath.ToSlash(filepath.Clean(rel)))
+	return ListPath(dir, rel)
 }
 
 func ValidateSecret(root *yaml.Node) error {
@@ -251,28 +251,29 @@ func EditSecret(path, hash string, ids []age.Identity, edit func(root *yaml.Node
 	})
 }
 
-func DeleteSecret(dir, rel, hash string) (string, error) {
+func DeleteSecret(dir, rel, hash string) ([]string, error) {
 	if err := requireHash(hash); err != nil {
-		return "", err
+		return nil, err
 	}
 	path, err := SecretPath(dir, rel)
 	if err != nil {
-		return "", err
+		return nil, err
 	}
 	unlock := fsx.Lock(path)
 	defer unlock()
 	b, err := os.ReadFile(path)
 	if err != nil {
-		return "", err
+		return nil, err
 	}
 	if hash != Fingerprint(b) {
-		return "", ErrStale
+		return nil, ErrStale
 	}
 	if err := os.Remove(path); err != nil {
-		return "", err
+		return nil, err
 	}
+	touched, err := UnlistPath(dir, rel)
 	pruneEmpty(dir, filepath.Dir(path))
-	return UnlistResource(dir, rel)
+	return touched, err
 }
 
 func pruneEmpty(root, dir string) {

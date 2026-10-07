@@ -10,7 +10,7 @@ import (
 	"time"
 
 	"github.com/fsnotify/fsnotify"
-	"github.com/mikael/kubit/internal/sops"
+	"github.com/mikaelhug/kubit/internal/sops"
 )
 
 const settle = 300 * time.Millisecond

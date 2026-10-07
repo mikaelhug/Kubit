@@ -9,11 +9,11 @@ import (
 	"testing"
 
 	"filippo.io/age"
-	"github.com/mikael/kubit/internal/cluster"
-	"github.com/mikael/kubit/internal/config"
-	"github.com/mikael/kubit/internal/repo"
-	"github.com/mikael/kubit/internal/store"
-	"github.com/mikael/kubit/internal/watch"
+	"github.com/mikaelhug/kubit/internal/cluster"
+	"github.com/mikaelhug/kubit/internal/config"
+	"github.com/mikaelhug/kubit/internal/repo"
+	"github.com/mikaelhug/kubit/internal/store"
+	"github.com/mikaelhug/kubit/internal/watch"
 )
 
 func localServer(t *testing.T) (*Server, *store.Store) {

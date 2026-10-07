@@ -86,7 +86,7 @@ spec:
     builds: { enabled: false }
     flux:
       enabled: true
-      repository: { url: ssh://git@github.com/you/apps.git, branch: main, path: ./flux }
+      repository: { url: ssh://git@github.com/you/apps.git, branch: main, path: ./clusters/lab }
 ```
 
 The Discovery page copies a node entry for any machine in maintenance mode.
@@ -138,12 +138,13 @@ alerts and samples live in the daemon's memory and start empty.
 `secrets.sops.yaml` (`flux.ageKey`), so a rebuild from the repo decrypts again. Every
 platform apply with Flux installs it as `flux-system/sops-age`, and the root
 Kustomization decrypts with it. New repos encrypt app secrets to your own key plus the cluster's recipient
-(shown with *Copy* on the Add-ons tab's Flux card); see [Secrets](console.md#secrets).
+(shown with *Copy* in Settings › Apps); see [Secrets](console.md#secrets).
 
 **Private apps repo (deploy key).** `platform.flux.repository.url` is an `https://` URL
 for a public repo or an `ssh://user@host/path` URL for a private one (the scp form
-`git@host:path` is refused; Flux takes only ssh:// URLs). For ssh, *Generate* on the Flux
-card (or `kubit deploy-key lab`) writes a new ed25519 key to `secrets.sops.yaml`
+`git@host:path` is refused; Flux takes only ssh:// URLs). Connecting the cluster to its
+[apps repository](apps-repository.md) sets the URL. For ssh, connecting (or *Generate* in
+Settings › Apps, or `kubit deploy-key lab`) writes a new ed25519 key to `secrets.sops.yaml`
 (`flux.deployKey`, under the rule for your keys only) together with the host's keys
 (`flux.knownHosts`, every type the host offers; compare the fingerprints with the host's
 published ones). Add the public key to the repository's deploy keys, read-only; on GitHub one
@@ -159,4 +160,4 @@ the host (the plan stays blocked until then), apply, remove the old key. *Rescan
 `platform.flux.repository.interval` (default 1m) and fetches only when it moved;
 kustomize-controller applies a new revision as soon as it arrives and re-applies every 10m
 to undo drift. Both run in the cluster and pull, so nothing inbound is needed and the laptop
-may sleep; a failure shows as the GitRepository's message on the Flux card.
+may sleep; a failure shows as the object's message on the Flux card.

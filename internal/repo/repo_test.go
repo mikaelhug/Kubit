@@ -12,8 +12,8 @@ import (
 	"testing"
 
 	"filippo.io/age"
-	"github.com/mikael/kubit/internal/config"
-	"github.com/mikael/kubit/internal/sops"
+	"github.com/mikaelhug/kubit/internal/config"
+	"github.com/mikaelhug/kubit/internal/sops"
 	clientconfig "github.com/siderolabs/talos/pkg/machinery/client/config"
 	"k8s.io/client-go/tools/clientcmd"
 )

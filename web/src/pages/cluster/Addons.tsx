@@ -4,7 +4,7 @@ import { ErrorBox, Notice, Pill, Section, StatusDot } from '../../components/ui'
 import { stateTone } from '../../tone'
 import { useLive } from '../../useLive'
 import { AddonToggle } from '../../components/AddonToggle'
-import { BuildList, DeployKeyRow, FluxSync, SOPSRow } from './AddonPanels'
+import { BuildList, FluxSync } from './AddonPanels'
 import type { ClusterCtx } from './ClusterPage'
 
 const stateText: Record<AddonStatus['state'], string> = { disabled: 'disabled', pending: 'enabled, not applied yet', deploying: 'deploying', ready: 'ready', degraded: 'degraded', failed: 'release failed', orphaned: 'disabled in cluster.yaml, still installed' }
@@ -18,9 +18,6 @@ export function Addons({ ctx }: { ctx: ClusterCtx }) {
   const flux = !!cluster.spec.spec.platform.flux?.enabled
   const repo = cluster.spec.spec.platform.flux?.repository
   const builds = !!cluster.spec.spec.platform.builds?.enabled
-  const { data: sops } = useLive(() => api.sopsKey(name), [name], [[name, 'sops']], { onError: 'null', enabled: flux })
-  const ssh = !!repo?.url.startsWith('ssh://')
-  const { data: deployKey, set: setDeployKey } = useLive(() => api.deployKey(name), [name], [[name, 'sops']], { onError: 'null', enabled: flux && ssh })
   const { data: sync } = useLive(() => api.flux(name), [name], [[name, 'flux']], { onError: 'null', enabled: flux })
   const { data: buildList } = useLive(() => api.builds(name), [name], [[name, 'workloads']], { onError: 'null', enabled: builds })
   const stateOf = (key: string) => addons?.find((x) => x.key === key)?.state ?? 'disabled'
@@ -58,14 +55,12 @@ export function Addons({ ctx }: { ctx: ClusterCtx }) {
                         {a.readiness && <><span class="text-muted">Workloads</span><span class={a.readiness.ready === a.readiness.total ? '' : 'text-warn'}>{a.readiness.ready}/{a.readiness.total} available in {a.readiness.namespace}{a.readiness.detail?.length ? ` — ${a.readiness.detail.join(', ')}` : ''}</span></>}
                         {a.key === 'metallb' && <><span class="text-muted">Pool</span><span class="mono">{cluster.spec.spec.platform.metallb.range || '—'}</span></>}
                         {a.key === 'builds' && <><span class="text-muted">Registry</span><span class="mono">registry.kubit → {a.address ?? '—'}</span></>}
-                        {a.key === 'flux' && <><span class="text-muted">Repository</span><span class="mono truncate" title={repo?.url}>{repo ? [repo.url, repo.branch, repo.path].filter(Boolean).join(' · ') : 'not set'}</span></>}
+                        {a.key === 'flux' && <><span class="text-muted self-center">Repository</span><span class="flex items-center gap-2 min-w-0"><span class="mono truncate min-w-0" title={repo?.url}>{repo ? [repo.url, repo.branch, repo.path].filter(Boolean).join(' · ') : 'not set'}</span><a class="btn btn-sm ml-auto shrink-0" href={`/clusters/${name}/settings?view=apps`}>Settings</a></span></>}
                         {a.values && Object.keys(a.values).length > 0 && <><span class="text-muted">Values</span><span class="mono truncate" title={JSON.stringify(a.values)}>{Object.keys(a.values).join(', ')} overridden</span></>}
                       </div>
                     )}
                     {a?.key === 'flux' && sync && sync.length > 0 && <FluxSync objects={sync} />}
                     {a?.key === 'builds' && buildList && buildList.length > 0 && <BuildList cluster={name} builds={buildList} />}
-                    {a?.key === 'flux' && repo && deployKey && <DeployKeyRow cluster={name} url={repo.url} deployKey={deployKey} onChange={setDeployKey} />}
-                    {a?.key === 'flux' && sops && <SOPSRow sops={sops} />}
                   </div>
                 </div>
               )

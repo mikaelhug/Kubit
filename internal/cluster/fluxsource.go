@@ -3,15 +3,21 @@ package cluster
 import (
 	"context"
 	"errors"
+	"fmt"
+	"slices"
+	"strings"
 
-	"github.com/mikael/kubit/internal/config"
-	"github.com/mikael/kubit/internal/gitremote"
+	"github.com/mikaelhug/kubit/internal/config"
+	"github.com/mikaelhug/kubit/internal/gitremote"
+	"github.com/mikaelhug/kubit/internal/repo"
 )
 
-func fluxSourceProblem(ctx context.Context, c *config.Cluster, d *Desired) string {
+const AppsProblem = "Apps repository: "
+
+func (m *Manager) fluxSourceProblems(ctx context.Context, c *config.Cluster, d *Desired) []string {
 	r := c.Spec.Platform.Flux.Repository
 	if !c.Spec.Platform.Flux.Enabled || r == nil {
-		return ""
+		return nil
 	}
 	var err error
 	if gitremote.IsSSH(r.URL) {
@@ -19,9 +25,27 @@ func fluxSourceProblem(ctx context.Context, c *config.Cluster, d *Desired) strin
 	} else {
 		err = gitremote.ProbeHTTPS(ctx, r.URL, r.Branch)
 	}
+	var out []string
 	var refusal *gitremote.Refusal
 	if errors.As(err, &refusal) {
-		return refusal.Msg
+		out = append(out, AppsProblem+refusal.Msg)
 	}
-	return ""
+	if m.Checkout == nil {
+		return out
+	}
+	dir := m.Checkout(r.URL)
+	if dir == "" {
+		return out
+	}
+	root := repo.FluxRoot(r.Path)
+	paths := []string{root}
+	for _, p := range repo.FluxRoots(dir, root) {
+		if !slices.Contains(paths, p) {
+			paths = append(paths, p)
+		}
+	}
+	if missing := repo.Unpushed(ctx, dir, r.Branch, paths); len(missing) > 0 {
+		out = append(out, fmt.Sprintf("%scommit and push %s to origin/%s in %s", AppsProblem, strings.Join(missing, ", "), r.Branch, repo.Tilde(dir)))
+	}
+	return out
 }

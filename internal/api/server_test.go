@@ -6,10 +6,10 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/mikael/kubit/internal/api"
-	"github.com/mikael/kubit/internal/cluster"
-	"github.com/mikael/kubit/internal/store"
-	"github.com/mikael/kubit/internal/watch"
+	"github.com/mikaelhug/kubit/internal/api"
+	"github.com/mikaelhug/kubit/internal/cluster"
+	"github.com/mikaelhug/kubit/internal/store"
+	"github.com/mikaelhug/kubit/internal/watch"
 )
 
 func newServer(t *testing.T, token string) (*api.Server, *store.Store) {

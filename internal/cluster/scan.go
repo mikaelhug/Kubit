@@ -3,8 +3,8 @@ package cluster
 import (
 	"encoding/json"
 
-	"github.com/mikael/kubit/internal/store"
-	"github.com/mikael/kubit/internal/talos"
+	"github.com/mikaelhug/kubit/internal/store"
+	"github.com/mikaelhug/kubit/internal/talos"
 )
 
 func RowFromScan(res talos.ScanResult) store.Machine {

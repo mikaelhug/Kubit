@@ -5,7 +5,7 @@ import (
 	"reflect"
 	"sort"
 
-	"github.com/mikael/kubit/internal/config"
+	"github.com/mikaelhug/kubit/internal/config"
 )
 
 type ClusterRow struct {

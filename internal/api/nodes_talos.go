@@ -6,9 +6,9 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/mikael/kubit/internal/netx"
-	"github.com/mikael/kubit/internal/store"
-	"github.com/mikael/kubit/internal/talos"
+	"github.com/mikaelhug/kubit/internal/netx"
+	"github.com/mikaelhug/kubit/internal/store"
+	"github.com/mikaelhug/kubit/internal/talos"
 	"github.com/siderolabs/talos/pkg/machinery/api/common"
 )
 

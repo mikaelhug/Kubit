@@ -7,7 +7,7 @@ import (
 	"strings"
 
 	"filippo.io/age"
-	"github.com/mikael/kubit/internal/yamlx"
+	"github.com/mikaelhug/kubit/internal/yamlx"
 	"go.yaml.in/yaml/v4"
 )
 

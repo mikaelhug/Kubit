@@ -7,8 +7,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/mikael/kubit/internal/cluster"
-	"github.com/mikael/kubit/internal/talos"
+	"github.com/mikaelhug/kubit/internal/cluster"
+	"github.com/mikaelhug/kubit/internal/talos"
 )
 
 const scopeDiscovery = "discovery"

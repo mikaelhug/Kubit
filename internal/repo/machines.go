@@ -1,8 +1,8 @@
 package repo
 
 import (
-	"github.com/mikael/kubit/internal/config"
-	"github.com/mikael/kubit/internal/talos"
+	"github.com/mikaelhug/kubit/internal/config"
+	"github.com/mikaelhug/kubit/internal/talos"
 )
 
 func Machine(ip string, inv *talos.Inventory) config.Machine {

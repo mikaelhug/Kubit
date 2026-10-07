@@ -11,8 +11,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/mikael/kubit/internal/netx"
-	"github.com/mikael/kubit/internal/yamlx"
+	"github.com/mikaelhug/kubit/internal/netx"
+	"github.com/mikaelhug/kubit/internal/yamlx"
 	"github.com/siderolabs/talos/pkg/machinery/constants"
 	"github.com/siderolabs/talos/pkg/machinery/gendata"
 	"go.yaml.in/yaml/v4"
@@ -219,7 +219,7 @@ func (r *FluxRepository) Validate() error {
 	if strings.ContainsAny(r.Branch, " \t\n") {
 		errs = append(errs, fmt.Errorf("platform.flux.repository.branch %q is not a branch name", r.Branch))
 	}
-	if d, err := time.ParseDuration(r.Interval); err != nil || d < 10*time.Second {
+	if d, err := time.ParseDuration(r.Interval); r.Interval != "" && (err != nil || d < 10*time.Second) {
 		errs = append(errs, fmt.Errorf("platform.flux.repository.interval %q: a Go duration of at least 10s", r.Interval))
 	}
 	return errors.Join(errs...)

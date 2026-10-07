@@ -3,8 +3,8 @@ package main
 import (
 	"fmt"
 
-	"github.com/mikael/kubit/internal/repo"
-	"github.com/mikael/kubit/internal/sops"
+	"github.com/mikaelhug/kubit/internal/repo"
+	"github.com/mikaelhug/kubit/internal/sops"
 	"github.com/spf13/cobra"
 )
 

@@ -14,9 +14,9 @@ import (
 	"time"
 
 	"filippo.io/age"
-	"github.com/mikael/kubit/internal/config"
-	"github.com/mikael/kubit/internal/fsx"
-	"github.com/mikael/kubit/internal/sops"
+	"github.com/mikaelhug/kubit/internal/config"
+	"github.com/mikaelhug/kubit/internal/fsx"
+	"github.com/mikaelhug/kubit/internal/sops"
 	talosconfig "github.com/siderolabs/talos/pkg/machinery/config"
 	"github.com/siderolabs/talos/pkg/machinery/config/generate/secrets"
 	"go.yaml.in/yaml/v4"
@@ -227,7 +227,7 @@ func Init(dir string, c *config.Cluster, recipients []string) (*Repo, error) {
 func sopsRule(dir string, recipients []string, flux string) (sops.Rule, error) {
 	if _, err := os.Stat(filepath.Join(dir, sops.ConfigFile)); err == nil {
 		if flux != "" {
-			if _, err := sops.AddRecipient(dir, flux, SecretsFile); err != nil {
+			if _, err := sops.AddRecipient(dir, flux, SecretsFile, []string{sampleSecret}); err != nil {
 				return sops.Rule{}, err
 			}
 		}

@@ -37,12 +37,12 @@ export function Changes({ ctx }: { ctx: ClusterCtx }) {
         </span>
       </div>
       <ErrorBox error={error ?? loadError ?? (summary?.state === 'failed' ? summary.error ?? null : null)} />
-      {plan && <div class={checking ? 'opacity-60' : ''}><PlanView plan={plan} /></div>}
+      {plan && <div class={checking ? 'opacity-60' : ''}><PlanView plan={plan} cluster={name} /></div>}
       {!plan && !checking && summary?.state !== 'failed' && <Notice tone="muted">No plan yet.</Notice>}
       {run && (run.running || run.lines.length > 0) && (
         <div class="panel flex flex-col">
           <div class="flex items-center gap-2 px-3 py-2 border-b border-border text-[13px]">
-            <span class="font-medium">Apply</span>
+            <span class="font-medium">{run.kind === 'destroy' ? 'Destroy' : 'Apply'}</span>
             {run.running ? <Pill tone="info">running</Pill> : run.error ? <Pill tone="bad">failed</Pill> : <Pill tone="good">done</Pill>}
             {run.started && <span class="text-muted">{fmt.datetime(run.started)}</span>}
           </div>
@@ -76,13 +76,25 @@ function impactOf(plan: Plan) {
   return n > 0 ? `Erases the install disk on ${n} machine${n === 1 ? '' : 's'}.` : ''
 }
 
-function PlanView({ plan }: { plan: Plan }) {
+const appsProblem = 'Apps repository: '
+
+function Problem({ text, cluster }: { text: string; cluster: string }) {
+  const apps = text.startsWith(appsProblem)
+  return (
+    <div class="px-3 py-2 flex items-center gap-3 text-bad">
+      <span class="min-w-0">{apps && <span class="text-muted">Apps repository · </span>}{apps ? text.slice(appsProblem.length) : text}</span>
+      {apps && <a class="btn btn-sm ml-auto shrink-0" href={`/clusters/${cluster}/settings?view=apps`}>Apps settings</a>}
+    </div>
+  )
+}
+
+function PlanView({ plan, cluster }: { plan: Plan; cluster: string }) {
   if (!plan.problems?.length && plan.changes.length === 0) return <Notice tone="good">No changes.</Notice>
   const changes = plan.changes.filter((c) => !oneTime(c))
   const once = plan.changes.filter(oneTime)
   return (
     <div class="panel divide-y divide-border/60 text-[13px]">
-      {plan.problems?.map((p) => <div key={p} class="px-3 py-2 text-bad">{p}</div>)}
+      {plan.problems?.map((p) => <Problem key={p} text={p} cluster={cluster} />)}
       {changes.length === 0 && !plan.problems?.length && <div class="px-3 py-2 text-good">No cluster changes.</div>}
       {changes.map((c, i) => <ChangeRow key={i} c={c} />)}
       {once.map((c, i) => (

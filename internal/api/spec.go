@@ -5,7 +5,7 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/mikael/kubit/internal/repo"
+	"github.com/mikaelhug/kubit/internal/repo"
 )
 
 func (s *Server) specRoutes() {

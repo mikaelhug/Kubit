@@ -4,8 +4,8 @@ import (
 	"net/http"
 	"strconv"
 
-	"github.com/mikael/kubit/internal/cluster"
-	"github.com/mikael/kubit/internal/k8s"
+	"github.com/mikaelhug/kubit/internal/cluster"
+	"github.com/mikaelhug/kubit/internal/k8s"
 )
 
 func (s *Server) k8sRoutes() {

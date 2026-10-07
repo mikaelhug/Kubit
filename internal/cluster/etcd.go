@@ -15,12 +15,12 @@ import (
 	"time"
 
 	"filippo.io/age"
-	"github.com/mikael/kubit/internal/config"
-	"github.com/mikael/kubit/internal/fsx"
-	"github.com/mikael/kubit/internal/repo"
-	"github.com/mikael/kubit/internal/sops"
-	"github.com/mikael/kubit/internal/store"
-	"github.com/mikael/kubit/internal/talos"
+	"github.com/mikaelhug/kubit/internal/config"
+	"github.com/mikaelhug/kubit/internal/fsx"
+	"github.com/mikaelhug/kubit/internal/repo"
+	"github.com/mikaelhug/kubit/internal/sops"
+	"github.com/mikaelhug/kubit/internal/store"
+	"github.com/mikaelhug/kubit/internal/talos"
 )
 
 func firstControlPlane(ctx context.Context, cps []config.Node, talosconfig []byte, try func(config.Node, *talos.Client) error) (config.Node, *talos.Client, error) {

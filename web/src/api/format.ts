@@ -10,7 +10,7 @@ export const fmt = {
     let i = 0
     let v = b
     while (v >= 1024 && i < u.length - 1) { v /= 1024; i++ }
-    return (i >= 3 && v < 100 ? v.toFixed(1) : Math.round(v)) + u[i]
+    return (i >= 3 && v < 100 ? +v.toFixed(1) : Math.round(v)) + u[i]
   },
   cores(m: number) { return m >= 1000 ? (m / 1000).toFixed(1) : `${m}m` },
   date(iso: string) { return iso ? new Date(iso).toLocaleDateString() : '' },

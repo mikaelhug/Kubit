@@ -20,14 +20,16 @@ The console writes only to the served repos and never commits:
   repo in a directory you type or pick with *Browse* (`cluster.yaml` designed from the machines' inventory,
   `secrets.sops.yaml` and `.sops.yaml` for your age key, created at
   `~/.config/sops/age/keys.txt` when missing; an existing `cluster.yaml` is never
-  overwritten) and serves it, or appends the machines to a served cluster's `spec.nodes`
-  with the next free hostnames. Both go through a review of the exact result first
+  overwritten) and serves it, optionally connected to an
+  [apps repository](apps-repository.md), or appends the machines to a served cluster's
+  `spec.nodes` with the next free hostnames. Both go through a review of the exact result first
   ([Discovery](operations.md#discovery)).
 - **Remove** on a node's page deletes the node from `spec.nodes`.
 - **Enable / Disable** on an Add-ons card sets `spec.platform.<add-on>.enabled` (MetalLB asks
-  for its range, Flux for its repository); Storage offers it for Longhorn when no
-  StorageClass exists.
-- **Generate / Replace / Rescan** on the Flux card writes `flux.deployKey` and
+  for its range); Storage offers it for Longhorn when no StorageClass exists.
+- **Connect / Change** in Settings › Apps writes the apps layout into the checkout and sets
+  `platform.flux.repository` ([Apps repository](apps-repository.md)).
+- **Generate / Replace / Rescan** in Settings › Apps writes `flux.deployKey` and
   `flux.knownHosts` to `secrets.sops.yaml` (stale-hash checked, re-encrypted for the file's
   own recipients).
 - **Upgrade** on an update notice (Home, Overview) sets `talosVersion` and
@@ -124,7 +126,10 @@ result without writing), `POST design/checks` (the same with the VIP and address
 (`{repo, file, hash, set: [{path, value}], remove: [path]}`), `DELETE secrets/file?repo&file&hash`,
 `POST secrets/move` (`{repo, file, to, hash}`), `POST secrets/files` (`{repo, file, name, namespace,
 type, stringData}`), `POST clusters/{n}/sops/flux[?repo=i]`, `POST clusters/{n}/destroy` (`{name}`, 202; lines arrive as `apply` messages),
-`GET|POST clusters/{n}/flux/key`
+`GET|POST clusters/{n}/flux/key`, `GET apps?dir=` (inspect a checkout),
+`GET clusters/{n}/apps` (repository, checkout, environment), `POST clusters/{n}/apps/review`
+and `POST clusters/{n}/apps` (`{dir, environment, environments, path, hash}`); `POST design`
+and `POST repos` take the same `apps` object
 (`{hash, hostsOnly}`; public key, fingerprint, host keys). Unknown `/api/`
 paths answer 404 JSON.
 
@@ -135,7 +140,7 @@ A cluster's *Secrets* tab lists the Kubernetes Secrets Flux applies to it: the
 is `platform.flux.repository.url` (https, ssh and scp forms match), plus any SOPS files in the
 cluster repo itself. Each row shows namespace, type, key count, whether Flux can decrypt it
 (the cluster's Flux key is a recipient), whether Flux applies it at all (every
-`kustomization.yaml` from the Flux path down lists it; with none, Flux generates one and takes
+`kustomization.yaml` from the Flux path, or from the path of a Flux Kustomization it lists, down lists it; with none, Flux generates one and takes
 every file), its git state and age. When Flux syncs a repo that is not served, the tab says
 which checkout to serve. The global *Secrets* page lists the SOPS files of every served repo
 and opens each in its cluster's tab.
@@ -155,10 +160,11 @@ on a write.
 
 `.sops.yaml` holds two rules: `(^|/)secrets\.sops\.yaml$` for your keys only (the Talos
 bundle, the Flux key, the state passphrase), and `\.sops\.ya?ml$` for your keys plus the
-cluster's Flux recipient, so Flux can decrypt app secrets. The `sops` CLI picks the same rule
+cluster's Flux recipient, so Flux can decrypt app secrets; an apps repository adds a rule per
+environment ([Apps repository](apps-repository.md#environments)). The `sops` CLI picks the same rule
 for relative and absolute paths. Repos with a single shared rule show a notice on the cluster's
-Secrets tab; *Let Flux decrypt* adds the Flux key to that repo's `.sops.yaml` (splitting a
-shared rule) and re-encrypts the app secrets Flux can't read.
+Secrets tab; *Let Flux decrypt* adds the Flux key to the rule its paths use in that repo's
+`.sops.yaml` (splitting a shared rule) and re-encrypts the app secrets Flux can't read.
 
 ## Settings file
 

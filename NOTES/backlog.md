@@ -95,9 +95,9 @@
 - The status-bar uptime keeps ticking while disconnected.
 - Secrets: keys under sequences are not editable; non-Secret files split keys on dots;
   encrypted comments are dropped on a write.
-- Secrets attribution follows only the root `flux-system` Kustomization: Flux Kustomization
-  objects in the repo with their own `path`, `.sourceignore` and `patches`/`components` are
-  not followed. A file under two clusters' Flux paths is shown for the first one.
+- Secrets attribution follows the root Kustomization and the Flux Kustomizations it lists, one
+  level deep; `.sourceignore` and `patches`/`components` are not followed. A file under two
+  clusters' Flux paths is shown for the first one.
 - *Let Flux decrypt* on a shared apps repo adds one cluster's key at a time; a repo synced by
   several clusters needs it once per cluster.
 - Security: no CSRF guard on bodiless POSTs while loopback needs no token; check

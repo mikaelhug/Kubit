@@ -3,8 +3,8 @@ package watch
 import (
 	"testing"
 
-	"github.com/mikael/kubit/internal/cluster"
-	"github.com/mikael/kubit/internal/store"
+	"github.com/mikaelhug/kubit/internal/cluster"
+	"github.com/mikaelhug/kubit/internal/store"
 )
 
 func testWatcher(t *testing.T) *Watcher {

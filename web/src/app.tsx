@@ -91,11 +91,11 @@ function ClusterNav({ active }: { active?: string }) {
   return (
     <>
       {clusters.value.map((c) => (
-        <a key={c.name} href={`/clusters/${c.name}/overview`} class={`${navCls(active === c.name)} flex items-center justify-between`}>
-          <span class="truncate font-medium">{c.name}</span>
-          <span class="flex items-center gap-1">
-            <PendingBadge name={c.name} />
+        <a key={c.name} href={`/clusters/${c.name}/overview`} class={`${navCls(active === c.name)} flex flex-col items-start gap-1`}>
+          <span class="truncate font-medium max-w-full">{c.name}</span>
+          <span class="flex flex-wrap items-center gap-1">
             <ClusterPill state={c.state} status={statuses.value.get(c.name)} />
+            <PendingBadge name={c.name} />
           </span>
         </a>
       ))}

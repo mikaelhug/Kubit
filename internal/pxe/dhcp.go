@@ -13,7 +13,7 @@ import (
 	"github.com/insomniacslk/dhcp/dhcpv4"
 	"github.com/insomniacslk/dhcp/dhcpv4/server4"
 	"github.com/insomniacslk/dhcp/iana"
-	"github.com/mikael/kubit/internal/netx"
+	"github.com/mikaelhug/kubit/internal/netx"
 )
 
 const (

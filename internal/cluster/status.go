@@ -8,10 +8,10 @@ import (
 	"sync"
 	"time"
 
-	"github.com/mikael/kubit/internal/config"
-	"github.com/mikael/kubit/internal/k8s"
-	"github.com/mikael/kubit/internal/store"
-	"github.com/mikael/kubit/internal/talos"
+	"github.com/mikaelhug/kubit/internal/config"
+	"github.com/mikaelhug/kubit/internal/k8s"
+	"github.com/mikaelhug/kubit/internal/store"
+	"github.com/mikaelhug/kubit/internal/talos"
 )
 
 const (

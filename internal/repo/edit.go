@@ -7,9 +7,9 @@ import (
 	"path/filepath"
 
 	"filippo.io/age"
-	"github.com/mikael/kubit/internal/config"
-	"github.com/mikael/kubit/internal/sops"
-	"github.com/mikael/kubit/internal/yamlx"
+	"github.com/mikaelhug/kubit/internal/config"
+	"github.com/mikaelhug/kubit/internal/sops"
+	"github.com/mikaelhug/kubit/internal/yamlx"
 	"go.yaml.in/yaml/v4"
 )
 

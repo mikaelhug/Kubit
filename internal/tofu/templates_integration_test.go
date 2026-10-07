@@ -9,8 +9,8 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/mikael/kubit/internal/config"
-	"github.com/mikael/kubit/internal/tofu"
+	"github.com/mikaelhug/kubit/internal/config"
+	"github.com/mikaelhug/kubit/internal/tofu"
 )
 
 func TestTemplatesValidateWithTheLockedProviders(t *testing.T) {

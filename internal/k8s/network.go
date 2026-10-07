@@ -6,7 +6,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/mikael/kubit/internal/config"
+	"github.com/mikaelhug/kubit/internal/config"
 	corev1 "k8s.io/api/core/v1"
 )
 

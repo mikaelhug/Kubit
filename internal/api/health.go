@@ -8,9 +8,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/mikael/kubit/internal/cluster"
-	"github.com/mikael/kubit/internal/config"
-	"github.com/mikael/kubit/internal/watch"
+	"github.com/mikaelhug/kubit/internal/cluster"
+	"github.com/mikaelhug/kubit/internal/config"
+	"github.com/mikaelhug/kubit/internal/watch"
 	"github.com/siderolabs/talos/pkg/machinery/constants"
 )
 

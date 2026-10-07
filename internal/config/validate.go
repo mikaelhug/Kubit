@@ -10,7 +10,7 @@ import (
 	"strings"
 
 	"filippo.io/age"
-	"github.com/mikael/kubit/internal/netx"
+	"github.com/mikaelhug/kubit/internal/netx"
 	talosconfig "github.com/siderolabs/talos/pkg/machinery/config"
 )
 

@@ -9,7 +9,7 @@ import (
 	"os"
 	"time"
 
-	"github.com/mikael/kubit/internal/fsx"
+	"github.com/mikaelhug/kubit/internal/fsx"
 )
 
 var transport = &http.Transport{

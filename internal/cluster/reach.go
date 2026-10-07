@@ -7,7 +7,7 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/mikael/kubit/internal/talos"
+	"github.com/mikaelhug/kubit/internal/talos"
 )
 
 type Reach int

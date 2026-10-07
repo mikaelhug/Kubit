@@ -12,8 +12,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/mikael/kubit/internal/factory"
-	"github.com/mikael/kubit/internal/fsx"
+	"github.com/mikaelhug/kubit/internal/factory"
+	"github.com/mikaelhug/kubit/internal/fsx"
 	"github.com/pin/tftp/v3"
 )
 

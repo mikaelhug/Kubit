@@ -4,10 +4,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mikael/kubit/internal/cluster"
-	"github.com/mikael/kubit/internal/config"
-	"github.com/mikael/kubit/internal/k8s"
-	"github.com/mikael/kubit/internal/store"
+	"github.com/mikaelhug/kubit/internal/cluster"
+	"github.com/mikaelhug/kubit/internal/config"
+	"github.com/mikaelhug/kubit/internal/k8s"
+	"github.com/mikaelhug/kubit/internal/store"
 )
 
 func TestKubeconfigChangeRestartsOnlyThatClustersInformers(t *testing.T) {

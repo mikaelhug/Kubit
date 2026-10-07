@@ -6,8 +6,8 @@ import (
 	"io"
 	"time"
 
-	"github.com/mikael/kubit/internal/config"
-	"github.com/mikael/kubit/internal/talos"
+	"github.com/mikaelhug/kubit/internal/config"
+	"github.com/mikaelhug/kubit/internal/talos"
 )
 
 func (m *Manager) RemoveNode(ctx context.Context, name, hostname string, sink Sink) error {

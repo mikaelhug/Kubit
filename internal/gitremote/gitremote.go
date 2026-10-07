@@ -71,6 +71,15 @@ func Hosts(knownHosts string) []Host {
 	return out
 }
 
+func Pinned(hosts []Host, rawURL string) bool {
+	addr, err := HostOf(rawURL)
+	if err != nil {
+		return false
+	}
+	name := knownhosts.Normalize(addr)
+	return slices.ContainsFunc(hosts, func(h Host) bool { return slices.Contains(strings.Split(h.Host, ","), name) })
+}
+
 func HostOf(rawURL string) (string, error) {
 	u, err := url.Parse(rawURL)
 	if err != nil || u.Hostname() == "" {
@@ -204,19 +213,36 @@ func Probe(ctx context.Context, rawURL, branch, key, knownHosts string) error {
 	return hasBranch(rawURL, refs, branch)
 }
 
-func ProbeHTTPS(ctx context.Context, rawURL, branch string) error {
+func infoRefs(ctx context.Context, rawURL string) (*http.Response, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, strings.TrimSuffix(rawURL, "/")+"/info/refs?service=git-upload-pack", nil)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	req.Header.Set("User-Agent", "git/kubit")
-	resp, err := (&http.Client{Timeout: timeout}).Do(req)
+	return (&http.Client{Timeout: timeout}).Do(req)
+}
+
+func private(status int) bool {
+	return status == http.StatusUnauthorized || status == http.StatusForbidden || status == http.StatusNotFound
+}
+
+func Private(ctx context.Context, rawURL string) bool {
+	resp, err := infoRefs(ctx, rawURL)
+	if err != nil {
+		return false
+	}
+	resp.Body.Close()
+	return private(resp.StatusCode)
+}
+
+func ProbeHTTPS(ctx context.Context, rawURL, branch string) error {
+	resp, err := infoRefs(ctx, rawURL)
 	if err != nil {
 		return err
 	}
 	defer resp.Body.Close()
 	switch {
-	case resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden || resp.StatusCode == http.StatusNotFound:
+	case private(resp.StatusCode):
 		return &Refusal{fmt.Sprintf("%s is private or missing; a private repository needs its ssh:// URL and a deploy key", rawURL)}
 	case resp.StatusCode != http.StatusOK:
 		return fmt.Errorf("%s: %s", rawURL, resp.Status)

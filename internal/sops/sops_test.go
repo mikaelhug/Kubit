@@ -217,7 +217,7 @@ func TestAddRecipientSeparatesTheClusterSecrets(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, ConfigFile), []byte(old), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	changed, err := AddRecipient(dir, "age1flux", "secrets.sops.yaml")
+	changed, err := AddRecipient(dir, "age1flux", "secrets.sops.yaml", []string{"apps/example.sops.yaml"})
 	if err != nil || !changed {
 		t.Fatalf("add: %v %v", changed, err)
 	}

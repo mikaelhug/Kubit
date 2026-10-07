@@ -11,7 +11,7 @@ import { Changes } from './Changes'
 import { Network } from './Network'
 import { Nodes } from './Nodes'
 import { Overview } from './Overview'
-import { Repository } from './Repository'
+import { Settings } from './Settings'
 import { Secrets } from './Secrets'
 import { Storage } from './Storage'
 import { Workloads } from './Workloads'
@@ -56,7 +56,7 @@ function renderSection(section: Section, ctx: ClusterCtx) {
     case 'nodes': return <Nodes ctx={ctx} />
     case 'addons': return <Addons ctx={ctx} />
     case 'changes': return <Changes ctx={ctx} />
-    case 'repository': return <Repository ctx={ctx} />
+    case 'settings': return <Settings ctx={ctx} />
     case 'workloads': return <Workloads ctx={ctx} />
     case 'network': return <Network ctx={ctx} />
     case 'storage': return <Storage ctx={ctx} />
@@ -78,11 +78,12 @@ function CheckNow({ name }: { name: string }) {
 }
 
 function legacy(name: string, section: string) {
+  if (section === 'repository') return `/clusters/${name}/settings${location.search}`
   if (section !== 'config') return `/clusters/${name}/overview`
   const view = new URLSearchParams(location.search).get('view')
-  if (view === 'yaml') return `/clusters/${name}/repository`
-  if (view === 'repo') return `/clusters/${name}/repository?view=git`
-  if (view === 'certs') return `/clusters/${name}/repository?view=certs`
+  if (view === 'yaml') return `/clusters/${name}/settings`
+  if (view === 'repo') return `/clusters/${name}/settings?view=git`
+  if (view === 'certs') return `/clusters/${name}/settings?view=certs`
   return `/clusters/${name}/changes`
 }
 

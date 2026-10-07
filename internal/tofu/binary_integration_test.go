@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/mikael/kubit/internal/tofu"
+	"github.com/mikaelhug/kubit/internal/tofu"
 )
 
 func TestTheOpenTofuReleaseDownloadsAndRuns(t *testing.T) {

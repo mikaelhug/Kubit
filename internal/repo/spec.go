@@ -4,8 +4,8 @@ import (
 	"fmt"
 	"slices"
 
-	"github.com/mikael/kubit/internal/config"
-	"github.com/mikael/kubit/internal/yamlx"
+	"github.com/mikaelhug/kubit/internal/config"
+	"github.com/mikaelhug/kubit/internal/yamlx"
 	"go.yaml.in/yaml/v4"
 )
 

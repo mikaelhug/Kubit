@@ -7,7 +7,7 @@ import (
 	"testing"
 
 	"filippo.io/age"
-	"github.com/mikael/kubit/internal/sops"
+	"github.com/mikaelhug/kubit/internal/sops"
 )
 
 func TestLetFluxDecryptRekeysAppSecretsOnly(t *testing.T) {
@@ -21,7 +21,7 @@ func TestLetFluxDecryptRekeysAppSecretsOnly(t *testing.T) {
 	if _, err := NewSecret(dir, "apps/db/db.sops.yaml", SecretSpec{Name: "db", Namespace: "shop"}); err != nil {
 		t.Fatal(err)
 	}
-	n, err := LetFluxDecrypt(dir, flux.Recipient().String(), []age.Identity{me})
+	n, err := LetFluxDecrypt(dir, "", flux.Recipient().String(), []age.Identity{me})
 	if err != nil || n != 1 {
 		t.Fatalf("rekeyed %d: %v", n, err)
 	}

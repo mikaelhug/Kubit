@@ -13,8 +13,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/mikael/kubit/internal/fsx"
-	"github.com/mikael/kubit/internal/httpx"
+	"github.com/mikaelhug/kubit/internal/fsx"
+	"github.com/mikaelhug/kubit/internal/httpx"
 )
 
 var ipxeURLs = map[string]string{

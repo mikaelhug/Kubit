@@ -8,11 +8,11 @@ import (
 	"sync"
 	"time"
 
-	"github.com/mikael/kubit/internal/config"
-	"github.com/mikael/kubit/internal/factory"
-	"github.com/mikael/kubit/internal/k8s"
-	"github.com/mikael/kubit/internal/store"
-	"github.com/mikael/kubit/internal/talos"
+	"github.com/mikaelhug/kubit/internal/config"
+	"github.com/mikaelhug/kubit/internal/factory"
+	"github.com/mikaelhug/kubit/internal/k8s"
+	"github.com/mikaelhug/kubit/internal/store"
+	"github.com/mikaelhug/kubit/internal/talos"
 	"github.com/siderolabs/talos/pkg/machinery/config/generate/secrets"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -55,6 +55,8 @@ type Manager struct {
 	liveEndpoint map[string]string
 	converging   sync.Map
 	observed     sync.Map
+
+	Checkout func(url string) string
 }
 
 type kubeEntry struct {

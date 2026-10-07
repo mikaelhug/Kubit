@@ -7,10 +7,10 @@ import (
 	"path/filepath"
 	"time"
 
-	"github.com/mikael/kubit/internal/config"
-	"github.com/mikael/kubit/internal/repo"
-	"github.com/mikael/kubit/internal/sops"
-	"github.com/mikael/kubit/internal/talos"
+	"github.com/mikaelhug/kubit/internal/config"
+	"github.com/mikaelhug/kubit/internal/repo"
+	"github.com/mikaelhug/kubit/internal/sops"
+	"github.com/mikaelhug/kubit/internal/talos"
 	"github.com/spf13/cobra"
 )
 
@@ -22,6 +22,8 @@ func initCmd() *cobra.Command {
 		talosVersion string
 		lbRange      string
 		timeout      time.Duration
+		apps         string
+		af           appsFlags
 	)
 	cmd := &cobra.Command{
 		Use:   "init <dir>",
@@ -71,9 +73,26 @@ age recipients in .sops.yaml (or --age, or your own key). Never overwrites.`,
 					fmt.Fprintf(cmd.ErrOrStderr(), "created your age key %s; back it up, it opens the cluster secrets\n", created)
 				}
 			}
+			var a repo.AppsRepo
+			var conn repo.AppsConnect
+			var files []repo.AppsFile
+			if apps != "" {
+				if a, conn, files, err = af.connect(cmd.Context(), apps, name, ""); err != nil {
+					return err
+				}
+				c.Spec.Platform.Flux.Enabled = true
+				c.Spec.Platform.Flux.Repository = &config.FluxRepository{URL: a.URL, Branch: a.Branch, Path: a.FluxPath(conn)}
+			}
 			r, err := repo.Init(dir, c, recipients)
 			if err != nil {
 				return err
+			}
+			if apps != "" {
+				conn.FluxRecipient = r.Secrets.FluxRecipient()
+				if err := repo.Connect(cmd.Context(), dir, "", a, conn); err != nil {
+					return err
+				}
+				defer printConnected(cmd.OutOrStdout(), dir, a, conn, files)
 			}
 			out := cmd.OutOrStdout()
 			fmt.Fprintf(out, "wrote %s with %d node(s), %s, %s\n", filepath.Join(dir, repo.ClusterFile), len(c.Spec.Nodes), repo.SecretsFile, sops.ConfigFile)
@@ -91,6 +110,8 @@ age recipients in .sops.yaml (or --age, or your own key). Never overwrites.`,
 	cmd.Flags().StringVar(&talosVersion, "talos-version", "", "Talos version (default: Kubit's)")
 	cmd.Flags().StringVar(&lbRange, "lb-range", "", "LoadBalancer address range start-end; turns on MetalLB and Traefik")
 	cmd.Flags().DurationVar(&timeout, "timeout", 2*time.Second, "per-host connect timeout")
+	cmd.Flags().StringVar(&apps, "apps", "", "Flux apps repository checkout to connect")
+	af.register(cmd)
 	return cmd
 }
 

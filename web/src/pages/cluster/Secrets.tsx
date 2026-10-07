@@ -27,7 +27,7 @@ export function Secrets({ ctx }: { ctx: ClusterCtx }) {
 
   const flux = data?.sources.filter((s) => s.flux) ?? []
   const targets: SecretTarget[] = flux.length > 0
-    ? flux.map((s) => ({ repo: s.repo, name: s.name, root: data?.flux.path ?? '' }))
+    ? flux.map((s) => ({ repo: s.repo, name: s.name, root: s.folder ?? data?.flux.path ?? '' }))
     : (data?.sources ?? []).filter((s) => s.cluster).map((s) => ({ repo: s.repo, name: s.name }))
   return (
     <Section title="Secrets"

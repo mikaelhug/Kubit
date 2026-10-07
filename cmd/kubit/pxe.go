@@ -8,10 +8,10 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/mikael/kubit/internal/config"
-	"github.com/mikael/kubit/internal/factory"
-	"github.com/mikael/kubit/internal/pxe"
-	"github.com/mikael/kubit/internal/repo"
+	"github.com/mikaelhug/kubit/internal/config"
+	"github.com/mikaelhug/kubit/internal/factory"
+	"github.com/mikaelhug/kubit/internal/pxe"
+	"github.com/mikaelhug/kubit/internal/repo"
 	"github.com/spf13/cobra"
 )
 

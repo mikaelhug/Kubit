@@ -16,10 +16,10 @@ import (
 	"sync"
 	"time"
 
-	"github.com/mikael/kubit/internal/config"
-	"github.com/mikael/kubit/internal/netx"
-	"github.com/mikael/kubit/internal/repo"
-	"github.com/mikael/kubit/internal/store"
+	"github.com/mikaelhug/kubit/internal/config"
+	"github.com/mikaelhug/kubit/internal/netx"
+	"github.com/mikaelhug/kubit/internal/repo"
+	"github.com/mikaelhug/kubit/internal/store"
 )
 
 func (s *Server) editRoutes() {
@@ -28,12 +28,14 @@ func (s *Server) editRoutes() {
 	r.HandleFunc("POST /api/v1/design/checks", s.handleDesign)
 	r.HandleFunc("GET /api/v1/clusters/{name}/repo", s.handleRepo)
 	r.HandleFunc("POST /api/v1/repos", s.handleCreateRepo)
+	r.HandleFunc("GET /api/v1/dirs", s.handleDirs)
 	r.HandleFunc("POST /api/v1/clusters/{name}/nodes", s.handleAddNodes)
 	r.HandleFunc("DELETE /api/v1/clusters/{name}/nodes/{hostname}", s.handleRemoveNode)
 	r.HandleFunc("GET /api/v1/clusters/{name}/nodes/{hostname}/network", s.handleNodeNetwork)
 	r.HandleFunc("PUT /api/v1/clusters/{name}/nodes/{hostname}/network", s.handleNodeNetworkPut)
 	r.HandleFunc("POST /api/v1/clusters/{name}/apply", s.handleApply)
 	r.HandleFunc("GET /api/v1/clusters/{name}/apply", s.handleApplyRun)
+	r.HandleFunc("POST /api/v1/clusters/{name}/destroy", s.handleDestroy)
 }
 
 func (s *Server) machineOf(mac string) (config.Machine, error) {
@@ -90,6 +92,7 @@ type designRequest struct {
 	VIP      string          `json:"vip,omitempty"`
 	Machines []machineChoice `json:"machines"`
 	Hash     string          `json:"hash,omitempty"`
+	Apps     *appsRequest    `json:"apps,omitempty"`
 }
 
 type designNode struct {
@@ -116,12 +119,15 @@ type designView struct {
 	K8s      string       `json:"kubernetesVersion"`
 	Warnings []string     `json:"warnings"`
 	Hash     string       `json:"hash,omitempty"`
+	Apps     *appsReview  `json:"apps,omitempty"`
 }
 
 type design struct {
 	view  designView
 	spec  *config.Cluster
 	added []config.Node
+	apps  repo.AppsRepo
+	conn  repo.AppsConnect
 }
 
 func expandHome(p string) (string, error) {
@@ -233,15 +239,25 @@ func (s *Server) design(ctx context.Context, req designRequest, probe bool) (*de
 			return nil, invalid(err)
 		}
 		vip := strings.TrimSpace(req.VIP)
+		if req.Apps != nil && req.Apps.Dir != "" {
+			rv, a, conn, err := reviewApps(ctx, *req.Apps, name, "", false)
+			if err != nil {
+				return nil, err
+			}
+			d.view.Apps, d.apps, d.conn = rv, a, conn
+		}
 		redesign = func(vip string) *config.Cluster {
 			c, _ := config.Design(name, ms, config.DesignOptions{Roles: roles, VIP: vip, Networks: ch.networks})
+			if rv := d.view.Apps; rv != nil {
+				c.Spec.Platform.Flux = config.Flux{Enabled: true, Repository: &config.FluxRepository{URL: rv.URL, Branch: rv.Branch, Path: rv.Path}}
+			}
 			return c
 		}
 		c := redesign(vip)
 		pickVIP = vip == ""
 		warnings = config.Lint(c, ms)
 		d.spec, d.added = c, c.Spec.Nodes
-		d.view = designView{Cluster: name, Dir: dir, New: true}
+		d.view = designView{Cluster: name, Dir: dir, New: true, Apps: d.view.Apps}
 	} else {
 		dir, err := s.repoOf(req.Cluster)
 		if err != nil {
@@ -350,9 +366,17 @@ func (s *Server) handleCreateRepo(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, err)
 		return
 	}
-	if _, err := repo.Init(d.view.Dir, d.spec, recipients); err != nil {
+	created, err := repo.Init(d.view.Dir, d.spec, recipients)
+	if err != nil {
 		writeErr(w, invalid(err))
 		return
+	}
+	if d.view.Apps != nil {
+		d.conn.FluxRecipient = created.Secrets.FluxRecipient()
+		if err := s.writeApps(r.Context(), d.view.Dir, "", d.apps, d.conn); err != nil {
+			writeErr(w, editErr(err))
+			return
+		}
 	}
 	if _, err := repo.GitInit(r.Context(), d.view.Dir); err != nil {
 		log.Printf("repo %s: git init: %v", d.view.Dir, err)

@@ -12,7 +12,7 @@ export function AddonToggle({ cluster, info, platform, label }: { cluster: strin
   if (info.key === 'backup') return null
   const key = info.key as PlatformKey
   const on = !!platform[key]?.enabled
-  const settings = !on && (key === 'metallb' || key === 'flux')
+  const settings = !on && key === 'metallb'
   const toggle = () => {
     if (settings) { setOpen(true); return }
     setBusy(true)
@@ -27,38 +27,21 @@ export function AddonToggle({ cluster, info, platform, label }: { cluster: strin
 }
 
 function AddonDialog({ cluster, name, addon, on, platform, onClose }: { cluster: string; name: string; addon: PlatformKey; on: boolean; platform: PlatformSpec; onClose: () => void }) {
-  const repo = platform.flux.repository
   const [range, setRange] = useState(platform.metallb.range ?? '')
-  const [url, setUrl] = useState(repo?.url ?? '')
-  const [branch, setBranch] = useState(repo?.branch ?? 'main')
-  const [path, setPath] = useState(repo?.path ?? './')
   const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
   const enabling = !on
   const needsRange = enabling && addon === 'metallb' && !range
   const save = () => {
     setBusy(true)
-    writeClusterYaml(cluster, (hash) => api.setAddon(cluster, addon, {
-      hash,
-      enabled: enabling,
-      ...(enabling && addon === 'metallb' ? { range } : {}),
-      ...(enabling && addon === 'flux' ? { repository: { url, branch, path } } : {}),
-    })).then(onClose).catch((e) => setError(e.message)).finally(() => setBusy(false))
+    writeClusterYaml(cluster, (hash) => api.setAddon(cluster, addon, { hash, enabled: enabling, ...(enabling && addon === 'metallb' ? { range } : {}) }))
+      .then(onClose).catch((e) => setError(e.message)).finally(() => setBusy(false))
   }
   return (
     <Dialog title={`${enabling ? 'Enable' : 'Disable'} ${name}`} onClose={onClose}
       footer={<><button class="btn" onClick={onClose}>Cancel</button><button class="btn btn-primary" disabled={busy || needsRange} onClick={save}>{busy ? 'Writing' : 'Write cluster.yaml'}</button></>}>
       <ErrorBox error={error} />
       {enabling && addon === 'metallb' && <Field label="Address range"><input class="input mono" value={range} placeholder="192.168.1.200-192.168.1.220" autofocus onInput={(e) => setRange(inputValue(e).trim())} /></Field>}
-      {enabling && addon === 'flux' && (
-        <>
-          <Field label="Repository" hint="Optional"><input class="input mono" value={url} placeholder="https://github.com/you/apps.git" autofocus onInput={(e) => setUrl(inputValue(e).trim())} /></Field>
-          <div class="grid grid-cols-2 gap-3">
-            <Field label="Branch"><input class="input mono" value={branch} onInput={(e) => setBranch(inputValue(e).trim())} /></Field>
-            <Field label="Path"><input class="input mono" value={path} onInput={(e) => setPath(inputValue(e).trim())} /></Field>
-          </div>
-        </>
-      )}
     </Dialog>
   )
 }

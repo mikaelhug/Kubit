@@ -4,7 +4,7 @@ import (
 	"os"
 	"testing"
 
-	"github.com/mikael/kubit/internal/tofu"
+	"github.com/mikaelhug/kubit/internal/tofu"
 )
 
 func TestParseShowPlanReadsOpenTofuPlanJSON(t *testing.T) {

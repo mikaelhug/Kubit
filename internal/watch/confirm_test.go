@@ -4,7 +4,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mikael/kubit/internal/cluster"
+	"github.com/mikaelhug/kubit/internal/cluster"
 )
 
 func status(api bool, etcd bool, nodes ...cluster.NodeStatus) *cluster.Status {

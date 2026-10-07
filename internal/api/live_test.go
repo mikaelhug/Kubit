@@ -10,8 +10,8 @@ import (
 	"time"
 
 	"github.com/coder/websocket"
-	"github.com/mikael/kubit/internal/config"
-	"github.com/mikael/kubit/internal/store"
+	"github.com/mikaelhug/kubit/internal/config"
+	"github.com/mikaelhug/kubit/internal/store"
 )
 
 func TestSubscribeNeverRepeatsAReplayedMessage(t *testing.T) {

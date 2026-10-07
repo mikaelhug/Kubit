@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/mikael/kubit/internal/config"
+	"github.com/mikaelhug/kubit/internal/config"
 )
 
 func TestTalosRejectsAControlPlanePatchOnAWorker(t *testing.T) {

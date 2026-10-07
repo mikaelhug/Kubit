@@ -4,7 +4,7 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/mikael/kubit/internal/store"
+	"github.com/mikaelhug/kubit/internal/store"
 )
 
 func (s *Server) nodeRoutes() {

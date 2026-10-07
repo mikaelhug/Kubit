@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/mikael/kubit/internal/config"
+	"github.com/mikaelhug/kubit/internal/config"
 )
 
 const sampleSpec = `apiVersion: kubit.dev/v1

@@ -6,8 +6,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mikael/kubit/internal/config"
-	"github.com/mikael/kubit/internal/netx"
+	"github.com/mikaelhug/kubit/internal/config"
+	"github.com/mikaelhug/kubit/internal/netx"
 )
 
 const addressSpec = `

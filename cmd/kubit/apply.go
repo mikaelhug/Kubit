@@ -9,8 +9,8 @@ import (
 	"os"
 	"strings"
 
-	"github.com/mikael/kubit/internal/cluster"
-	"github.com/mikael/kubit/internal/repo"
+	"github.com/mikaelhug/kubit/internal/cluster"
+	"github.com/mikaelhug/kubit/internal/repo"
 	"github.com/spf13/cobra"
 )
 
@@ -131,11 +131,18 @@ func lockHolder() string {
 	return cluster.Holder("cli")
 }
 
-func confirm(in io.Reader, out io.Writer) (bool, error) {
+func requireTerminal(in io.Reader) error {
 	if f, ok := in.(*os.File); ok {
 		if st, err := f.Stat(); err == nil && st.Mode()&os.ModeCharDevice == 0 {
-			return false, errors.New("not a terminal; pass --yes to apply")
+			return errors.New("not a terminal; pass --yes")
 		}
+	}
+	return nil
+}
+
+func confirm(in io.Reader, out io.Writer) (bool, error) {
+	if err := requireTerminal(in); err != nil {
+		return false, err
 	}
 	fmt.Fprint(out, "Apply these changes? [y/N] ")
 	line, err := bufio.NewReader(in).ReadString('\n')

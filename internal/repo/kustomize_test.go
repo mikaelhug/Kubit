@@ -8,7 +8,7 @@ import (
 	"testing"
 
 	"filippo.io/age"
-	"github.com/mikael/kubit/internal/sops"
+	"github.com/mikaelhug/kubit/internal/sops"
 	"go.yaml.in/yaml/v4"
 )
 

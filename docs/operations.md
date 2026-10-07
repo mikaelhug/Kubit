@@ -247,6 +247,6 @@ access. Under `sudo` (`kubit pxe`) Kubit uses the invoking user's `~/.kubit`.
 
 Deleting `~/.kubit` loses nothing but downloads.
 
-**Commands:** `kubit [dirs…]` (daemon and console), `serve`, `init`, `plan`, `apply`, `deploy-key`,
+**Commands:** `kubit [dirs…]` (daemon and console), `serve`, `init`, `plan`, `apply`, `connect`, `deploy-key`,
 `destroy`, `talosconfig`, `kubeconfig`, `pxe`, `etcd snapshot|list|restore`, `version`. Everything else is talosctl or
 kubectl with the derived credentials.

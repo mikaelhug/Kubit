@@ -11,7 +11,7 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/mikael/kubit/internal/httpx"
+	"github.com/mikaelhug/kubit/internal/httpx"
 	"go.yaml.in/yaml/v4"
 )
 

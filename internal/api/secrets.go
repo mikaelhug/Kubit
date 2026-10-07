@@ -13,8 +13,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/mikael/kubit/internal/repo"
-	"github.com/mikael/kubit/internal/sops"
+	"github.com/mikaelhug/kubit/internal/repo"
+	"github.com/mikaelhug/kubit/internal/sops"
 	"go.yaml.in/yaml/v4"
 )
 
@@ -137,8 +137,8 @@ func (s *Server) secretIndex(ctx context.Context) secretIndex {
 func (s *Server) attribute(v *secretFileView, r servedRepo, fluxOf []string, fluxes map[string]clusterFlux) {
 	for _, name := range fluxOf {
 		cf := fluxes[name]
-		root := cf.source.Path
-		if root != "" && !strings.HasPrefix(v.Path, root+"/") {
+		root, under := repo.RootOf(append(repo.FluxRoots(r.Dir, cf.source.Path), cf.source.Path), v.Path)
+		if !under {
 			continue
 		}
 		v.Cluster, v.Skipped = name, repo.Applied(r.Dir, root, v.Path)
@@ -174,6 +174,7 @@ type sourceView struct {
 	Cluster bool   `json:"cluster"`
 	Flux    bool   `json:"flux"`
 	Reads   bool   `json:"reads"`
+	Folder  string `json:"folder,omitempty"`
 	Error   string `json:"error,omitempty"`
 }
 
@@ -205,7 +206,11 @@ func (s *Server) handleClusterSecrets(w http.ResponseWriter, r *http.Request) {
 			root = cf.source.Path
 		}
 		reads := cf.recipient != "" && repo.FluxReads(sr.Dir, root, cf.recipient)
-		out.Sources = append(out.Sources, sourceView{Repo: sr.Index, Name: sr.Name, Dir: sr.Dir, Cluster: own, Flux: flux, Reads: reads, Error: sr.Error})
+		folder := ""
+		if flux {
+			folder = secretFolder(repo.FluxRoots(sr.Dir, root))
+		}
+		out.Sources = append(out.Sources, sourceView{Repo: sr.Index, Name: sr.Name, Dir: sr.Dir, Cluster: own, Flux: flux, Reads: reads, Folder: folder, Error: sr.Error})
 		for _, f := range sr.Files {
 			if f.Cluster == name {
 				out.Files = append(out.Files, f)
@@ -213,6 +218,15 @@ func (s *Server) handleClusterSecrets(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	writeJSON(w, http.StatusOK, out)
+}
+
+func secretFolder(roots []string) string {
+	for _, r := range roots {
+		if strings.HasPrefix(r, "apps/") {
+			return r
+		}
+	}
+	return roots[0]
 }
 
 type secretRef struct {
@@ -378,7 +392,7 @@ func (s *Server) handleSecretDelete(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, editErr(err))
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string][]string{"kustomizations": nonEmpty(k)})
+	writeJSON(w, http.StatusOK, map[string][]string{"kustomizations": nonEmpty(k...)})
 }
 
 func nonEmpty(xs ...string) []string {
@@ -441,5 +455,5 @@ func (s *Server) handleSecretFile(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, editErr(err))
 		return
 	}
-	writeJSON(w, http.StatusCreated, map[string][]string{"kustomizations": nonEmpty(k)})
+	writeJSON(w, http.StatusCreated, map[string][]string{"kustomizations": nonEmpty(k...)})
 }

@@ -3,9 +3,9 @@ package cluster
 import (
 	"testing"
 
-	"github.com/mikael/kubit/internal/config"
-	"github.com/mikael/kubit/internal/store"
-	"github.com/mikael/kubit/internal/talos"
+	"github.com/mikaelhug/kubit/internal/config"
+	"github.com/mikaelhug/kubit/internal/store"
+	"github.com/mikaelhug/kubit/internal/talos"
 )
 
 func TestATalosVIPIsNotRecordedAsAMachine(t *testing.T) {

@@ -2,6 +2,8 @@ import type { ComponentType } from 'preact'
 import { useEffect, useState } from 'preact/hooks'
 import { api, fmt, kubeconfigUrl, type CertInfo } from '../../api'
 import { DataTable, type Column } from '../../components/DataTable'
+import { DestroyCluster } from '../../components/DestroyCluster'
+import { AppsSettings } from './AppsSettings'
 import { Tabs } from '../../components/Tabs'
 import { CopyButton, ErrorBox, Notice, Pill, Section } from '../../components/ui'
 import { useQueryParams } from '../../query'
@@ -16,10 +18,10 @@ const certColumns: Column<CertInfo>[] = [
   { id: 'left', header: 'Left', align: 'right', sort: (c) => c.daysLeft, cell: (c) => <Pill tone={c.daysLeft < 14 ? 'bad' : c.daysLeft < 60 ? 'warn' : 'good'}>{c.daysLeft} days</Pill> },
 ]
 
-const views = ['yaml', 'git', 'certs'] as const
+const views = ['yaml', 'apps', 'git', 'certs', 'danger'] as const
 type View = (typeof views)[number]
 
-export function Repository({ ctx }: { ctx: ClusterCtx }) {
+export function Settings({ ctx }: { ctx: ClusterCtx }) {
   const { name } = ctx
   const [query, setQuery] = useQueryParams()
   const { data: repo, error: repoError } = useLive(() => api.repo(name), [name], [[name, 'repo']], { onError: 'box' })
@@ -33,18 +35,39 @@ export function Repository({ ctx }: { ctx: ClusterCtx }) {
         actions={<a class="btn btn-sm" href={kubeconfigUrl(name)} download="kubeconfig">kubeconfig</a>}
         tabs={[
           { id: 'yaml', label: 'cluster.yaml' },
+          { id: 'apps', label: 'Apps' },
           { id: 'git', label: 'Git', badge: uncommitted || undefined, tone: 'warn' },
           ...(certs?.length ? [{ id: 'certs', label: 'Certificates', badge: expiring || undefined, tone: 'warn' as const }] : []),
+          { id: 'danger', label: 'Danger zone' },
         ]} />
       {view === 'yaml' && <ClusterYAML name={name} />}
+      {view === 'apps' && <AppsSettings ctx={ctx} />}
       {view === 'git' && <Repo repo={repo} error={repoError} />}
       {view === 'certs' && !!certs?.length && (
         <Section>
           <DataTable id="certs" search={false} columns={certColumns} rows={certs} rowKey={(c) => c.name} defaultSort={{ id: 'left', dir: 'asc' }} />
         </Section>
       )}
+      {view === 'danger' && (
+        <Section>
+          <div class="panel p-3 max-w-xl flex flex-wrap items-center gap-3 text-[13px]">
+            <div class="flex flex-col gap-1">
+              <span class="label">Cluster</span>
+              <span><span class="font-medium">{name}</span><span class="text-muted"> · {nodeCount(ctx)}</span></span>
+            </div>
+            <span class="ml-auto"><DestroyCluster cluster={name} /></span>
+          </div>
+        </Section>
+      )}
     </>
   )
+}
+
+function nodeCount(ctx: ClusterCtx) {
+  const nodes = ctx.cluster.spec.spec.nodes
+  const cps = nodes.filter((n) => n.role === 'controlplane').length
+  const workers = nodes.length - cps
+  return `${cps} control plane${cps === 1 ? '' : 's'}, ${workers} worker${workers === 1 ? '' : 's'}`
 }
 
 type EditorProps = { value: string; onChange: (v: string) => void; onSave: () => void }

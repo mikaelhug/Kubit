@@ -10,7 +10,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/mikael/kubit/internal/watch"
+	"github.com/mikaelhug/kubit/internal/watch"
 )
 
 func (s *Server) forwardEvent(e watch.Event) {

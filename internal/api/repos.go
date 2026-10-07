@@ -11,10 +11,10 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/mikael/kubit/internal/cluster"
-	"github.com/mikael/kubit/internal/config"
-	"github.com/mikael/kubit/internal/repo"
-	"github.com/mikael/kubit/internal/store"
+	"github.com/mikaelhug/kubit/internal/cluster"
+	"github.com/mikaelhug/kubit/internal/config"
+	"github.com/mikaelhug/kubit/internal/repo"
+	"github.com/mikaelhug/kubit/internal/store"
 )
 
 type servedRepo struct {
@@ -69,9 +69,35 @@ func (s *Server) serveRepo(dir string) (*cluster.Desired, error) {
 	}
 	return d, repo.Watch(ctx, []string{dir}, repo.Events{
 		Changed: func(dir string) { s.loadRepo(ctx, dir, true) },
-		Secrets: func(string) { s.refresh("", scopeSecrets) },
-		Git:     func(dir string) { s.refreshRepo(dir); s.refresh("", scopeSecrets) },
+		Secrets: func(dir string) { s.refresh("", scopeSecrets); s.appsChanged(ctx, dir, false) },
+		Git:     func(dir string) { s.refreshRepo(dir); s.refresh("", scopeSecrets); s.appsChanged(ctx, dir, true) },
 	})
+}
+
+const scopeApps = "apps"
+
+func (s *Server) appsChanged(ctx context.Context, dir string, replan bool) {
+	if e := s.repoAt(dir); e == nil || e.Cluster != "" {
+		return
+	}
+	remotes := repo.Remotes(ctx, dir)
+	for _, r := range s.servedRepos() {
+		if r.Cluster == "" {
+			continue
+		}
+		d, err := s.manager.Desired(r.Cluster)
+		if err != nil || d.Cluster.Spec.Platform.Flux.Repository == nil {
+			continue
+		}
+		url := d.Cluster.Spec.Platform.Flux.Repository.URL
+		if !slices.ContainsFunc(remotes, func(u string) bool { return repo.SameRemote(u, url) }) {
+			continue
+		}
+		s.refresh(r.Cluster, scopeApps)
+		if replan {
+			s.kickPlan(r.Cluster, "apps repository")
+		}
+	}
 }
 
 const scopeRepo = "repo"

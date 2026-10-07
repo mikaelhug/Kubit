@@ -44,10 +44,12 @@ function diskCandidates(inv?: Inventory | null) {
 }
 export const installCandidates = (m?: NodeRow | null) => diskCandidates(m?.inventory)
 
+export const memoryOf = (inv?: Inventory | null) => inv?.memory?.reduce((a, m) => a + m.sizeBytes, 0) || inv?.memoryBytes || 0
+
 export function specsOf(inv?: Inventory | null) {
   if (!inv) return ''
   const disk = diskCandidates(inv)[0]
-  return [`${inv.cpus} CPU`, fmt.bytes(inv.memoryBytes), disk && `${fmt.bytes(disk.sizeBytes)}${disk.transport ? ` ${disk.transport}` : ''}`].filter(Boolean).join(' · ')
+  return [`${inv.cpus} CPU`, fmt.bytes(memoryOf(inv)), disk && `${fmt.bytes(disk.sizeBytes)}${disk.transport ? ` ${disk.transport}` : ''}`].filter(Boolean).join(' · ')
 }
 
 export const roleLabel = (role?: string) => (role === 'controlplane' ? 'control plane' : 'worker')

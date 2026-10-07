@@ -5,8 +5,8 @@ import (
 	"net/http"
 	"strconv"
 
-	"github.com/mikael/kubit/internal/repo"
-	"github.com/mikael/kubit/internal/sops"
+	"github.com/mikaelhug/kubit/internal/repo"
+	"github.com/mikaelhug/kubit/internal/sops"
 )
 
 func (s *Server) sopsRoutes() {
@@ -29,14 +29,19 @@ func (s *Server) handleLetFluxDecrypt(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, err)
 		return
 	}
+	root := ""
 	if q := r.URL.Query().Get("repo"); q != "" {
 		i, err := strconv.Atoi(q)
+		own := dir
 		if err == nil {
 			dir, err = s.repoDir(i)
 		}
 		if err != nil {
 			writeErr(w, badRequest("unknown repo"))
 			return
+		}
+		if dir != own {
+			root = s.fluxOf(name, own).source.Path
 		}
 	}
 	k, err := s.manager.SOPSKey(name)
@@ -49,7 +54,7 @@ func (s *Server) handleLetFluxDecrypt(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, err)
 		return
 	}
-	n, err := repo.LetFluxDecrypt(dir, k.Recipient, ids)
+	n, err := repo.LetFluxDecrypt(dir, root, k.Recipient, ids)
 	s.secretsChanged(dir)
 	if err != nil {
 		writeErr(w, conflict(err.Error()))

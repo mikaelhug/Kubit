@@ -83,13 +83,17 @@ func (c *Client) list(ctx context.Context, root string) ([]string, error) {
 	}
 }
 
-func (c *Client) readText(ctx context.Context, p string) (string, error) {
+func (c *Client) readAll(ctx context.Context, p string) ([]byte, error) {
 	rc, err := c.Read(ctx, p)
 	if err != nil {
-		return "", err
+		return nil, err
 	}
 	defer rc.Close()
-	b, err := io.ReadAll(rc)
+	return io.ReadAll(rc)
+}
+
+func (c *Client) readText(ctx context.Context, p string) (string, error) {
+	b, err := c.readAll(ctx, p)
 	return strings.TrimSpace(string(b)), err
 }
 

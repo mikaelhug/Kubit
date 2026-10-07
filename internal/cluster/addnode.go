@@ -4,7 +4,7 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/mikael/kubit/internal/config"
+	"github.com/mikaelhug/kubit/internal/config"
 )
 
 func (m *Manager) AddNode(ctx context.Context, name string, n config.Node, sink Sink) error {

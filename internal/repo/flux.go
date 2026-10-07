@@ -5,43 +5,61 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path"
 	"path/filepath"
 	"slices"
 
 	"filippo.io/age"
-	"github.com/mikael/kubit/internal/gitremote"
-	"github.com/mikael/kubit/internal/sops"
+	"github.com/mikaelhug/kubit/internal/gitremote"
+	"github.com/mikaelhug/kubit/internal/sops"
 	"go.yaml.in/yaml/v4"
 )
 
 const sampleSecret = "apps/example.sops.yaml"
 
-func FluxReads(dir, root, recipient string) bool {
-	r, err := sops.RuleFor(dir, filepath.Join(dir, filepath.FromSlash(root), sampleSecret))
-	return err == nil && slices.Contains(r.Age, recipient)
+func fluxSamples(dir, root string) []string {
+	var out []string
+	for _, r := range FluxRoots(dir, root) {
+		out = append(out, path.Join(r, sampleSecret))
+	}
+	return out
 }
 
-func LetFluxDecrypt(dir, recipient string, ids []age.Identity) (int, error) {
-	if _, err := sops.AddRecipient(dir, recipient, SecretsFile); err != nil {
+func FluxReads(dir, root, recipient string) bool {
+	for _, sample := range fluxSamples(dir, root) {
+		r, err := sops.RuleFor(dir, filepath.Join(dir, filepath.FromSlash(sample)))
+		if err != nil || !slices.Contains(r.Age, recipient) {
+			return false
+		}
+	}
+	return true
+}
+
+func LetFluxDecrypt(dir, root, recipient string, ids []age.Identity) (int, error) {
+	if _, err := sops.AddRecipient(dir, recipient, SecretsFile, fluxSamples(dir, root)); err != nil {
 		return 0, err
 	}
 	files, err := SecretFiles(dir)
 	if err != nil {
 		return 0, err
 	}
+	roots := FluxRoots(dir, root)
 	n := 0
 	var errs []error
 	for _, f := range files {
-		if f.Error != "" || slices.Contains(f.Recipients, recipient) {
+		if _, under := RootOf(roots, f.Path); !under || f.Error != "" || slices.Contains(f.Recipients, recipient) {
 			continue
 		}
-		path := filepath.Join(dir, filepath.FromSlash(f.Path))
-		rule, err := sops.RuleFor(dir, path)
+		p := filepath.Join(dir, filepath.FromSlash(f.Path))
+		rule, err := sops.RuleFor(dir, p)
 		if err != nil {
 			errs = append(errs, fmt.Errorf("%s: %w", f.Path, err))
 			continue
 		}
-		err = replace(path, f.Hash, 0o644, func(b []byte) ([]byte, error) { return sops.Rekey(b, ids, rule.Age) })
+		if !slices.Contains(rule.Age, recipient) {
+			continue
+		}
+		err = replace(p, f.Hash, 0o644, func(b []byte) ([]byte, error) { return sops.Rekey(b, ids, rule.Age) })
 		if err != nil {
 			errs = append(errs, fmt.Errorf("%s: %w", f.Path, err))
 			continue

@@ -15,8 +15,8 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/mikael/kubit/internal/fsx"
-	"github.com/mikael/kubit/internal/httpx"
+	"github.com/mikaelhug/kubit/internal/fsx"
+	"github.com/mikaelhug/kubit/internal/httpx"
 	utilversion "k8s.io/apimachinery/pkg/util/version"
 )
 

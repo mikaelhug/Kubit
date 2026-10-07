@@ -1,7 +1,7 @@
 package cluster
 
 import (
-	"github.com/mikael/kubit/internal/config"
+	"github.com/mikaelhug/kubit/internal/config"
 )
 
 func node(host, mac, ip string) config.Node {

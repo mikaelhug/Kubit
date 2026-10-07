@@ -14,9 +14,9 @@ import (
 	"runtime"
 	"time"
 
-	"github.com/mikael/kubit/internal/api"
-	"github.com/mikael/kubit/internal/repo"
-	"github.com/mikael/kubit/internal/watch"
+	"github.com/mikaelhug/kubit/internal/api"
+	"github.com/mikaelhug/kubit/internal/repo"
+	"github.com/mikaelhug/kubit/internal/watch"
 	"github.com/spf13/cobra"
 )
 

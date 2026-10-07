@@ -10,8 +10,8 @@ import (
 	"strings"
 
 	"filippo.io/age"
-	"github.com/mikael/kubit/internal/fsx"
-	"github.com/mikael/kubit/internal/yamlx"
+	"github.com/mikaelhug/kubit/internal/fsx"
+	"github.com/mikaelhug/kubit/internal/yamlx"
 	"go.yaml.in/yaml/v4"
 )
 
@@ -39,7 +39,7 @@ func WriteConfig(dir string, operator, apps []string, protected string) error {
 	all := append(slices.Clone(operator), apps...)
 	cf := configFile{CreationRules: []creationRule{
 		{PathRegex: protectedRegex(protected), Age: strings.Join(operator, ",")},
-		{PathRegex: `\.sops\.ya?ml$`, Age: strings.Join(slices.Compact(all), ",")},
+		{PathRegex: catchAll, Age: strings.Join(slices.Compact(all), ",")},
 	}}
 	b, err := yamlx.Encode(cf)
 	if err != nil {
@@ -48,7 +48,86 @@ func WriteConfig(dir string, operator, apps []string, protected string) error {
 	return fsx.WriteFile(filepath.Join(dir, ConfigFile), b, 0o644)
 }
 
-func AddRecipient(dir, recipient, protected string) (bool, error) {
+func AddRecipient(dir, recipient, protected string, samples []string) (bool, error) {
+	return editRules(dir, func(rules *yaml.Node) (bool, error) {
+		guard := slices.IndexFunc(rules.Content, func(r *yaml.Node) bool { return ruleMatches(r, protected) })
+		if guard < 0 {
+			return false, fmt.Errorf("%s has no rule for %s", ConfigFile, protected)
+		}
+		changed := false
+		if slices.ContainsFunc(samples, func(s string) bool { return ruleMatches(rules.Content[guard], s) }) {
+			ageNode, _ := yamlx.Lookup(rules.Content[guard], "age")
+			if ageNode == nil {
+				return false, fmt.Errorf("%s: the rule for %s has no age recipients", ConfigFile, protected)
+			}
+			own := &yaml.Node{Kind: yaml.MappingNode, Tag: "!!map", Content: []*yaml.Node{
+				scalarNode("path_regex"), scalarNode(protectedRegex(protected)),
+				scalarNode("age"), copyNode(ageNode),
+			}}
+			rules.Content = slices.Insert(rules.Content, guard, own)
+			changed = true
+		}
+		for _, sample := range samples {
+			i := slices.IndexFunc(rules.Content, func(r *yaml.Node) bool { return ruleMatches(r, sample) })
+			if i < 0 || i == guard {
+				continue
+			}
+			if ageNode, _ := yamlx.Lookup(rules.Content[i], "age"); ageNode != nil && addTo(ageNode, recipient) {
+				changed = true
+			}
+		}
+		return changed, nil
+	})
+}
+
+func EnvRegex(env string) string {
+	return `^(apps|infrastructure)/` + regexp.QuoteMeta(env) + `/.*\.sops\.ya?ml$`
+}
+
+const catchAll = `\.sops\.ya?ml$`
+
+func AppsConfig(operator, envs []string, protected string) ([]byte, error) {
+	age := strings.Join(operator, ",")
+	cf := configFile{CreationRules: []creationRule{{PathRegex: protectedRegex(protected), Age: age}}}
+	for _, env := range envs {
+		cf.CreationRules = append(cf.CreationRules, creationRule{PathRegex: EnvRegex(env), Age: age})
+	}
+	cf.CreationRules = append(cf.CreationRules, creationRule{PathRegex: catchAll, Age: age})
+	return yamlx.Encode(cf)
+}
+
+func AddEnvRule(dir, env string, operator []string) (bool, error) {
+	re := EnvRegex(env)
+	return editRules(dir, func(rules *yaml.Node) (bool, error) {
+		at := len(rules.Content)
+		for i, r := range rules.Content {
+			n, _ := yamlx.Lookup(r, "path_regex")
+			if n != nil && n.Value == re {
+				return false, nil
+			}
+			if (n == nil || n.Value == catchAll) && i < at {
+				at = i
+			}
+		}
+		rule := &yaml.Node{Kind: yaml.MappingNode, Tag: "!!map", Content: []*yaml.Node{
+			scalarNode("path_regex"), scalarNode(re),
+			scalarNode("age"), scalarNode(strings.Join(operator, ",")),
+		}}
+		rules.Content = slices.Insert(rules.Content, at, rule)
+		return true, nil
+	})
+}
+
+func ruleMatches(rule *yaml.Node, rel string) bool {
+	re, _ := yamlx.Lookup(rule, "path_regex")
+	if re == nil {
+		return true
+	}
+	ok, err := regexp.MatchString(re.Value, rel)
+	return err == nil && ok
+}
+
+func editRules(dir string, edit func(rules *yaml.Node) (bool, error)) (bool, error) {
 	path := filepath.Join(dir, ConfigFile)
 	unlock := fsx.Lock(path)
 	defer unlock()
@@ -67,46 +146,9 @@ func AddRecipient(dir, recipient, protected string) (bool, error) {
 	if rules == nil || rules.Kind != yaml.SequenceNode {
 		return false, errors.New(ConfigFile + " has no creation_rules")
 	}
-	matches := func(rule *yaml.Node, rel string) bool {
-		re, _ := yamlx.Lookup(rule, "path_regex")
-		if re == nil {
-			return true
-		}
-		ok, err := regexp.MatchString(re.Value, rel)
-		return err == nil && ok
-	}
-	sample := "apps/example.sops.yaml"
-	guard := slices.IndexFunc(rules.Content, func(r *yaml.Node) bool { return matches(r, protected) })
-	if guard < 0 {
-		return false, fmt.Errorf("%s has no rule for %s", ConfigFile, protected)
-	}
-	changed := false
-	if matches(rules.Content[guard], sample) {
-		ageNode, _ := yamlx.Lookup(rules.Content[guard], "age")
-		if ageNode == nil {
-			return false, fmt.Errorf("%s: the rule for %s has no age recipients", ConfigFile, protected)
-		}
-		own := &yaml.Node{Kind: yaml.MappingNode, Tag: "!!map", Content: []*yaml.Node{
-			scalarNode("path_regex"), scalarNode(protectedRegex(protected)),
-			scalarNode("age"), copyNode(ageNode),
-		}}
-		rules.Content = slices.Insert(rules.Content, guard, own)
-		changed = true
-	}
-	for i, rule := range rules.Content {
-		if i == guard {
-			continue
-		}
-		ageNode, _ := yamlx.Lookup(rule, "age")
-		if ageNode == nil {
-			continue
-		}
-		if addTo(ageNode, recipient) {
-			changed = true
-		}
-	}
-	if !changed {
-		return false, nil
+	changed, err := edit(rules)
+	if err != nil || !changed {
+		return false, err
 	}
 	out, err := yamlx.Encode(&doc)
 	if err != nil {

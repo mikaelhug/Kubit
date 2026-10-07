@@ -1,5 +1,5 @@
 import { authedUrl, req } from './api/http'
-import type { AddonStatus, Build, CertInfo, ApplyRun, ClusterRow, ConfigStatus, DesignRequest, DesignView, DiscoverState, FluxObject, HealthEvent, ImageStatus, Inventory, Namespace, NetworkView, NodeDetail, NodeNetworkView, NodeRow, PodEvent, Plan, PlanSummary, PodSummary, PxeStatus, RepoView, SecretEntry, SecretIndex, SecretSpec, ClusterSecrets, DeployKey, SOPSKey, Sample, Service, Snapshot, Status, StorageView, Versions, Workload } from './api/types'
+import type { AppsRepo, AppsRequest, AppsReview, AppsStatus, AddonStatus, Build, CertInfo, ApplyRun, ClusterRow, ConfigStatus, DesignRequest, DesignView, DirListing, DiscoverState, FluxObject, FluxRepository, HealthEvent, ImageStatus, Inventory, Namespace, NetworkView, NodeDetail, NodeNetworkView, NodeRow, PodEvent, Plan, PlanSummary, PodSummary, PxeStatus, RepoView, SecretEntry, SecretIndex, SecretSpec, ClusterSecrets, DeployKey, SOPSKey, Sample, Service, Snapshot, Status, StorageView, Versions, Workload } from './api/types'
 
 export type * from './api/types'
 export { getToken } from './api/http'
@@ -10,18 +10,24 @@ export const api = {
   design: (cluster: string, body: DesignRequest) => req<DesignView>('POST', '/design', { ...body, cluster: cluster || undefined }),
   designChecks: (cluster: string, body: DesignRequest) => req<DesignView>('POST', '/design/checks', { ...body, cluster: cluster || undefined }),
   createRepo: (body: DesignRequest) => req<DesignView>('POST', '/repos', body),
+  dirs: (path: string) => req<DirListing>('GET', `/dirs?path=${encodeURIComponent(path)}`),
+  inspectApps: (dir: string) => req<AppsRepo>('GET', `/apps?dir=${encodeURIComponent(dir)}`),
+  appsStatus: (cluster: string) => req<AppsStatus>('GET', `/clusters/${cluster}/apps`),
+  reviewApps: (cluster: string, body: AppsRequest) => req<AppsReview>('POST', `/clusters/${cluster}/apps/review`, body),
+  connectApps: (cluster: string, body: AppsRequest & { hash: string }) => req<{ hash: string }>('POST', `/clusters/${cluster}/apps`, body),
   addNodes: (cluster: string, body: DesignRequest) => req<DesignView>('POST', `/clusters/${cluster}/nodes`, body),
   repo: (cluster: string) => req<RepoView>('GET', `/clusters/${cluster}/repo`),
   nodeNetwork: (cluster: string, host: string) => req<NodeNetworkView>('GET', `/clusters/${cluster}/nodes/${host}/network`),
   setNodeNetwork: (cluster: string, host: string, body: { static: boolean; address?: string; gateway?: string; nameservers?: string[]; hash: string }) => req<{ hash: string }>('PUT', `/clusters/${cluster}/nodes/${host}/network`, body),
   removeNode: (cluster: string, hostname: string, hash: string) => req<{ hash: string }>('DELETE', `/clusters/${cluster}/nodes/${hostname}?hash=${hash}`),
-  setAddon: (cluster: string, key: string, body: { enabled: boolean; range?: string; repository?: { url: string; branch?: string; path?: string }; hash: string }) => req<{ hash: string }>('PUT', `/clusters/${cluster}/platform/${key}`, body),
+  setAddon: (cluster: string, key: string, body: { enabled: boolean; range?: string; repository?: FluxRepository; hash: string }) => req<{ hash: string }>('PUT', `/clusters/${cluster}/platform/${key}`, body),
   setVersions: (cluster: string, body: { talosVersion?: string; kubernetesVersion?: string; hash: string }) => req<{ hash: string }>('PUT', `/clusters/${cluster}/versions`, body),
   plans: () => req<PlanSummary[]>('GET', '/plans'),
   plan: (cluster: string) => req<{ summary: PlanSummary; plan: Plan | null }>('GET', `/clusters/${cluster}/plan`),
   replan: (cluster: string) => req<void>('POST', `/clusters/${cluster}/plan`),
   apply: (cluster: string, allowRemoval: boolean, planHash: string) => req<void>('POST', `/clusters/${cluster}/apply`, { allowRemoval, planHash }),
   applyRun: (cluster: string) => req<ApplyRun>('GET', `/clusters/${cluster}/apply`),
+  destroy: (cluster: string, name: string) => req<void>('POST', `/clusters/${cluster}/destroy`, { name }),
   status: (name: string) => req<Status>('GET', `/clusters/${name}/status`),
   checkNow: (name: string) => req<void>('POST', `/clusters/${name}/check`),
   samples: (name: string, range = '24h', node = '') => req<Sample[]>('GET', `/clusters/${name}/samples?range=${range}&node=${encodeURIComponent(node)}`),

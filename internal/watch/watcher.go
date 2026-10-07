@@ -5,8 +5,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/mikael/kubit/internal/cluster"
-	"github.com/mikael/kubit/internal/store"
+	"github.com/mikaelhug/kubit/internal/cluster"
+	"github.com/mikaelhug/kubit/internal/store"
 )
 
 type Watcher struct {

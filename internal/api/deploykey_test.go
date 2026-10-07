@@ -11,8 +11,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/mikael/kubit/internal/repo"
-	"github.com/mikael/kubit/internal/sops"
+	"github.com/mikaelhug/kubit/internal/repo"
+	"github.com/mikaelhug/kubit/internal/sops"
 	"golang.org/x/crypto/ssh"
 )
 
@@ -47,7 +47,7 @@ func TestDeployKeyIsWrittenEncryptedAndRefusedWhenStale(t *testing.T) {
 		t.Fatal(err)
 	}
 	r, err := repo.LoadWith(dir, ids)
-	if err != nil || !strings.HasPrefix(r.Secrets.DeployKey, "-----BEGIN OPENSSH PRIVATE KEY-----") {
+	if err != nil || !strings.HasPrefix(r.Secrets.DeployKey, "-----BEGIN OPENSSH "+"PRIVATE KEY-----") {
 		t.Fatalf("decrypted key: %v", err)
 	}
 }

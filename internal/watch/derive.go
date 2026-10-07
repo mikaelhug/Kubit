@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"slices"
 
-	"github.com/mikael/kubit/internal/cluster"
+	"github.com/mikaelhug/kubit/internal/cluster"
 )
 
 func Derive(name string, prev, cur *cluster.Status) []Event {

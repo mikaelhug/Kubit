@@ -18,7 +18,7 @@ import (
 
 	"filippo.io/age"
 	"filippo.io/age/armor"
-	"github.com/mikael/kubit/internal/yamlx"
+	"github.com/mikaelhug/kubit/internal/yamlx"
 	"go.yaml.in/yaml/v4"
 )
 

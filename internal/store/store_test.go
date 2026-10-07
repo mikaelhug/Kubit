@@ -3,7 +3,7 @@ package store_test
 import (
 	"testing"
 
-	"github.com/mikael/kubit/internal/store"
+	"github.com/mikaelhug/kubit/internal/store"
 )
 
 func TestMachineIdentityFollowsTheMACNotTheAddress(t *testing.T) {

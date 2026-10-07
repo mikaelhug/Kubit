@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/mikael/kubit/internal/api"
+	"github.com/mikaelhug/kubit/internal/api"
 	"sigs.k8s.io/yaml"
 )
 

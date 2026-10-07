@@ -5,7 +5,7 @@ import { KindPill, TypePill } from '../components/Machine'
 import { AddMachines } from '../components/AddMachine'
 import { ScanBox } from '../components/ScanBox'
 import { Code, KeyValue, Notice, Pill, SeenAgo, Section } from '../components/ui'
-import { addable, installCandidates, lastSeenOf, modelOf, specsOf } from '../machine'
+import { addable, installCandidates, lastSeenOf, memoryOf, modelOf, specsOf } from '../machine'
 import { live, machineList, toast } from '../store'
 import { useLive } from '../useLive'
 
@@ -33,7 +33,7 @@ const readyColumns = (selected: Set<string>, toggle: (mac: string) => void, all:
   { id: 'machine', header: 'Machine', sort: (n) => n.ip, text: (n) => `${modelOf(n)} ${n.mac} ${n.serial ?? ''}`, cell: machineCell },
   { id: 'ip', header: 'Address', mono: true, sort: (n) => n.ip, cell: (n) => n.ip },
   { id: 'type', header: 'Type', cell: (n) => <TypePill m={n} /> },
-  { id: 'hardware', header: 'Hardware', sort: (n) => n.inventory?.memoryBytes ?? 0, cell: hardware },
+  { id: 'hardware', header: 'Hardware', sort: (n) => memoryOf(n.inventory), cell: hardware },
   { id: 'talos', header: 'Talos', mono: true, cell: (n) => n.inventory?.talosVersion || n.talosVersion || '—' },
   { id: 'seen', header: 'Seen', sort: (n) => lastSeenOf(n), cell: (n) => <SeenAgo observed={lastSeenOf(n)} /> },
   { id: 'add', header: '', align: 'right', cell: (n) => <AddMachines machines={[n]} primary={false} /> },

@@ -8,8 +8,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/mikael/kubit/internal/cluster"
-	"github.com/mikael/kubit/internal/repo"
+	"github.com/mikaelhug/kubit/internal/cluster"
+	"github.com/mikaelhug/kubit/internal/repo"
 )
 
 type applyLine struct {
@@ -21,6 +21,7 @@ type applyLine struct {
 }
 
 type applyRun struct {
+	Kind     string      `json:"kind"`
 	Running  bool        `json:"running"`
 	Started  string      `json:"started"`
 	Finished string      `json:"finished,omitempty"`
@@ -71,24 +72,61 @@ func (s *Server) handleApply(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, conflict("The plan changed since you reviewed it; review the new plan."))
 		return
 	}
-	s.runsMu.Lock()
-	if run := s.runs[name]; run != nil && run.Running {
-		s.runsMu.Unlock()
-		writeErr(w, conflict("An apply is already running."))
+	opts := cluster.ConvergeOptions{AllowRemoval: req.AllowRemoval}
+	if err := s.startRun(name, "apply", func(ctx context.Context, sink cluster.Sink) error {
+		return s.applyReviewed(ctx, name, d, req.PlanHash, opts, sink)
+	}); err != nil {
+		writeErr(w, err)
 		return
 	}
-	run := &applyRun{Running: true, Started: time.Now().UTC().Format(time.RFC3339), Lines: []applyLine{}}
-	s.runs[name] = run
-	s.runsMu.Unlock()
-	s.setSummary(name, func(sum *planSummary) { sum.State, sum.Holder = planApplying, "" })
-	s.refresh(name, scopeApply)
-	go s.apply(s.serveCtx, name, d, req.PlanHash, cluster.ConvergeOptions{AllowRemoval: req.AllowRemoval}, run)
+	w.WriteHeader(http.StatusAccepted)
+}
+
+func (s *Server) handleDestroy(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Name string `json:"name"`
+	}
+	if !decode(w, r, &req) {
+		return
+	}
+	name := r.PathValue("name")
+	d, err := s.desiredOf(name)
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+	if err := cluster.CheckDestroy(d.Cluster, req.Name); err != nil {
+		writeErr(w, conflict(err.Error()))
+		return
+	}
+	if err := s.startRun(name, "destroy", func(ctx context.Context, sink cluster.Sink) error {
+		defer cluster.KeepAwake()()
+		return s.manager.Destroy(ctx, d, req.Name, cluster.Holder("console"), sink)
+	}); err != nil {
+		writeErr(w, err)
+		return
+	}
 	w.WriteHeader(http.StatusAccepted)
 }
 
 const scopeApply = "apply"
 
-func (s *Server) apply(ctx context.Context, name string, d *cluster.Desired, reviewed string, opts cluster.ConvergeOptions, run *applyRun) {
+func (s *Server) startRun(name, kind string, fn func(context.Context, cluster.Sink) error) error {
+	s.runsMu.Lock()
+	if run := s.runs[name]; run != nil && run.Running {
+		s.runsMu.Unlock()
+		return conflict("An apply is already running.")
+	}
+	run := &applyRun{Kind: kind, Running: true, Started: time.Now().UTC().Format(time.RFC3339), Lines: []applyLine{}}
+	s.runs[name] = run
+	s.runsMu.Unlock()
+	s.setSummary(name, func(sum *planSummary) { sum.State, sum.Holder = planApplying, "" })
+	s.refresh(name, scopeApply)
+	go s.run(name, run, fn)
+	return nil
+}
+
+func (s *Server) run(name string, run *applyRun, fn func(context.Context, cluster.Sink) error) {
 	sink := func(e cluster.Event) {
 		line := applyLine{TS: e.Time.UTC().Format(time.RFC3339), Level: string(e.Level), Step: e.Step, Node: e.Node, Message: e.Message}
 		if e.Kind == cluster.KindStep {
@@ -105,7 +143,7 @@ func (s *Server) apply(ctx context.Context, name string, d *cluster.Desired, rev
 		s.runsMu.Unlock()
 		s.hub.publish(Message{Kind: "apply", Cluster: name, Line: &line})
 	}
-	err := s.applyReviewed(ctx, name, d, reviewed, opts, sink)
+	err := fn(s.serveCtx, sink)
 	s.runsMu.Lock()
 	run.Running, run.Finished = false, time.Now().UTC().Format(time.RFC3339)
 	if err != nil {

@@ -14,7 +14,7 @@ import (
 
 	"github.com/insomniacslk/dhcp/dhcpv4"
 	"github.com/insomniacslk/dhcp/iana"
-	"github.com/mikael/kubit/internal/factory"
+	"github.com/mikaelhug/kubit/internal/factory"
 )
 
 func discover(t *testing.T, mods ...dhcpv4.Modifier) *dhcpv4.DHCPv4 {

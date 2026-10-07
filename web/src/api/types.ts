@@ -6,10 +6,11 @@ export interface Plan { hash: string; cluster: string; changes: PlanChange[]; in
 export type PlanState = 'checking' | 'ready' | 'blocked' | 'applying' | 'failed'
 export interface PlanSummary { cluster: string; state: PlanState; hash?: string; changes: number; oneTime: number; problems: number; plannedAt?: string; holder?: string; error?: string }
 export interface ApplyLine { ts: string; level: 'info' | 'warn' | 'error' | 'done'; step: string; node?: string; message: string }
-export interface ApplyRun { running: boolean; started?: string; finished?: string; error?: string; lines: ApplyLine[] }
+export interface ApplyRun { kind?: 'apply' | 'destroy'; running: boolean; started?: string; finished?: string; error?: string; lines: ApplyLine[] }
 export interface HealthEvent { id: number; ts: string; cluster: string; node?: string; severity: 'info' | 'warn' | 'critical'; kind: string; message: string; open: boolean }
 export interface Sample { ts: string; node?: string; cpuMilli: number; cpuCap: number; memBytes: number; memCap: number; pods: number; ready: boolean; reachable: boolean }
 export interface SOPSKey { recipient: string }
+export interface DirListing { path: string; parent?: string; dirs: { name: string; git?: boolean; cluster?: boolean }[] }
 export interface DeployKey { publicKey?: string; fingerprint?: string; hosts: { host: string; type: string; fingerprint: string }[] | null; hash: string }
 export interface Build { name: string; image?: string; state: 'running' | 'succeeded' | 'failed'; pod?: string; startedAt?: string; finishedAt?: string }
 export interface FluxRepository { url: string; branch?: string; path?: string; interval?: string }
@@ -55,9 +56,11 @@ export interface CertInfo { name: string; subject: string; issuer?: string; notB
 export interface ClusterRow { name: string; state: string; spec: ClusterSpec; hash: string }
 
 export interface Inventory {
-  ip: string; hostname?: string; uuid?: string; serial?: string; cpus: number; memoryBytes: number; kvm: boolean; virtual?: boolean; arch: string; talosVersion: string; platform: string; stage: string; manufacturer?: string; product?: string
-  disks: { devPath: string; sizeBytes: number; model?: string; transport?: string; rotational: boolean; readonly: boolean; cdrom: boolean; serial?: string; wwid?: string; links?: string[] }[]
-  links: { name: string; mac: string; up: boolean; addresses?: string[] }[]
+  ip: string; hostname?: string; uuid?: string; serial?: string; cpus: number; cpuModel?: string; cpuCores?: number; cpuSockets?: number; memoryBytes: number; kvm: boolean; virtual?: boolean; arch: string; talosVersion: string; platform: string; stage: string; manufacturer?: string; product?: string; systemVersion?: string; biosVersion?: string
+  memory?: { slot: string; bank?: string; sizeBytes: number; empty?: boolean; type?: string; speedMTs?: number; configuredMTs?: number; manufacturer?: string; part?: string; serial?: string }[]
+  disks: { devPath: string; sizeBytes: number; model?: string; transport?: string; rotational: boolean; readonly: boolean; cdrom: boolean; serial?: string; wwid?: string; firmware?: string; links?: string[] }[]
+  links: { name: string; mac: string; up: boolean; addresses?: string[]; speedMbps?: number; mtu?: number }[]
+  pci?: { address: string; kind?: string; vendor?: string; product?: string; driver?: string }[]
   bootTime?: string; extensions?: { name: string; version: string; author?: string }[]
   etcd?: { memberId: string; leader: boolean; learner: boolean; dbSizeBytes: number; dbInUseBytes: number; raftIndex: number; raftTerm: number; errors?: string[] }
 }
@@ -105,7 +108,7 @@ export interface SecretFile {
 }
 export interface SecretRepo { index: number; dir: string; name: string; cluster?: string; error?: string; files: SecretFile[]; fluxOf: string[]; fluxRecipient?: string; fluxReads: boolean }
 export interface SecretIndex { repos: SecretRepo[]; labels: Record<string, string> }
-export interface SecretSource { repo: number; name: string; dir: string; cluster: boolean; flux: boolean; reads: boolean; error?: string }
+export interface SecretSource { repo: number; name: string; dir: string; cluster: boolean; flux: boolean; reads: boolean; folder?: string; error?: string }
 export interface FluxSource { enabled: boolean; url?: string; branch?: string; path?: string }
 export interface ClusterSecrets { flux: FluxSource; recipient?: string; sources: SecretSource[]; files: SecretFile[]; labels: Record<string, string> }
 export interface SecretEntry { path: string[]; value: string }
@@ -129,7 +132,14 @@ export interface DesignRequest {
   vip?: string
   machines: MachineChoice[]
   hash?: string
+  apps?: AppsRequest
 }
+
+export interface AppsRequest { dir: string; environment?: string; environments?: string[]; path?: string }
+export interface AppsRepo { dir: string; display: string; kind: 'empty' | 'layout' | 'other'; environments: string[]; clusters: { name: string; environment?: string }[]; branch: string; remote: string; url: string }
+export interface AppsFile { repo: string; path: string; action: 'create' | 'edit' }
+export interface AppsReview { repo: AppsRepo; url: string; branch: string; path: string; files: AppsFile[]; deployKey: boolean }
+export interface AppsStatus { url?: string; branch?: string; path?: string; checkout?: { dir: string; environment?: string; git: GitState } }
 
 export interface DesignNode { hostname: string; ip: string; mac: string; role: string; disk: string; diskBytes?: number; network?: NodeNetwork; live: LiveNet; inUse?: boolean }
 
@@ -145,6 +155,7 @@ export interface DesignView {
   kubernetesVersion: string
   warnings: string[]
   hash?: string
+  apps?: AppsReview
 }
 
 export interface GitState { repo: boolean; branch?: string; upstream?: string; ahead: number; changes: { status: string; path: string }[] }

@@ -3,7 +3,7 @@ package talos_test
 import (
 	"testing"
 
-	"github.com/mikael/kubit/internal/talos"
+	"github.com/mikaelhug/kubit/internal/talos"
 )
 
 func TestInstallTargetsTheScannedMACAndNeverARemovableDisk(t *testing.T) {

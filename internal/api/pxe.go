@@ -15,7 +15,7 @@ import (
 	"time"
 
 	"github.com/fsnotify/fsnotify"
-	"github.com/mikael/kubit/internal/httpx"
+	"github.com/mikaelhug/kubit/internal/httpx"
 )
 
 func (s *Server) pxeRoutes() {

@@ -6,7 +6,7 @@ import { addressOf } from '../../net'
 import { useConfigStatus } from '../../configStatus'
 import { Pill, Section } from '../../components/ui'
 import { machines } from '../../store'
-import { modelName, roleLabel, specsOf } from '../../machine'
+import { memoryOf, modelName, roleLabel, specsOf } from '../../machine'
 import { degrees, sensorOf, temperatureTitle, temperatureTone } from '../../temperature'
 import { toneText } from '../../tone'
 import type { ClusterCtx } from './ClusterPage'
@@ -39,7 +39,7 @@ export function Nodes({ ctx }: { ctx: ClusterCtx }) {
         )
       } },
       { id: 'role', header: 'Role', sort: (n) => `${n.role === 'controlplane' ? 0 : 1} ${n.hostname}`, cell: (n) => roleLabel(n.role) },
-      { id: 'hardware', header: 'Hardware', sort: (n) => inventoryOf(n)?.memoryBytes ?? 0, text: (n) => `${modelName(inventoryOf(n))} ${specsOf(inventoryOf(n))}`, cell: (n) => {
+      { id: 'hardware', header: 'Hardware', sort: (n) => memoryOf(inventoryOf(n)), text: (n) => `${modelName(inventoryOf(n))} ${specsOf(inventoryOf(n))}`, cell: (n) => {
         const inv = inventoryOf(n)
         return inv ? (
           <span class="flex flex-col whitespace-nowrap max-w-[200px]" title={`${modelName(inv)}\n${specsOf(inv)}`}>
@@ -56,7 +56,7 @@ export function Nodes({ ctx }: { ctx: ClusterCtx }) {
         </span>
       ) },
       { id: 'cpu', header: 'CPU', align: 'right', sort: (n) => n.cpuMilli, cell: (n) => <>{fmt.cores(n.cpuMilli)}<span class="text-muted">/{fmt.cores(n.cpuCapMilli)}</span></> },
-      { id: 'ram', header: 'Memory', align: 'right', sort: (n) => n.memBytes, cell: (n) => { const small = !!n.memAllocBytes && n.memAllocBytes < smallAlloc; return <span title={n.memAllocBytes ? `${fmt.bytes(n.memAllocBytes)} allocatable for pods${small ? '; too small for the add-ons' : ''}` : undefined}><span class={n.memCapBytes && n.memBytes >= n.memCapBytes * 0.95 ? 'text-bad' : ''}>{fmt.bytes(n.memBytes)}</span><span class={small ? 'text-warn' : 'text-muted'}>/{fmt.bytes(n.memCapBytes)}</span></span> } },
+      { id: 'ram', header: 'Memory', align: 'right', sort: (n) => n.memBytes, cell: (n) => { const small = !!n.memAllocBytes && n.memAllocBytes < smallAlloc; return <span title={n.memAllocBytes ? `${fmt.bytes(n.memAllocBytes)} allocatable for pods${small ? '; too small for the add-ons' : ''}` : undefined}><span class={n.memCapBytes && n.memBytes >= n.memCapBytes * 0.95 ? 'text-bad' : ''}>{fmt.bytes(n.memBytes)}</span><span class={small ? 'text-warn' : 'text-muted'}>/{fmt.bytes(memoryOf(inventoryOf(n)) || n.memCapBytes)}</span></span> } },
       { id: 'pods', header: 'Pods', align: 'right', sort: (n) => n.pods, cell: (n) => <a href={`/clusters/${name}/workloads?view=pods&node=${encodeURIComponent(n.hostname)}`} class="hover:underline">{n.pods}</a> },
       ...(sensors ? [{ id: 'temp', header: 'Temp', align: 'right', sort: (n: NodeStatus) => sensorOf(n.temperatures, 'cpu')?.celsius ?? -1, cell: (n: NodeStatus) => <NodeTemperature n={n} /> } satisfies Column<NodeStatus>] : []),
     ]

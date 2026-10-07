@@ -7,7 +7,7 @@ import (
 	stdx509 "crypto/x509"
 	"encoding/json"
 	"fmt"
-	"github.com/mikael/kubit/internal/repo"
+	"github.com/mikaelhug/kubit/internal/repo"
 	"io"
 	"net"
 	"net/http"

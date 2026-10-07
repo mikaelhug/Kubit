@@ -7,8 +7,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/mikael/kubit/internal/config"
-	"github.com/mikael/kubit/internal/talos"
+	"github.com/mikaelhug/kubit/internal/config"
+	"github.com/mikaelhug/kubit/internal/talos"
 	"github.com/siderolabs/talos/pkg/machinery/config/generate/secrets"
 )
 

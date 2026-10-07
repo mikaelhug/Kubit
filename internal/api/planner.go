@@ -12,7 +12,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/mikael/kubit/internal/cluster"
+	"github.com/mikaelhug/kubit/internal/cluster"
 )
 
 const (

@@ -1,6 +1,7 @@
 package repo
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"os"
@@ -9,7 +10,7 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/mikael/kubit/internal/yamlx"
+	"github.com/mikaelhug/kubit/internal/yamlx"
 	"go.yaml.in/yaml/v4"
 )
 
@@ -34,6 +35,74 @@ func FluxRoot(p string) string {
 		return ""
 	}
 	return c
+}
+
+func FluxRoots(dir, root string) []string {
+	root = FluxRoot(root)
+	base := filepath.Join(dir, filepath.FromSlash(root))
+	var files []string
+	if k := kustomizationIn(base); k != "" {
+		res, err := resources(k)
+		if err != nil {
+			return []string{root}
+		}
+		for _, r := range res {
+			files = append(files, filepath.Join(base, filepath.FromSlash(r)))
+		}
+	} else if entries, err := os.ReadDir(base); err == nil {
+		for _, e := range entries {
+			files = append(files, filepath.Join(base, e.Name()))
+		}
+	}
+	var roots []string
+	for _, f := range files {
+		if ext := filepath.Ext(f); ext != ".yaml" && ext != ".yml" {
+			continue
+		}
+		for _, p := range fluxPaths(f) {
+			if !slices.Contains(roots, p) {
+				roots = append(roots, p)
+			}
+		}
+	}
+	if len(roots) == 0 {
+		return []string{root}
+	}
+	return roots
+}
+
+func fluxPaths(file string) []string {
+	b, err := os.ReadFile(file)
+	if err != nil {
+		return nil
+	}
+	var out []string
+	dec := yaml.NewDecoder(bytes.NewReader(b))
+	for {
+		var d struct {
+			APIVersion string `yaml:"apiVersion"`
+			Kind       string `yaml:"kind"`
+			Spec       struct {
+				Path string `yaml:"path"`
+			} `yaml:"spec"`
+		}
+		if err := dec.Decode(&d); err != nil {
+			return out
+		}
+		if d.Kind == "Kustomization" && strings.HasPrefix(d.APIVersion, "kustomize.toolkit.fluxcd.io/") {
+			out = append(out, FluxRoot(d.Spec.Path))
+		}
+	}
+}
+
+func RootOf(roots []string, rel string) (string, bool) {
+	best, found := "", false
+	for _, r := range roots {
+		if (r == "" || strings.HasPrefix(rel, r+"/")) && (!found || len(r) > len(best)) {
+			best, found = r, true
+		}
+	}
+	return best, found
 }
 
 func Applied(dir, root, rel string) string {
@@ -95,6 +164,86 @@ func ListResource(dir, rel string) (string, error) {
 		seq.Content = append(seq.Content, &yaml.Node{Kind: yaml.ScalarNode, Value: base})
 		return true
 	})
+}
+
+func ListPath(dir, rel string) ([]string, error) {
+	rel = path.Clean(filepath.ToSlash(rel))
+	var missing []string
+	cur := path.Dir(rel)
+	for kustomizationIn(filepath.Join(dir, filepath.FromSlash(cur))) == "" {
+		if cur == "." {
+			return nil, nil
+		}
+		missing = append(missing, cur)
+		cur = path.Dir(cur)
+	}
+	var touched []string
+	child := rel
+	for _, m := range missing {
+		b, err := kustomizationFile([]string{path.Base(child)})
+		if err != nil {
+			return touched, err
+		}
+		k := path.Join(m, "kustomization.yaml")
+		if err := create(filepath.Join(dir, filepath.FromSlash(k)), 0o644, b); err != nil {
+			return touched, err
+		}
+		touched = append(touched, k)
+		child = m
+	}
+	k, err := ListResource(dir, child)
+	if k != "" {
+		touched = append(touched, k)
+	}
+	return touched, err
+}
+
+func UnlistPath(dir, rel string) ([]string, error) {
+	var touched []string
+	child := path.Clean(filepath.ToSlash(rel))
+	for {
+		k, err := UnlistResource(dir, child)
+		if err != nil || k == "" {
+			return touched, err
+		}
+		touched = append(touched, k)
+		folder := path.Dir(child)
+		if folder == "." || !emptyKustomization(filepath.Join(dir, filepath.FromSlash(folder))) {
+			return touched, nil
+		}
+		if err := os.Remove(filepath.Join(dir, filepath.FromSlash(k))); err != nil {
+			return touched, err
+		}
+		_ = os.Remove(filepath.Join(dir, filepath.FromSlash(folder)))
+		child = folder
+	}
+}
+
+func emptyKustomization(folder string) bool {
+	entries, err := os.ReadDir(folder)
+	if err != nil || len(entries) != 1 || !IsKustomization(entries[0].Name()) {
+		return false
+	}
+	b, err := os.ReadFile(filepath.Join(folder, entries[0].Name()))
+	if err != nil {
+		return false
+	}
+	var k map[string]any
+	if err := yaml.Unmarshal(b, &k); err != nil {
+		return false
+	}
+	for key, v := range k {
+		switch key {
+		case "apiVersion", "kind":
+		case "resources":
+			if l, ok := v.([]any); !ok || len(l) > 0 {
+				return false
+			}
+		default:
+			return false
+		}
+	}
+	return true
 }
 
 func UnlistResource(dir, rel string) (string, error) {

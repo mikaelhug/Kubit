@@ -5,7 +5,7 @@ import (
 	"sort"
 	"time"
 
-	"github.com/mikael/kubit/internal/netx"
+	"github.com/mikaelhug/kubit/internal/netx"
 )
 
 const (

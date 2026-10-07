@@ -8,8 +8,8 @@ import (
 	"testing"
 
 	"filippo.io/age"
-	"github.com/mikael/kubit/internal/store"
-	"github.com/mikael/kubit/internal/talos"
+	"github.com/mikaelhug/kubit/internal/store"
+	"github.com/mikaelhug/kubit/internal/talos"
 )
 
 func maintenanceMachine(t *testing.T, st *store.Store, mac, ip string) {

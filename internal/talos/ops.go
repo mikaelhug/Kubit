@@ -239,6 +239,17 @@ func (c *Client) ResetToMaintenance(ctx context.Context) error {
 	return c.Reset(c.nodeContext(ctx), true, true)
 }
 
+func (c *Client) WipeToMaintenance(ctx context.Context) error {
+	return c.ResetGeneric(c.nodeContext(ctx), &machineapi.ResetRequest{
+		Graceful: false,
+		Reboot:   true,
+		SystemPartitionsToWipe: []*machineapi.ResetPartitionSpec{
+			{Label: "STATE", Wipe: true},
+			{Label: "EPHEMERAL", Wipe: true},
+		},
+	})
+}
+
 func (c *Client) AdminKubeconfig(ctx context.Context) ([]byte, error) {
 	return c.Kubeconfig(c.nodeContext(ctx))
 }

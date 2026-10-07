@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"text/tabwriter"
 
-	"github.com/mikael/kubit/internal/cluster"
+	"github.com/mikaelhug/kubit/internal/cluster"
 	"github.com/spf13/cobra"
 )
 

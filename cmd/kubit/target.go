@@ -3,8 +3,8 @@ package main
 import (
 	"fmt"
 
-	"github.com/mikael/kubit/internal/cluster"
-	"github.com/mikael/kubit/internal/repo"
+	"github.com/mikaelhug/kubit/internal/cluster"
+	"github.com/mikaelhug/kubit/internal/repo"
 	"github.com/spf13/cobra"
 )
 

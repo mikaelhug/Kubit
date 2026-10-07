@@ -3,7 +3,7 @@ package cluster
 import (
 	"testing"
 
-	"github.com/mikael/kubit/internal/k8s"
+	"github.com/mikaelhug/kubit/internal/k8s"
 )
 
 func TestADisabledChartlessAddonStillRunningIsOrphaned(t *testing.T) {

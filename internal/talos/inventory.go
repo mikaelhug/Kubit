@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -23,27 +24,34 @@ import (
 )
 
 type Inventory struct {
-	IP           string      `json:"ip"`
-	Hostname     string      `json:"hostname,omitempty"`
-	TalosVersion string      `json:"talosVersion"`
-	Arch         string      `json:"arch"`
-	Platform     string      `json:"platform"`
-	Stage        string      `json:"stage"`
-	CPUs         int         `json:"cpus"`
-	MemoryBytes  uint64      `json:"memoryBytes"`
-	Manufacturer string      `json:"manufacturer,omitempty"`
-	Product      string      `json:"product,omitempty"`
-	UUID         string      `json:"uuid,omitempty"`
-	Serial       string      `json:"serial,omitempty"`
-	KVM          bool        `json:"kvm"`
-	Virtual      bool        `json:"virtual"`
-	Disks        []Disk      `json:"disks"`
-	Links        []Link      `json:"links"`
-	Gateway      string      `json:"gateway,omitempty"`
-	Nameservers  []string    `json:"nameservers,omitempty"`
-	BootTime     string      `json:"bootTime,omitempty"`
-	Extensions   []Extension `json:"extensions,omitempty"`
-	Etcd         *EtcdMember `json:"etcd,omitempty"`
+	IP            string         `json:"ip"`
+	Hostname      string         `json:"hostname,omitempty"`
+	TalosVersion  string         `json:"talosVersion"`
+	Arch          string         `json:"arch"`
+	Platform      string         `json:"platform"`
+	Stage         string         `json:"stage"`
+	CPUs          int            `json:"cpus"`
+	CPUModel      string         `json:"cpuModel,omitempty"`
+	CPUCores      int            `json:"cpuCores,omitempty"`
+	CPUSockets    int            `json:"cpuSockets,omitempty"`
+	MemoryBytes   uint64         `json:"memoryBytes"`
+	Memory        []MemoryModule `json:"memory,omitempty"`
+	Manufacturer  string         `json:"manufacturer,omitempty"`
+	Product       string         `json:"product,omitempty"`
+	SystemVersion string         `json:"systemVersion,omitempty"`
+	BIOSVersion   string         `json:"biosVersion,omitempty"`
+	UUID          string         `json:"uuid,omitempty"`
+	Serial        string         `json:"serial,omitempty"`
+	KVM           bool           `json:"kvm"`
+	Virtual       bool           `json:"virtual"`
+	Disks         []Disk         `json:"disks"`
+	Links         []Link         `json:"links"`
+	PCI           []PCIDevice    `json:"pci,omitempty"`
+	Gateway       string         `json:"gateway,omitempty"`
+	Nameservers   []string       `json:"nameservers,omitempty"`
+	BootTime      string         `json:"bootTime,omitempty"`
+	Extensions    []Extension    `json:"extensions,omitempty"`
+	Etcd          *EtcdMember    `json:"etcd,omitempty"`
 }
 
 func (inv Inventory) MarshalJSON() ([]byte, error) {
@@ -85,6 +93,7 @@ type Disk struct {
 	CDROM      bool     `json:"cdrom"`
 	Serial     string   `json:"serial,omitempty"`
 	WWID       string   `json:"wwid,omitempty"`
+	Firmware   string   `json:"firmware,omitempty"`
 	Links      []string `json:"links,omitempty"`
 }
 
@@ -93,7 +102,20 @@ type Link struct {
 	MAC       string   `json:"mac"`
 	Up        bool     `json:"up"`
 	Addresses []string `json:"addresses,omitempty"`
+	SpeedMbps int      `json:"speedMbps,omitempty"`
+	MTU       uint32   `json:"mtu,omitempty"`
 }
+
+type PCIDevice struct {
+	Address string `json:"address"`
+	Kind    string `json:"kind,omitempty"`
+	Vendor  string `json:"vendor,omitempty"`
+	Product string `json:"product,omitempty"`
+	Driver  string `json:"driver,omitempty"`
+}
+
+// PCI-SIG base class codes: mass storage, network, display, processing accelerator.
+var pciClasses = []string{"0x01", "0x02", "0x03", "0x12"}
 
 func (c *Client) Inspect(ctx context.Context) (*Inventory, error) {
 	ctx = c.nodeContext(ctx)
@@ -116,6 +138,17 @@ func (c *Client) Inspect(ctx context.Context) (*Inventory, error) {
 	}
 	if cpu, err := c.MachineClient.CPUInfo(ctx, &emptypb.Empty{}); err == nil && len(cpu.Messages) > 0 {
 		inv.CPUs = len(cpu.Messages[0].CpuInfo)
+		if inv.CPUs > 0 {
+			inv.CPUModel = strings.TrimSpace(cpu.Messages[0].CpuInfo[0].ModelName)
+		}
+	}
+	if cores, err := safe.StateListAll[*hardware.CPUCore](ctx, c.COSI); err == nil {
+		sockets := map[string]bool{}
+		for core := range cores.All() {
+			inv.CPUCores++
+			sockets[core.TypedSpec().Socket] = true
+		}
+		inv.CPUSockets = len(sockets)
 	}
 	if mem, err := c.Memory(ctx); err == nil && len(mem.Messages) > 0 && mem.Messages[0].Meminfo != nil {
 		inv.MemoryBytes = mem.Messages[0].Meminfo.Memtotal * 1024
@@ -126,7 +159,10 @@ func (c *Client) Inspect(ctx context.Context) (*Inventory, error) {
 		inv.Virtual = IsVirtual(inv.Manufacturer, inv.Product)
 		inv.UUID = si.TypedSpec().UUID
 		inv.Serial = si.TypedSpec().SerialNumber
+		inv.SystemVersion = dmiText(si.TypedSpec().Version)
+		inv.BIOSVersion = dmiText(si.TypedSpec().BIOSVersion)
 	}
+	inv.Memory = c.memoryModules(ctx)
 	inv.KVM = c.exists(ctx, "/dev/kvm")
 
 	disks, err := safe.StateListAll[*block.Disk](ctx, c.COSI)
@@ -141,7 +177,7 @@ func (c *Client) Inspect(ctx context.Context) (*Inventory, error) {
 		inv.Disks = append(inv.Disks, Disk{
 			DevPath: s.DevPath, SizeBytes: s.Size, Model: s.Model, Transport: s.Transport,
 			Rotational: s.Rotational, Readonly: s.Readonly, CDROM: s.CDROM,
-			Serial: s.Serial, WWID: s.WWID, Links: byIDLinks(s.Symlinks),
+			Serial: s.Serial, WWID: s.WWID, Firmware: s.FirmwareVersion, Links: byIDLinks(s.Symlinks),
 		})
 	}
 	sort.Slice(inv.Disks, func(i, j int) bool { return inv.Disks[i].DevPath < inv.Disks[j].DevPath })
@@ -164,9 +200,24 @@ func (c *Client) Inspect(ctx context.Context) (*Inventory, error) {
 		inv.Links = append(inv.Links, Link{
 			Name: l.Metadata().ID(), MAC: s.HardwareAddr.String(),
 			Up: s.OperationalState.String() == "up", Addresses: addrs[l.Metadata().ID()],
+			SpeedMbps: max(s.SpeedMegabits, 0), MTU: s.MTU,
 		})
 	}
 	sort.Slice(inv.Links, func(i, j int) bool { return inv.Links[i].Name < inv.Links[j].Name })
+	if pci, err := safe.StateListAll[*hardware.PCIDevice](ctx, c.COSI); err == nil {
+		for d := range pci.All() {
+			s := d.TypedSpec()
+			if !slices.Contains(pciClasses, s.ClassID) {
+				continue
+			}
+			kind := s.Subclass
+			if kind == "" {
+				kind = s.Class
+			}
+			inv.PCI = append(inv.PCI, PCIDevice{Address: d.Metadata().ID(), Kind: kind, Vendor: s.Vendor, Product: s.Product, Driver: s.Driver})
+		}
+		sort.Slice(inv.PCI, func(i, j int) bool { return inv.PCI[i].Address < inv.PCI[j].Address })
+	}
 	inv.Gateway, inv.Nameservers = c.uplinkRoute(ctx)
 
 	if st, err := c.MachineClient.SystemStat(ctx, &emptypb.Empty{}); err == nil && len(st.Messages) > 0 && st.Messages[0].BootTime > 0 {

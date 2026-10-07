@@ -83,3 +83,16 @@ func Status(ctx context.Context, dir string) GitState {
 	}
 	return st
 }
+
+func Unpushed(ctx context.Context, dir, branch string, paths []string) []string {
+	var out []string
+	for _, p := range paths {
+		if p == "" {
+			continue
+		}
+		if _, err := git(ctx, dir, "cat-file", "-e", "origin/"+branch+":"+p); err != nil {
+			out = append(out, p)
+		}
+	}
+	return out
+}

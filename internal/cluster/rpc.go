@@ -4,7 +4,7 @@ import (
 	"context"
 	"time"
 
-	"github.com/mikael/kubit/internal/talos"
+	"github.com/mikaelhug/kubit/internal/talos"
 )
 
 const (
