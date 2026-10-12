@@ -12,7 +12,6 @@ import { ClusterPage } from './pages/cluster/ClusterPage'
 import { Discovery } from './pages/Discovery'
 import { Home } from './pages/Home'
 import { NodePage } from './pages/node/NodePage'
-import { Secrets } from './pages/Secrets'
 import { sameView } from './routes'
 import { clusters, connected, daemon, machineList, plans, reconnectAttempt, resyncing, statuses, stopped, toast } from './store'
 
@@ -36,7 +35,10 @@ function Shell() {
     <div class="flex h-full min-h-screen">
       <nav class="w-52 shrink-0 border-r border-border bg-panel flex flex-col overflow-y-auto">
         <a href="/" class="px-4 py-3.5 border-b border-border flex items-center gap-2">
-          <span class="inline-block h-2.5 w-2.5 rounded-sm bg-accent" />
+          <svg class="h-4 w-4 shrink-0" viewBox="0 0 32 32" aria-hidden="true">
+            <polygon fill="var(--accent)" stroke="var(--accent)" stroke-width="2.5" stroke-linejoin="round" points="16,3 26.55,8.08 29.16,19.5 21.86,28.66 10.14,28.66 2.84,19.5 5.45,8.08" />
+            <rect fill="var(--accent-ink)" x="12" y="12.5" width="8" height="8" rx="1.5" />
+          </svg>
           <span class="font-semibold tracking-tight">Kubit</span>
         </a>
         <div class="mt-2"><NavLink href="/" path={path} exact>Home</NavLink></div>
@@ -44,7 +46,6 @@ function Shell() {
         <ClusterNav active={activeCluster} />
         <div class="px-4 pt-5 pb-1 label">Kubit</div>
         <NavLink href="/discovery" path={path}>Discovery <DiscoveryBadge /></NavLink>
-        <NavLink href="/secrets" path={path}>Secrets</NavLink>
         <StopKubit />
         <div class="px-4 py-2.5 text-[11px] text-muted border-t border-border flex items-center gap-2">
           <ConnectionDot />
@@ -60,7 +61,6 @@ function Shell() {
           <Route path="/nodes/:ip" component={NodePage} />
           <Route path="/machines/:mac" component={NodePage} />
           <Route path="/discovery" component={Discovery} />
-          <Route path="/secrets" component={Secrets} />
           <Route path="/" component={Home} />
           <Route default component={NotFound} />
         </Router>

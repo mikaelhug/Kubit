@@ -3,7 +3,7 @@ import { api, type KIngress, type KRoute, type KService } from '../../api'
 import { DataTable, withoutColumn } from '../../components/DataTable'
 import { NamespaceScope, useNamespaceScope } from '../../components/NamespaceScope'
 import { Age } from '../../components/Time'
-import { ErrorBox, KeyValue, Notice, Pill, Section } from '../../components/ui'
+import { ErrorBox, KeyValue, Notice, Pending, Pill, Section } from '../../components/ui'
 import { ipAt } from '../../net'
 import { createdSort } from '../../time'
 import { useLive } from '../../useLive'
@@ -16,7 +16,7 @@ const home = (x: KService) => (x.namespace === 'default' && x.name === 'kubernet
 export function Network({ ctx }: { ctx: ClusterCtx }) {
   const { name, status, cluster } = ctx
   const spec = cluster.spec.spec
-  const { data: view, error } = useLive(() => api.network(name), [name], [[name, 'network'], [name, 'addons']])
+  const { data: view, error } = useLive(() => api.network(name), [name], [[name, 'network'], [name, 'addons'], [name, 'config']])
   const pool = view?.pool
   const s = useNamespaceScope(name, view ? [...view.services.map(home), ...view.ingresses.map((x) => x.namespace), ...(view.routes ?? []).map((x) => x.namespace)] : null)
   const services = useMemo(() => (view?.services ?? []).filter((x) => s.keep(home(x))), [view, s.keep])
@@ -57,7 +57,14 @@ export function Network({ ctx }: { ctx: ClusterCtx }) {
     { id: 'accepted', header: 'Accepted', sort: (r) => r.accepted, cell: (r) => <Pill tone={r.accepted === 'True' ? 'good' : r.accepted === 'False' ? 'bad' : 'muted'} title={r.message}>{r.accepted === 'True' ? 'yes' : r.accepted === 'False' ? 'no' : 'unknown'}</Pill> },
     { id: 'age', header: 'Age', sort: createdSort, cell: (r) => <span class="text-muted"><Age at={r.createdAt} fallback={r.age} /></span> },
   ], 'ns', !!s.ns), [s.ns])
-  const ingressIP = status?.ingressIP || pool?.allocated.find((a) => a.service === 'traefik/traefik')?.ip
+  const ingressIP = status?.loadBalancer.ip || pool?.allocated.find((a) => a.service === 'traefik/traefik')?.ip
+  const observed = !!status?.apiReachable
+  const configRead = !!status?.configRead
+  const live = status?.controlPlane
+  const net = status?.network
+  const value = (v: string | undefined, declared: string | undefined) => !configRead ? <span class="text-muted">—</span> : (
+    <span class="inline-flex items-center gap-2">{v ? <span class="mono">{v}</span> : <span class="text-muted">none</span>}{(v ?? '') !== (declared ?? '') && <Pending cluster={name} />}</span>
+  )
 
   return (
     <div class="flex flex-col gap-5">
@@ -66,21 +73,21 @@ export function Network({ ctx }: { ctx: ClusterCtx }) {
         <Section title="Cluster addressing">
           <div class="panel p-3">
             <KeyValue rows={[
-              ['API endpoint', <span class="mono">{spec.controlPlane.endpoint}</span>],
-              ['Control plane VIP', spec.controlPlane.vip ? <span class="mono">{spec.controlPlane.vip}</span> : <span class="text-muted">none</span>],
-              ['Pod CIDR', <span class="mono">{spec.network.podCIDR}</span>],
-              ['Service CIDR', <span class="mono">{spec.network.serviceCIDR}</span>],
-              ['CNI', spec.network.policies === false ? 'Flannel' : 'Flannel, NetworkPolicy enforced'],
-              ['Node IPs', <span class="mono text-[12px]">{spec.nodes.map((n) => n.ip).join(', ')}</span>],
+              ['API endpoint', value(status?.endpoint, spec.controlPlane.endpoint)],
+              ['Control plane VIP', <span class="inline-flex items-center gap-2">{value(live?.vip, spec.controlPlane.vip)}{live?.vipHolder && <span class="text-muted">on {live.vipHolder}</span>}</span>],
+              ['Pod CIDR', value(net?.podCIDRs?.join(', '), spec.network.podCIDR)],
+              ['Service CIDR', value(net?.serviceCIDRs?.join(', '), spec.network.serviceCIDR)],
+              ['CNI', net?.cni.name ? <span class="inline-flex items-center gap-2"><span class="capitalize">{net.cni.name}</span>{net.cni.policies && <Pill tone="muted">NetworkPolicy enforced</Pill>}{observed && net.cni.policies !== (spec.network.policies !== false) && <Pending cluster={name} />}</span> : <span class="text-muted">—</span>],
+              ['Node IPs', <span class="mono text-[12px]">{(status?.nodes ?? []).map((n) => n.ip).join(', ')}</span>],
             ]} />
           </div>
         </Section>
         <Section title="MetalLB pool">
-          {!spec.platform.metallb.enabled && <Notice tone="muted">MetalLB is off.</Notice>}
+          {observed && !status?.loadBalancer.pool?.length && !pool && <Notice tone="muted"><span class="inline-flex items-center gap-2">MetalLB is off.{observed && spec.platform.metallb.enabled && <Pending cluster={name} />}</span></Notice>}
           {view?.poolError && <Notice tone="bad">{view.poolError}</Notice>}
           {pool && (
             <div class="panel p-3 flex flex-col gap-3">
-              <div class="flex items-baseline justify-between"><span class="mono">{pool.range}</span><span class="text-[13px]"><strong>{pool.allocated.length}</strong> <span class="text-muted">/ {pool.total} in use</span></span></div>
+              <div class="flex items-baseline justify-between"><span class="inline-flex items-center gap-2"><span class="mono">{pool.range}</span>{observed && (!spec.platform.metallb.enabled || spec.platform.metallb.range !== pool.range) && <Pending cluster={name} />}</span><span class="text-[13px]"><strong>{pool.allocated.length}</strong> <span class="text-muted">/ {pool.total} in use</span></span></div>
               {pool.total <= smallPool && <div class="flex flex-wrap gap-1">
                 {Array.from({ length: pool.total }, (_, i) => {
                   const ip = ipAt(pool.range, i)

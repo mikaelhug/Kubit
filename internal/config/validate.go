@@ -68,7 +68,10 @@ func (c *Cluster) validatePlatform() []error {
 	var errs []error
 	p := c.Spec.Platform
 	if p.Longhorn.Enabled && len(c.LonghornNodes()) == 0 {
-		errs = append(errs, fmt.Errorf("platform.longhorn needs storage.systemDisk or dataDisks on at least one node to hold replicas"))
+		errs = append(errs, fmt.Errorf("platform.longhorn needs storage.systemDisk or dataDisks on at least one node that runs workloads"))
+	}
+	if r := p.Longhorn.Replicas; r < 0 || p.Longhorn.Enabled && r > len(c.LonghornNodes()) {
+		errs = append(errs, fmt.Errorf("platform.longhorn.replicas %d: at most %d, one per node that holds Longhorn data", r, len(c.LonghornNodes())))
 	}
 	if p.Builds.Enabled {
 		if c.RegistryIP() == "" {
@@ -121,12 +124,28 @@ func (c *Cluster) validateAuth() []error {
 }
 
 func (c *Cluster) validateTalosVersion() []error {
-	contract, err := talosconfig.ParseContractFromVersion(c.Spec.TalosVersion)
+	var errs []error
+	if err := checkTalosVersion("talosVersion", c.Spec.TalosVersion); err != nil {
+		errs = append(errs, err)
+	}
+	for i, n := range c.Spec.Nodes {
+		if n.TalosVersion == "" {
+			continue
+		}
+		if err := checkTalosVersion(fmt.Sprintf("nodes[%d].talosVersion", i), n.TalosVersion); err != nil {
+			errs = append(errs, err)
+		}
+	}
+	return errs
+}
+
+func checkTalosVersion(field, v string) error {
+	contract, err := talosconfig.ParseContractFromVersion(v)
 	if err != nil {
-		return []error{fmt.Errorf("talosVersion: %w", err)}
+		return fmt.Errorf("%s: %w", field, err)
 	}
 	if !contract.UnattendedInstallConfig() || !contract.MultidocKubernetesConfigSupported() {
-		return []error{fmt.Errorf("talosVersion %s: Kubit requires Talos %s or newer", c.Spec.TalosVersion, MinTalosVersion)}
+		return fmt.Errorf("%s %s: Kubit requires Talos %s or newer", field, v, MinTalosVersion)
 	}
 	return nil
 }
@@ -138,6 +157,9 @@ func (c *Cluster) validateControlPlane() []error {
 	}
 	if len(c.ControlPlanes()) == 0 {
 		errs = append(errs, errors.New("at least one controlplane node is required"))
+	}
+	if s := c.Spec.ControlPlane.AllowScheduling; s != nil && !*s && len(c.Spec.Nodes) > 0 && len(c.Workers()) == 0 {
+		errs = append(errs, errors.New("controlPlane.allowScheduling: false leaves no node for workloads; add a worker or allow scheduling"))
 	}
 	if u, err := url.Parse(c.Spec.ControlPlane.Endpoint); err != nil || u.Scheme != "https" || u.Host == "" {
 		errs = append(errs, fmt.Errorf("controlPlane.endpoint %q must be an https URL", c.Spec.ControlPlane.Endpoint))
@@ -262,7 +284,7 @@ func (c *Cluster) validateNodeNetwork(p string, nn *NodeNetwork) []error {
 		if i == 0 {
 			first = pfx
 		}
-		if pfx.Addr().Is4() && pfx.Bits() <= 30 && (pfx.Addr() == pfx.Masked().Addr() || pfx.Addr() == lastAddr(pfx)) {
+		if pfx.Addr().Is4() && pfx.Bits() <= 30 && (pfx.Addr() == pfx.Masked().Addr() || pfx.Addr() == netx.Broadcast(pfx)) {
 			errs = append(errs, fmt.Errorf("%s.network.addresses %q is the network's own or broadcast address", p, a))
 		}
 		if v := c.Spec.ControlPlane.VIP; v != "" && v == pfx.Addr().String() {
@@ -336,11 +358,4 @@ func validTaint(key, value string) error {
 		return nil
 	}
 	return fmt.Errorf("%s=%q: effect must be NoSchedule, PreferNoSchedule or NoExecute (write value:Effect)", key, value)
-}
-
-func lastAddr(pfx netip.Prefix) netip.Addr {
-	b := pfx.Masked().Addr().As4()
-	host := uint32(1)<<(32-pfx.Bits()) - 1
-	v := uint32(b[0])<<24 | uint32(b[1])<<16 | uint32(b[2])<<8 | uint32(b[3]) | host
-	return netip.AddrFrom4([4]byte{byte(v >> 24), byte(v >> 16), byte(v >> 8), byte(v)})
 }

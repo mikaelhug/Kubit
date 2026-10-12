@@ -18,6 +18,28 @@ const searchFrom = 10
 
 export const withoutColumn = <T,>(cols: Column<T>[], id: string, hide: boolean) => (hide ? cols.filter((c) => c.id !== id) : cols)
 
+export function useSelection() {
+  const [selected, setSelected] = useState<Set<string>>(new Set())
+  return {
+    selected,
+    toggle: (key: string) => setSelected((cur) => { const next = new Set(cur); if (!next.delete(key)) next.add(key); return next }),
+    setAll: (keys: string[], on: boolean) => setSelected(on ? new Set(keys) : new Set()),
+    clear: () => setSelected(new Set()),
+  }
+}
+
+export type Selection = ReturnType<typeof useSelection>
+
+export function selectColumn<T>(rows: T[], key: (row: T) => string, sel: Selection, label: (row: T) => string): Column<T> {
+  const keys = rows.map(key)
+  const picked = keys.filter((k) => sel.selected.has(k)).length
+  return {
+    id: 'pick', width: '28px',
+    header: <input type="checkbox" aria-label="Select all" checked={keys.length > 0 && picked === keys.length} indeterminate={picked > 0 && picked < keys.length} onChange={(e) => sel.setAll(keys, (e.target as HTMLInputElement).checked)} />,
+    cell: (row) => <input type="checkbox" aria-label={`Select ${label(row)}`} checked={sel.selected.has(key(row))} onChange={() => sel.toggle(key(row))} />,
+  }
+}
+
 interface Props<T> {
   columns: Column<T>[]
   rows: T[]

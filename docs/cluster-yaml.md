@@ -67,9 +67,11 @@ spec:
       dataDisks: [/dev/vdb]        # whole disks → xfs at /var/mnt/data-N
     - hostname: gpu-01
       ip: 192.168.64.150
+      talosVersion: v1.14.3        # default: spec.talosVersion
       labels: { workload: gpu }
       taints: { nvidia.com/gpu: "true:NoSchedule" }
       installDisk: { selector: { minSize: 100GB, type: nvme } }
+      storage: { systemDisk: false }   # overrides spec.storage for this node
       network: { addresses: [192.168.64.150/24], gateway: 192.168.64.1, vlan: 0 }
       patches: []                  # this node only, after the cluster patches
   backup:                          # absent = off
@@ -82,7 +84,7 @@ spec:
     gvisor: { enabled: false }
     metricsServer: { enabled: true }
     certManager: { enabled: true }
-    longhorn: { enabled: true }
+    longhorn: { enabled: true, replicas: 2 }   # default: min(3, nodes holding data)
     builds: { enabled: false }
     flux:
       enabled: true
@@ -99,6 +101,23 @@ inside its prefix that is not its own address; no network or broadcast address; 
 owned by two nodes (across `ip` and targets); the VIP and the pod and service CIDRs stay
 clear; without a VIP, `controlPlane.endpoint` must follow a control plane that moves.
 
+**Versions.** Kubernetes is cluster-wide. Each node runs its own Talos version:
+`nodes[].talosVersion`, else `spec.talosVersion`, with that version's config contract and
+installer. *Update* on the Nodes tab writes the version on the selected nodes; a node
+version equal to `spec.talosVersion` is dropped, and when every node carries the same one it
+moves to `spec.talosVersion`. *Upgrade* (Home, Overview) sets `spec.talosVersion` and drops
+node versions that are not newer.
+
+**Wake-on-LAN.** *Power on* sends a magic packet to the node's `mac`. The NIC must keep
+Wake-on-LAN armed through a shutdown: enable it in the firmware and, where the driver turns
+it off, add a node patch with the kernel link name (the machine page lists the links; the
+`uplink` alias does not work here):
+
+```yaml
+      patches:
+        - { apiVersion: v1alpha1, kind: EthernetConfig, name: enp3s0, wakeOnLan: [magic] }
+```
+
 **Generated configs** are Talos 1.14 multi-document: v1alpha1 core,
 `UnattendedInstallConfig` (installer + disk selector), `HostnameConfig`,
 `KubeNodeConfig` (node labels, taints), `LinkAliasConfig` `uplink` by MAC,
@@ -113,7 +132,19 @@ Talos < 1.14 is rejected.
 **Disks.** `installDisk` holds Talos; each `dataDisks` entry becomes a whole-disk xfs
 `UserVolumeConfig` at `/var/mnt/data-N`. With `storage.systemDisk` a node without data
 disks keeps `ephemeralSize` for `/var` and gives the rest of the install disk to
-`data-system` (fresh installs only; Longhorn must be on).
+`data-system` (fresh installs only; Longhorn must be on). Longhorn places replicas only on
+nodes that run workloads: workers, and control planes while `controlPlane.allowScheduling` is
+on. Which disks carry `data-system` is fixed per node at install; the review gives control
+planes that don't run workloads `storage: { systemDisk: false }`, so changing
+`allowScheduling` later never changes a disk layout.
+The review in Discovery › Add sets both for a new cluster (*Schedule workloads on control
+planes*, *Longhorn storage on system disks*); Longhorn starts on when a node that runs
+workloads has room for `/var` plus a 10 GiB `data-system`. A node whose disk lacks that room
+gets `storage: { systemDisk: false }` and keeps the whole disk for `/var`; the review shows
+each node's `data-system` and lets you turn it off per node. `platform.longhorn.replicas`
+sets the default StorageClass's copies per volume (1 to the number of nodes holding data);
+the review shows the usable space for each choice. Longhorn applies a new count to new
+volumes only; existing volumes keep theirs.
 
 **Not in cluster.yaml.** Host firewall, disk encryption, watchdog and per-pool images are
 Talos patches (`NetworkRuleConfig`, `VolumeConfig`, `WatchdogTimerConfig`). A removed
@@ -147,8 +178,8 @@ for a public repo or an `ssh://user@host/path` URL for a private one (the scp fo
 Settings › Apps, or `kubit deploy-key lab`) writes a new ed25519 key to `secrets.sops.yaml`
 (`flux.deployKey`, under the rule for your keys only) together with the host's keys
 (`flux.knownHosts`, every type the host offers; compare the fingerprints with the host's
-published ones). Add the public key to the repository's deploy keys, read-only; on GitHub one
-deploy key serves one repository. Every plan then connects with the key and lists as a
+published ones). Add the public key to the repository's deploy keys, read-only, or with
+write access for image automation; on GitHub one deploy key serves one repository. Every plan then connects with the key and lists as a
 problem a refused key, a host key not in `flux.knownHosts`, a missing repository or branch,
 and an https repository that is private or missing; an unreachable host adds nothing. The
 platform apply installs the key as Secret `flux-system/flux-system` (`identity`,

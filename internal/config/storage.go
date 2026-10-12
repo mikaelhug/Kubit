@@ -8,6 +8,7 @@ import (
 	"github.com/siderolabs/talos/pkg/machinery/config/encoder"
 	"github.com/siderolabs/talos/pkg/machinery/config/types/block"
 	"github.com/siderolabs/talos/pkg/machinery/constants"
+	"github.com/siderolabs/talos/pkg/machinery/imager/quirks"
 )
 
 type Storage struct {
@@ -15,10 +16,15 @@ type Storage struct {
 	EphemeralSize string `yaml:"ephemeralSize,omitempty" json:"ephemeralSize,omitempty"`
 }
 
+type NodeStorage struct {
+	SystemDisk *bool `yaml:"systemDisk,omitempty" json:"systemDisk,omitempty"`
+}
+
 const (
 	DefaultEphemeralSize = "40GiB"
 	MinEphemeralBytes    = 10 << 30
 	MinSystemDataSize    = "10GiB"
+	LonghornReservedPct  = 5
 	SystemDataVolume     = "data-system"
 )
 
@@ -45,7 +51,85 @@ func (s Storage) CheckEphemeral() error {
 }
 
 func (c *Cluster) SharesSystemDisk(n Node) bool {
-	return c.Spec.Storage.SystemDisk && c.Spec.Platform.Longhorn.Enabled && len(n.DataDisks) == 0
+	return c.Spec.Platform.Longhorn.Enabled && len(n.DataDisks) == 0 && c.UsesSystemDisk(n)
+}
+
+func (c *Cluster) UsesSystemDisk(n Node) bool {
+	if n.Storage != nil && n.Storage.SystemDisk != nil {
+		return *n.Storage.SystemDisk
+	}
+	return c.Spec.Storage.SystemDisk
+}
+
+func (c *Cluster) SetSystemDisk(n *Node, on bool) {
+	n.Storage = nil
+	if on != c.Spec.Storage.SystemDisk {
+		n.Storage = &NodeStorage{SystemDisk: &on}
+	}
+}
+
+func (c *Cluster) SystemDataBytes(diskBytes uint64) uint64 {
+	var data block.Size
+	_ = data.UnmarshalText([]byte(MinSystemDataSize))
+	need := c.SystemDiskBytes()
+	if diskBytes < need {
+		return 0
+	}
+	return diskBytes - need + data.Value()
+}
+
+func UsableByReplicas(capacities []uint64, upTo int) []uint64 {
+	out := make([]uint64, upTo)
+	for r := range out {
+		out[r] = UsableBytes(capacities, r+1)
+	}
+	return out
+}
+
+func UsableBytes(capacities []uint64, replicas int) uint64 {
+	if replicas < 1 || len(capacities) < replicas {
+		return 0
+	}
+	var total uint64
+	for _, c := range capacities {
+		total += c
+	}
+	fits := func(d uint64) bool {
+		var sum uint64
+		for _, c := range capacities {
+			sum += min(c, d)
+		}
+		return sum >= d*uint64(replicas)
+	}
+	lo, hi := uint64(0), total/uint64(replicas)
+	for lo < hi {
+		mid := hi - (hi-lo)/2
+		if fits(mid) {
+			lo = mid
+		} else {
+			hi = mid - 1
+		}
+	}
+	return lo
+}
+
+func (c *Cluster) SystemDiskBytes() uint64 {
+	s := c.Spec.Storage
+	if s.EphemeralSize == "" {
+		s.EphemeralSize = DefaultEphemeralSize
+	}
+	eph, err := s.EphemeralBytes()
+	if err != nil {
+		return 0
+	}
+	var data block.Size
+	_ = data.UnmarshalText([]byte(MinSystemDataSize))
+	p := quirks.New(c.Spec.TalosVersion).PartitionSizes()
+	return p.UKIEFISize() + p.METASize() + p.StateSize() + eph + data.Value()
+}
+
+func (c *Cluster) RunsWorkloads(n Node) bool {
+	return n.Role != RoleControlPlane || c.Spec.ControlPlane.AllowScheduling == nil || *c.Spec.ControlPlane.AllowScheduling
 }
 
 const MaxDataDisks = 8
@@ -86,7 +170,7 @@ var LonghornExtensions = []string{"siderolabs/iscsi-tools", "siderolabs/util-lin
 func (c *Cluster) LonghornNodes() []Node {
 	var out []Node
 	for _, n := range c.Spec.Nodes {
-		if len(n.DataDisks) > 0 || c.Spec.Storage.SystemDisk {
+		if c.RunsWorkloads(n) && (len(n.DataDisks) > 0 || c.UsesSystemDisk(n)) {
 			out = append(out, n)
 		}
 	}
@@ -94,6 +178,13 @@ func (c *Cluster) LonghornNodes() []Node {
 }
 
 func (c *Cluster) LonghornReplicas() int {
+	if r := c.Spec.Platform.Longhorn.Replicas; r > 0 {
+		return r
+	}
+	return c.AutoReplicas()
+}
+
+func (c *Cluster) AutoReplicas() int {
 	n := len(c.LonghornNodes())
 	if n > 3 {
 		return 3

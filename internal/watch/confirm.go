@@ -41,7 +41,7 @@ func (c *confirm) Seed(open []Event) {
 
 func (c *confirm) Reset() { c.bad = map[string]int{} }
 
-func (c *confirm) Apply(name string, facts map[string]Event) []transition {
+func (c *confirm) Apply(name string, facts map[string]Event, held map[string]bool) []transition {
 	if !c.started {
 		c.started = true
 		for key := range facts {
@@ -67,8 +67,11 @@ func (c *confirm) Apply(name string, facts map[string]Event) []transition {
 		if _, still := facts[key]; still {
 			continue
 		}
-		delete(c.open, key)
 		kind, node := splitKey(key)
+		if held[node] {
+			continue
+		}
+		delete(c.open, key)
 		out = append(out, transition{resolves: kind, recovery: recovery(name, kind, node)})
 	}
 	return out
@@ -85,12 +88,28 @@ func recovery(name, kind, node string) Event {
 	return Event{Cluster: name, Node: node, Severity: "info", Kind: rk, Message: msg[rk]}
 }
 
+func offNodes(cur *cluster.Status) map[string]bool {
+	out := map[string]bool{}
+	for _, n := range cur.Nodes {
+		if n.Off {
+			out[n.Hostname] = true
+		}
+	}
+	return out
+}
+
 func badFacts(name string, cur *cluster.Status) map[string]Event {
 	out := map[string]Event{}
+	if cur.Off {
+		return out
+	}
 	ev := func(sev, kind, node, msg string) {
 		out[factKey(kind, node)] = Event{Cluster: name, Node: node, Severity: sev, Kind: kind, Message: msg}
 	}
 	for _, n := range cur.Nodes {
+		if n.Off {
+			continue
+		}
 		if !n.TalosReachable {
 			ev("critical", "talos.unreachable", n.Hostname, fmt.Sprintf("%s: Talos API unreachable (%s)", n.Hostname, n.TalosError))
 		}
@@ -99,7 +118,11 @@ func badFacts(name string, cur *cluster.Status) map[string]Event {
 		}
 	}
 	if !cur.APIReachable {
-		ev("critical", "api.unreachable", "", fmt.Sprintf("Kubernetes API unreachable at %s: %s", cur.Endpoint, cur.APIError))
+		where := ""
+		if cur.Endpoint != "" {
+			where = " at " + cur.Endpoint
+		}
+		ev("critical", "api.unreachable", "", fmt.Sprintf("Kubernetes API unreachable%s: %s", where, cur.APIError))
 	}
 	if cur.Etcd.Expected > 0 && !cur.Etcd.Healthy {
 		ev("critical", "etcd.unhealthy", "", fmt.Sprintf("etcd unhealthy (%d/%d members)", cur.Etcd.Members, cur.Etcd.Expected))

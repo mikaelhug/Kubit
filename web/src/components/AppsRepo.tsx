@@ -32,9 +32,9 @@ export function AppsRepoFields({ choice, onChange, repo, error, optional }: { ch
   const set = (p: Partial<AppsChoice>) => onChange({ ...choice, ...p })
   return (
     <>
-      <Field label="Checkout" hint={error ? <span class="text-bad">{error}</span> : optional && !choice.dir ? 'Optional' : undefined}>
+      <Field label="Checkout" error={error} hint={optional && !choice.dir ? 'Optional' : undefined}>
         <div class="flex items-center gap-2">
-          <input class="input mono" value={choice.dir} placeholder="~/git/apps" onInput={(e) => set({ dir: inputValue(e) })} />
+          <input class="input mono" aria-invalid={!!error} value={choice.dir} placeholder="~/git/apps" onInput={(e) => set({ dir: inputValue(e) })} />
           <DirPicker value={choice.dir} onPick={(dir) => set({ dir })} />
         </div>
         {repo && <span class="mono text-[12px] text-muted truncate" title={repo.remote}>{repo.url} · {repo.branch}</span>}
@@ -51,7 +51,7 @@ export function AppsReviewBlock({ review }: { review: AppsReview }) {
     ['Repository', <span class="mono break-all">{review.url} · {review.branch}</span>],
     ['Flux path', <span class="mono">{review.path}</span>],
   ]
-  if (review.deployKey) rows.push(['Deploy key', 'new, read-only'])
+  if (review.deployKey) rows.push(['Deploy key', review.imageAutomation ? 'new, write access' : 'new, read-only'])
   return (
     <div class="flex flex-col gap-2">
       <KeyValue rows={rows} />

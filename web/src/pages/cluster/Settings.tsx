@@ -64,7 +64,7 @@ export function Settings({ ctx }: { ctx: ClusterCtx }) {
 }
 
 function nodeCount(ctx: ClusterCtx) {
-  const nodes = ctx.cluster.spec.spec.nodes
+  const nodes = ctx.status?.nodes ?? ctx.cluster.spec.spec.nodes
   const cps = nodes.filter((n) => n.role === 'controlplane').length
   const workers = nodes.length - cps
   return `${cps} control plane${cps === 1 ? '' : 's'}, ${workers} worker${workers === 1 ? '' : 's'}`

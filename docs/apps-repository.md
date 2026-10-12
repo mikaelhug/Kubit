@@ -46,7 +46,8 @@ secrets. Secrets elsewhere are encrypted to your key only.
 You clone the repository yourself (`git clone`, any remote form, ssh aliases included). Then
 either:
 
-- **New cluster** (Discovery › Add): fill *Apps repository* with the checkout.
+- **New cluster** (Discovery › Add): fill *Apps repository* with the checkout; for an ssh
+  remote, *Image automation* in the review is on by default.
 - **Existing cluster** (Settings › Apps › *Connect* or *Change*), the same field.
 - **CLI**: `kubit init production --nodes … --apps ~/git/apps` or
   `kubit connect production ~/git/apps`.
@@ -78,7 +79,7 @@ into the apps repository; the normal sync then rolls it out. Nothing is needed i
 repository, so third-party images work the same way. Turning it on installs Flux's image
 controllers and writes `clusters/<cluster>/image-automation.yaml` (an `ImageUpdateAutomation`
 for `./apps/<cluster>`, committing as `flux-<cluster>`); turning it off removes it. The deploy key
-needs write access; the plan reports a key that cannot push.
+needs write access; the plan reports a key that cannot push, and an https repository, which Flux cannot push to.
 
 Per app, `apps/base/<app>/` holds an `ImageRepository`, and each cluster's folder an
 `ImagePolicy` and the tag to update:

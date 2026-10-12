@@ -20,6 +20,9 @@
   cp-01 with the endpoint; a wrong gateway to prove the 3-minute try rollback. Proven on VMs
   by `hack/scenario.sh` (pin, move a worker, move the control plane with the endpoint and its
   etcd peer URL, release to DHCP); still unproven: the try-mode rollback.
+- Node power on `lab` (each needs a go): restart a worker; shut down a worker and power it
+  on; update one node's Talos; shut down every node and power them on; a NIC with
+  Wake-on-LAN armed through the `EthernetConfig` patch.
 
 ## Converge
 - `ApplyConfigs` (internal/cluster/apply.go) has an empty `if wantKubelet == "" {}` block.
@@ -43,13 +46,21 @@
   failed node.
 - The manifests step fails when the Kubernetes API does not answer although every node
   config was applied, and the platform step is skipped; report it as a warning.
-- A Talos upgrade that fails mid-run leaves upgraded nodes ahead of the others; the next
-  plan shows a config diff until the upgrade finishes. Say so in the plan.
 - The etcd check before a control plane goes down reads Talos's service health (20 s
   refresh); add a direct quorum read if that window matters.
 - A node left cordoned by a failed upgrade blocks `upgrade kubernetes`; release Kubit's
   cordon in `ApplyConfigs` too.
 - Drain timeout (5 min) and PDB policy are fixed; Longhorn's last-replica PDB can block.
+  Talos's own drain on a graceful shutdown has the same limit: the shutdown fails, the node
+  stays up and cordoned until its next boot, and the run reports the timeout.
+- A daemon restart while every node is off shows the cluster unreachable (raised quietly)
+  until it is powered on.
+- A run that dies between marking a node off and shutting it down leaves the mark until
+  the node reboots; a crash in that window raises no alert.
+- Power on reaches only the laptop's broadcast domain. Undeclared Kubernetes nodes do not
+  count for a shutdown of every node. No CLI for node power.
+- A Talos update of one node prechecks every node (API, Ready, `/var`); a node version
+  older than the running one is installed without a downgrade guard.
 - A NotReady node is still drained and waits out the full timeout; skip the drain when the
   node is NotReady.
 - A node whose clock lags more than a day rejects Kubit's certificates ("expired
@@ -103,6 +114,9 @@
 - Security: no CSRF guard on bodiless POSTs while loopback needs no token; check
   `Origin`/`Sec-Fetch-Site` in `ServeHTTP`. WebSocket origin check fails behind a proxy
   that rewrites `Host`.
+
+- Storage trend: Longhorn totals are not sampled; a trend next to CPU and memory would add
+  Longhorn list calls to every watcher tick.
 
 ## Dev harness
 - vfkit console: direct-kernel boot with `console=hvc0` would give a readable log.

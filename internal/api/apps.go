@@ -18,12 +18,13 @@ type appsRequest struct {
 }
 
 type appsReview struct {
-	Repo      repo.AppsRepo   `json:"repo"`
-	URL       string          `json:"url"`
-	Branch    string          `json:"branch"`
-	Path      string          `json:"path"`
-	Files     []repo.AppsFile `json:"files"`
-	DeployKey bool            `json:"deployKey"`
+	Repo            repo.AppsRepo   `json:"repo"`
+	URL             string          `json:"url"`
+	Branch          string          `json:"branch"`
+	Path            string          `json:"path"`
+	Files           []repo.AppsFile `json:"files"`
+	DeployKey       bool            `json:"deployKey"`
+	ImageAutomation bool            `json:"imageAutomation"`
 }
 
 type appsCheckout struct {
@@ -67,17 +68,18 @@ func (s *Server) handleInspectApps(w http.ResponseWriter, r *http.Request) {
 	reply(w, a, err)
 }
 
-func reviewApps(ctx context.Context, req appsRequest, cluster, fluxRecipient string, hasKey bool) (*appsReview, repo.AppsRepo, repo.AppsConnect, error) {
+func reviewApps(ctx context.Context, req appsRequest, cluster, fluxRecipient string, hasKey, imageAutomation bool) (*appsReview, repo.AppsRepo, repo.AppsConnect, error) {
 	a, err := inspectApps(ctx, req.Dir)
 	c := repo.AppsConnect{Cluster: cluster, Path: req.Path, FluxRecipient: fluxRecipient}
 	if err != nil {
 		return nil, a, c, err
 	}
+	c.ImageAutomation = imageAutomation && gitremote.IsSSH(a.URL)
 	files, err := a.Files(c)
 	if err != nil {
 		return nil, a, c, invalid(err)
 	}
-	return &appsReview{Repo: a, URL: a.URL, Branch: a.Branch, Path: a.FluxPath(c), Files: files, DeployKey: gitremote.IsSSH(a.URL) && !hasKey}, a, c, nil
+	return &appsReview{Repo: a, URL: a.URL, Branch: a.Branch, Path: a.FluxPath(c), Files: files, DeployKey: gitremote.IsSSH(a.URL) && !hasKey, ImageAutomation: c.ImageAutomation}, a, c, nil
 }
 
 func (s *Server) clusterApps(ctx context.Context, name string, req appsRequest) (string, *appsReview, repo.AppsRepo, repo.AppsConnect, error) {
@@ -95,11 +97,11 @@ func (s *Server) clusterApps(ctx context.Context, name string, req appsRequest) 
 			hasKey = dk.Key != nil
 		}
 	}
-	rv, a, c, err := reviewApps(ctx, req, name, k.Recipient, hasKey)
-	if d, derr := s.manager.Desired(name); derr == nil && err == nil {
-		c.ImageAutomation = d.Cluster.Spec.Platform.Flux.ImageAutomation
-		rv.Files, err = a.Files(c)
+	auto := false
+	if d, err := s.manager.Desired(name); err == nil {
+		auto = d.Cluster.Spec.Platform.Flux.ImageAutomation
 	}
+	rv, a, c, err := reviewApps(ctx, req, name, k.Recipient, hasKey, auto)
 	return dir, rv, a, c, err
 }
 

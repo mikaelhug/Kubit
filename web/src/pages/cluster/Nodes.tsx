@@ -1,17 +1,26 @@
-import { useMemo } from 'preact/hooks'
+import { useEffect, useMemo, useState } from 'preact/hooks'
+import type { ComponentChildren } from 'preact'
 import { fmt, type NodeStatus } from '../../api'
-import { DataTable, type Column } from '../../components/DataTable'
+import { DataTable, selectColumn, useSelection, type Column } from '../../components/DataTable'
 import { EditAddress } from '../../components/EditAddress'
+import { NodeActions } from '../../components/NodeActions'
+import { RunLog } from '../../components/RunLog'
+import { Ago } from '../../components/Time'
 import { addressOf } from '../../net'
 import { useConfigStatus } from '../../configStatus'
 import { Pill, Section } from '../../components/ui'
-import { machines } from '../../store'
-import { memoryOf, modelName, roleLabel, specsOf } from '../../machine'
+import { applyRuns, loadApplyRun, machines } from '../../store'
+import { memoryOf, modelName, nodeState, roleLabel, specsOf } from '../../machine'
 import { degrees, sensorOf, temperatureTitle, temperatureTone } from '../../temperature'
 import { toneText } from '../../tone'
 import type { ClusterCtx } from './ClusterPage'
 
 const smallAlloc = 768 * 1048576
+const nodeRuns = ['restart', 'shutdown', 'power-on']
+
+function OnApply({ href, children }: { href: string; children: ComponentChildren }) {
+  return <a class="text-[11px] text-info hover:underline" href={href}>→ {children} on apply</a>
+}
 
 export function Nodes({ ctx }: { ctx: ClusterCtx }) {
   const { status, cluster, name } = ctx
@@ -19,6 +28,13 @@ export function Nodes({ ctx }: { ctx: ClusterCtx }) {
   const apiUp = !!status?.apiReachable
   const behind = useConfigStatus(name)?.behind
   const sensors = !!status?.nodes.some((n) => n.temperatures?.length)
+  const changes = `/clusters/${name}/changes`
+  const sel = useSelection()
+  const rows = status?.nodes ?? []
+  const picked = rows.filter((n) => sel.selected.has(n.hostname))
+  const run = applyRuns.value.get(name)
+  const [hidden, setHidden] = useState<string | undefined>()
+  useEffect(() => { loadApplyRun(name) }, [name])
 
   const columns = useMemo<Column<NodeStatus>[]>(() => {
     const specOf = (n: NodeStatus) => specs.find((s) => s.hostname === n.hostname)
@@ -32,8 +48,8 @@ export function Nodes({ ctx }: { ctx: ClusterCtx }) {
         const target = addressOf(sp?.network?.addresses[0])
         return (
           <div class="flex flex-col">
-            <span>{sp ? <EditAddress cluster={name} hostname={n.hostname}>{n.ip}</EditAddress> : n.ip} <span class="text-[10px] text-muted">{sp?.network ? (sp.network.vlan ? `static · vlan ${sp.network.vlan}` : 'static') : 'dhcp'}</span></span>
-            {target && target !== n.ip && <a class="text-[11px] text-info hover:underline" href={`/clusters/${name}/changes`}>→ {target} on apply</a>}
+            <span>{sp ? <EditAddress cluster={name} hostname={n.hostname}>{n.ip}</EditAddress> : n.ip} {n.network && <span class="text-[10px] text-muted">{n.network.dhcp ? 'dhcp' : n.network.vlan ? `static · vlan ${n.network.vlan}` : 'static'}</span>}</span>
+            {target && target !== n.ip && <OnApply href={changes}>{target}</OnApply>}
             {moved && <span class="text-[11px] text-warn" title={`Declared ${n.ip}`}>seen at {n.seenAt}</span>}
           </div>
         )
@@ -48,11 +64,12 @@ export function Nodes({ ctx }: { ctx: ClusterCtx }) {
           </span>
         ) : <span class="text-muted">—</span>
       } },
-      { id: 'status', header: 'Status', sort: (n) => (n.talosReachable ? 1 : 0) + (n.ready ? 2 : 0), text: (n) => `${n.talosReachable ? '' : 'unreachable'} ${n.ready ? 'ready' : 'notready'}${behind?.includes(n.hostname) ? ' config behind' : ''}`, cell: (n) => <NodeHealth n={n} apiReachable={apiUp} behind={!!behind?.includes(n.hostname)} declared={!!specOf(n)} changes={`/clusters/${name}/changes`} /> },
+      { id: 'status', header: 'Status', sort: (n) => (n.talosReachable ? 1 : 0) + (n.ready ? 2 : 0), text: (n) => `${nodeState(n, apiUp)[1]}${behind?.includes(n.hostname) ? ' config behind' : ''}`, cell: (n) => <NodeHealth n={n} apiReachable={apiUp} behind={!!behind?.includes(n.hostname)} declared={n.declared} changes={changes} /> },
       { id: 'versions', header: 'Versions', sort: (n) => `${n.talosVersion} ${n.kubeletVersion}`, cell: (n) => (
         <span class="flex flex-col whitespace-nowrap mono text-[12px]">
           <span>{n.talosVersion || '—'}<span class="text-muted"> Talos</span></span>
           <span>{n.kubeletVersion || '—'}<span class="text-muted"> Kubernetes</span></span>
+          {n.talosTarget && n.talosVersion && n.talosTarget !== n.talosVersion && <OnApply href={changes}>Talos {n.talosTarget}</OnApply>}
         </span>
       ) },
       { id: 'cpu', header: 'CPU', align: 'right', sort: (n) => n.cpuMilli, cell: (n) => <>{fmt.cores(n.cpuMilli)}<span class="text-muted">/{fmt.cores(n.cpuCapMilli)}</span></> },
@@ -60,30 +77,31 @@ export function Nodes({ ctx }: { ctx: ClusterCtx }) {
       { id: 'pods', header: 'Pods', align: 'right', sort: (n) => n.pods, cell: (n) => <a href={`/clusters/${name}/workloads?view=pods&node=${encodeURIComponent(n.hostname)}`} class="hover:underline">{n.pods}</a> },
       ...(sensors ? [{ id: 'temp', header: 'Temp', align: 'right', sort: (n: NodeStatus) => sensorOf(n.temperatures, 'cpu')?.celsius ?? -1, cell: (n: NodeStatus) => <NodeTemperature n={n} /> } satisfies Column<NodeStatus>] : []),
     ]
-  }, [specs, apiUp, name, behind, machines.value, sensors])
+  }, [specs, apiUp, name, changes, behind, machines.value, sensors])
 
+  const toolbar = (
+    <span class="flex items-center gap-2">
+      {picked.length > 0 && <span class="text-[12px] text-muted">{picked.length} selected</span>}
+      <NodeActions ctx={ctx} picked={picked} onDone={sel.clear} />
+    </span>
+  )
+  const showRun = !!run?.kind && nodeRuns.includes(run.kind) && (run.running || run.lines.length > 0) && run.started !== hidden
   return (
     <Section title="Nodes" actions={<a class="btn btn-sm" href="/discovery">Add machines</a>}>
-      <DataTable id="nodes" columns={columns} rows={status?.nodes ?? []} loading={!status} rowKey={(n) => n.hostname} defaultSort={{ id: 'role', dir: 'asc' }} />
+      <DataTable id="nodes" columns={[selectColumn(rows, (n) => n.hostname, sel, (n) => n.hostname), ...columns]} rows={rows} loading={!status} rowKey={(n) => n.hostname} defaultSort={{ id: 'role', dir: 'asc' }} toolbar={toolbar} />
+      {showRun && run && <RunLog run={run} capped onClose={() => setHidden(run.started)} />}
     </Section>
   )
 }
 
 function NodeHealth({ n, apiReachable, behind, declared, changes }: { n: NodeStatus; apiReachable: boolean; behind: boolean; declared: boolean; changes: string }) {
-  const pills = []
-  if (!n.talosReachable) pills.push(<Pill key="talos" tone="bad" title={n.talosError}>Talos unreachable</Pill>)
-  else if (n.stage && n.stage !== 'running') pills.push(<Pill key="talos" tone="warn">{n.stage}</Pill>)
-  if (!apiReachable) pills.push(<Pill key="k8s" tone="muted">k8s unknown</Pill>)
-  else if (!n.registered) pills.push(<Pill key="k8s" tone="warn">not registered</Pill>)
-  else if (!n.ready) pills.push(<Pill key="k8s" tone="warn">NotReady</Pill>)
-  else pills.push(<Pill key="k8s" tone="good">Ready</Pill>)
-  if (n.unschedulable) pills.push(<Pill key="cordon" tone="warn">cordoned</Pill>)
-  if (behind) pills.push(<a key="config" href={changes}><Pill tone="warn">Config behind</Pill></a>)
-  if (!declared) pills.push(<Pill key="undeclared" tone="warn">undeclared</Pill>)
+  const [tone, state] = nodeState(n, apiReachable)
   return (
-    <div class="flex flex-col gap-0.5">
-      <span class="inline-flex flex-wrap gap-1">{pills}</span>
-      {!n.talosReachable && n.talosError && <span class="text-[11px] text-muted max-w-[260px] truncate" title={n.talosError}>{n.talosError}</span>}
+    <div class="flex flex-col items-start gap-0.5">
+      <Pill tone={tone} title={!n.off && !n.talosReachable ? n.talosError : undefined}>{state}</Pill>
+      {n.bootedAt && n.talosReachable && <span class="text-[11px] text-muted whitespace-nowrap">up <Ago iso={n.bootedAt} bare /></span>}
+      {behind && <a class="text-[11px] text-warn hover:underline" href={changes}>Config behind</a>}
+      {!declared && <span class="text-[11px] text-warn">undeclared</span>}
     </div>
   )
 }

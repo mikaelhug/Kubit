@@ -40,7 +40,7 @@ export function Home() {
       <Section title="Clusters">
         {list.length === 0 && <div class="panel p-3 text-[13px] text-muted">No cluster yet.</div>}
         <div class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
-          {list.map((c) => { const u = updates.get(c.name)!; return <ClusterCard key={c.name} name={c.name} state={c.state} talos={c.spec.spec.talosVersion} k8s={c.spec.spec.kubernetesVersion} update={!!(u.talos || u.kubernetes)} alerts={openAlerts(c.name).length} /> })}
+          {list.map((c) => { const u = updates.get(c.name)!; return <ClusterCard key={c.name} name={c.name} state={c.state} talos={statuses.value.get(c.name)?.talosVersion ?? c.spec.spec.talosVersion} k8s={statuses.value.get(c.name)?.kubernetesVersion ?? c.spec.spec.kubernetesVersion} update={!!(u.talos || u.kubernetes)} alerts={openAlerts(c.name).length} /> })}
         </div>
       </Section>
 

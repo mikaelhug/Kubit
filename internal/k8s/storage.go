@@ -2,6 +2,7 @@ package k8s
 
 import (
 	"context"
+	"slices"
 	"sort"
 )
 
@@ -16,15 +17,16 @@ type StorageClass struct {
 }
 
 type Volume struct {
-	Name       string `json:"name"`
-	Capacity   int64  `json:"capacityBytes"`
-	Phase      string `json:"phase"`
-	Class      string `json:"class"`
-	Claim      string `json:"claim,omitempty"`
-	AccessMode string `json:"accessModes"`
-	Reclaim    string `json:"reclaim"`
-	Age        string `json:"age"`
-	CreatedAt  string `json:"createdAt,omitempty"`
+	Name       string          `json:"name"`
+	Capacity   int64           `json:"capacityBytes"`
+	Phase      string          `json:"phase"`
+	Class      string          `json:"class"`
+	Claim      string          `json:"claim,omitempty"`
+	AccessMode string          `json:"accessModes"`
+	Reclaim    string          `json:"reclaim"`
+	Age        string          `json:"age"`
+	CreatedAt  string          `json:"createdAt,omitempty"`
+	Longhorn   *LonghornVolume `json:"longhorn,omitempty"`
 }
 
 type Claim struct {
@@ -41,9 +43,11 @@ type Claim struct {
 }
 
 type Storage struct {
-	Classes []StorageClass `json:"classes"`
-	Volumes []Volume       `json:"volumes"`
-	Claims  []Claim        `json:"claims"`
+	Classes       []StorageClass `json:"classes"`
+	Volumes       []Volume       `json:"volumes"`
+	Claims        []Claim        `json:"claims"`
+	Longhorn      *Longhorn      `json:"-"`
+	LonghornError string         `json:"-"`
 }
 
 func (c *Client) Storage(ctx context.Context) (*Storage, error) {
@@ -69,6 +73,9 @@ func (c *Client) Storage(ctx context.Context) (*Storage, error) {
 	if err != nil {
 		return nil, err
 	}
+	if out.Longhorn, err = c.Longhorn(ctx); err != nil {
+		out.LonghornError = err.Error()
+	}
 	for _, pv := range pvs {
 		v := Volume{Name: pv.Name, Capacity: pv.Spec.Capacity.Storage().Value(), Phase: string(pv.Status.Phase), Class: pv.Spec.StorageClassName, Reclaim: string(pv.Spec.PersistentVolumeReclaimPolicy)}
 		v.Age, _ = age(pv.CreationTimestamp)
@@ -78,6 +85,11 @@ func (c *Client) Storage(ctx context.Context) (*Storage, error) {
 		}
 		for _, m := range pv.Spec.AccessModes {
 			v.AccessMode += string(m) + " "
+		}
+		if lh := out.Longhorn; lh != nil {
+			if i := slices.IndexFunc(lh.Volumes, func(lv LonghornVolume) bool { return lv.PV == pv.Name }); i >= 0 {
+				v.Longhorn = &lh.Volumes[i]
+			}
 		}
 		out.Volumes = append(out.Volumes, v)
 	}

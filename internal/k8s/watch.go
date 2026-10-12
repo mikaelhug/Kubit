@@ -42,9 +42,9 @@ func (c *Client) WatchScopes(ctx context.Context, changed func(scope, namespace 
 		_, _ = is.informer(f).AddEventHandler(hook(is.scope))
 	}
 	k := NewCache(f)
-	watches := []crdWatch{{gvr: httpRouteGVR, handler: hook(ScopeNetwork)}}
+	watches := []crdWatch{{gvr: httpRouteGVR, handler: hook(ScopeNetwork)}, {gvr: longhornNodeGVR, handler: hook(ScopeStorage)}, {gvr: longhornVolumeGVR, handler: hook(ScopeStorage)}, {gvr: longhornSettingGVR, handler: hook(ScopeStorage)}, {gvr: metallbPoolGVR, handler: hook(ScopeNetwork)}}
 	for _, fk := range fluxKinds {
-		watches = append(watches, crdWatch{gvr: fk.gvr, handler: hook(ScopeFlux), flux: true})
+		watches = append(watches, crdWatch{gvr: fk.gvr, handler: hook(ScopeFlux)})
 	}
 	go c.watchCRDs(ctx, k, watches)
 	c.UseCache(k)
@@ -127,7 +127,6 @@ func (d *Debouncer) Stop() {
 type crdWatch struct {
 	gvr     schema.GroupVersionResource
 	handler cache.ResourceEventHandler
-	flux    bool
 }
 
 func (c *Client) watchCRDs(ctx context.Context, tracked *Cache, watches []crdWatch) {
@@ -155,17 +154,13 @@ func (c *Client) watchCRDs(ctx context.Context, tracked *Cache, watches []crdWat
 		running[name] = cancel
 		inf := dynamicinformer.NewFilteredDynamicInformer(dyn, w.gvr, "", 0, cache.Indexers{}, nil).Informer()
 		_, _ = inf.AddEventHandler(w.handler)
-		if w.flux {
-			tracked.trackFlux(w.gvr, inf)
-		}
+		tracked.trackCRD(w.gvr, inf)
 		go inf.Run(ictx.Done())
 	}
 	stop := func(obj any) {
 		name, _ := cache.DeletionHandlingMetaNamespaceKeyFunc(obj)
 		if cancel := running[name]; cancel != nil {
-			if w := byCRD[name]; w.flux {
-				tracked.untrackFlux(w.gvr)
-			}
+			tracked.untrackCRD(byCRD[name].gvr)
 			cancel()
 			delete(running, name)
 		}
@@ -173,7 +168,7 @@ func (c *Client) watchCRDs(ctx context.Context, tracked *Cache, watches []crdWat
 	crds := metadatainformer.NewFilteredMetadataInformer(meta, crdResource, "", 0, cache.Indexers{}, nil).Informer()
 	reg, err := crds.AddEventHandler(cache.ResourceEventHandlerFuncs{AddFunc: start, DeleteFunc: stop})
 	if err == nil {
-		tracked.trackCRDs(reg.HasSynced)
+		tracked.trackCRDs(reg.HasSynced, crds.GetStore())
 	}
 	crds.Run(ctx.Done())
 }

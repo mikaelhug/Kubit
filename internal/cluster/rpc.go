@@ -45,6 +45,12 @@ func rebootNode(ctx context.Context, tc *talos.Client) error {
 	return tc.RebootMachine(call)
 }
 
+func shutdownNode(ctx context.Context, tc *talos.Client, force bool) error {
+	call, cancel := context.WithTimeout(ctx, rebootTimeout)
+	defer cancel()
+	return tc.ShutdownMachine(call, force)
+}
+
 func pullImage(ctx context.Context, tc *talos.Client, ref string, timeout time.Duration, progress func(string)) (string, error) {
 	call, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()

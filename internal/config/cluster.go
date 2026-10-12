@@ -16,6 +16,7 @@ import (
 	"github.com/siderolabs/talos/pkg/machinery/constants"
 	"github.com/siderolabs/talos/pkg/machinery/gendata"
 	"go.yaml.in/yaml/v4"
+	utilversion "k8s.io/apimachinery/pkg/util/version"
 )
 
 const (
@@ -143,31 +144,33 @@ type ControlPlane struct {
 }
 
 type Node struct {
-	Hostname    string            `yaml:"hostname" json:"hostname"`
-	IP          string            `yaml:"ip" json:"ip"`
-	MAC         string            `yaml:"mac,omitempty" json:"mac,omitempty"`
-	UUID        string            `yaml:"uuid,omitempty" json:"uuid,omitempty"`
-	Role        Role              `yaml:"role,omitempty" json:"role,omitempty"`
-	Arch        Arch              `yaml:"arch,omitempty" json:"arch,omitempty"`
-	InstallDisk InstallDisk       `yaml:"installDisk,omitempty" json:"installDisk,omitempty"`
-	DataDisks   []string          `yaml:"dataDisks,omitempty" json:"dataDisks,omitempty"`
-	KVM         bool              `yaml:"kvm,omitempty" json:"kvm,omitempty"`
-	Network     *NodeNetwork      `yaml:"network,omitempty" json:"network,omitempty"`
-	Labels      map[string]string `yaml:"labels,omitempty" json:"labels,omitempty"`
-	Taints      map[string]string `yaml:"taints,omitempty" json:"taints,omitempty"`
-	Annotations map[string]string `yaml:"annotations,omitempty" json:"annotations,omitempty"`
-	Patches     []map[string]any  `yaml:"patches,omitempty" json:"patches,omitempty"`
+	Hostname     string            `yaml:"hostname" json:"hostname"`
+	IP           string            `yaml:"ip" json:"ip"`
+	MAC          string            `yaml:"mac,omitempty" json:"mac,omitempty"`
+	UUID         string            `yaml:"uuid,omitempty" json:"uuid,omitempty"`
+	Role         Role              `yaml:"role,omitempty" json:"role,omitempty"`
+	Arch         Arch              `yaml:"arch,omitempty" json:"arch,omitempty"`
+	TalosVersion string            `yaml:"talosVersion,omitempty" json:"talosVersion,omitempty"`
+	InstallDisk  InstallDisk       `yaml:"installDisk,omitempty" json:"installDisk,omitempty"`
+	DataDisks    []string          `yaml:"dataDisks,omitempty" json:"dataDisks,omitempty"`
+	Storage      *NodeStorage      `yaml:"storage,omitempty" json:"storage,omitempty"`
+	KVM          bool              `yaml:"kvm,omitempty" json:"kvm,omitempty"`
+	Network      *NodeNetwork      `yaml:"network,omitempty" json:"network,omitempty"`
+	Labels       map[string]string `yaml:"labels,omitempty" json:"labels,omitempty"`
+	Taints       map[string]string `yaml:"taints,omitempty" json:"taints,omitempty"`
+	Annotations  map[string]string `yaml:"annotations,omitempty" json:"annotations,omitempty"`
+	Patches      []map[string]any  `yaml:"patches,omitempty" json:"patches,omitempty"`
 }
 
 type Platform struct {
-	MetalLB       MetalLB `yaml:"metallb" json:"metallb"`
-	Traefik       Addon   `yaml:"traefik" json:"traefik"`
-	GVisor        Toggle  `yaml:"gvisor" json:"gvisor"`
-	MetricsServer Addon   `yaml:"metricsServer" json:"metricsServer"`
-	CertManager   Addon   `yaml:"certManager" json:"certManager"`
-	Flux          Flux    `yaml:"flux" json:"flux"`
-	Longhorn      Addon   `yaml:"longhorn" json:"longhorn"`
-	Builds        Toggle  `yaml:"builds" json:"builds"`
+	MetalLB       MetalLB  `yaml:"metallb" json:"metallb"`
+	Traefik       Addon    `yaml:"traefik" json:"traefik"`
+	GVisor        Toggle   `yaml:"gvisor" json:"gvisor"`
+	MetricsServer Addon    `yaml:"metricsServer" json:"metricsServer"`
+	CertManager   Addon    `yaml:"certManager" json:"certManager"`
+	Flux          Flux     `yaml:"flux" json:"flux"`
+	Longhorn      Longhorn `yaml:"longhorn" json:"longhorn"`
+	Builds        Toggle   `yaml:"builds" json:"builds"`
 }
 
 func (p Platform) AddOns() bool {
@@ -249,6 +252,12 @@ func checkRepoURL(raw string) error {
 	return nil
 }
 
+type Longhorn struct {
+	Enabled  bool           `yaml:"enabled" json:"enabled"`
+	Replicas int            `yaml:"replicas,omitempty" json:"replicas,omitempty"`
+	Values   map[string]any `yaml:"values,omitempty" json:"values,omitempty"`
+}
+
 type MetalLB struct {
 	Enabled bool           `yaml:"enabled" json:"enabled"`
 	Range   string         `yaml:"range,omitempty" json:"range,omitempty"`
@@ -314,9 +323,30 @@ func (c *Cluster) Clone() *Cluster {
 	return &out
 }
 
+func DefaultTalosVersion() string { return gendata.VersionTag }
+
+func (c *Cluster) NodeTalosVersion(n Node) string {
+	if n.TalosVersion != "" {
+		return n.TalosVersion
+	}
+	return c.Spec.TalosVersion
+}
+
+func TalosBefore(a, b string) bool {
+	va, err := utilversion.ParseGeneric(a)
+	if err != nil {
+		return false
+	}
+	vb, err := utilversion.ParseGeneric(b)
+	if err != nil {
+		return false
+	}
+	return va.LessThan(vb)
+}
+
 func (c *Cluster) applyDefaults() {
 	if c.Spec.TalosVersion == "" {
-		c.Spec.TalosVersion = gendata.VersionTag
+		c.Spec.TalosVersion = DefaultTalosVersion()
 	}
 	if c.Spec.Backup.Enabled() && c.Spec.Backup.S3.Region == "" {
 		c.Spec.Backup.S3.Region = "us-east-1"
@@ -336,7 +366,7 @@ func (c *Cluster) applyDefaults() {
 	if c.Spec.Network.Discovery == nil {
 		c.Spec.Network.Discovery = new(true)
 	}
-	if c.Spec.Storage.SystemDisk && c.Spec.Storage.EphemeralSize == "" {
+	if c.Spec.Storage.EphemeralSize == "" && slices.ContainsFunc(c.Spec.Nodes, c.UsesSystemDisk) {
 		c.Spec.Storage.EphemeralSize = DefaultEphemeralSize
 	}
 	if r := c.Spec.Platform.Flux.Repository; r != nil && r.URL == "" {

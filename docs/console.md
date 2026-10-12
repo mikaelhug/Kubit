@@ -3,6 +3,12 @@
 The web console and its HTTP API are served by the Kubit daemon on your machine. Every view
 is live, and every change it makes goes into the cluster repo, never around it.
 
+Views show what runs, read from the cluster: Talos (machine config, VIP holder, volumes, etcd),
+Kubernetes (node roles, the traefik Service, the talos-backup CronJob, Helm releases, the MetalLB
+pool, Longhorn's records). Only editors (add-on toggles, the replicas picker, settings, the
+Upgrade target) show `cluster.yaml`. Where `cluster.yaml` differs from what runs, a view marks
+the value *pending*, linked to Changes, and keeps showing the running value until Apply.
+
 ## Running the console
 
 `kubit lab apps` runs the daemon in the foreground for those repos and opens the console,
@@ -29,6 +35,22 @@ The console writes only to the served repos and never commits:
 - **Remove** on a node's page deletes the node from `spec.nodes`.
 - **Enable / Disable** on an Add-ons card sets `spec.platform.<add-on>.enabled` (MetalLB asks
   for its range); Storage offers it for Longhorn when no StorageClass exists.
+- **Replicas** on Storage › Longhorn sets `platform.longhorn.replicas` (*Auto* removes it); each
+  option shows the usable space it would give on the live disks, the header the space at the
+  applied count, *pending* until Apply. The
+  table lists each node that runs workloads with its Longhorn disks, scheduled and used space
+  and replica count from Longhorn's own node records; the volumes table shows each volume's
+  replicas and health. A node awaiting install has a *data-system* switch that sets its
+  `storage.systemDisk`; an installed node's layout is fixed, and the API refuses the edit.
+  The state column follows the node's install and readiness live.
+- **Overview** tiles: the control plane VIP and the node holding it, workers by their Kubernetes
+  role, the load balancer from the traefik Service and the MetalLB pool, and the newest etcd
+  snapshot, local or from talos-backup's last successful run (with its schedule, or a failed
+  last run).
+- **Overview › Storage** shows Longhorn's space left to provision at the replica count it
+  applies now (its default StorageClass, not a pending `cluster.yaml` value; what Longhorn's
+  scheduler still accepts, from schedulable disks of Ready nodes), the
+  space provisioned and written, volume health, and the scheduled share of each node.
 - **Connect / Change** in Settings › Apps writes the apps layout into the checkout and sets
   `platform.flux.repository` ([Apps repository](apps-repository.md)).
 - **Generate / Replace / Rescan** in Settings › Apps writes `flux.deployKey` and
@@ -36,6 +58,8 @@ The console writes only to the served repos and never commits:
   own recipients).
 - **Upgrade** on an update notice (Home, Overview) sets `talosVersion` and
   `kubernetesVersion` to the latest supported pair and opens Changes.
+- **Update to Talos vX** in the Nodes tab's *Actions* writes that version on the selected
+  nodes ([Versions](cluster-yaml.md)) and opens Changes.
 - Clicking a node's address on the Nodes tab sets its `network` (static or DHCP, address, gateway,
   DNS), prefilled from the node's live config, and moves `controlPlane.endpoint` along when
   it points at that node. The Add review step chooses DHCP or a static address per machine,
@@ -58,6 +82,10 @@ The console writes only to the served repos and never commits:
   `review` plans again under it and stops with "the plan changed since you reviewed it" when
   the hash differs. Removals need *allow removal*; the log streams live and survives a page
   reload.
+- **Diff** on a change shows what it changes: the Talos config diff for a node, and for an
+  add-on a diff per OpenTofu resource read from the saved plan (Helm chart, version, values
+  and `set` entries; a manifest's YAML). Values the plan marks sensitive show as
+  `(sensitive)` or `(sensitive, changed)`, Secret data never in clear.
 
 Every cluster page header, the sidebar and Home show the plan state: *in sync*, *N
 changes*, *planning*, *applying*, *N problems* or *plan failed*. One-time housekeeping
@@ -85,7 +113,13 @@ The Nodes tab shows each node's model, CPUs, memory and largest disk (read once 
 over the Talos API for members, since machine records live in memory) and its CPU package temperature (`coretemp`, `k10temp` or the SoC
 sensor) and, when it has one, its NVMe temperature, read from `/sys/class/hwmon` over
 the Talos API on every watcher tick and coloured by the chip's own high and critical
-limits.
+limits. Status is one state per node, the first that holds of *off*, *unreachable*, a Talos stage
+(*starting*, *restarting*, *shutting down*, *updating*, …), *unknown* (no Kubernetes API),
+*joining*, *not ready*, *cordoned* (Kubernetes places no new pods there), *ready*, with the
+time since the node booted under it. Selecting nodes opens *Actions*: Restart, Power on, Update to Talos vX and Shut down
+(*Shut down {cluster}* with every node selected), each shown only for the selected nodes it
+applies to and confirmed with the nodes in run order. The run's log follows below the table
+([Node power](operations.md#node-power)).
 
 Clicking a controller on Workloads lists the pods its selector matches; a pod opens its logs
 and events, also from a machine's Kubernetes tab. Network lists Services, Ingresses and Gateway
@@ -100,7 +134,6 @@ work.
 | `/clusters/<name>/…` | Overview, Changes, Nodes, Workloads, Network, Storage, Add-ons, Secrets, Backups, Settings (cluster.yaml editor, Apps, Git, Certificates, Danger zone; kubeconfig) |
 | `/machines/<mac>` | Overview, Hardware, Kubernetes, Services, Logs (`?tab=`) |
 | `/discovery` | machines to add, machines waiting for apply, other machines, scan, PXE state |
-| `/secrets` | the SOPS files of every served repo, each linked to its cluster's Secrets tab |
 
 ## API
 
@@ -111,19 +144,21 @@ watcher; reconnects replay from `?since=`. Nothing polls; the only UI timer is
 
 Endpoints (all `GET` unless noted): `clusters`, `clusters/{n}/status|yaml|kubeconfig|
 config|image|addons|flux|builds|sops|certificates|snapshots[/{id}]|events|samples|
-workloads|pods|namespaces|network|storage`, `nodes`,
+workloads|pods|namespaces|network|storage|storage/longhorn`, `nodes`,
 `nodes/{ip}/inventory|services|logs|kubernetes`, `versions`, `pxe`, `ws`; `GET discover` (subnets, last scan), `POST discover` (scans `targets`, or the default subnets, in the background; machines arrive as `machine` messages),
 `POST clusters/{n}/check` (the watcher observes the cluster now),
 `POST daemon/stop`, `POST design` (`{cluster | dir, name, vip, machines: [{mac, role}]}`; the
 result without writing), `POST design/checks` (the same with the VIP and address probes), `POST repos` (same body, writes a new repo), `GET dirs?path=` (subfolders, for *Browse*), `POST clusters/{n}/nodes`
 (`{machines: [{mac, role}], hash}`), `clusters/{n}/repo` (directory and git state), `DELETE clusters/{n}/nodes/{hostname}?hash=`,
 `GET|PUT clusters/{n}/nodes/{hostname}/network` (`{static, address, gateway, nameservers, hash}`),
-`PUT clusters/{n}/platform/{add-on}` (`{enabled, range, repository, hash}`), `PUT clusters/{n}/versions`
-(`{talosVersion, kubernetesVersion, hash}`), `POST clusters/{n}/snapshots` (takes an etcd snapshot),
+`PUT clusters/{n}/nodes/{hostname}/storage` (`{systemDisk, hash}`; only for a node awaiting install),
+`PUT clusters/{n}/platform/{add-on}` (`{enabled, range, repository, imageAutomation, replicas, hash}`), `PUT clusters/{n}/versions`
+(`{talosVersion, kubernetesVersion, hash}`, or `{talosVersion, hostnames, hash}` for those nodes),
+`POST clusters/{n}/nodes/power` (`{action: restart|shutdown|power-on, hostnames, whole}`, 202; a shutdown whose `whole` differs from the daemon's verdict is refused; lines arrive as `apply` messages), `POST clusters/{n}/snapshots` (202; takes an etcd snapshot as a run, lines as `apply` messages),
 `PUT clusters/{n}/yaml` (`{yaml, hash}`; this and the other cluster.yaml writes answer the new `{hash}`), `plans` (every cluster's plan state), `GET clusters/{n}/plan`
 (`{summary, plan}`), `POST clusters/{n}/plan` (plan again), `GET|POST clusters/{n}/apply`
 (`{allowRemoval, planHash}`, 202; lines arrive as `apply` messages, plan states as `plan` messages),
-`GET secrets` (`{repos, labels}`), `GET clusters/{n}/secrets` (Flux source, repos, files),
+`GET clusters/{n}/secrets` (Flux source, repos, files),
 `GET secrets/values?repo&file` (one file decrypted, with its hash), `PATCH secrets/file`
 (`{repo, file, hash, set: [{path, value}], remove: [path]}`), `DELETE secrets/file?repo&file&hash`,
 `POST secrets/move` (`{repo, file, to, hash}`), `POST secrets/files` (`{repo, file, name, namespace,
@@ -140,12 +175,11 @@ paths answer 404 JSON.
 A cluster's *Secrets* tab lists the Kubernetes Secrets Flux applies to it: the
 `*.sops.yaml` files under `platform.flux.repository.path` in every served repo whose git remote
 is `platform.flux.repository.url` (https, ssh and scp forms match), plus any SOPS files in the
-cluster repo itself. Each row shows namespace, type, key count, whether Flux can decrypt it
+cluster repo itself. SOPS files in that repo outside every cluster's Flux path show as not applied. Each row shows namespace, type, key count, whether Flux can decrypt it
 (the cluster's Flux key is a recipient), whether Flux applies it at all (every
 `kustomization.yaml` from the Flux path, or from the path of a Flux Kustomization it lists, down lists it; with none, Flux generates one and takes
 every file), its git state and age. When Flux syncs a repo that is not served, the tab says
-which checkout to serve. The global *Secrets* page lists the SOPS files of every served repo
-and opens each in its cluster's tab.
+which checkout to serve.
 
 Files are read without decrypting; *Show values* decrypts one file. *Edit* changes any number
 of keys (add, rename, change, remove) and shows a review of the key names before the write;

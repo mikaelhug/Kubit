@@ -1,6 +1,6 @@
-import { useMemo, useState } from 'preact/hooks'
+import { useMemo } from 'preact/hooks'
 import { api, fmt, type NodeRow } from '../api'
-import { DataTable, withoutColumn, type Column } from '../components/DataTable'
+import { DataTable, selectColumn, useSelection, withoutColumn, type Column, type Selection } from '../components/DataTable'
 import { KindPill, TypePill } from '../components/Machine'
 import { AddMachines } from '../components/AddMachine'
 import { ScanBox } from '../components/ScanBox'
@@ -28,8 +28,8 @@ const machineCell = (n: NodeRow) => (
   </a>
 )
 
-const readyColumns = (selected: Set<string>, toggle: (mac: string) => void, all: NodeRow[], setAll: (on: boolean) => void): Column<NodeRow>[] => [
-  { id: 'pick', header: <input type="checkbox" aria-label="Select all" checked={all.length > 0 && all.every((n) => selected.has(n.mac))} onChange={(e) => setAll((e.target as HTMLInputElement).checked)} />, width: '28px', cell: (n) => <input type="checkbox" aria-label={`Select ${n.ip}`} checked={selected.has(n.mac)} onChange={() => toggle(n.mac)} /> },
+const readyColumns = (all: NodeRow[], sel: Selection): Column<NodeRow>[] => [
+  selectColumn(all, (n) => n.mac, sel, (n) => n.ip),
   { id: 'machine', header: 'Machine', sort: (n) => n.ip, text: (n) => `${modelOf(n)} ${n.mac} ${n.serial ?? ''}`, cell: machineCell },
   { id: 'ip', header: 'Address', mono: true, sort: (n) => n.ip, cell: (n) => n.ip },
   { id: 'type', header: 'Type', cell: (n) => <TypePill m={n} /> },
@@ -57,18 +57,16 @@ export function Discovery() {
   const waiting = useMemo(() => all.filter((m) => m.kind === 'maintenance' && m.declared), [all])
   const members = useMemo(() => all.filter((m) => m.kind === 'member'), [all])
   const rest = useMemo(() => all.filter((m) => m.kind !== 'maintenance' && m.kind !== 'member'), [all])
-  const [selected, setSelected] = useState<Set<string>>(new Set())
-  const picked = available.filter((m) => selected.has(m.mac))
-  const toggle = (mac: string) => { const next = new Set(selected); if (!next.delete(mac)) next.add(mac); setSelected(next) }
-  const setAll = (on: boolean) => setSelected(on ? new Set(available.map((m) => m.mac)) : new Set())
-  const columns = readyColumns(selected, toggle, available, setAll)
+  const sel = useSelection()
+  const picked = available.filter((m) => sel.selected.has(m.mac))
+  const columns = readyColumns(available, sel)
   return (
     <div class="p-5 flex flex-col gap-4">
       <Section title="Discovery">
         <div class="panel p-3">
           <ScanBox onError={(m) => toast(m, 'error')} />
         </div>
-        <DataTable loading={!live.value} id="discovery" columns={columns} toolbar={picked.length > 0 && <AddMachines machines={picked} label={`Add ${picked.length} to cluster`} onDone={() => setSelected(new Set())} />} rows={available} rowKey={(n) => n.mac || n.ip} defaultSort={{ id: 'ip', dir: 'asc' }} empty="No machines to add." />
+        <DataTable loading={!live.value} id="discovery" columns={columns} toolbar={picked.length > 0 && <AddMachines machines={picked} label={`Add ${picked.length} to cluster`} onDone={sel.clear} />} rows={available} rowKey={(n) => n.mac || n.ip} defaultSort={{ id: 'ip', dir: 'asc' }} empty="No machines to add." />
       </Section>
       {waiting.length > 0 && <Waiting machines={waiting} />}
       <PxePanel />

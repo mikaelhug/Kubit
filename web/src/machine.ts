@@ -1,4 +1,4 @@
-import { fmt, type Inventory, type MachineKind, type NodeRow } from './api'
+import { fmt, type Inventory, type MachineKind, type NodeRow, type NodeStatus } from './api'
 import { statuses } from './store'
 import { later } from './time'
 import { type Tone } from './tone'
@@ -53,3 +53,27 @@ export function specsOf(inv?: Inventory | null) {
 }
 
 export const roleLabel = (role?: string) => (role === 'controlplane' ? 'control plane' : 'worker')
+
+export const systemDiskSplit = (s: { ephemeralSize?: string }) => `/var ${s.ephemeralSize ?? '40GiB'} · rest → /var/mnt/data-system`
+
+
+const stages: Record<string, string> = { booting: 'starting', rebooting: 'restarting', upgrading: 'updating' }
+
+export function talosHealth(n: NodeStatus): [Tone, string] | null {
+  if (n.off) return ['muted', 'off']
+  if (!n.talosReachable) return ['bad', 'unreachable']
+  if (n.stage && n.stage !== 'running') return ['warn', stages[n.stage] ?? n.stage]
+  return null
+}
+
+export function kubeHealth(n: NodeStatus, apiReachable: boolean): [Tone, string] {
+  if (!apiReachable) return ['muted', 'unknown']
+  if (!n.registered) return ['warn', 'joining']
+  if (!n.ready) return ['warn', 'not ready']
+  return ['good', 'ready']
+}
+
+export function nodeState(n: NodeStatus, apiReachable: boolean): [Tone, string] {
+  const kube = talosHealth(n) ?? kubeHealth(n, apiReachable)
+  return kube[0] === 'good' && n.unschedulable ? ['warn', 'cordoned'] : kube
+}

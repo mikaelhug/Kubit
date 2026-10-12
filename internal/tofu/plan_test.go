@@ -2,6 +2,7 @@ package tofu_test
 
 import (
 	"os"
+	"strings"
 	"testing"
 
 	"github.com/mikaelhug/kubit/internal/tofu"
@@ -22,5 +23,28 @@ func TestParseShowPlanReadsOpenTofuPlanJSON(t *testing.T) {
 	}
 	if byAddon["cert-manager"] != "1 to create" || byAddon["metallb"] != "1 to update" || len(groups) != 2 {
 		t.Errorf("groups %+v", groups)
+	}
+}
+
+func TestPlanDiffNeverShowsSecrets(t *testing.T) {
+	raw, err := os.ReadFile("testdata/plan-secrets.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	groups, err := tofu.ParseShowPlan(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	all := ""
+	for _, g := range groups {
+		if strings.Contains(g.Diff, "SECRET-") {
+			t.Errorf("%s diff shows a secret:\n%s", g.Addon, g.Diff)
+		}
+		all += g.Diff + "\n"
+	}
+	for _, want := range []string{"+set defaultSettings.defaultReplicaCount = 2", "(sensitive, changed)", "# kubectl_manifest.backup_secret[0] (create)"} {
+		if !strings.Contains(all, want) {
+			t.Errorf("diff lacks %q:\n%s", want, all)
+		}
 	}
 }

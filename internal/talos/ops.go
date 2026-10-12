@@ -5,14 +5,19 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/cosi-project/runtime/pkg/safe"
+	"github.com/mikaelhug/kubit/internal/netx"
 	"github.com/siderolabs/talos/pkg/machinery/api/common"
 	machineapi "github.com/siderolabs/talos/pkg/machinery/api/machine"
+	"github.com/siderolabs/talos/pkg/machinery/client"
+	coreconfig "github.com/siderolabs/talos/pkg/machinery/config"
 	"github.com/siderolabs/talos/pkg/machinery/constants"
+	"github.com/siderolabs/talos/pkg/machinery/nethelpers"
 	configres "github.com/siderolabs/talos/pkg/machinery/resources/config"
 	"github.com/siderolabs/talos/pkg/machinery/resources/k8s"
 	"github.com/siderolabs/talos/pkg/machinery/resources/network"
@@ -67,11 +72,19 @@ func (c *Client) ApplyDryRun(ctx context.Context, cfg []byte) (string, error) {
 }
 
 func (c *Client) MachineConfig(ctx context.Context) ([]byte, error) {
+	p, err := c.MachineConfigProvider(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return p.Bytes()
+}
+
+func (c *Client) MachineConfigProvider(ctx context.Context) (coreconfig.Provider, error) {
 	mc, err := safe.StateGetByID[*configres.MachineConfig](c.nodeContext(ctx), c.COSI, configres.ActiveID)
 	if err != nil {
 		return nil, err
 	}
-	return mc.Provider().Bytes()
+	return mc.Provider(), nil
 }
 
 func (c *Client) VersionTag(ctx context.Context) (string, error) {
@@ -103,6 +116,31 @@ func (c *Client) InstalledSchematic(ctx context.Context) (string, error) {
 
 func (c *Client) RebootMachine(ctx context.Context) error {
 	return c.Reboot(c.nodeContext(ctx))
+}
+
+func (c *Client) ShutdownMachine(ctx context.Context, force bool) error {
+	return c.Shutdown(c.nodeContext(ctx), client.WithShutdownForce(force))
+}
+
+func (c *Client) WakeOnLAN(ctx context.Context, mac string) (link string, armed bool, err error) {
+	links, err := safe.StateListAll[*network.LinkStatus](c.nodeContext(ctx), c.COSI)
+	if err != nil {
+		return "", false, err
+	}
+	for l := range links.All() {
+		if s := l.TypedSpec(); s.Physical() && netx.Normalize(s.HardwareAddr.String()) == netx.Normalize(mac) {
+			link = l.Metadata().ID()
+			break
+		}
+	}
+	if link == "" {
+		return "", false, fmt.Errorf("no link with MAC %s", mac)
+	}
+	eth, err := safe.StateGetByID[*network.EthernetStatus](c.nodeContext(ctx), c.COSI, link)
+	if err != nil {
+		return link, false, err
+	}
+	return link, slices.Contains(eth.TypedSpec().WakeOnLAN, nethelpers.WOLModeMagic), nil
 }
 
 func systemContainerd() *common.ContainerdInstance {
@@ -341,14 +379,30 @@ func (c *Client) EtcdAlarms(ctx context.Context) ([]string, error) {
 }
 
 func (c *Client) BootID(ctx context.Context) (string, error) {
-	resp, err := c.MachineClient.SystemStat(c.nodeContext(ctx), &emptypb.Empty{})
+	boot, err := c.bootTime(ctx)
 	if err != nil {
 		return "", err
 	}
-	if len(resp.Messages) == 0 {
-		return "", errors.New("empty SystemStat response")
+	return strconv.FormatUint(boot, 10), nil
+}
+
+func (c *Client) BootedAt(ctx context.Context) (time.Time, error) {
+	boot, err := c.bootTime(ctx)
+	if err != nil {
+		return time.Time{}, err
 	}
-	return strconv.FormatUint(resp.Messages[0].BootTime, 10), nil
+	return time.Unix(int64(boot), 0), nil
+}
+
+func (c *Client) bootTime(ctx context.Context) (uint64, error) {
+	resp, err := c.MachineClient.SystemStat(c.nodeContext(ctx), &emptypb.Empty{})
+	if err != nil {
+		return 0, err
+	}
+	if len(resp.Messages) == 0 {
+		return 0, errors.New("empty SystemStat response")
+	}
+	return resp.Messages[0].BootTime, nil
 }
 
 func WaitForReboot(ctx context.Context, ip string, talosconfig []byte, prevBootID string, timeout time.Duration) error {
@@ -393,6 +447,24 @@ func WaitForReboot(ctx context.Context, ip string, talosconfig []byte, prevBootI
 		}
 	}
 	return fmt.Errorf("%s: not back after reboot within %s: %w", ip, timeout, last)
+}
+
+func WaitDown(ctx context.Context, ip string, timeout time.Duration) error {
+	deadline := time.Now().Add(timeout)
+	closed := 0
+	for time.Now().Before(deadline) {
+		if PortOpen(ctx, ip, 2*time.Second) {
+			closed = 0
+		} else if closed++; closed >= 2 {
+			return nil
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(3 * time.Second):
+		}
+	}
+	return fmt.Errorf("%s still answers after %s", ip, timeout)
 }
 
 func bootIDWith(ctx context.Context, ip string, talosconfig []byte) (string, error) {

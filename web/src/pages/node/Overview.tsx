@@ -4,7 +4,8 @@ import { Elapsed } from '../../components/Time'
 import { identityRows } from '../../components/Machine'
 import { RemoveNode } from '../../components/RemoveNode'
 import { KeyValue, Meter, Notice, Pill, Section } from '../../components/ui'
-import { kindLabel, modelName, roleLabel } from '../../machine'
+import { kindLabel, modelName, roleLabel, systemDiskSplit } from '../../machine'
+import { statuses } from '../../store'
 
 type Row = [string, ComponentChildren]
 
@@ -14,10 +15,16 @@ export function OverviewTab({ inv, invErr, k8s, k8sErr, node, spec, storage }: {
     ['Kind', kindLabel[node.kind]],
     ['Model', [modelName(inv ?? node?.inventory), inv?.platform].filter(Boolean).join(' · ')],
     ...identityRows(node),
-    ...(spec ? [['Install disk', <span class="mono">{spec.installDisk?.path ?? (spec.installDisk?.selector ? JSON.stringify(spec.installDisk.selector) : '—')}</span>] as Row] : []),
-    ...(spec?.dataDisks?.length ? [['Data disks', <span class="mono">{spec.dataDisks.map((d, i) => `${d} → /var/mnt/data-${i + 1}`).join(' · ')}</span>] as Row] : []),
-    ...(spec && !spec.dataDisks?.length && storage?.systemDisk ? [['System disk', <span class="mono">/var {storage.ephemeralSize ?? '40GiB'} · rest → /var/mnt/data-system</span>] as Row] : []),
+    ...(inv?.volumes?.length ? [
+      ...(inv.systemDisk ? [['System disk', <span class="mono">{inv.systemDisk}</span>] as Row] : []),
+      ...inv.volumes.map((v) => [v.name, <span class="mono">{v.device} · {fmt.bytes(v.sizeBytes)}{v.mount ? ` → ${v.mount}` : ''}{v.phase !== 'ready' ? ` · ${v.phase}` : ''}</span>] as Row),
+    ] : [
+      ...(spec ? [['Install disk', <span class="mono">{spec.installDisk?.path ?? (spec.installDisk?.selector ? JSON.stringify(spec.installDisk.selector) : '—')}</span>] as Row] : []),
+      ...(spec?.dataDisks?.length ? [['Data disks', <span class="mono">{spec.dataDisks.map((d, i) => `${d} → /var/mnt/data-${i + 1}`).join(' · ')}</span>] as Row] : []),
+      ...(spec && storage ? [['System disk', <span class="mono">{systemDiskSplit(storage)}</span>] as Row] : []),
+    ]),
   ]
+  const role = (node.cluster && statuses.value.get(node.cluster)?.nodes.find((n) => n.hostname === node.hostname)?.role) || spec?.role
   const identity = (
     <Section title="Machine">
       <div class="panel p-3">
@@ -26,7 +33,7 @@ export function OverviewTab({ inv, invErr, k8s, k8sErr, node, spec, storage }: {
           <div class="mt-4 pt-4 border-t border-border flex flex-wrap items-center gap-3">
             <div class="flex flex-col gap-1">
               <span class="label">Cluster</span>
-              <span><a href={`/clusters/${node.cluster}/nodes`} class="hover:underline">{node.cluster}</a><span class="text-muted"> · {roleLabel(spec.role)}</span></span>
+              <span><a href={`/clusters/${node.cluster}/nodes`} class="hover:underline">{node.cluster}</a><span class="text-muted"> · {roleLabel(role ?? '')}</span></span>
             </div>
             <span class="ml-auto"><RemoveNode cluster={node.cluster} hostname={spec.hostname} label="Remove from cluster" /></span>
           </div>

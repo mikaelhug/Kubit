@@ -50,6 +50,11 @@ const labSpec = "apiVersion: kubit.dev/v1\nkind: Cluster\nmetadata: {name: lab}\
 
 func servedLab(t *testing.T) (*Server, string) {
 	t.Helper()
+	return servedSpec(t, labSpec)
+}
+
+func servedSpec(t *testing.T, spec string) (*Server, string) {
+	t.Helper()
 	id, err := age.GenerateX25519Identity()
 	if err != nil {
 		t.Fatal(err)
@@ -57,7 +62,7 @@ func servedLab(t *testing.T) (*Server, string) {
 	t.Setenv("SOPS_AGE_KEY", id.String())
 	t.Setenv("SOPS_AGE_KEY_FILE", "")
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
-	c, err := config.Parse([]byte(labSpec))
+	c, err := config.Parse([]byte(spec))
 	if err != nil {
 		t.Fatal(err)
 	}

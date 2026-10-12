@@ -6,6 +6,8 @@ import (
 	"net/http"
 	"path/filepath"
 	"time"
+
+	"github.com/mikaelhug/kubit/internal/cluster"
 )
 
 const scopeSnapshots = "snapshots"
@@ -25,15 +27,21 @@ func (s *Server) handleSnapshotTake(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, err)
 		return
 	}
-	ctx, cancel := context.WithTimeout(r.Context(), snapshotTimeout)
-	defer cancel()
-	sn, err := s.manager.SnapshotEtcd(ctx, name, "manual", nil)
-	s.refresh(name, scopeSnapshots)
-	if err != nil {
-		writeErr(w, conflict(err.Error()))
+	if err := s.startRun(name, runSnapshot, func(ctx context.Context, sink cluster.Sink) error {
+		ctx, cancel := context.WithTimeout(ctx, snapshotTimeout)
+		defer cancel()
+		defer s.refresh(name, scopeSnapshots)
+		sn, err := s.manager.SnapshotEtcd(ctx, name, "manual", sink)
+		if err != nil {
+			return err
+		}
+		sink.Emit(cluster.Done, "snapshot", "", "snapshot %s written", sn.ID)
+		return nil
+	}); err != nil {
+		writeErr(w, err)
 		return
 	}
-	writeJSON(w, http.StatusCreated, sn)
+	w.WriteHeader(http.StatusAccepted)
 }
 
 func (s *Server) handleSnapshots(w http.ResponseWriter, r *http.Request) {

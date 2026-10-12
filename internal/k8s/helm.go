@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"sort"
 	"strconv"
 	"time"
 
@@ -15,14 +16,15 @@ import (
 )
 
 type HelmRelease struct {
-	Name         string `json:"name"`
-	Namespace    string `json:"namespace"`
-	Revision     int    `json:"revision"`
-	Chart        string `json:"chart"`
-	ChartVersion string `json:"chartVersion"`
-	AppVersion   string `json:"appVersion,omitempty"`
-	Status       string `json:"status"`
-	LastDeployed int64  `json:"lastDeployed,omitempty"`
+	Name         string   `json:"name"`
+	Namespace    string   `json:"namespace"`
+	Revision     int      `json:"revision"`
+	Chart        string   `json:"chart"`
+	ChartVersion string   `json:"chartVersion"`
+	AppVersion   string   `json:"appVersion,omitempty"`
+	Status       string   `json:"status"`
+	LastDeployed int64    `json:"lastDeployed,omitempty"`
+	Values       []string `json:"values,omitempty"`
 }
 
 func (c *Client) HelmRelease(ctx context.Context, namespace, name string) (*HelmRelease, error) {
@@ -66,7 +68,8 @@ func DecodeHelmRelease(data []byte) (*HelmRelease, error) {
 			Status       string    `json:"status"`
 			LastDeployed time.Time `json:"last_deployed"`
 		} `json:"info"`
-		Chart struct {
+		Config map[string]json.RawMessage `json:"config"`
+		Chart  struct {
 			Metadata struct {
 				Name       string `json:"name"`
 				Version    string `json:"version"`
@@ -81,5 +84,9 @@ func DecodeHelmRelease(data []byte) (*HelmRelease, error) {
 	if !rel.Info.LastDeployed.IsZero() {
 		out.LastDeployed = rel.Info.LastDeployed.Unix()
 	}
+	for k := range rel.Config {
+		out.Values = append(out.Values, k)
+	}
+	sort.Strings(out.Values)
 	return out, nil
 }

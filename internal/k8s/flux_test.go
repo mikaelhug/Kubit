@@ -57,7 +57,7 @@ func TestFluxObjectsFromTheWatcherInformers(t *testing.T) {
 	k := NewCache(informers.NewSharedInformerFactory(fake.NewClientset(), 0))
 	c.UseCache(k)
 	crdsSynced := false
-	k.trackCRDs(func() bool { return crdsSynced })
+	k.trackCRDs(func() bool { return crdsSynced }, cache.NewStore(cache.MetaNamespaceKeyFunc))
 	if got, _ := c.FluxObjects(ctx); len(got) != 1 || fluxKeys(got)[0] != live[0] {
 		t.Fatalf("unsynced CRDs must fall back to live reads: %v", fluxKeys(got))
 	}
@@ -75,7 +75,7 @@ func TestFluxObjectsFromTheWatcherInformers(t *testing.T) {
 		for _, fk := range fluxKinds {
 			if fk.kind == kind {
 				inf := dynamicinformer.NewFilteredDynamicInformer(watched, fk.gvr, "", 0, cache.Indexers{}, nil).Informer()
-				k.trackFlux(fk.gvr, inf)
+				k.trackCRD(fk.gvr, inf)
 				infs = append(infs, inf)
 			}
 		}

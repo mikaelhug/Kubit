@@ -52,7 +52,7 @@ type Generated struct {
 	Nodes       map[string][]byte
 }
 
-func Generate(c *Cluster, bundle *secrets.Bundle, installer string) (*Generated, error) {
+func Generate(c *Cluster, bundle *secrets.Bundle, installer func(Node) string) (*Generated, error) {
 	contract, err := talosconfig.ParseContractFromVersion(c.Spec.TalosVersion)
 	if err != nil {
 		return nil, fmt.Errorf("talosVersion: %w", err)
@@ -63,6 +63,46 @@ func Generate(c *Cluster, bundle *secrets.Bundle, installer string) (*Generated,
 			return nil, err
 		}
 	}
+	inputs := map[string]*generate.Input{}
+	inputFor := func(version string) (*generate.Input, error) {
+		if in, ok := inputs[version]; ok {
+			return in, nil
+		}
+		in, err := c.input(version, bundle)
+		if err != nil {
+			return nil, err
+		}
+		inputs[version] = in
+		return in, nil
+	}
+
+	out := &Generated{Secrets: bundle, Nodes: make(map[string][]byte, len(c.Spec.Nodes))}
+	for _, n := range c.Spec.Nodes {
+		in, err := inputFor(c.NodeTalosVersion(n))
+		if err != nil {
+			return nil, fmt.Errorf("node %s: %w", n.Hostname, err)
+		}
+		b, err := generateNode(c, in, n, installer(n))
+		if err != nil {
+			return nil, fmt.Errorf("node %s: %w", n.Hostname, err)
+		}
+		out.Nodes[n.Hostname] = b
+	}
+	in, err := inputFor(c.Spec.TalosVersion)
+	if err != nil {
+		return nil, err
+	}
+	if out.Talosconfig, err = in.Talosconfig(); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *Cluster) input(version string, bundle *secrets.Bundle) (*generate.Input, error) {
+	contract, err := talosconfig.ParseContractFromVersion(version)
+	if err != nil {
+		return nil, fmt.Errorf("talosVersion %s: %w", version, err)
+	}
 	var cpIPs []string
 	for _, n := range c.ControlPlanes() {
 		cpIPs = append(cpIPs, n.TargetIP())
@@ -71,7 +111,6 @@ func Generate(c *Cluster, bundle *secrets.Bundle, installer string) (*Generated,
 		generate.WithVersionContract(contract),
 		generate.WithSecretsBundle(bundle),
 		generate.WithEndpointList(cpIPs),
-		generate.WithInstallImage(installer),
 		generate.WithAllowSchedulingOnControlPlanes(*c.Spec.ControlPlane.AllowScheduling),
 		generate.WithSkipUnattendedInstallConfig(true),
 		generate.WithClusterDiscovery(c.DiscoveryOn()),
@@ -88,19 +127,7 @@ func Generate(c *Cluster, bundle *secrets.Bundle, installer string) (*Generated,
 	}
 	in.PodNet = []string{c.Spec.Network.PodCIDR}
 	in.ServiceNet = []string{c.Spec.Network.ServiceCIDR}
-
-	out := &Generated{Secrets: bundle, Nodes: make(map[string][]byte, len(c.Spec.Nodes))}
-	for _, n := range c.Spec.Nodes {
-		b, err := generateNode(c, in, n, installer)
-		if err != nil {
-			return nil, fmt.Errorf("node %s: %w", n.Hostname, err)
-		}
-		out.Nodes[n.Hostname] = b
-	}
-	if out.Talosconfig, err = in.Talosconfig(); err != nil {
-		return nil, err
-	}
-	return out, nil
+	return in, nil
 }
 
 func (c *Cluster) apiServerSANs(cpIPs []string) []string {

@@ -3,6 +3,7 @@ package k8s
 import (
 	"context"
 	"fmt"
+	"slices"
 	"sort"
 	"sync"
 
@@ -12,8 +13,10 @@ import (
 	discoveryv1 "k8s.io/api/discovery/v1"
 	networkingv1 "k8s.io/api/networking/v1"
 	storagev1 "k8s.io/api/storage/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/fields"
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -26,9 +29,10 @@ type Cache struct {
 	f      informers.SharedInformerFactory
 	synced []cache.InformerSynced
 
-	fluxMu sync.Mutex
-	crds   cache.InformerSynced
-	flux   map[schema.GroupVersionResource]cache.SharedIndexInformer
+	crdMu   sync.Mutex
+	crds    cache.InformerSynced
+	crdList cache.Store
+	watched map[schema.GroupVersionResource]cache.SharedIndexInformer
 }
 
 type informerScope struct {
@@ -78,41 +82,60 @@ func (k *Cache) HasSynced() bool {
 	return true
 }
 
-func (k *Cache) trackCRDs(synced cache.InformerSynced) {
-	k.fluxMu.Lock()
-	defer k.fluxMu.Unlock()
-	k.crds = synced
+func (k *Cache) trackCRDs(synced cache.InformerSynced, list cache.Store) {
+	k.crdMu.Lock()
+	defer k.crdMu.Unlock()
+	k.crds, k.crdList = synced, list
 }
 
-func (k *Cache) trackFlux(gvr schema.GroupVersionResource, inf cache.SharedIndexInformer) {
-	k.fluxMu.Lock()
-	defer k.fluxMu.Unlock()
-	if k.flux == nil {
-		k.flux = map[schema.GroupVersionResource]cache.SharedIndexInformer{}
+func (k *Cache) trackCRD(gvr schema.GroupVersionResource, inf cache.SharedIndexInformer) {
+	k.crdMu.Lock()
+	defer k.crdMu.Unlock()
+	if k.watched == nil {
+		k.watched = map[schema.GroupVersionResource]cache.SharedIndexInformer{}
 	}
-	k.flux[gvr] = inf
+	k.watched[gvr] = inf
 }
 
-func (k *Cache) untrackFlux(gvr schema.GroupVersionResource) {
-	k.fluxMu.Lock()
-	defer k.fluxMu.Unlock()
-	delete(k.flux, gvr)
+func (k *Cache) untrackCRD(gvr schema.GroupVersionResource) {
+	k.crdMu.Lock()
+	defer k.crdMu.Unlock()
+	delete(k.watched, gvr)
 }
 
-func (k *Cache) fluxStores() (map[schema.GroupVersionResource]cache.Store, bool) {
-	k.fluxMu.Lock()
-	defer k.fluxMu.Unlock()
+func (k *Cache) crdStore(gvr schema.GroupVersionResource) (cache.Store, bool) {
+	k.crdMu.Lock()
+	defer k.crdMu.Unlock()
 	if k.crds == nil || !k.crds() {
 		return nil, false
 	}
-	stores := map[schema.GroupVersionResource]cache.Store{}
-	for gvr, inf := range k.flux {
-		if !inf.HasSynced() {
-			return nil, false
-		}
-		stores[gvr] = inf.GetStore()
+	inf, ok := k.watched[gvr]
+	if !ok {
+		_, exists, _ := k.crdList.GetByKey(gvr.Resource + "." + gvr.Group)
+		return nil, !exists
 	}
-	return stores, true
+	if !inf.HasSynced() {
+		return nil, false
+	}
+	return inf.GetStore(), true
+}
+
+func (c *Client) cachedObjects(gvr schema.GroupVersionResource) ([]unstructured.Unstructured, bool) {
+	k := c.cache.Load()
+	if k == nil {
+		return nil, false
+	}
+	store, ok := k.crdStore(gvr)
+	if !ok || store == nil {
+		return nil, ok
+	}
+	var objs []*unstructured.Unstructured
+	for _, obj := range store.List() {
+		if u, ok := obj.(*unstructured.Unstructured); ok {
+			objs = append(objs, u)
+		}
+	}
+	return sortedValues(objs), true
 }
 
 func (c *Client) UseCache(k *Cache) { c.cache.Store(k) }
@@ -124,6 +147,27 @@ func (c *Client) listers() informers.SharedInformerFactory {
 		return k.f
 	}
 	return nil
+}
+
+func (c *Client) crdObjects(ctx context.Context, gvr schema.GroupVersionResource, namespace string) ([]unstructured.Unstructured, error) {
+	if objs, ok := c.cachedObjects(gvr); ok {
+		if objs == nil {
+			return nil, nil
+		}
+		return slices.DeleteFunc(objs, func(u unstructured.Unstructured) bool { return u.GetNamespace() != namespace }), nil
+	}
+	dyn, err := c.dynClient()
+	if err != nil {
+		return nil, err
+	}
+	list, err := dyn.Resource(gvr).Namespace(namespace).List(ctx, metav1.ListOptions{})
+	if apierrors.IsNotFound(err) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return append([]unstructured.Unstructured{}, list.Items...), nil
 }
 
 func sortedValues[T any, P interface {

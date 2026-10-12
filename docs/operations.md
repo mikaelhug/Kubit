@@ -54,7 +54,7 @@ would do:
 + add                w-03: worker at 192.168.1.23
 ~ config             w-01
       ~ machine.network.nameservers …
-~ upgrade talos      v1.14.0 → v1.14.2
+~ upgrade talos      cp-01: v1.14.0 → v1.14.2
 - remove             w-09: drain, delete and reset (needs --allow-removal)
 ~ platform           traefik: 1 to update
 lab: 5 change(s). Plan 6533c580b90d08e086e949f3.
@@ -81,7 +81,13 @@ held by a process on this machine that no longer runs is taken over instead of w
 1. **address** (below), before anything else.
 2. **create** when no node is a member yet: preflight → schematic → configs from the
    repo's secrets → install in parallel → bootstrap etcd → nodes Ready. Re-running
-   resumes an interrupted create.
+   resumes an interrupted create. A machine that boots an existing Talos install (after
+   destroy or a removal reset) keeps it when the config is applied, since Talos does not
+   reinstall over one; the plan lists it as **re-image** (read from the machine in
+   maintenance mode), and create installs the declared image on every node that runs
+   another one before bootstrapping etcd, while the nodes are empty. A node that comes up on
+   its static address gets an **address** entry, and create writes its `ip:` once it is
+   Ready. The platform follows in the same apply, so the next plan is empty.
 3. **add** each declared machine in maintenance mode.
 4. **config**: dry-run first, apply only where Talos reports a diff, wait for Ready.
 5. **upgrade talos**, then **upgrade kubernetes**, node by node, control planes first.
@@ -127,10 +133,11 @@ rebuilds its view of a cluster from the repo and the live nodes on every run, so
 machine with the repo and the age key plans the same way. A cluster cached in `~/.kubit`
 with other secrets is refused.
 
-**Upgrades** run per node, control planes first: pull the installer, stage it, check etcd health (never with exactly two members), drain (5 min, PDBs respected),
+**Upgrades** run per node, control planes first, and only on nodes whose running Talos
+differs from their declared one: pull the installer, stage it, check etcd health (never with exactly two members), drain (5 min, PDBs respected),
 reboot, wait for Ready and the etcd member count, uncordon. A changed extension set
-re-images even at the same version. Every upgrade starts with prechecks (API, etcd,
-nodes Ready, free `/var`, published target, supported version pair, deprecated API use)
+re-images every node even at the same version. Every upgrade starts with prechecks (API, etcd,
+nodes Ready, free `/var`, each target published, supported version pairs, deprecated API use)
 and a `pre-upgrade` etcd snapshot.
 
 CI: a workflow can run `kubit plan --detailed-exitcode` on pull requests and
@@ -139,10 +146,36 @@ cluster's network. `hack/e2e.sh <subnet>` runs init → apply → a second, empt
 
 **Destroy.** `kubit destroy lab` (or *Settings › Danger zone › Destroy*, after typing the cluster name; the log runs on Changes)
 takes the apply Lease, resets the workers and then the control planes without draining or
-leaving etcd (Talos reset of STATE and EPHEMERAL, reboot; the installed Talos stays), and
+leaving etcd (Talos reset of STATE and EPHEMERAL, reboot; the installed Talos stays, and the
+next create re-images it if the declared image differs), and
 waits up to 10 minutes until every node answers in maintenance mode, at its address or by
 MAC in its /24. Nodes come back on DHCP. The repo is kept: `kubit apply` creates the cluster
 again from it; to start over through Discovery, move the repo away. `--yes` skips the prompt.
+
+## Node power
+
+The Nodes tab restarts, shuts down and powers on selected nodes. Each runs like an apply:
+one run per cluster, under the apply Lease while the API answers, with its log on the Nodes
+tab and `POST clusters/{n}/nodes/power`.
+
+- **Restart**: one node at a time, control planes first. The upgrade cycle without the
+  install: etcd check, cordon, drain (5 min), reboot, Ready and etcd members, uncordon. A
+  node you cordoned stays cordoned.
+- **Shut down** (some nodes): workers first, one at a time. Refused when more than one
+  control plane would be down, when the cluster has two, or for the endpoint node without a
+  VIP. Talos cordons and drains the node itself and uncordons it at its next
+  boot, whether Kubit runs then or not.
+- **Shut down** (every node): a `pre-shutdown` etcd snapshot (the shutdown goes on if it
+  fails), workers in parallel, the Lease released, then the control planes in parallel.
+  Nothing is drained.
+- **Power on**: magic packets to each node's `mac` at 255.255.255.255 and the node's subnet
+  broadcast (UDP 9); the run ends there and the node's row follows it back. The laptop must
+  sit in the nodes' broadcast domain. Before each shutdown the log says whether the node's NIC
+  has Wake-on-LAN armed ([cluster.yaml](cluster-yaml.md) shows how to arm it).
+
+A node Kubit shut down carries `kubit.dev/off=<boot ID>` until it boots again, and the
+daemon remembers it too: the node shows *off*, raises no alert, and the plan reports it as
+off instead of scanning for it. With every node off the cluster shows *off*.
 
 ## Platform layer (OpenTofu)
 
@@ -180,7 +213,7 @@ Charts are pinned in `internal/tofu/render.go`. Notes:
   chart (`gateway-api` in `kube-system`) whose CRDs carry `helm.sh/resource-policy: keep`,
   so turning Traefik off never deletes Gateways or routes.
 - **Longhorn** runs only on data disks or `data-system` (labelled at machine-config
-  time), reserve 5 %, replicas = min(3, storage nodes). Enabling it adds the
+  time) of nodes that run workloads, reserve 5 %, replicas = min(3, storage nodes). Enabling it adds the
   iscsi/util-linux extensions; `kubit apply` re-images the nodes before the platform.
 - **Builds**: in-cluster `registry:3` + rootful BuildKit in `kubit-builds`; nodes pull
   `registry.kubit/<app>` through a fixed ClusterIP mirror. Needs Longhorn.
@@ -211,7 +244,8 @@ while they hold and resolve themselves; there is nothing to acknowledge. A fault
 hold for three ticks without a gap; a laptop that slept re-baselines instead of
 alerting. When the gateway is unreachable too, the observer is offline and cluster
 alerts pause. Alerts stay quiet while a `kubit apply` holds the cluster's
-`kube-system/kubit-apply` Lease and for 10 minutes after. Changes (cordons, version
+`kube-system/kubit-apply` Lease and for 10 minutes after, and for nodes or a cluster that
+Kubit shut down. Changes (cordons, version
 steps, removed nodes, etcd membership and leader) are logged as events.
 
 The webhook gets each raise at or above `alerts.minSeverity` and its resolution.

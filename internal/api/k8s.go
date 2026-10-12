@@ -33,9 +33,6 @@ func (s *Server) k8sRoutes() {
 	r.HandleFunc("GET /api/v1/clusters/{name}/builds", s.kubeJSON(func(r *http.Request, kc *k8s.Client) (any, error) {
 		return kc.Builds(r.Context())
 	}))
-	r.HandleFunc("GET /api/v1/clusters/{name}/storage", s.kubeJSON(func(r *http.Request, kc *k8s.Client) (any, error) {
-		return kc.Storage(r.Context())
-	}))
 	r.HandleFunc("GET /api/v1/clusters/{name}/network", s.kubeJSON(s.network))
 	r.HandleFunc("GET /api/v1/clusters/{name}/pods/{namespace}/{pod}/logs", s.handlePodLogs)
 }
@@ -120,8 +117,8 @@ func (s *Server) network(r *http.Request, kc *k8s.Client) (any, error) {
 	} else {
 		view.RoutesErr = err.Error()
 	}
-	if c, _, err := s.manager.LoadCluster(r.PathValue("name")); err == nil && c.Spec.Platform.MetalLB.Enabled {
-		if pool, err := k8s.PoolUsageFor(c.Spec.Platform.MetalLB.Range, svcs); err == nil {
+	if lb := kc.LoadBalancer(r.Context()); len(lb.Pool) > 0 {
+		if pool, err := k8s.PoolUsageFor(lb.Pool[0], svcs); err == nil {
 			view.Pool = pool
 		} else {
 			view.PoolError = err.Error()

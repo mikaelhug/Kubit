@@ -54,7 +54,7 @@ func TestLiveAddressingReadsBackAsDeclaredSoNothingMoves(t *testing.T) {
 		if err != nil {
 			t.Fatalf("%s: %v", name, err)
 		}
-		g, err := config.Generate(c, sharedSecrets(t), "installer")
+		g, err := config.Generate(c, sharedSecrets(t), installer)
 		if err != nil {
 			t.Fatal(err)
 		}

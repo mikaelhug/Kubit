@@ -48,7 +48,7 @@ var generatedTalosconfig = sync.OnceValues(func() ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	gen, err := config.Generate(c, nil, "installer")
+	gen, err := config.Generate(c, nil, func(config.Node) string { return "installer" })
 	if err != nil {
 		return nil, err
 	}

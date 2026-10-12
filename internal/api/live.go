@@ -6,12 +6,14 @@ import (
 	"log"
 	"net/http"
 	"runtime"
+	"slices"
 	"strconv"
 	"sync"
 	"time"
 
 	"github.com/coder/websocket"
 	"github.com/mikaelhug/kubit/internal/cluster"
+	"github.com/mikaelhug/kubit/internal/k8s"
 	"github.com/mikaelhug/kubit/internal/store"
 	"github.com/mikaelhug/kubit/internal/watch"
 )
@@ -182,16 +184,51 @@ func (s *Server) onChange(ctx context.Context, c store.Change) {
 	case "machines":
 		if c.Key == "" {
 			s.refresh("", scopeMachines)
+			s.pruneKinds()
 			return
 		}
 		if m, err := s.store.GetMachine(c.Key); err == nil {
 			s.machineSeen(ctx, *m)
-			v := s.machineView(*m, s.declaredNodes())
+			declared := s.declaredNodes()
+			v := s.machineView(*m, declared)
 			s.hub.publish(Message{Kind: "machine", Cluster: m.Cluster, Machine: &v})
+			s.noteMachineKind(*m, declared)
 		}
 	case "secrets":
 		s.refresh(c.Cluster, scopeCertificates)
 	}
+}
+
+type machinePlace struct {
+	kind    store.Kind
+	cluster string
+}
+
+func (s *Server) noteMachineKind(m store.Machine, declared map[string]declaredNode) {
+	next := machinePlace{kind: m.Kind(), cluster: m.Cluster}
+	prev, seen := s.kinds.Swap(m.MAC, next)
+	was, _ := prev.(machinePlace)
+	if seen && was == next {
+		return
+	}
+	for _, cl := range slices.Compact(slices.Sorted(slices.Values([]string{was.cluster, m.Cluster, declared[m.MAC].Cluster}))) {
+		if cl != "" {
+			s.refresh(cl, k8s.ScopeStorage)
+		}
+	}
+}
+
+func (s *Server) pruneKinds() {
+	known := map[string]bool{}
+	for _, m := range s.store.ListNodes("") {
+		known[m.MAC] = true
+	}
+	s.kinds.Range(func(k, _ any) bool {
+		if !known[k.(string)] {
+			s.kinds.Delete(k)
+		}
+		return true
+	})
 }
 
 var devOrigins = []string{"localhost:5173", "127.0.0.1:5173"}

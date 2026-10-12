@@ -164,22 +164,18 @@ func printPlan(w io.Writer, p *cluster.Plan) {
 			sym = "~"
 		}
 		line := fmt.Sprintf("%s %-18s %s", sym, c.Action, c.Target)
-		detail := c.Detail
-		if c.Action == cluster.ActConfig {
-			detail = ""
-		}
-		if detail != "" {
+		if c.Detail != "" {
 			if c.Target != "" {
 				line += ": "
 			}
-			line += detail
+			line += c.Detail
 		}
 		if c.Blocked != "" {
 			line += " (" + c.Blocked + ")"
 		}
 		fmt.Fprintln(w, strings.TrimRight(line, " "))
-		if c.Action == cluster.ActConfig {
-			for _, l := range firstLines(c.Detail, 12) {
+		if c.Diff != "" {
+			for _, l := range firstLines(c.Diff, 12) {
 				fmt.Fprintf(w, "      %s\n", l)
 			}
 		}

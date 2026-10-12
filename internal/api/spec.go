@@ -42,9 +42,10 @@ func (s *Server) handleAddonPut(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleVersionsPut(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		Talos      string `json:"talosVersion"`
-		Kubernetes string `json:"kubernetesVersion"`
-		Hash       string `json:"hash"`
+		Talos      string   `json:"talosVersion"`
+		Kubernetes string   `json:"kubernetesVersion"`
+		Hostnames  []string `json:"hostnames"`
+		Hash       string   `json:"hash"`
 	}
 	if !decode(w, r, &req) {
 		return
@@ -53,12 +54,20 @@ func (s *Server) handleVersionsPut(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, badRequest("body must be {talosVersion, kubernetesVersion}"))
 		return
 	}
+	if len(req.Hostnames) > 0 && (req.Talos == "" || req.Kubernetes != "") {
+		writeErr(w, badRequest("hostnames take a talosVersion only; Kubernetes is cluster-wide"))
+		return
+	}
 	dir, err := s.repoOf(r.PathValue("name"))
 	if err != nil {
 		writeErr(w, err)
 		return
 	}
-	if err := repo.SetVersions(dir, req.Hash, req.Talos, req.Kubernetes); err != nil {
+	edit := func() error { return repo.SetVersions(dir, req.Hash, req.Talos, req.Kubernetes) }
+	if len(req.Hostnames) > 0 {
+		edit = func() error { return repo.SetNodeTalos(dir, req.Hash, req.Hostnames, req.Talos) }
+	}
+	if err := edit(); err != nil {
 		writeErr(w, editErr(err))
 		return
 	}

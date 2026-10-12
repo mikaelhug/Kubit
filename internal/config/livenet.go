@@ -5,6 +5,7 @@ import (
 	"strconv"
 	"strings"
 
+	coreconfig "github.com/siderolabs/talos/pkg/machinery/config"
 	"github.com/siderolabs/talos/pkg/machinery/config/configloader"
 	"github.com/siderolabs/talos/pkg/machinery/config/types/network"
 )
@@ -43,9 +44,12 @@ func (a Addressing) String() string {
 }
 
 type LiveConfig struct {
-	Addressing Addressing
-	Endpoint   string
-	Found      bool
+	Addressing   Addressing
+	Endpoint     string
+	VIP          string
+	PodCIDRs     []string
+	ServiceCIDRs []string
+	Found        bool
 }
 
 func ReadLive(cfg []byte) (LiveConfig, error) {
@@ -53,9 +57,21 @@ func ReadLive(cfg []byte) (LiveConfig, error) {
 	if err != nil {
 		return LiveConfig{}, err
 	}
+	return LiveOf(p), nil
+}
+
+func LiveOf(p coreconfig.Provider) LiveConfig {
 	var live LiveConfig
 	if k := p.K8sClusterConfig(); k != nil && k.ClusterEndpoint() != nil {
 		live.Endpoint = k.ClusterEndpoint().String()
+	}
+	if k := p.K8sNetworkConfig(); k != nil {
+		for _, c := range k.PodCIDRs() {
+			live.PodCIDRs = append(live.PodCIDRs, c.String())
+		}
+		for _, c := range k.ServiceCIDRs() {
+			live.ServiceCIDRs = append(live.ServiceCIDRs, c.String())
+		}
 	}
 	fill := func(c network.CommonLinkConfig, vlan uint16) {
 		a := Addressing{VLAN: vlan, MTU: c.LinkMTU}
@@ -83,7 +99,9 @@ func ReadLive(cfg []byte) (LiveConfig, error) {
 			if doc.ParentLinkConfig == vipLinkAlias {
 				fill(doc.CommonLinkConfig, doc.VLANIDConfig)
 			}
+		case *network.Layer2VIPConfigV1Alpha1:
+			live.VIP = doc.MetaName
 		}
 	}
-	return live, nil
+	return live
 }

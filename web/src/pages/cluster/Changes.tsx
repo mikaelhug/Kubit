@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'preact/hooks'
-import { api, fmt, type ApplyLine, type Plan, type PlanChange } from '../../api'
+import { api, type Plan, type PlanChange } from '../../api'
+import { RunLog } from '../../components/RunLog'
 import { Ago } from '../../components/Time'
 import { ConfirmDialog, ErrorBox, Notice, Pill, PlanPill, Section } from '../../components/ui'
 import { roleLabel } from '../../machine'
@@ -39,17 +40,7 @@ export function Changes({ ctx }: { ctx: ClusterCtx }) {
       <ErrorBox error={error ?? loadError ?? (summary?.state === 'failed' ? summary.error ?? null : null)} />
       {plan && <div class={checking ? 'opacity-60' : ''}><PlanView plan={plan} cluster={name} /></div>}
       {!plan && !checking && summary?.state !== 'failed' && <Notice tone="muted">No plan yet.</Notice>}
-      {run && (run.running || run.lines.length > 0) && (
-        <div class="panel flex flex-col">
-          <div class="flex items-center gap-2 px-3 py-2 border-b border-border text-[13px]">
-            <span class="font-medium">{run.kind === 'destroy' ? 'Destroy' : 'Apply'}</span>
-            {run.running ? <Pill tone="info">running</Pill> : run.error ? <Pill tone="bad">failed</Pill> : <Pill tone="good">done</Pill>}
-            {run.started && <span class="text-muted">{fmt.datetime(run.started)}</span>}
-          </div>
-          {run.error && <div class="px-3 pt-2"><ErrorBox error={run.error} /></div>}
-          <pre class="log !max-h-none !rounded-none !border-0">{run.lines.map(logLine).join('\n')}</pre>
-        </div>
-      )}
+      {run && (run.running || run.lines.length > 0) && <RunLog run={run} />}
       {confirm && plan && (
         <ConfirmDialog title={`Apply ${name}`} action="Apply" tone={removals ? 'danger' : 'primary'} onClose={() => setConfirm(false)}
           impact={impactOf(plan) || removals ? <>
@@ -60,13 +51,6 @@ export function Changes({ ctx }: { ctx: ClusterCtx }) {
       )}
     </Section>
   )
-}
-
-const logLine = (l: ApplyLine) => {
-  const time = new Date(l.ts).toLocaleTimeString()
-  const level = l.level === 'info' || l.level === 'done' ? '' : `${l.level.toUpperCase()} `
-  if (l.message === l.step) return `${time} ${level}${l.step}`
-  return `${time} ${level}  ${l.node ? `${l.node}: ` : ''}${l.message}`
 }
 
 const oneTime = (c: PlanChange) => c.action === 'platform' && c.target === 'state'
@@ -126,18 +110,35 @@ function PlanView({ plan, cluster }: { plan: Plan; cluster: string }) {
 
 function ChangeRow({ c }: { c: PlanChange }) {
   const [open, setOpen] = useState(false)
-  const config = c.action === 'config'
+  const summary = (
+    <>
+      <span class="mono w-3 text-center">{symbol[c.action] ?? '~'}</span>
+      <span class="font-medium">{c.action}</span>
+      {c.target && <span class="mono">{c.target}</span>}
+      {c.detail && <span class="text-muted truncate">{c.detail}</span>}
+      {c.blocked && <Pill tone="warn">needs removal allowed</Pill>}
+    </>
+  )
+  if (!c.diff) return <div class="px-3 py-2 flex items-center gap-2">{summary}</div>
   return (
-    <div class="px-3 py-2 flex flex-col gap-1">
-      <div class="flex items-center gap-2">
-        <span class="mono w-3 text-center">{symbol[c.action] ?? '~'}</span>
-        <span class="font-medium">{c.action}</span>
-        {c.target && <span class="mono">{c.target}</span>}
-        {!config && c.detail && <span class="text-muted truncate">{c.detail}</span>}
-        {c.blocked && <Pill tone="warn">needs removal allowed</Pill>}
-        {config && <button class="btn btn-sm ml-auto" onClick={() => setOpen(!open)}>{open ? 'Hide diff' : 'Diff'}</button>}
-      </div>
-      {config && open && <pre class="log !max-h-none">{c.detail}</pre>}
+    <div class="flex flex-col">
+      <button type="button" class="px-3 py-2 flex items-center gap-2 text-left hover:bg-panel-2/60 cursor-pointer" aria-expanded={open} onClick={() => setOpen(!open)}>
+        {summary}
+        <svg class={`ml-auto shrink-0 text-muted transition-transform ${open ? 'rotate-90' : ''}`} width="12" height="12" viewBox="0 0 12 12" aria-hidden="true"><path d="M4.5 2.5 8 6l-3.5 3.5" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" /></svg>
+      </button>
+      {open && <div class="px-3 pb-2"><DiffView diff={c.diff} /></div>}
     </div>
   )
+}
+
+function diffLineClass(line: string) {
+  if (line.startsWith('#')) return 'font-semibold'
+  if (line.startsWith('@@') || line.startsWith('+++') || line.startsWith('---')) return 'text-muted'
+  if (line.startsWith('+')) return 'text-good'
+  if (line.startsWith('-')) return 'text-bad'
+  return ''
+}
+
+function DiffView({ diff }: { diff: string }) {
+  return <pre class="log !max-h-none">{diff.split('\n').map((line, i) => <span key={i} class={diffLineClass(line)}>{line}{'\n'}</span>)}</pre>
 }

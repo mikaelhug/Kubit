@@ -56,6 +56,9 @@ type Manager struct {
 	converging   sync.Map
 	observed     sync.Map
 
+	offMu sync.Mutex
+	off   map[string]map[string]bool
+
 	Checkout func(url string) string
 }
 
@@ -105,12 +108,16 @@ func (m *Manager) ImageStatus(ctx context.Context, name string) (ImageStatus, er
 	return ImageStatus{TalosVersion: c.Spec.TalosVersion, Installed: c.Spec.SchematicID, Desired: id, Extensions: append([]string{}, c.Spec.Extensions...), Outdated: id != c.Spec.SchematicID}, nil
 }
 
-func (m *Manager) installerImage(c *config.Cluster) string {
-	return m.Factory.InstallerImage(c.Spec.SchematicID, c.Spec.TalosVersion)
+func (m *Manager) installerImage(c *config.Cluster, n config.Node) string {
+	return m.Factory.InstallerImage(c.Spec.SchematicID, c.NodeTalosVersion(n))
+}
+
+func (m *Manager) installers(c *config.Cluster) func(config.Node) string {
+	return func(n config.Node) string { return m.installerImage(c, n) }
 }
 
 func (m *Manager) machineConfigs(c *config.Cluster, bundle *secrets.Bundle) (*config.Generated, error) {
-	return config.Generate(declared(c), bundle, m.installerImage(c))
+	return config.Generate(declared(c), bundle, m.installers(c))
 }
 
 func (m *Manager) loadSecrets(name string) (*Desired, *secrets.Bundle, error) {

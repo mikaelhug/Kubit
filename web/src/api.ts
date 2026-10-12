@@ -1,5 +1,5 @@
 import { authedUrl, req } from './api/http'
-import type { AppsRepo, AppsRequest, AppsReview, AppsStatus, AddonStatus, Build, CertInfo, ApplyRun, ClusterRow, ConfigStatus, DesignRequest, DesignView, DirListing, DiscoverState, FluxObject, FluxRepository, HealthEvent, ImageStatus, Inventory, Namespace, NetworkView, NodeDetail, NodeNetworkView, NodeRow, PodEvent, Plan, PlanSummary, PodSummary, PxeStatus, RepoView, SecretEntry, SecretIndex, SecretSpec, ClusterSecrets, DeployKey, SOPSKey, Sample, Service, Snapshot, Status, StorageView, Versions, Workload } from './api/types'
+import type { AppsRepo, AppsRequest, AppsReview, AppsStatus, AddonStatus, Build, CertInfo, ApplyRun, ClusterRow, ConfigStatus, DesignRequest, DesignView, DirListing, DiscoverState, FluxObject, FluxRepository, HealthEvent, ImageStatus, Inventory, Namespace, NetworkView, NodeDetail, NodeNetworkView, NodeRow, PodEvent, Plan, PlanSummary, PodSummary, PxeStatus, RepoView, SecretEntry, SecretSpec, ClusterSecrets, DeployKey, SOPSKey, Sample, Service, Snapshot, Status, StorageView, LonghornView, Versions, Workload } from './api/types'
 
 export type * from './api/types'
 export { getToken } from './api/http'
@@ -19,9 +19,11 @@ export const api = {
   repo: (cluster: string) => req<RepoView>('GET', `/clusters/${cluster}/repo`),
   nodeNetwork: (cluster: string, host: string) => req<NodeNetworkView>('GET', `/clusters/${cluster}/nodes/${host}/network`),
   setNodeNetwork: (cluster: string, host: string, body: { static: boolean; address?: string; gateway?: string; nameservers?: string[]; hash: string }) => req<{ hash: string }>('PUT', `/clusters/${cluster}/nodes/${host}/network`, body),
+  setNodeStorage: (cluster: string, host: string, body: { systemDisk: boolean; hash: string }) => req<{ hash: string }>('PUT', `/clusters/${cluster}/nodes/${host}/storage`, body),
   removeNode: (cluster: string, hostname: string, hash: string) => req<{ hash: string }>('DELETE', `/clusters/${cluster}/nodes/${hostname}?hash=${hash}`),
-  setAddon: (cluster: string, key: string, body: { enabled: boolean; range?: string; repository?: FluxRepository; imageAutomation?: boolean; hash: string }) => req<{ hash: string }>('PUT', `/clusters/${cluster}/platform/${key}`, body),
-  setVersions: (cluster: string, body: { talosVersion?: string; kubernetesVersion?: string; hash: string }) => req<{ hash: string }>('PUT', `/clusters/${cluster}/versions`, body),
+  setAddon: (cluster: string, key: string, body: { enabled: boolean; range?: string; repository?: FluxRepository; imageAutomation?: boolean; replicas?: number; hash: string }) => req<{ hash: string }>('PUT', `/clusters/${cluster}/platform/${key}`, body),
+  setVersions: (cluster: string, body: { talosVersion?: string; kubernetesVersion?: string; hostnames?: string[]; hash: string }) => req<{ hash: string }>('PUT', `/clusters/${cluster}/versions`, body),
+  nodePower: (cluster: string, action: 'restart' | 'shutdown' | 'power-on', hostnames: string[], whole = false) => req<void>('POST', `/clusters/${cluster}/nodes/power`, { action, hostnames, whole }),
   plans: () => req<PlanSummary[]>('GET', '/plans'),
   plan: (cluster: string) => req<{ summary: PlanSummary; plan: Plan | null }>('GET', `/clusters/${cluster}/plan`),
   replan: (cluster: string) => req<void>('POST', `/clusters/${cluster}/plan`),
@@ -35,7 +37,7 @@ export const api = {
   versions: () => req<Versions>('GET', '/versions'),
   certificates: (cluster: string) => req<CertInfo[]>('GET', `/clusters/${cluster}/certificates`),
   snapshots: (cluster: string) => req<Snapshot[]>('GET', `/clusters/${cluster}/snapshots`),
-  takeSnapshot: (cluster: string) => req<Snapshot>('POST', `/clusters/${cluster}/snapshots`),
+  takeSnapshot: (cluster: string) => req<void>('POST', `/clusters/${cluster}/snapshots`),
   stopDaemon: () => req<void>('POST', '/daemon/stop'),
   pxe: () => req<PxeStatus>('GET', '/pxe'),
   addons: (name: string) => req<AddonStatus[]>('GET', `/clusters/${name}/addons`),
@@ -53,6 +55,7 @@ export const api = {
   podEvents: (name: string, ns: string, pod: string) => req<PodEvent[]>('GET', `/clusters/${name}/pods/${ns}/${pod}/events`),
   network: (name: string) => req<NetworkView>('GET', `/clusters/${name}/network`),
   storage: (name: string) => req<StorageView>('GET', `/clusters/${name}/storage`),
+  longhorn: (name: string) => req<LonghornView | null>('GET', `/clusters/${name}/storage/longhorn`),
   clusterYaml: (name: string) => req<{ dir: string; yaml: string; hash: string }>('GET', `/clusters/${name}/yaml`),
   saveClusterYaml: (name: string, yaml: string, hash: string) => req<{ hash: string }>('PUT', `/clusters/${name}/yaml`, { yaml, hash }),
   nodes: (cluster?: string) => req<NodeRow[]>('GET', '/nodes' + (cluster ? `?cluster=${cluster}` : '')),
@@ -61,7 +64,6 @@ export const api = {
   services: (ip: string) => req<Service[]>('GET', `/nodes/${ip}/services`),
   inventory: (ip: string) => req<Inventory>('GET', `/nodes/${ip}/inventory`),
   nodeKubernetes: (ip: string) => req<NodeDetail>('GET', `/nodes/${ip}/kubernetes`),
-  secrets: () => req<SecretIndex>('GET', '/secrets'),
   clusterSecrets: (name: string) => req<ClusterSecrets>('GET', `/clusters/${name}/secrets`),
   secretValues: (repo: number, file: string) => req<{ hash: string; values: SecretEntry[] }>('GET', `/secrets/values?${secretQuery(repo, file)}`),
   patchSecret: (repo: number, file: string, hash: string, set: SecretEntry[], remove: string[][]) => req<void>('PATCH', '/secrets/file', { repo, file, hash, set, remove }),

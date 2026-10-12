@@ -11,7 +11,9 @@ func status(api bool, etcd bool, nodes ...cluster.NodeStatus) *cluster.Status {
 	return &cluster.Status{APIReachable: api, Etcd: cluster.EtcdStatus{Expected: 1, Members: 1, Healthy: etcd}, Nodes: nodes}
 }
 
-func apply(c *confirm, st *cluster.Status) []transition { return c.Apply("c", badFacts("c", st)) }
+func apply(c *confirm, st *cluster.Status) []transition {
+	return c.Apply("c", badFacts("c", st), offNodes(st))
+}
 
 func tkinds(ts []transition) []string {
 	var out []string

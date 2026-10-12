@@ -1,6 +1,7 @@
 package tofu
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -11,15 +12,15 @@ import (
 type Group struct {
 	Addon   string
 	Actions string
+	Diff    string
 }
 
 type showPlan struct {
 	ResourceChanges []struct {
 		Address string `json:"address"`
 		Mode    string `json:"mode"`
-		Change  struct {
-			Actions []string `json:"actions"`
-		} `json:"change"`
+		Type    string `json:"type"`
+		Change  change `json:"change"`
 	} `json:"resource_changes"`
 }
 
@@ -33,11 +34,14 @@ func (r *Runner) ShowPlan(ctx context.Context) ([]Group, error) {
 
 func ParseShowPlan(raw []byte) ([]Group, error) {
 	var sp showPlan
-	if err := json.Unmarshal(raw, &sp); err != nil {
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	dec.UseNumber()
+	if err := dec.Decode(&sp); err != nil {
 		return nil, fmt.Errorf("parse plan: %w", err)
 	}
 	counts := map[string]map[string]int{}
 	order := map[string][]string{}
+	diffs := map[string][]string{}
 	for _, rc := range sp.ResourceChanges {
 		action := actionOf(rc.Change.Actions)
 		if rc.Mode == "data" || action == "" {
@@ -51,6 +55,7 @@ func ParseShowPlan(raw []byte) ([]Group, error) {
 			order[addon] = append(order[addon], action)
 		}
 		counts[addon][action]++
+		diffs[addon] = append(diffs[addon], resourceDiff(rc.Address, rc.Type, action, rc.Change)...)
 	}
 	out := make([]Group, 0, len(counts))
 	for addon, n := range counts {
@@ -58,7 +63,7 @@ func ParseShowPlan(raw []byte) ([]Group, error) {
 		for _, a := range order[addon] {
 			parts = append(parts, fmt.Sprintf("%d to %s", n[a], a))
 		}
-		out = append(out, Group{Addon: addon, Actions: strings.Join(parts, ", ")})
+		out = append(out, Group{Addon: addon, Actions: strings.Join(parts, ", "), Diff: capLines(diffs[addon])})
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Addon < out[j].Addon })
 	return out, nil

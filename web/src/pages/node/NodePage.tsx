@@ -28,7 +28,8 @@ export function NodePage({ ip: ipParam, mac }: { ip?: string; mac?: string }) {
   const { data: inv, error: invErr } = useLive(() => api.inventory(ip), [ip], talos.scopes, { enabled: !!node?.talos, refresh: talos.refresh })
   const { data: k8s, error: k8sErr } = useLive(() => api.nodeKubernetes(ip), [ip], [...talos.scopes, [node?.cluster ?? '', 'workloads']], { enabled: node?.kind === 'member' })
 
-  const cluster = node?.cluster ? clusters.value.find((c) => c.name === node.cluster) : undefined
+  const clusterName = node?.cluster || node?.declared?.cluster
+  const cluster = clusterName ? clusters.value.find((c) => c.name === clusterName) : undefined
   const spec: NodeSpec | undefined = cluster?.spec.spec.nodes.find((n) => (node?.mac && n.mac === node.mac) || n.hostname === node?.hostname)
   const title = node?.hostname || ip || mac || ''
   const tabs: { id: TabId; label: string; badge?: number }[] = [
@@ -47,7 +48,7 @@ export function NodePage({ ip: ipParam, mac }: { ip?: string; mac?: string }) {
           {node && !node.cluster && <KindPill m={node} />}
           {node && <TypePill m={node} inv={inv} />}
           {node?.talos && <ReachPill node={node} inv={inv} invErr={invErr} />}
-          {k8s ? <Pill tone={k8s.ready ? 'good' : 'warn'}>{k8s.ready ? 'Ready' : 'NotReady'}</Pill> : null}
+          {k8s ? <Pill tone={k8s.ready ? 'good' : 'warn'}>{k8s.ready ? 'ready' : 'not ready'}</Pill> : null}
           {k8s?.unschedulable && <Pill tone="warn">cordoned</Pill>}
           {node?.kind === 'maintenance' && <span class="ml-auto">{node.declared ? <Declared m={node} /> : <AddMachines machines={[node]} />}</span>}
         </div>
@@ -55,7 +56,7 @@ export function NodePage({ ip: ipParam, mac }: { ip?: string; mac?: string }) {
       </header>
       <div class="p-5 flex flex-col gap-4 max-w-[1300px]">
         <ErrorBox error={!node && live.value ? `No machine ${mac ?? ipParam} is known.` : null} />
-        {shown === 'overview' && <OverviewTab inv={inv} invErr={invErr} k8s={k8s} k8sErr={k8sErr} node={node} spec={spec} storage={cluster?.spec.spec.platform.longhorn?.enabled ? cluster.spec.spec.storage : undefined} />}
+        {shown === 'overview' && <OverviewTab inv={inv} invErr={invErr} k8s={k8s} k8sErr={k8sErr} node={node} spec={spec} storage={node?.declared?.dataSystem ? cluster?.spec.spec.storage ?? {} : undefined} />}
         {shown === 'hardware' && <HardwareTab inv={inv} invErr={invErr} node={node} />}
         {shown === 'kubernetes' && <KubernetesTab cluster={node?.cluster ?? ''} k8s={k8s} err={k8sErr} />}
         {shown === 'services' && <ServicesTab ip={ip} node={node} />}

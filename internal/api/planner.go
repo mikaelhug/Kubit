@@ -37,6 +37,7 @@ type planSummary struct {
 	Problems  int    `json:"problems"`
 	PlannedAt string `json:"plannedAt,omitempty"`
 	Holder    string `json:"holder,omitempty"`
+	Run       string `json:"run,omitempty"`
 	Error     string `json:"error,omitempty"`
 }
 
@@ -119,24 +120,31 @@ func (s *Server) cancelPlan(name string) {
 	}
 }
 
-func (s *Server) applying(name string) bool {
+func (s *Server) runKind(name string) (string, bool) {
 	s.runsMu.Lock()
 	defer s.runsMu.Unlock()
-	run := s.runs[name]
-	return run != nil && run.Running
+	if run := s.runs[name]; run != nil && run.Running {
+		return run.Kind, true
+	}
+	return "", false
+}
+
+func (s *Server) applying(name string) bool {
+	_, running := s.runKind(name)
+	return running
 }
 
 func (s *Server) planOnce(ctx context.Context, name string) {
-	if s.applying(name) {
-		s.setSummary(name, func(p *planSummary) { p.State, p.Holder = planApplying, "" })
+	if kind, running := s.runKind(name); running {
+		s.setSummary(name, func(p *planSummary) { p.State, p.Holder, p.Run = planApplying, "", kind })
 		return
 	}
 	if holder, held := s.manager.ApplyHolder(ctx, name); held {
-		s.setSummary(name, func(p *planSummary) { p.State, p.Holder = planApplying, holder })
+		s.setSummary(name, func(p *planSummary) { p.State, p.Holder, p.Run = planApplying, holder, "" })
 		s.afterRelease(name)
 		return
 	}
-	s.setSummary(name, func(p *planSummary) { p.State, p.Holder, p.Error = planChecking, "", "" })
+	s.setSummary(name, func(p *planSummary) { p.State, p.Holder, p.Run, p.Error = planChecking, "", "", "" })
 	run := s.plans.run
 	if run == nil {
 		run = s.planFromRepo

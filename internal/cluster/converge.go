@@ -48,6 +48,7 @@ const (
 	ActRemove     = "remove"
 	ActPlatform   = "platform"
 	ActAddress    = "address"
+	ActReimage    = "re-image"
 	ActEndpoint   = "endpoint"
 )
 
@@ -55,6 +56,7 @@ type Change struct {
 	Action  string `json:"action"`
 	Target  string `json:"target,omitempty"`
 	Detail  string `json:"detail,omitempty"`
+	Diff    string `json:"diff,omitempty"`
 	Blocked string `json:"blocked,omitempty"`
 }
 
@@ -109,6 +111,7 @@ type liveNode struct {
 	addr   string
 	member bool
 	maint  bool
+	inv    *talos.Inventory
 	image  nodeImage
 	live   config.LiveConfig
 	err    error
@@ -167,6 +170,10 @@ func (m *Manager) plan(ctx context.Context, d *Desired, opts ConvergeOptions) (*
 		return p, nil
 	}
 	p.Problems = append(p.Problems, m.fluxSourceProblems(ctx, c, d)...)
+	if off := m.OffNodes(name); len(off) > 0 && !slices.ContainsFunc(c.Spec.Nodes, func(n config.Node) bool { return !off[n.Hostname] }) {
+		p.Problems = append(p.Problems, "the cluster is off")
+		return p, nil
+	}
 	ls := m.observe(ctx, d)
 	if ls.endpoint != "" {
 		m.pinEndpoint(d.Cluster.Metadata.Name, ls.endpoint)
@@ -203,6 +210,19 @@ func (m *Manager) planWith(ctx context.Context, d *Desired, p *Plan, ls *liveSta
 			return p, nil
 		}
 		p.Changes = append(p.Changes, Change{Action: ActCreate, Target: name, Detail: detail})
+		want, err := m.Factory.CreateSchematic(ctx, c.Spec.Extensions)
+		if err != nil {
+			p.Problems = append(p.Problems, "Image Factory: "+err.Error())
+			return p, nil
+		}
+		for i, n := range c.Spec.Nodes {
+			if why := reimageReason(ls.nodes[n.Hostname].inv, c, n, want); why != "" {
+				p.Changes = append(p.Changes, Change{Action: ActReimage, Target: n.Hostname, Detail: why})
+			}
+			if at, target := p.target.Spec.Nodes[i].IP, n.TargetIP(); target != n.IP {
+				p.Changes = append(p.Changes, Change{Action: ActAddress, Target: n.Hostname, Detail: fmt.Sprintf("installs at %s, comes up at %s; ip: in cluster.yaml becomes %s", at, target, target)})
+			}
+		}
 		if c.Spec.Platform.AddOns() {
 			p.Changes = append(p.Changes, Change{Action: ActPlatform, Detail: "install the add-ons"})
 		}
@@ -230,6 +250,9 @@ func (m *Manager) planWith(ctx context.Context, d *Desired, p *Plan, ls *liveSta
 			p.install(n)
 			p.Changes = append(p.Changes, Change{Action: ActAdd, Target: n.Hostname, Detail: fmt.Sprintf("%s at %s", n.Role, ln.addr)})
 		default:
+			if offMarked(ls.kube[n.Hostname]) {
+				ln.err = errNodeOff
+			}
 			p.Problems = append(p.Problems, notInMaintenance(n, n.TargetIP(), ln))
 		}
 	}
@@ -253,13 +276,20 @@ func (m *Manager) planWith(ctx context.Context, d *Desired, p *Plan, ls *liveSta
 				p.Problems = append(p.Problems, fmt.Sprintf("%s: other changes in its config need a reboot; apply them before changing its address", h))
 			case p.moving(h):
 			default:
-				p.Changes = append(p.Changes, Change{Action: ActConfig, Target: h, Detail: nd.diff})
+				p.Changes = append(p.Changes, Change{Action: ActConfig, Target: h, Diff: nd.diff})
 			}
 		}
 	}
-	if from := p.applied.Spec.TalosVersion; from != c.Spec.TalosVersion {
-		p.Changes = append(p.Changes, Change{Action: ActTalos, Detail: from + " → " + c.Spec.TalosVersion})
-	} else if id, err := m.Factory.CreateSchematic(ctx, c.Spec.Extensions); err == nil && id != p.applied.Spec.SchematicID {
+	for _, n := range orderedNodes(declared(c)) {
+		i := p.applied.NodeIndex(n.Hostname)
+		if i < 0 {
+			continue
+		}
+		if from, to := vTag(p.applied.NodeTalosVersion(p.applied.Spec.Nodes[i])), vTag(c.NodeTalosVersion(n)); from != to {
+			p.Changes = append(p.Changes, Change{Action: ActTalos, Target: n.Hostname, Detail: from + " → " + to})
+		}
+	}
+	if id, err := m.Factory.CreateSchematic(ctx, c.Spec.Extensions); err == nil && id != p.applied.Spec.SchematicID {
 		p.Changes = append(p.Changes, Change{Action: ActTalos, Detail: "new image for extensions " + strings.Join(c.Spec.Extensions, ", ")})
 	}
 	if from := p.applied.Spec.KubernetesVersion; from != c.Spec.KubernetesVersion {
@@ -282,7 +312,7 @@ func (m *Manager) planWith(ctx context.Context, d *Desired, p *Plan, ls *liveSta
 			p.Problems = append(p.Problems, "platform: "+err.Error())
 		}
 		for _, g := range groups {
-			p.Changes = append(p.Changes, Change{Action: ActPlatform, Target: g.Addon, Detail: g.Actions})
+			p.Changes = append(p.Changes, Change{Action: ActPlatform, Target: g.Addon, Detail: g.Actions, Diff: g.Diff})
 		}
 	}
 	return p, nil
@@ -342,6 +372,9 @@ func (p *Plan) addressOf(n config.Node, ln *liveNode) string {
 }
 
 func notInMaintenance(n config.Node, ip string, ln *liveNode) string {
+	if errors.Is(ln.err, errNodeOff) {
+		return n.Hostname + " is off"
+	}
 	var other otherMachine
 	if errors.As(ln.err, &other) || errors.Is(ln.err, errOtherCluster) {
 		return fmt.Sprintf("%s (%s) %v", n.Hostname, ip, ln.err)
@@ -373,9 +406,10 @@ func (m *Manager) observe(ctx context.Context, d *Desired) *liveState {
 	var mu sync.Mutex
 	var wg sync.WaitGroup
 	lans := &lanScans{byPrefix: map[netip.Prefix]*lanScan{}}
+	off := m.OffNodes(c.Metadata.Name)
 	for _, n := range c.Spec.Nodes {
 		wg.Go(func() {
-			ln := m.observeNode(ctx, n, d.Talosconfig, lans)
+			ln := m.observeNode(ctx, n, d.Talosconfig, lans, off[n.Hostname])
 			mu.Lock()
 			ls.nodes[n.Hostname] = ln
 			mu.Unlock()
@@ -404,12 +438,16 @@ func (m *Manager) observe(ctx context.Context, d *Desired) *liveState {
 	return ls
 }
 
-func (m *Manager) observeNode(ctx context.Context, n config.Node, talosconfig []byte, lans *lanScans) *liveNode {
+func (m *Manager) observeNode(ctx context.Context, n config.Node, talosconfig []byte, lans *lanScans, off bool) *liveNode {
 	ln := &liveNode{}
 	if m.memberAt(ctx, ln, n, n.TargetIP(), talosconfig) {
 		return ln
 	}
 	if n.TargetIP() != n.IP && m.memberAt(ctx, ln, n, n.IP, talosconfig) {
+		return ln
+	}
+	if off {
+		ln.err = errNodeOff
 		return ln
 	}
 	r := talos.Probe(ctx, n.IP, 3*time.Second)
@@ -461,8 +499,8 @@ func (m *Manager) memberAt(ctx context.Context, ln *liveNode, n config.Node, ip 
 		return false
 	}
 	ln.member, ln.addr, ln.err = true, ip, nil
-	if cfg, err := tc.MachineConfig(call); err == nil {
-		ln.live, _ = config.ReadLive(cfg)
+	if prov, err := tc.MachineConfigProvider(call); err == nil {
+		ln.live = config.LiveOf(prov)
 	}
 	img, cancelImg := context.WithTimeout(ctx, 20*time.Second)
 	defer cancelImg()
@@ -470,7 +508,12 @@ func (m *Manager) memberAt(ctx context.Context, ln *liveNode, n config.Node, ip 
 	return true
 }
 
-var errOtherCluster = errors.New("runs Talos with another cluster's configuration; reset it first")
+var (
+	errOtherCluster = errors.New("runs Talos with another cluster's configuration; reset it first")
+	errNodeOff      = errors.New("is off")
+)
+
+func offMarked(kn k8s.NodeStatus) bool { return kn.OffBoot != "" && kn.OffBoot == kn.BootID }
 
 type otherMachine struct{ ip, mac string }
 
@@ -482,7 +525,7 @@ func (e otherMachine) Error() string {
 }
 
 func (ln *liveNode) settle(r talos.ScanResult, ip string) {
-	ln.maint, ln.addr, ln.err = true, ip, nil
+	ln.maint, ln.addr, ln.inv, ln.err = true, ip, r.Inventory, nil
 }
 
 func sameMachine(r talos.ScanResult, n config.Node) bool {
@@ -529,6 +572,7 @@ func appliedSpec(d *config.Cluster, ls *liveState) *config.Cluster {
 			continue
 		}
 		n.IP = ln.addr
+		n.TalosVersion = ln.image.version
 		a.Spec.Nodes = append(a.Spec.Nodes, n)
 		if ln.image.version != "" {
 			talosVersions = append(talosVersions, ln.image.version)
@@ -694,7 +738,7 @@ func (m *Manager) Converge(ctx context.Context, d *Desired, p *Plan, opts Conver
 		}
 	}
 	if p.has(ActTalos) {
-		if err := m.UpgradeTalos(ctx, name, c.Spec.TalosVersion, sink); err != nil {
+		if err := m.UpgradeTalos(ctx, c, sink); err != nil {
 			return err
 		}
 	}
@@ -741,7 +785,6 @@ func (m *Manager) Track(ctx context.Context, d *Desired) (bool, error) {
 	}
 	m.Register(d)
 	ls := m.observe(ctx, d)
-	m.observed.Store(name, ls)
 	if ls.endpoint != "" {
 		m.pinEndpoint(name, ls.endpoint)
 	}

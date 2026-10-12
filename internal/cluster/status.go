@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -19,28 +20,34 @@ const (
 	HealthDegraded = "degraded"
 	HealthDown     = "down"
 	HealthUnknown  = "unknown"
+	HealthOff      = "off"
 )
 
 type Status struct {
-	Name              string       `json:"name"`
-	State             string       `json:"state"`
-	TalosVersion      string       `json:"talosVersion"`
-	KubernetesVersion string       `json:"kubernetesVersion"`
-	Endpoint          string       `json:"endpoint"`
-	APIReachable      bool         `json:"apiReachable"`
-	APIError          string       `json:"apiError,omitempty"`
-	APIReach          string       `json:"apiReach,omitempty"`
-	Nodes             []NodeStatus `json:"nodes"`
-	Etcd              EtcdStatus   `json:"etcd"`
-	Totals            Totals       `json:"totals"`
-	IngressIP         string       `json:"ingressIP,omitempty"`
-	Health            string       `json:"health,omitempty"`
-	OpenAlerts        int          `json:"openAlerts,omitempty"`
-	ObservedAt        string       `json:"observedAt"`
-	LastSnapshotAt    string       `json:"lastSnapshotAt,omitempty"`
-	Observer          string       `json:"observer,omitempty"`
-	ObserverError     string       `json:"observerError,omitempty"`
-	LastContactAt     string       `json:"lastContactAt,omitempty"`
+	Name              string           `json:"name"`
+	State             string           `json:"state"`
+	TalosVersion      string           `json:"talosVersion"`
+	KubernetesVersion string           `json:"kubernetesVersion"`
+	Endpoint          string           `json:"endpoint"`
+	APIReachable      bool             `json:"apiReachable"`
+	APIError          string           `json:"apiError,omitempty"`
+	APIReach          string           `json:"apiReach,omitempty"`
+	Off               bool             `json:"off,omitempty"`
+	Nodes             []NodeStatus     `json:"nodes"`
+	Etcd              EtcdStatus       `json:"etcd"`
+	Totals            Totals           `json:"totals"`
+	Health            string           `json:"health,omitempty"`
+	OpenAlerts        int              `json:"openAlerts,omitempty"`
+	ObservedAt        string           `json:"observedAt"`
+	LastSnapshotAt    string           `json:"lastSnapshotAt,omitempty"`
+	ConfigRead        bool             `json:"configRead"`
+	ControlPlane      ControlPlane     `json:"controlPlane"`
+	Network           LiveNetwork      `json:"network"`
+	LoadBalancer      k8s.LoadBalancer `json:"loadBalancer"`
+	Backup            *k8s.Backup      `json:"backup,omitempty"`
+	Observer          string           `json:"observer,omitempty"`
+	ObserverError     string           `json:"observerError,omitempty"`
+	LastContactAt     string           `json:"lastContactAt,omitempty"`
 }
 
 type NodeStatus struct {
@@ -53,11 +60,13 @@ type NodeStatus struct {
 	Ready          bool                `json:"ready"`
 	Unschedulable  bool                `json:"unschedulable"`
 	TalosReachable bool                `json:"talosReachable"`
+	Off            bool                `json:"off,omitempty"`
 	TalosError     string              `json:"talosError,omitempty"`
 	TalosReach     string              `json:"talosReach,omitempty"`
 	Registered     bool                `json:"registered"`
 	SeenAt         string              `json:"seenAt,omitempty"`
 	Stage          string              `json:"stage"`
+	BootedAt       string              `json:"bootedAt,omitempty"`
 	CPUMilli       int64               `json:"cpuMilli"`
 	CPUCapMilli    int64               `json:"cpuCapMilli"`
 	MemBytes       int64               `json:"memBytes"`
@@ -66,6 +75,21 @@ type NodeStatus struct {
 	Pods           int                 `json:"pods"`
 	PodCap         int64               `json:"podCap"`
 	Temperatures   []talos.Temperature `json:"temperatures,omitempty"`
+	Declared       bool                `json:"declared"`
+	TalosTarget    string              `json:"talosTarget,omitempty"`
+	Network        *config.Addressing  `json:"network,omitempty"`
+	offMark        bool
+}
+
+type ControlPlane struct {
+	VIP       string `json:"vip,omitempty"`
+	VIPHolder string `json:"vipHolder,omitempty"`
+}
+
+type LiveNetwork struct {
+	PodCIDRs     []string `json:"podCIDRs,omitempty"`
+	ServiceCIDRs []string `json:"serviceCIDRs,omitempty"`
+	CNI          k8s.CNI  `json:"cni"`
 }
 
 type EtcdStatus struct {
@@ -96,10 +120,27 @@ func (m *Manager) Status(ctx context.Context, name string) (*Status, error) {
 		Name: name, State: row.State, TalosVersion: c.Spec.TalosVersion,
 		KubernetesVersion: c.Spec.KubernetesVersion, Endpoint: c.Spec.ControlPlane.Endpoint,
 	}
+	if d, err := m.Desired(name); err == nil {
+		defer func() {
+			rows, off := 0, 0
+			for i := range st.Nodes {
+				if j := d.Cluster.NodeIndex(st.Nodes[i].Hostname); j >= 0 {
+					st.Nodes[i].Declared = true
+					st.Nodes[i].TalosTarget = vTag(d.Cluster.NodeTalosVersion(d.Cluster.Spec.Nodes[j]))
+					rows++
+					if st.Nodes[i].Off {
+						off++
+					}
+				}
+			}
+			st.Off = off > 0 && off == rows
+		}()
+	}
 	if !Live(row.State) {
 		m.nodeRows(ctx, c, st)
 		return st, nil
 	}
+	st.Endpoint = ""
 	sec, err := m.Store.GetClusterSecrets(name)
 	if err != nil {
 		return nil, err
@@ -110,7 +151,8 @@ func (m *Manager) Status(ctx context.Context, name string) (*Status, error) {
 	byHost := m.nodeRows(ctx, c, st)
 	var wg sync.WaitGroup
 	var mu sync.Mutex
-	probeOf := m.probeNodes(ctx, c, sec.Talosconfig, byHost, &wg, &mu)
+	lives := map[string]config.LiveConfig{}
+	probeOf := m.probeNodes(ctx, c, sec.Talosconfig, st, byHost, lives, &wg, &mu)
 	if cps := c.ControlPlanes(); len(cps) > 0 {
 		wg.Add(1)
 		go func() {
@@ -138,6 +180,19 @@ func (m *Manager) Status(ctx context.Context, name string) (*Status, error) {
 		m.collectKube(ctx, name, sec.Kubeconfig, st, byHost, &mu)
 	}()
 	wg.Wait()
+	for i := range st.Nodes {
+		ns := &st.Nodes[i]
+		seen := m.offSeen(name, ns.Hostname, ns.TalosReachable)
+		ns.Off = !ns.TalosReachable && (seen || ns.offMark)
+	}
+	for _, cp := range c.ControlPlanes() {
+		if live, ok := lives[cp.Hostname]; ok {
+			st.Endpoint, st.ControlPlane.VIP = live.Endpoint, live.VIP
+			st.Network.PodCIDRs, st.Network.ServiceCIDRs = live.PodCIDRs, live.ServiceCIDRs
+			st.ConfigRead = true
+			break
+		}
+	}
 	ips := map[string]bool{}
 	for _, n := range c.Spec.Nodes {
 		ips[n.IP] = true
@@ -145,8 +200,10 @@ func (m *Manager) Status(ctx context.Context, name string) (*Status, error) {
 	m.keepTalos(name, ips)
 	st.Observer, st.ObserverError = observerOf(ctx, st)
 
-	st.Etcd.Expected = len(c.ControlPlanes())
 	for _, ns := range st.Nodes {
+		if ns.Role == string(config.RoleControlPlane) {
+			st.Etcd.Expected++
+		}
 		st.Totals.Nodes++
 		if ns.Ready {
 			st.Totals.NodesReady++
@@ -182,7 +239,7 @@ func (m *Manager) nodeRows(ctx context.Context, c *config.Cluster, st *Status) m
 	return byHost
 }
 
-func (m *Manager) probeNodes(ctx context.Context, c *config.Cluster, talosconfig []byte, byHost map[string]*NodeStatus, wg *sync.WaitGroup, mu *sync.Mutex) map[string]*talosProbe {
+func (m *Manager) probeNodes(ctx context.Context, c *config.Cluster, talosconfig []byte, st *Status, byHost map[string]*NodeStatus, lives map[string]config.LiveConfig, wg *sync.WaitGroup, mu *sync.Mutex) map[string]*talosProbe {
 	probeOf := map[string]*talosProbe{}
 	for _, n := range c.Spec.Nodes {
 		p := &talosProbe{m: m, cluster: c.Metadata.Name, dialed: make(chan struct{})}
@@ -193,6 +250,16 @@ func (m *Manager) probeNodes(ctx context.Context, c *config.Cluster, talosconfig
 			nctx, cancel := context.WithTimeout(ctx, 6*time.Second)
 			defer cancel()
 			ver, stage, temps, err := p.probe(nctx, n.IP, talosconfig)
+			var live config.LiveConfig
+			var read, holds bool
+			var booted time.Time
+			if err == nil {
+				if prov, perr := p.tc.MachineConfigProvider(nctx); perr == nil {
+					live, read = config.LiveOf(prov), true
+					holds = live.VIP != "" && p.tc.HasAddress(nctx, live.VIP)
+				}
+				booted, _ = p.tc.BootedAt(nctx)
+			}
 			mu.Lock()
 			defer mu.Unlock()
 			ns := byHost[n.Hostname]
@@ -208,7 +275,19 @@ func (m *Manager) probeNodes(ctx context.Context, c *config.Cluster, talosconfig
 			ns.Stage = stage
 			ns.TalosVersion = ver
 			ns.Temperatures = temps
+			if !booted.IsZero() {
+				ns.BootedAt = booted.UTC().Format(time.RFC3339)
+			}
 			m.recordHardware(n, p.tc)
+			if read {
+				lives[n.Hostname] = live
+			}
+			if read && live.Found {
+				ns.Network = &live.Addressing
+			}
+			if holds {
+				st.ControlPlane.VIPHolder = n.Hostname
+			}
 		}()
 	}
 	return probeOf
@@ -238,19 +317,24 @@ func (m *Manager) collectKube(ctx context.Context, name string, kubeconfig []byt
 	}
 	usage, _ := kc.NodeUsages(ctx)
 	pods, _ := kc.PodCount(ctx)
-	ingress := kc.LoadBalancerIP(ctx, "traefik", "traefik")
+	lb, backup, cni := kc.LoadBalancer(ctx), kc.Backup(ctx), kc.CNI(ctx)
 	mu.Lock()
 	defer mu.Unlock()
 	st.APIReachable = true
-	st.IngressIP = ingress
+	st.LoadBalancer, st.Backup, st.Network.CNI = lb, backup, cni
 	for _, kn := range nodes {
 		ns, ok := byHost[kn.Name]
 		if !ok {
 			continue
 		}
 		ns.Registered = true
+		ns.Role = string(config.RoleWorker)
+		if _, cp := kn.Labels[k8s.LabelControlPlane]; cp {
+			ns.Role = string(config.RoleControlPlane)
+		}
 		ns.Ready = kn.Ready
 		ns.Unschedulable = kn.Unschedulable
+		ns.offMark = offMarked(kn)
 		ns.KubeletVersion = kn.KubeletVersion
 		ns.CPUCapMilli = kn.CapacityCPU
 		ns.MemCapBytes = kn.CapacityMem
@@ -395,8 +479,10 @@ func (m *Manager) etcdStatus(ctx context.Context, name string, cps []config.Node
 		}
 		e.Members = members
 		if info, err := tc.EtcdMemberInfo(ctx); err == nil {
-			if info.Leader {
-				e.Leader = cp.Hostname
+			if peers, err := tc.EtcdPeers(ctx); err == nil {
+				if i := slices.IndexFunc(peers, func(p talos.EtcdPeer) bool { return p.ID == info.LeaderID }); i >= 0 {
+					e.Leader = peers[i].Hostname
+				}
 			}
 			e.Alarms = append(e.Alarms, info.Errors...)
 		}

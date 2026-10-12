@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
+	"strings"
 	"sync"
 	"time"
 
@@ -19,7 +21,7 @@ func (m *Manager) Create(ctx context.Context, c *config.Cluster, bundle *secrets
 		if err := m.EnsureSchematic(ctx, c); err != nil {
 			return err
 		}
-		sink.Emit(Info, "schematic", "", "installer %s", m.installerImage(c))
+		sink.Emit(Info, "schematic", "", "installer %s", m.Factory.InstallerImage(c.Spec.SchematicID, c.Spec.TalosVersion))
 		return nil
 	}); err != nil {
 		return err
@@ -31,7 +33,7 @@ func (m *Manager) Create(ctx context.Context, c *config.Cluster, bundle *secrets
 	var gen *config.Generated
 	if err := sink.Run("secrets", func() error {
 		var err error
-		if gen, err = config.Generate(c, bundle, m.installerImage(c)); err != nil {
+		if gen, err = config.Generate(c, bundle, m.installers(c)); err != nil {
 			return err
 		}
 		m.saveCluster(c, "")
@@ -56,6 +58,9 @@ func (m *Manager) Create(ctx context.Context, c *config.Cluster, bundle *secrets
 	if err := sink.Run("install", func() error { return m.installAll(ctx, c, pending, gen.Nodes, d.Talosconfig, sink) }); err != nil {
 		return err
 	}
+	if err := sink.Run("image", func() error { return m.imageAll(ctx, c, d.Talosconfig, sink) }); err != nil {
+		return err
+	}
 	if err := sink.Run("bootstrap", func() error {
 		return m.bootstrap(ctx, c.ControlPlanes()[0], d.Talosconfig, len(c.ControlPlanes()), sink)
 	}); err != nil {
@@ -66,7 +71,62 @@ func (m *Manager) Create(ctx context.Context, c *config.Cluster, bundle *secrets
 		sink.Emit(Warn, "ready", "", "%v — etcd and the API are up but not every node is Ready; kubit apply resumes", err)
 		return err
 	}
+	for _, n := range d.Cluster.Spec.Nodes {
+		if i := c.NodeIndex(n.Hostname); i >= 0 {
+			if err := m.recordAddress(d, n, c.Spec.Nodes[i].IP, "ready", sink); err != nil {
+				sink.Emit(Warn, "ready", n.Hostname, "%v", err)
+			}
+		}
+	}
 	sink.Emit(Done, "ready", "", "cluster %s is up: %d control planes, %d workers", name, len(c.ControlPlanes()), len(c.Workers()))
+	return nil
+}
+
+func (m *Manager) imageAll(ctx context.Context, c *config.Cluster, talosconfig []byte, sink Sink) error {
+	var (
+		wg   sync.WaitGroup
+		mu   sync.Mutex
+		errs []error
+	)
+	for _, n := range c.Spec.Nodes {
+		wg.Go(func() {
+			want := nodeImage{version: c.NodeTalosVersion(n), schematic: c.Spec.SchematicID}
+			if err := m.imageOne(ctx, c, n, want, talosconfig, sink); err != nil {
+				mu.Lock()
+				errs = append(errs, fmt.Errorf("%s: %w", n.Hostname, err))
+				mu.Unlock()
+			}
+		})
+	}
+	wg.Wait()
+	return errors.Join(errs...)
+}
+
+func (m *Manager) imageOne(ctx context.Context, c *config.Cluster, n config.Node, want nodeImage, talosconfig []byte, sink Sink) error {
+	cur, err := readNodeImage(ctx, n.IP, talosconfig)
+	if err != nil {
+		return err
+	}
+	if cur.satisfies(want, true) {
+		sink.Emit(Info, "image", n.Hostname, "runs Talos %s with the declared image", cur.version)
+		return nil
+	}
+	sink.Emit(Info, "image", n.Hostname, "runs Talos %s from an earlier install (schematic %s)", cur.version, cur.schematic)
+	if err := m.installTalos(ctx, n, talosconfig, m.installerImage(c, n), want.version, "image", sink); err != nil {
+		return err
+	}
+	if err := m.rebootAndWait(ctx, n.IP, talosconfig, func() {
+		sink.Emit(Info, "image", n.Hostname, "rebooting into the declared image")
+	}); err != nil {
+		return fmt.Errorf("reboot: %w", err)
+	}
+	if cur, err = readNodeImage(ctx, n.IP, talosconfig); err != nil {
+		return err
+	}
+	if !cur.satisfies(want, true) {
+		return fmt.Errorf("still runs Talos %s (schematic %s) after the re-image", cur.version, cur.schematic)
+	}
+	sink.Emit(Info, "image", n.Hostname, "runs Talos %s with the declared image", cur.version)
 	return nil
 }
 
@@ -259,4 +319,23 @@ func (m *Manager) waitReady(ctx context.Context, c *config.Cluster, nodes []conf
 	}
 	m.Store.SetClusterState(c.Metadata.Name, StateReady)
 	return nil
+}
+
+func reimageReason(inv *talos.Inventory, c *config.Cluster, n config.Node, schematic string) string {
+	if inv == nil || inv.SystemDisk == "" {
+		return ""
+	}
+	version := c.NodeTalosVersion(n)
+	cur := nodeImage{version: inv.TalosVersion, schematic: inv.Schematic()}
+	if cur.satisfies(nodeImage{version: version, schematic: schematic}, true) {
+		return ""
+	}
+	if cur.version != version {
+		return fmt.Sprintf("boots an existing Talos %s install on %s; re-imaged to %s before bootstrap", cur.version, inv.SystemDisk, version)
+	}
+	missing := slices.DeleteFunc(slices.Clone(c.Spec.Extensions), inv.HasExtension)
+	if len(missing) == 0 {
+		return fmt.Sprintf("boots an existing Talos install on %s with another image; re-imaged before bootstrap", inv.SystemDisk)
+	}
+	return fmt.Sprintf("boots an existing Talos install on %s without %s; re-imaged before bootstrap", inv.SystemDisk, strings.Join(missing, ", "))
 }

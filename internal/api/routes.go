@@ -33,6 +33,7 @@ type Server struct {
 	token       string
 	repos       repoSet
 	reloading   sync.Map
+	kinds       sync.Map
 	settings    Settings
 	certsMu     sync.Mutex
 	certsSeen   map[string]time.Time
@@ -68,6 +69,7 @@ func (s *Server) routes() {
 	s.planRoutes()
 	s.specRoutes()
 	s.appsRoutes()
+	s.storageRoutes()
 	s.mux.HandleFunc("/api/", func(w http.ResponseWriter, _ *http.Request) {
 		writeErr(w, &statusError{Status: http.StatusNotFound, Msg: "not found"})
 	})

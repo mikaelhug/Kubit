@@ -21,18 +21,14 @@ func TestSecretsEditorNeverWritesInClearAndRefusesStaleOrEscapingEdits(t *testin
 	if strings.Contains(string(raw), "hunter2") {
 		t.Fatal("the value must be written encrypted")
 	}
-	var idx struct {
-		Repos []struct {
-			Files []secretFileView `json:"files"`
-		} `json:"repos"`
-	}
-	if rec := call(t, s, "GET", "/api/v1/secrets", ""); json.Unmarshal(rec.Body.Bytes(), &idx) != nil || len(idx.Repos) != 1 || len(idx.Repos[0].Files) != 1 {
+	var idx clusterSecrets
+	if rec := call(t, s, "GET", "/api/v1/clusters/lab/secrets", ""); json.Unmarshal(rec.Body.Bytes(), &idx) != nil || len(idx.Files) != 1 {
 		t.Fatalf("index: %d %s", rec.Code, rec.Body)
 	}
 	if rec := call(t, s, "PATCH", "/api/v1/secrets/file", `{"repo":0,"file":"apps/db.sops.yaml","hash":"0000000000000000","set":[{"path":["stringData","user"],"value":"app"}]}`); rec.Code != http.StatusConflict {
 		t.Errorf("stale: %d %s", rec.Code, rec.Body)
 	}
-	patch := `{"repo":0,"file":"apps/db.sops.yaml","hash":"` + idx.Repos[0].Files[0].Hash + `","set":[{"path":["stringData","user"],"value":"app"}]}`
+	patch := `{"repo":0,"file":"apps/db.sops.yaml","hash":"` + idx.Files[0].Hash + `","set":[{"path":["stringData","user"],"value":"app"}]}`
 	if rec := call(t, s, "PATCH", "/api/v1/secrets/file", patch); rec.Code != http.StatusNoContent {
 		t.Fatalf("patch: %d %s", rec.Code, rec.Body)
 	}

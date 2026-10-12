@@ -30,10 +30,12 @@ func (m *Manager) fluxSourceProblems(ctx context.Context, c *config.Cluster, d *
 	if errors.As(err, &refusal) {
 		out = append(out, AppsProblem+refusal.Msg)
 	}
-	if err == nil && c.Spec.Platform.Flux.ImageAutomation && gitremote.IsSSH(r.URL) {
-		if errors.As(gitremote.ProbeWrite(ctx, r.URL, d.GitKey, d.KnownHosts), &refusal) {
-			out = append(out, AppsProblem+"flux.deployKey cannot push; image automation needs write access on the deploy key")
-		}
+	switch {
+	case !c.Spec.Platform.Flux.ImageAutomation:
+	case !gitremote.IsSSH(r.URL):
+		out = append(out, AppsProblem+"image automation pushes over ssh; use the repository's ssh:// URL and a deploy key")
+	case err == nil && errors.As(gitremote.ProbeWrite(ctx, r.URL, d.GitKey, d.KnownHosts), &refusal):
+		out = append(out, AppsProblem+"flux.deployKey cannot push; image automation needs write access on the deploy key")
 	}
 	if m.Checkout == nil {
 		return out

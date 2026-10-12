@@ -93,15 +93,21 @@ export function reviewOf(before: Row[], after: Row[]): Review {
 
 export const reviewEmpty = (r: Review) => !r.added.length && !r.changed.length && !r.removed.length && !r.renamed.length
 
-const keyRe = /^[-._a-zA-Z0-9]+$/
+function charProblem(v: string, max: number, allowed: RegExp, lowercase: boolean) {
+  if (v.length > max) return `At most ${max} characters`
+  if (lowercase && /[A-Z]/.test(v)) return 'Lowercase only'
+  const bad = [...v].find((c) => !allowed.test(c))
+  return bad === undefined ? '' : /\s/.test(bad) ? 'No spaces' : `'${bad}' is not allowed`
+}
 
 export function keyProblems(file: Pick<SecretFile, 'kind'>, rows: Row[]): Map<string, string> {
   const out = new Map<string, string>()
   const seen = new Map<string, string>()
   for (const r of rows) {
     const k = r.key.trim()
-    if (!k) out.set(r.id, 'Name the key')
-    else if (isSecret(file) && (!keyRe.test(k) || k.length > 253)) out.set(r.id, "Letters, digits, '-', '_' and '.'")
+    const chars = isSecret(file) ? charProblem(k, 253, /[-._a-zA-Z0-9]/, false) : ''
+    if (!k) out.set(r.id, 'Required')
+    else if (chars) out.set(r.id, chars)
     else if (!isSecret(file) && k.split('.').some((p) => !p)) out.set(r.id, 'Empty path segment')
     else if (seen.has(k)) out.set(r.id, 'Duplicate key')
     if (k) seen.set(k, r.id)
@@ -109,14 +115,26 @@ export function keyProblems(file: Pick<SecretFile, 'kind'>, rows: Row[]): Map<st
   return out
 }
 
-const subdomainRe = /^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$/
-const labelRe = /^[a-z0-9]([-a-z0-9]*[a-z0-9])?$/
+function dnsProblem(v: string, max: number, dots: boolean, typing: boolean) {
+  if (!v) return typing ? '' : 'Required'
+  const chars = charProblem(v, max, dots ? /[-.a-z0-9]/ : /[-a-z0-9]/, true)
+  if (chars || typing) return chars
+  const parts = dots ? v.split('.') : [v]
+  if (parts.every((p) => /^[a-z0-9](.*[a-z0-9])?$/.test(p))) return ''
+  return parts.length > 1 ? "Start and end with a letter or digit, also around '.'" : 'Start and end with a letter or digit'
+}
 
-export const nameProblem = (name: string) => (!name ? 'Required' : name.length > 253 || !subdomainRe.test(name) ? "Lowercase letters, digits, '-' and '.'" : '')
-export const namespaceProblem = (ns: string) => (ns && (ns.length > 63 || !labelRe.test(ns)) ? "Lowercase letters, digits and '-'" : '')
+export const nameProblem = (name: string, typing = false) => dnsProblem(name, 253, true, typing)
+export const namespaceProblem = (ns: string, typing = false) => (ns ? dnsProblem(ns, 63, false, typing) : '')
+
+export function fileProblem(path: string) {
+  if (!path) return 'Required'
+  if (path.startsWith('/') || path.split('/').includes('..')) return 'Must stay inside the repo'
+  return /\.sops\.ya?ml$/.test(path) ? '' : 'Must end in .sops.yaml'
+}
 
 export function defaultFile(root: string | undefined, namespace: string, name: string) {
-  if (!name) return ''
+  if (nameProblem(name) || namespaceProblem(namespace)) return ''
   const base = root === undefined ? 'apps' : root.replace(/^\.?\/*/, '').replace(/\/+$/, '')
   return [base, namespace || name, `${name}.sops.yaml`].filter(Boolean).join('/')
 }

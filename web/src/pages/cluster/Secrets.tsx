@@ -40,7 +40,7 @@ export function Secrets({ ctx }: { ctx: ClusterCtx }) {
       })}
       <SecretsTable id="cluster-secrets" files={data?.files ?? []} loading={loading && !data} hrefOf={(f) => href(f.repo, f.path)}
         repoOf={new Set(data?.files.map((f) => f.repo)).size > 1 ? (f) => sourceName(f.repo) : undefined} empty="No secrets yet." />
-      {creating && <NewSecretDialog targets={targets} onClose={() => setCreating(false)} onCreated={(repo, path) => { setCreating(false); setQuery({ repo: String(repo), file: path }) }} />}
+      {creating && <NewSecretDialog cluster={name} targets={targets} onClose={() => setCreating(false)} onCreated={(repo, path) => { setCreating(false); setQuery({ repo: String(repo), file: path }) }} />}
     </Section>
   )
 }

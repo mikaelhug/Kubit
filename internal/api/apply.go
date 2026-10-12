@@ -111,17 +111,19 @@ func (s *Server) handleDestroy(w http.ResponseWriter, r *http.Request) {
 
 const scopeApply = "apply"
 
+var runNames = map[string]string{"apply": "An apply", "destroy": "A destroy", runRestart: "A restart", runShutdown: "A shutdown", runPowerOn: "A power-on", runSnapshot: "A snapshot"}
+
 func (s *Server) startRun(name, kind string, fn func(context.Context, cluster.Sink) error) error {
 	s.runsMu.Lock()
 	if run := s.runs[name]; run != nil && run.Running {
 		s.runsMu.Unlock()
-		return conflict("An apply is already running.")
+		return conflict(runNames[run.Kind] + " is already running.")
 	}
 	run := &applyRun{Kind: kind, Running: true, Started: time.Now().UTC().Format(time.RFC3339), Lines: []applyLine{}}
 	s.runs[name] = run
 	s.runsMu.Unlock()
 	s.cancelPlan(name)
-	s.setSummary(name, func(sum *planSummary) { sum.State, sum.Holder = planApplying, "" })
+	s.setSummary(name, func(sum *planSummary) { sum.State, sum.Holder, sum.Run = planApplying, "", kind })
 	s.refresh(name, scopeApply)
 	go s.run(name, run, fn)
 	return nil
@@ -152,6 +154,7 @@ func (s *Server) run(name string, run *applyRun, fn func(context.Context, cluste
 	}
 	s.runsMu.Unlock()
 	s.refresh(name, scopeApply, scopeConfig, scopeRepo)
+	s.watcher.CheckNow(name)
 	s.kickPlan(name, "applied")
 }
 

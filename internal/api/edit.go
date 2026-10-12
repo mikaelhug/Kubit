@@ -12,6 +12,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -36,6 +37,7 @@ func (s *Server) editRoutes() {
 	r.HandleFunc("POST /api/v1/clusters/{name}/apply", s.handleApply)
 	r.HandleFunc("GET /api/v1/clusters/{name}/apply", s.handleApplyRun)
 	r.HandleFunc("POST /api/v1/clusters/{name}/destroy", s.handleDestroy)
+	r.HandleFunc("POST /api/v1/clusters/{name}/nodes/power", s.handleNodePower)
 }
 
 func (s *Server) machineOf(mac string) (config.Machine, error) {
@@ -59,6 +61,7 @@ type machineChoice struct {
 	Address     string      `json:"address,omitempty"`
 	Gateway     string      `json:"gateway,omitempty"`
 	Nameservers []string    `json:"nameservers,omitempty"`
+	Storage     *bool       `json:"storage,omitempty"`
 }
 
 type liveNet struct {
@@ -72,6 +75,31 @@ type chosen struct {
 	roles    map[string]config.Role
 	networks map[string]*config.NodeNetwork
 	live     map[string]liveNet
+	storage  map[string]*bool
+	disks    map[string]uint64
+}
+
+func (ch *chosen) diskOf(n config.Node) uint64 { return ch.disks[strings.ToLower(n.MAC)] }
+
+func (ch *chosen) placeStorage(c *config.Cluster, n *config.Node) {
+	if !c.Spec.Platform.Longhorn.Enabled || !c.Spec.Storage.SystemDisk || len(n.DataDisks) > 0 {
+		return
+	}
+	if !c.RunsWorkloads(*n) {
+		c.SetSystemDisk(n, false)
+		return
+	}
+	on := ch.diskOf(*n) >= c.SystemDiskBytes()
+	if want := ch.storage[strings.ToLower(n.MAC)]; want != nil {
+		on = *want
+	}
+	c.SetSystemDisk(n, on)
+}
+
+func (ch *chosen) anyStorageFits(c *config.Cluster) bool {
+	return slices.ContainsFunc(c.Spec.Nodes, func(n config.Node) bool {
+		return c.RunsWorkloads(n) && len(n.DataDisks) == 0 && ch.diskOf(n) >= c.SystemDiskBytes()
+	})
 }
 
 func cidrOf(address, live string) string {
@@ -86,13 +114,17 @@ func cidrOf(address, live string) string {
 }
 
 type designRequest struct {
-	Cluster  string          `json:"cluster,omitempty"`
-	Dir      string          `json:"dir,omitempty"`
-	Name     string          `json:"name,omitempty"`
-	VIP      string          `json:"vip,omitempty"`
-	Machines []machineChoice `json:"machines"`
-	Hash     string          `json:"hash,omitempty"`
-	Apps     *appsRequest    `json:"apps,omitempty"`
+	Cluster         string          `json:"cluster,omitempty"`
+	Dir             string          `json:"dir,omitempty"`
+	Name            string          `json:"name,omitempty"`
+	VIP             string          `json:"vip,omitempty"`
+	Machines        []machineChoice `json:"machines"`
+	Hash            string          `json:"hash,omitempty"`
+	Apps            *appsRequest    `json:"apps,omitempty"`
+	Longhorn        *bool           `json:"longhorn,omitempty"`
+	Replicas        int             `json:"replicas,omitempty"`
+	ImageAutomation *bool           `json:"imageAutomation,omitempty"`
+	AllowScheduling *bool           `json:"allowScheduling,omitempty"`
 }
 
 type designNode struct {
@@ -105,21 +137,35 @@ type designNode struct {
 	Network   *config.NodeNetwork `json:"network,omitempty"`
 	Live      liveNet             `json:"live"`
 	InUse     bool                `json:"inUse,omitempty"`
+	Storage   *nodeStorage        `json:"storage,omitempty"`
+}
+
+type nodeStorage struct {
+	On    bool   `json:"on"`
+	Fits  bool   `json:"fits"`
+	Bytes uint64 `json:"bytes"`
 }
 
 type designView struct {
-	Cluster  string       `json:"cluster"`
-	Dir      string       `json:"dir"`
-	New      bool         `json:"new"`
-	Nodes    []designNode `json:"nodes"`
-	VIP      string       `json:"vip,omitempty"`
-	VIPInUse bool         `json:"vipInUse,omitempty"`
-	Endpoint string       `json:"endpoint"`
-	Talos    string       `json:"talosVersion"`
-	K8s      string       `json:"kubernetesVersion"`
-	Warnings []string     `json:"warnings"`
-	Hash     string       `json:"hash,omitempty"`
-	Apps     *appsReview  `json:"apps,omitempty"`
+	Cluster          string          `json:"cluster"`
+	Dir              string          `json:"dir"`
+	New              bool            `json:"new"`
+	Nodes            []designNode    `json:"nodes"`
+	VIP              string          `json:"vip,omitempty"`
+	VIPInUse         bool            `json:"vipInUse,omitempty"`
+	Endpoint         string          `json:"endpoint"`
+	Talos            string          `json:"talosVersion"`
+	K8s              string          `json:"kubernetesVersion"`
+	Warnings         []string        `json:"warnings"`
+	Hash             string          `json:"hash,omitempty"`
+	Apps             *appsReview     `json:"apps,omitempty"`
+	Storage          *config.Storage `json:"storage,omitempty"`
+	Replicas         int             `json:"replicas,omitempty"`
+	StorageNodes     int             `json:"storageNodes,omitempty"`
+	ReplicasAuto     int             `json:"replicasAuto,omitempty"`
+	UsableBytes      uint64          `json:"usableBytes,omitempty"`
+	UsableByReplicas []uint64        `json:"usableByReplicas,omitempty"`
+	AllowScheduling  bool            `json:"allowScheduling"`
 }
 
 type design struct {
@@ -146,7 +192,7 @@ func expandHome(p string) (string, error) {
 }
 
 func (s *Server) machinesOf(choices []machineChoice) (*chosen, error) {
-	out := &chosen{roles: map[string]config.Role{}, networks: map[string]*config.NodeNetwork{}, live: map[string]liveNet{}}
+	out := &chosen{roles: map[string]config.Role{}, networks: map[string]*config.NodeNetwork{}, live: map[string]liveNet{}, storage: map[string]*bool{}, disks: map[string]uint64{}}
 	declared := s.declaredNodes()
 	for _, ch := range choices {
 		m, err := s.machineOf(ch.MAC)
@@ -157,6 +203,10 @@ func (s *Server) machinesOf(choices []machineChoice) (*chosen, error) {
 			return nil, conflict(fmt.Sprintf("%s is already %s in %s's cluster.yaml.", m.IP, d.Hostname, d.Cluster))
 		}
 		out.machines = append(out.machines, m)
+		out.storage[strings.ToLower(m.MAC)] = ch.Storage
+		if len(m.Disks) > 0 {
+			out.disks[strings.ToLower(m.MAC)] = m.Disks[0].SizeBytes
+		}
 		if ch.Role != "" {
 			out.roles[m.MAC] = ch.Role
 		}
@@ -240,16 +290,26 @@ func (s *Server) design(ctx context.Context, req designRequest, probe bool) (*de
 		}
 		vip := strings.TrimSpace(req.VIP)
 		if req.Apps != nil && req.Apps.Dir != "" {
-			rv, a, conn, err := reviewApps(ctx, *req.Apps, name, "", false)
+			rv, a, conn, err := reviewApps(ctx, *req.Apps, name, "", false, req.ImageAutomation == nil || *req.ImageAutomation)
 			if err != nil {
 				return nil, err
 			}
 			d.view.Apps, d.apps, d.conn = rv, a, conn
 		}
 		redesign = func(vip string) *config.Cluster {
-			c, _ := config.Design(name, ms, config.DesignOptions{Roles: roles, VIP: vip, Networks: ch.networks})
+			c, _ := config.Design(name, ms, config.DesignOptions{Roles: roles, VIP: vip, Networks: ch.networks, AllowScheduling: req.AllowScheduling})
+			if req.Longhorn == nil && ch.anyStorageFits(c) || req.Longhorn != nil && *req.Longhorn {
+				c.Spec.Storage.SystemDisk = true
+				c.Spec.Platform.Longhorn.Enabled = true
+				for i := range c.Spec.Nodes {
+					ch.placeStorage(c, &c.Spec.Nodes[i])
+				}
+				if req.Replicas > 0 {
+					c.Spec.Platform.Longhorn.Replicas = min(req.Replicas, len(c.LonghornNodes()))
+				}
+			}
 			if rv := d.view.Apps; rv != nil {
-				c.Spec.Platform.Flux = config.Flux{Enabled: true, Repository: &config.FluxRepository{URL: rv.URL, Branch: rv.Branch, Path: rv.Path, Checkout: repo.RelCheckout(dir, rv.Repo.Dir)}}
+				c.Spec.Platform.Flux = config.Flux{Enabled: true, Repository: &config.FluxRepository{URL: rv.URL, Branch: rv.Branch, Path: rv.Path, Checkout: repo.RelCheckout(dir, rv.Repo.Dir)}, ImageAutomation: d.conn.ImageAutomation}
 			}
 			return c
 		}
@@ -274,6 +334,7 @@ func (s *Server) design(ctx context.Context, req designRequest, probe bool) (*de
 			}
 			n := c.NodeFor(m, c.NextHostname(role), role)
 			n.Network = ch.networks[m.MAC]
+			ch.placeStorage(c, &n)
 			c.Spec.Nodes = append(c.Spec.Nodes, n)
 			d.added = append(d.added, n)
 		}
@@ -289,16 +350,10 @@ func (s *Server) design(ctx context.Context, req designRequest, probe bool) (*de
 	for _, w := range warnings {
 		d.view.Warnings = append(d.view.Warnings, w.Message)
 	}
-	size := map[string]uint64{}
-	for _, m := range ms {
-		if len(m.Disks) > 0 {
-			size[m.MAC] = m.Disks[0].SizeBytes
-		}
-	}
 	d.view.Nodes = make([]designNode, len(d.added))
 	var wg sync.WaitGroup
 	for i, n := range d.added {
-		d.view.Nodes[i] = designNode{Hostname: n.Hostname, IP: n.IP, MAC: n.MAC, Role: n.Role, Disk: n.InstallDisk.String(), DiskBytes: size[n.MAC], Network: n.Network, Live: ch.live[n.MAC]}
+		d.view.Nodes[i] = designNode{Hostname: n.Hostname, IP: n.IP, MAC: n.MAC, Role: n.Role, Disk: n.InstallDisk.String(), DiskBytes: ch.diskOf(n), Network: n.Network, Live: ch.live[n.MAC]}
 		if target := n.TargetIP(); probe && target != n.IP {
 			wg.Go(func() { d.view.Nodes[i].InUse = netx.InUse(ctx, target, vipProbe) })
 		}
@@ -322,6 +377,26 @@ func (s *Server) design(ctx context.Context, req designRequest, probe bool) (*de
 	}
 	cp := d.spec.Spec.ControlPlane
 	d.view.VIP, d.view.Endpoint = cp.VIP, cp.Endpoint
+	if st := d.spec.Spec.Storage; st.SystemDisk && d.spec.Spec.Platform.Longhorn.Enabled {
+		d.view.Storage, d.view.Replicas, d.view.StorageNodes, d.view.ReplicasAuto = &st, d.spec.LonghornReplicas(), len(d.spec.LonghornNodes()), d.spec.AutoReplicas()
+		var capacities []uint64
+		for i, n := range d.added {
+			if !d.spec.RunsWorkloads(n) || len(n.DataDisks) > 0 {
+				continue
+			}
+			bytes := d.spec.SystemDataBytes(ch.diskOf(n))
+			ns := &nodeStorage{On: d.spec.SharesSystemDisk(n), Fits: bytes > 0, Bytes: bytes}
+			d.view.Nodes[i].Storage = ns
+			if ns.On {
+				capacities = append(capacities, bytes/100*(100-config.LonghornReservedPct))
+			}
+		}
+		if d.view.New {
+			d.view.UsableBytes = config.UsableBytes(capacities, d.view.Replicas)
+			d.view.UsableByReplicas = config.UsableByReplicas(capacities, d.view.StorageNodes)
+		}
+	}
+	d.view.AllowScheduling = *d.spec.Spec.ControlPlane.AllowScheduling
 	return d, nil
 }
 
@@ -455,7 +530,7 @@ type nodeSpec struct {
 	hash string
 }
 
-func (s *Server) nodeNetwork(r *http.Request) (nodeSpec, error) {
+func (s *Server) nodeOf(r *http.Request) (nodeSpec, error) {
 	name, host := r.PathValue("name"), r.PathValue("hostname")
 	dir, err := s.repoOf(name)
 	if err != nil {
@@ -478,7 +553,7 @@ func endpointFollows(c *config.Cluster, n config.Node) bool {
 }
 
 func (s *Server) handleNodeNetwork(w http.ResponseWriter, r *http.Request) {
-	ns, err := s.nodeNetwork(r)
+	ns, err := s.nodeOf(r)
 	if err != nil {
 		writeErr(w, err)
 		return
@@ -513,7 +588,7 @@ func (s *Server) handleNodeNetworkPut(w http.ResponseWriter, r *http.Request) {
 	if !decode(w, r, &req) {
 		return
 	}
-	ns, err := s.nodeNetwork(r)
+	ns, err := s.nodeOf(r)
 	if err != nil {
 		writeErr(w, err)
 		return

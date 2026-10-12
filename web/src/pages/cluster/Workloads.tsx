@@ -5,7 +5,7 @@ import { NamespaceScope, useNamespaceScope } from '../../components/NamespaceSco
 import { PodTable } from '../../components/PodTable'
 import { Tabs } from '../../components/Tabs'
 import { Age } from '../../components/Time'
-import { ErrorBox, Notice, Section, StatusDot } from '../../components/ui'
+import { ErrorBox, Section, StatusDot } from '../../components/ui'
 import { useQueryParams } from '../../query'
 import { createdSort } from '../../time'
 import { useLive } from '../../useLive'
@@ -26,7 +26,6 @@ export function Workloads({ ctx }: { ctx: ClusterCtx }) {
   const wl = useMemo(() => (workloads ?? []).filter((w) => s.keep(w.namespace)), [workloads, s.keep])
   const pl = useMemo(() => (pods ?? []).filter((p) => s.keep(p.namespace) && (!nodeFilter || p.node === nodeFilter)), [pods, s.keep, nodeFilter])
   const nodeNames = [...new Set((pods ?? []).map((p) => p.node).filter((n): n is string => !!n))].sort()
-  const unhealthy = wl.filter((w) => !w.available && w.kind !== 'Job' && w.kind !== 'CronJob').length
   const empty = (what: string) => s.ns ? `Nothing in ${s.ns}.` : s.scope === 'apps' ? `No app ${what}.` : `No ${what}.`
 
   const wcols = useMemo(() => withoutColumn<Workload>([
@@ -52,7 +51,6 @@ export function Workloads({ ctx }: { ctx: ClusterCtx }) {
             </select>
           )}
         </div>
-        {unhealthy > 0 && <Notice tone="warn">{unhealthy} controller{unhealthy === 1 ? '' : 's'} below desired replicas.</Notice>}
         {view === 'pods' && owner && (
           <span class="w-fit inline-flex items-center gap-1.5 rounded-[var(--r)] border border-border bg-panel-2 px-2 py-0.5 text-[12px]"><span class="text-muted">{owner.kind}</span><span class="mono">{owner.name}</span><button class="text-muted hover:text-text" aria-label="Show all pods" onClick={() => setQuery({ owner: undefined })}>✕</button></span>
         )}

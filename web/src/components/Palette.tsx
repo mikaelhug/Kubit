@@ -25,7 +25,7 @@ function paletteItems(): Item[] {
     if (m.kind !== 'member') out.push({ label: m.hostname || m.mac, hint: `${kindLabel[m.kind]} · ${m.ip || m.mac}`, href: `/machines/${m.mac}`, group: 'Machines' })
   }
   out.push({ label: 'Scan the network', run: () => api.discover([]), group: 'Actions' })
-  out.push({ label: 'Home', href: '/', group: 'Kubit' }, { label: 'Discovery', href: '/discovery', group: 'Kubit' }, { label: 'Secrets', href: '/secrets', group: 'Kubit' })
+  out.push({ label: 'Home', href: '/', group: 'Kubit' }, { label: 'Discovery', href: '/discovery', group: 'Kubit' })
   return out
 }
 

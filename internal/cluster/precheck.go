@@ -22,9 +22,11 @@ import (
 
 const minVarFree = 1 << 30
 
-func (m *Manager) precheckUpgrade(ctx context.Context, c *config.Cluster, kc *k8s.Client, talosconfig []byte, kind, kubeFrom, target string, sink Sink) error {
-	if err := checkUpgradeVersions(c, kind, kubeFrom, target, sink); err != nil {
-		return err
+func (m *Manager) precheckUpgrade(ctx context.Context, c *config.Cluster, kc *k8s.Client, talosconfig []byte, kind, kubeFrom string, targets []string, sink Sink) error {
+	for _, target := range targets {
+		if err := checkUpgradeVersions(c, kind, kubeFrom, target, sink); err != nil {
+			return err
+		}
 	}
 	name := c.Metadata.Name
 	var problems []string
@@ -40,6 +42,8 @@ func (m *Manager) precheckUpgrade(ctx context.Context, c *config.Cluster, kc *k8
 	}
 	for _, n := range st.Nodes {
 		switch {
+		case n.Off:
+			problems = append(problems, n.Hostname+" is off")
 		case !n.TalosReachable:
 			problems = append(problems, fmt.Sprintf("%s: Talos API unreachable (%s)", n.Hostname, n.TalosError))
 		case st.APIReachable && !n.Ready:
@@ -63,14 +67,18 @@ func (m *Manager) precheckUpgrade(ctx context.Context, c *config.Cluster, kc *k8
 		versions, err := m.Factory.Versions(ctx)
 		if err != nil {
 			sink.Emit(Warn, "precheck", "", "could not list Image Factory versions: %v", err)
-		} else if !slices.Contains(versions, target) {
-			return fmt.Errorf("Talos %s is not published by the Image Factory (%s); latest: %s", target, m.Factory.BaseURL(), latestOf(versions))
 		} else {
-			sink.Emit(Info, "precheck", "", "Talos %s is available from the Image Factory", target)
+			for _, target := range targets {
+				if !slices.Contains(versions, target) {
+					return fmt.Errorf("Talos %s is not published by the Image Factory (%s); latest: %s", target, m.Factory.BaseURL(), latestOf(versions))
+				}
+				sink.Emit(Info, "precheck", "", "Talos %s is available from the Image Factory", target)
+			}
 		}
 	}
 
 	if kind == "kubernetes" {
+		target := targets[0]
 		used, err := kc.DeprecatedAPIs(ctx)
 		if err != nil {
 			sink.Emit(Warn, "precheck", "", "deprecated-API scan skipped: %v", err)
@@ -228,12 +236,28 @@ func (m *Manager) varHeadroom(ctx context.Context, name string, n config.Node, t
 }
 
 func checkUpgradeVersions(c *config.Cluster, kind, kubeFrom, target string, sink Sink) error {
-	talosVersion, kubeVersion := c.Spec.TalosVersion, target
 	if kind == "talos" {
-		talosVersion, kubeVersion = target, kubeFrom
-	} else if err := checkKubernetesStep(kubeFrom, target); err != nil {
+		return checkSupported(target, kubeFrom, sink)
+	}
+	if err := checkKubernetesStep(kubeFrom, target); err != nil {
 		return err
 	}
+	var running []string
+	for _, n := range declared(c).Spec.Nodes {
+		running = append(running, vTag(c.NodeTalosVersion(n)))
+	}
+	if len(running) == 0 {
+		running = []string{c.Spec.TalosVersion}
+	}
+	for _, v := range distinct(running) {
+		if err := checkSupported(v, target, sink); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func checkSupported(talosVersion, kubeVersion string, sink Sink) error {
 	known, err := kubernetesSupported(talosVersion, kubeVersion)
 	switch {
 	case err != nil:

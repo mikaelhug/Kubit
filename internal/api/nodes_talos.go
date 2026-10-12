@@ -28,8 +28,9 @@ type nodeView struct {
 }
 
 type declaredNode struct {
-	Cluster  string `json:"cluster"`
-	Hostname string `json:"hostname"`
+	Cluster    string `json:"cluster"`
+	Hostname   string `json:"hostname"`
+	DataSystem bool   `json:"dataSystem,omitempty"`
 }
 
 func (s *Server) declaredNodes() map[string]declaredNode {
@@ -41,7 +42,7 @@ func (s *Server) declaredNodes() map[string]declaredNode {
 		}
 		for _, n := range d.Cluster.Spec.Nodes {
 			if n.MAC != "" {
-				out[netx.MACKey(n.MAC)] = declaredNode{Cluster: r.Cluster, Hostname: n.Hostname}
+				out[netx.MACKey(n.MAC)] = declaredNode{Cluster: r.Cluster, Hostname: n.Hostname, DataSystem: d.Cluster.SharesSystemDisk(n)}
 			}
 		}
 	}

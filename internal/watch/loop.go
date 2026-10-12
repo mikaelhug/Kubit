@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/mikaelhug/kubit/internal/cluster"
+	"github.com/mikaelhug/kubit/internal/config"
 	"github.com/mikaelhug/kubit/internal/k8s"
 	"github.com/mikaelhug/kubit/internal/store"
 )
@@ -134,7 +135,7 @@ func informable(st *cluster.Status) bool {
 
 func kubeScopes(scope, namespace string) []string {
 	if scope == k8s.ScopeWorkloads {
-		if cluster.AddonNamespace(namespace) {
+		if cluster.AddonNamespace(namespace) || namespace == config.BackupNamespace {
 			return []string{scope, k8s.ScopeAddons}
 		}
 	}
@@ -252,6 +253,9 @@ func (w *Watcher) tick(ctx context.Context, name string) {
 	case offline:
 		c.Reset()
 		st.Health, st.OpenAlerts = cluster.HealthUnknown, w.Alerts.OpenCount(name)
+	case st.Off:
+		c.Reset()
+		st.Health, st.OpenAlerts = cluster.HealthOff, w.Alerts.OpenCount(name)
 	case gap || (prev != nil && prev.Observer == cluster.ObserverOffline):
 		c.Reset()
 		st.Health, st.OpenAlerts = w.health(name, st, c)
@@ -263,7 +267,7 @@ func (w *Watcher) tick(ctx context.Context, name string) {
 		if len(facts) > 0 && w.Manager.ApplyQuiet(ctx, name, quietAfterOperation) {
 			c.Reset()
 		} else {
-			w.apply(c.Apply(name, facts))
+			w.apply(c.Apply(name, facts, offNodes(st)))
 		}
 		st.Health, st.OpenAlerts = w.health(name, st, c)
 	}

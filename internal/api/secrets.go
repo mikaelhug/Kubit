@@ -20,7 +20,6 @@ import (
 
 func (s *Server) secretRoutes() {
 	r := s.mux
-	r.HandleFunc("GET /api/v1/secrets", s.handleSecrets)
 	r.HandleFunc("GET /api/v1/clusters/{name}/secrets", s.handleClusterSecrets)
 	r.HandleFunc("GET /api/v1/secrets/values", s.handleSecretValues)
 	r.HandleFunc("PATCH /api/v1/secrets/file", s.handleSecretPatch)
@@ -163,10 +162,6 @@ func (s *Server) attribute(v *secretFileView, r servedRepo, fluxOf []string, flu
 	}
 }
 
-func (s *Server) handleSecrets(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, s.secretIndex(r.Context()))
-}
-
 type sourceView struct {
 	Repo    int    `json:"repo"`
 	Name    string `json:"name"`
@@ -212,6 +207,10 @@ func (s *Server) handleClusterSecrets(w http.ResponseWriter, r *http.Request) {
 		}
 		out.Sources = append(out.Sources, sourceView{Repo: sr.Index, Name: sr.Name, Dir: sr.Dir, Cluster: own, Flux: flux, Reads: reads, Folder: folder, Error: sr.Error})
 		for _, f := range sr.Files {
+			if f.Cluster == "" && flux {
+				f.Cluster, f.Skipped = name, "outside every Flux path"
+				f.FluxReads = cf.recipient != "" && slices.Contains(f.Recipients, cf.recipient)
+			}
 			if f.Cluster == name {
 				out.Files = append(out.Files, f)
 			}

@@ -86,6 +86,7 @@ type NodeStatus struct {
 	OSImage        string
 	InternalIP     string
 	BootID         string
+	OffBoot        string
 	Labels         map[string]string
 	AllocatableCPU int64
 	AllocatableMem int64
@@ -132,7 +133,7 @@ func statusOf(n *corev1.Node) NodeStatus {
 	s := NodeStatus{
 		Name: n.Name, Unschedulable: n.Spec.Unschedulable,
 		KubeletVersion: n.Status.NodeInfo.KubeletVersion, OSImage: n.Status.NodeInfo.OSImage,
-		BootID: n.Status.NodeInfo.BootID, Labels: n.Labels,
+		BootID: n.Status.NodeInfo.BootID, OffBoot: n.Annotations[OffBoot], Labels: n.Labels,
 	}
 	s.AllocatableCPU = n.Status.Allocatable.Cpu().MilliValue()
 	s.AllocatableMem = n.Status.Allocatable.Memory().Value()

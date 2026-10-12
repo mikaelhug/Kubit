@@ -1,12 +1,13 @@
 
 export interface Message { seq?: number; kind: 'hello' | 'stopped' | 'resync' | 'status' | 'health' | 'refresh' | 'cluster' | 'machine' | 'versions' | 'apply' | 'plan'; cluster?: string; status?: Status; health?: HealthEvent; scope?: string; clusterRow?: ClusterRow; machine?: NodeRow; hello?: { seq: number; version: string; startedAt: string; os?: string }; line?: ApplyLine; plan?: PlanSummary }
-export interface PlanChange { action: string; target?: string; detail?: string; blocked?: string }
+export interface PlanChange { action: string; target?: string; detail?: string; diff?: string; blocked?: string }
 export interface PlanInstall { hostname: string; role: string; ip: string; disk: string }
 export interface Plan { hash: string; cluster: string; changes: PlanChange[]; installs?: PlanInstall[]; problems?: string[] }
 export type PlanState = 'checking' | 'ready' | 'blocked' | 'applying' | 'failed'
-export interface PlanSummary { cluster: string; state: PlanState; hash?: string; changes: number; oneTime: number; problems: number; plannedAt?: string; holder?: string; error?: string }
+export type RunKind = 'apply' | 'destroy' | 'restart' | 'shutdown' | 'power-on' | 'snapshot'
+export interface PlanSummary { cluster: string; state: PlanState; hash?: string; changes: number; oneTime: number; problems: number; plannedAt?: string; holder?: string; run?: RunKind; error?: string }
 export interface ApplyLine { ts: string; level: 'info' | 'warn' | 'error' | 'done'; step: string; node?: string; message: string }
-export interface ApplyRun { kind?: 'apply' | 'destroy'; running: boolean; started?: string; finished?: string; error?: string; lines: ApplyLine[] }
+export interface ApplyRun { kind?: RunKind; running: boolean; started?: string; finished?: string; error?: string; lines: ApplyLine[] }
 export interface HealthEvent { id: number; ts: string; cluster: string; node?: string; severity: 'info' | 'warn' | 'critical'; kind: string; message: string; open: boolean }
 export interface Sample { ts: string; node?: string; cpuMilli: number; cpuCap: number; memBytes: number; memCap: number; pods: number; ready: boolean; reachable: boolean }
 export interface SOPSKey { recipient: string }
@@ -14,7 +15,7 @@ export interface DirListing { path: string; parent?: string; dirs: { name: strin
 export interface DeployKey { publicKey?: string; fingerprint?: string; hosts: { host: string; type: string; fingerprint: string }[] | null; hash: string }
 export interface Build { name: string; image?: string; state: 'running' | 'succeeded' | 'failed'; pod?: string; startedAt?: string; finishedAt?: string }
 export interface FluxRepository { url: string; branch?: string; path?: string; interval?: string }
-export interface FluxObject { kind: string; namespace: string; name: string; ready: 'True' | 'False' | 'Unknown'; reason?: string; message?: string; revision?: string; suspended?: boolean; since?: string }
+export interface FluxObject { kind: string; namespace: string; name: string; ready: 'True' | 'False' | 'Unknown'; reason?: string; message?: string; revision?: string; url?: string; suspended?: boolean; since?: string }
 export interface ImageStatus { talosVersion: string; installed: string; desired: string; extensions?: string[]; outdated: boolean }
 export interface Namespace { name: string; phase: string; security?: string; ageSec: number; createdAt?: string; platform: boolean; addon?: string }
 export interface Workload { kind: string; namespace: string; name: string; ready: number; desired: number; available: boolean; images: string; age: string; ageSec?: number; createdAt?: string; selector?: string }
@@ -22,11 +23,15 @@ export interface KService { namespace: string; name: string; type: string; clust
 export interface KIngress { namespace: string; name: string; class?: string; rules: { host: string; path: string; service: string; port: string }[]; addresses?: string[]; tlsHosts?: string[]; age: string; ageSec?: number; createdAt?: string }
 export interface KRoute { namespace: string; name: string; hostnames: string[]; gateways: string[]; rules: { path: string; backends: string[] }[]; accepted: string; message?: string; age: string; ageSec?: number; createdAt?: string }
 export interface NetworkView { services: KService[]; ingresses: KIngress[]; routes: KRoute[]; routesError?: string; pool?: { range: string; total: number; allocated: { ip: string; service: string }[] }; poolError?: string }
-export interface StorageView { classes: { name: string; provisioner: string; default: boolean; reclaim: string; binding: string; expandable: boolean; createdAt?: string }[]; volumes: { name: string; capacityBytes: number; phase: string; class: string; claim?: string; accessModes: string; reclaim: string; age: string; createdAt?: string }[]; claims: { namespace: string; name: string; phase: string; requestedBytes: number; capacityBytes: number; class: string; volume?: string; age: string; ageSec?: number; createdAt?: string }[] }
+export interface StorageView { classes: { name: string; provisioner: string; default: boolean; reclaim: string; binding: string; expandable: boolean; createdAt?: string }[]; volumes: { name: string; capacityBytes: number; phase: string; class: string; claim?: string; accessModes: string; reclaim: string; age: string; createdAt?: string; longhorn?: LonghornVolume }[]; claims: { namespace: string; name: string; phase: string; requestedBytes: number; capacityBytes: number; class: string; volume?: string; age: string; ageSec?: number; createdAt?: string }[]; longhorn?: LonghornView }
+export interface LonghornVolume { sizeBytes: number; actualBytes: number; replicas: number; robustness: string; state: string }
+export interface LonghornNode { name: string; ready: boolean; schedulable: boolean; reason?: string; disks: string[]; maximumBytes: number; reservedBytes: number; availableBytes: number; scheduledBytes: number; replicas: number }
+export interface StorageNode { hostname: string; role: string; disks: string[]; systemDisk: boolean; awaiting: boolean; editable: boolean; live?: LonghornNode }
+export interface LonghornView { replicas: number; auto: number; max: number; applied: number; usableBytes: number; usableByReplicas: number[]; leftBytes: number; provisionedBytes: number; writtenBytes: number; volumes: Record<string, number>; live: boolean; error?: string; nodes: StorageNode[] }
 export interface PodEvent { type: string; status: string; reason?: string; message?: string; since?: string }
 export interface AddonStatus {
-  key: string; enabled: boolean; address?: string; values?: Record<string, unknown>; pinnedVersion?: string
-  release?: { name: string; namespace: string; chart: string; chartVersion: string; appVersion?: string; status: string; lastDeployed?: number }
+  key: string; enabled: boolean; installed: boolean; address?: string; pinnedVersion?: string
+  release?: { name: string; namespace: string; chart: string; chartVersion: string; appVersion?: string; status: string; lastDeployed?: number; values?: string[] }
   readiness?: { namespace: string; ready: number; total: number; detail?: string[] }
   state: 'disabled' | 'pending' | 'deploying' | 'ready' | 'degraded' | 'failed' | 'orphaned'
 }
@@ -35,10 +40,10 @@ export interface Versions { talos: string[]; kubernetesLatest: string; minTalos:
 
 export interface InstallDisk { path?: string; selector?: { minSize?: string; type?: string; model?: string } }
 export interface NodeNetwork { addresses: string[]; gateway?: string; nameservers?: string[]; vlan?: number; mtu?: number }
-export interface NodeSpec { hostname: string; ip: string; mac?: string; uuid?: string; role?: 'controlplane' | 'worker'; arch: string; kvm?: boolean; installDisk?: InstallDisk; dataDisks?: string[]; network?: NodeNetwork; labels?: Record<string, string>; taints?: Record<string, string>; annotations?: Record<string, string>; patches?: Record<string, unknown>[] }
+export interface NodeSpec { hostname: string; ip: string; mac?: string; uuid?: string; role?: 'controlplane' | 'worker'; arch: string; kvm?: boolean; installDisk?: InstallDisk; dataDisks?: string[]; storage?: { systemDisk?: boolean }; network?: NodeNetwork; labels?: Record<string, string>; taints?: Record<string, string>; annotations?: Record<string, string>; patches?: Record<string, unknown>[] }
 export interface AddonSpec { enabled: boolean; values?: Record<string, unknown> }
 export interface Snapshot { id: string; ts: string; source: string; sizeBytes: number }
-export interface PlatformSpec { metallb: AddonSpec & { range?: string }; traefik: AddonSpec; gvisor: { enabled: boolean }; metricsServer: AddonSpec; certManager: AddonSpec; flux: AddonSpec & { repository?: FluxRepository; imageAutomation?: boolean }; longhorn: AddonSpec; builds: { enabled: boolean } }
+export interface PlatformSpec { metallb: AddonSpec & { range?: string }; traefik: AddonSpec; gvisor: { enabled: boolean }; metricsServer: AddonSpec; certManager: AddonSpec; flux: AddonSpec & { repository?: FluxRepository; imageAutomation?: boolean }; longhorn: AddonSpec & { replicas?: number }; builds: { enabled: boolean } }
 export interface ClusterSpec {
   apiVersion: string; kind: string; metadata: { name: string }
   spec: {
@@ -62,6 +67,7 @@ export interface Inventory {
   links: { name: string; mac: string; up: boolean; addresses?: string[]; speedMbps?: number; mtu?: number }[]
   pci?: { address: string; kind?: string; vendor?: string; product?: string; driver?: string }[]
   bootTime?: string; extensions?: { name: string; version: string; author?: string }[]
+  systemDisk?: string; volumes?: { name: string; disk: string; device: string; sizeBytes: number; mount?: string; phase: string }[]
   etcd?: { memberId: string; leader: boolean; learner: boolean; dbSizeBytes: number; dbInUseBytes: number; raftIndex: number; raftTerm: number; errors?: string[] }
 }
 export interface ConfigStatus { behind: string[] }
@@ -73,18 +79,22 @@ export interface NodeDetail {
   taints: string[] | null; labels: Record<string, string> | null; capacity: Resources; allocatable: Resources; requests: Resources; pods: PodSummary[] | null
 }
 export type MachineKind = 'member' | 'maintenance' | 'configured' | 'offline'
-export interface NodeRow { ip: string; mac: string; uuid?: string; serial?: string; ipsSeen?: string[]; cluster: string; hostname: string; arch: string; role: string; state: string; kind: MachineKind; talos: boolean; talosVersion: string; lastSeen: string; inventory?: Inventory; declared?: { cluster: string; hostname: string } }
+export interface NodeRow { ip: string; mac: string; uuid?: string; serial?: string; ipsSeen?: string[]; cluster: string; hostname: string; arch: string; role: string; state: string; kind: MachineKind; talos: boolean; talosVersion: string; lastSeen: string; inventory?: Inventory; declared?: { cluster: string; hostname: string; dataSystem?: boolean } }
 
-export interface NodeStatus { hostname: string; ip: string; role: string; seenAt?: string; arch: string; talosVersion: string; kubeletVersion: string; ready: boolean; unschedulable: boolean; talosReachable: boolean; talosError?: string; talosReach?: string; registered: boolean; stage: string; cpuMilli: number; cpuCapMilli: number; memBytes: number; memCapBytes: number; memAllocBytes: number; pods: number; podCap: number; temperatures?: Temperature[] }
+export interface NodeStatus { hostname: string; ip: string; role: string; seenAt?: string; arch: string; talosVersion: string; kubeletVersion: string; ready: boolean; unschedulable: boolean; talosReachable: boolean; off?: boolean; talosError?: string; talosReach?: string; registered: boolean; stage: string; bootedAt?: string; cpuMilli: number; cpuCapMilli: number; memBytes: number; memCapBytes: number; memAllocBytes: number; pods: number; podCap: number; temperatures?: Temperature[]; declared: boolean; talosTarget?: string; network?: { dhcp: boolean; addresses?: string[]; gateway?: string; vlan?: number; mtu?: number } }
 export interface Temperature { sensor: 'cpu' | 'disk'; chip: string; celsius: number; high?: number; critical?: number }
 export interface Status {
-  name: string; state: string; talosVersion: string; kubernetesVersion: string; endpoint: string; apiReachable: boolean; apiError?: string; apiReach?: string; health?: 'healthy' | 'degraded' | 'down' | 'unknown'; openAlerts?: number
+  name: string; state: string; talosVersion: string; kubernetesVersion: string; endpoint: string; apiReachable: boolean; apiError?: string; apiReach?: string; off?: boolean; health?: 'healthy' | 'degraded' | 'down' | 'unknown' | 'off'; openAlerts?: number
   observer?: 'online' | 'offline'; observerError?: string; lastContactAt?: string
   nodes: NodeStatus[]
   etcd: { members: number; expected: number; healthy: boolean; leader?: string; alarms?: string[] }
   totals: { cpuMilli: number; cpuCapMilli: number; memBytes: number; memCapBytes: number; pods: number; podCap: number; nodesReady: number; nodes: number }
-  ingressIP?: string
   observedAt?: string; lastSnapshotAt?: string
+  configRead: boolean
+  controlPlane: { vip?: string; vipHolder?: string }
+  network: { podCIDRs?: string[]; serviceCIDRs?: string[]; cni: { name?: string; policies: boolean } }
+  loadBalancer: { enabled: boolean; pool?: string[]; ip?: string }
+  backup?: { schedule: string; lastSchedule?: string; lastSuccess?: string; failed?: boolean }
 }
 export interface Service { id: string; state: string; healthy: boolean; unknown?: boolean; last: string }
 
@@ -106,8 +116,6 @@ export interface SecretFile {
   fluxReads: boolean
   skipped?: string
 }
-export interface SecretRepo { index: number; dir: string; name: string; cluster?: string; error?: string; files: SecretFile[]; fluxOf: string[]; fluxRecipient?: string; fluxReads: boolean }
-export interface SecretIndex { repos: SecretRepo[]; labels: Record<string, string> }
 export interface SecretSource { repo: number; name: string; dir: string; cluster: boolean; flux: boolean; reads: boolean; folder?: string; error?: string }
 export interface FluxSource { enabled: boolean; url?: string; branch?: string; path?: string }
 export interface ClusterSecrets { flux: FluxSource; recipient?: string; sources: SecretSource[]; files: SecretFile[]; labels: Record<string, string> }
@@ -120,6 +128,7 @@ export interface MachineChoice {
   address?: string
   gateway?: string
   nameservers?: string[]
+  storage?: boolean
 }
 
 export interface LiveNet { address?: string; gateway?: string; nameservers?: string[] }
@@ -133,15 +142,19 @@ export interface DesignRequest {
   machines: MachineChoice[]
   hash?: string
   apps?: AppsRequest
+  longhorn?: boolean
+  replicas?: number
+  imageAutomation?: boolean
+  allowScheduling?: boolean
 }
 
 export interface AppsRequest { dir: string; path?: string }
 export interface AppsRepo { dir: string; display: string; kind: 'empty' | 'layout' | 'other'; clusters: string[]; branch: string; remote: string; url: string }
 export interface AppsFile { repo: string; path: string; action: 'create' | 'edit' }
-export interface AppsReview { repo: AppsRepo; url: string; branch: string; path: string; files: AppsFile[]; deployKey: boolean }
+export interface AppsReview { repo: AppsRepo; url: string; branch: string; path: string; files: AppsFile[]; deployKey: boolean; imageAutomation: boolean }
 export interface AppsStatus { url?: string; branch?: string; path?: string; checkout?: { dir: string; missing?: boolean; git?: GitState } }
 
-export interface DesignNode { hostname: string; ip: string; mac: string; role: string; disk: string; diskBytes?: number; network?: NodeNetwork; live: LiveNet; inUse?: boolean }
+export interface DesignNode { hostname: string; ip: string; mac: string; role: string; disk: string; diskBytes?: number; network?: NodeNetwork; live: LiveNet; inUse?: boolean; storage?: { on: boolean; fits: boolean; bytes: number } }
 
 export interface DesignView {
   cluster: string
@@ -156,6 +169,13 @@ export interface DesignView {
   warnings: string[]
   hash?: string
   apps?: AppsReview
+  storage?: ClusterSpec['spec']['storage']
+  replicas?: number
+  storageNodes?: number
+  replicasAuto?: number
+  usableBytes?: number
+  usableByReplicas?: number[]
+  allowScheduling: boolean
 }
 
 export interface GitState { repo: boolean; branch?: string; upstream?: string; ahead: number; changes: { status: string; path: string }[] }

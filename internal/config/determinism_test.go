@@ -14,11 +14,11 @@ func TestGenerateIsDeterministic(t *testing.T) {
 		t.Fatal(err)
 	}
 	b := sharedSecrets(t)
-	first, err := config.Generate(c, b, "installer")
+	first, err := config.Generate(c, b, installer)
 	if err != nil {
 		t.Fatal(err)
 	}
-	again, err := config.Generate(c.Clone(), b, "installer")
+	again, err := config.Generate(c.Clone(), b, installer)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -38,7 +38,7 @@ func TestMinSizeAcceptsBinaryUnits(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GiB is a size: %v", err)
 	}
-	if _, err := config.Generate(c, sharedSecrets(t), "installer"); err != nil {
+	if _, err := config.Generate(c, sharedSecrets(t), installer); err != nil {
 		t.Errorf("a GiB selector compiles: %v", err)
 	}
 }
@@ -55,11 +55,11 @@ func TestRecordingTheMovedAddressChangesNoConfig(t *testing.T) {
 		t.Fatal(err)
 	}
 	s := sharedSecrets(t)
-	ga, err := config.Generate(a, s, "installer")
+	ga, err := config.Generate(a, s, installer)
 	if err != nil {
 		t.Fatal(err)
 	}
-	gb, err := config.Generate(b, s, "installer")
+	gb, err := config.Generate(b, s, installer)
 	if err != nil {
 		t.Fatal(err)
 	}

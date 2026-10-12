@@ -22,7 +22,7 @@ func (metalMode) String() string        { return "metal" }
 func (metalMode) RequiresInstall() bool { return true }
 func (metalMode) InContainer() bool     { return false }
 
-const installer = "factory.talos.dev/metal-installer/abc:v1.14.0"
+func installer(config.Node) string { return "factory.talos.dev/metal-installer/abc:v1.14.0" }
 
 func generateSample(t *testing.T) (*config.Cluster, *config.Generated) {
 	t.Helper()

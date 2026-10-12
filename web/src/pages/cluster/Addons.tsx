@@ -1,6 +1,6 @@
 import { addonCatalog } from '../../addons'
 import { api, fmt, type AddonStatus } from '../../api'
-import { ErrorBox, Notice, Pill, Section, StatusDot } from '../../components/ui'
+import { ErrorBox, Notice, Pending, Pill, Section, StatusDot } from '../../components/ui'
 import { stateTone } from '../../tone'
 import { useLive } from '../../useLive'
 import { AddonToggle } from '../../components/AddonToggle'
@@ -14,13 +14,14 @@ export function Addons({ ctx }: { ctx: ClusterCtx }) {
   const { data: addons, error } = useLive(() => api.addons(name), [name], [[name, 'addons'], [name, 'config']])
   const drift = (addons ?? []).some((a) => a.state === 'pending' || a.state === 'orphaned')
   const { data: image } = useLive(() => api.imageStatus(name), [name], [[name, 'config'], [name, 'nodes']], { onError: 'null' })
-  const longhornWaits = image?.outdated && cluster.spec.spec.platform.longhorn?.enabled
-  const flux = !!cluster.spec.spec.platform.flux?.enabled
-  const repo = cluster.spec.spec.platform.flux?.repository
-  const builds = !!cluster.spec.spec.platform.builds?.enabled
-  const { data: sync } = useLive(() => api.flux(name), [name], [[name, 'flux']], { onError: 'null', enabled: flux })
-  const { data: buildList } = useLive(() => api.builds(name), [name], [[name, 'workloads']], { onError: 'null', enabled: builds })
   const stateOf = (key: string) => addons?.find((x) => x.key === key)?.state ?? 'disabled'
+  const isInstalled = (key: string) => !!addons?.find((x) => x.key === key)?.installed
+  const longhornWaits = image?.outdated && stateOf('longhorn') !== 'disabled'
+  const declaredRepo = cluster.spec.spec.platform.flux?.repository
+  const { data: sync } = useLive(() => api.flux(name), [name], [[name, 'flux']], { onError: 'null', enabled: isInstalled('flux') })
+  const { data: buildList } = useLive(() => api.builds(name), [name], [[name, 'workloads']], { onError: 'null', enabled: isInstalled('builds') })
+  const source = sync?.find((o) => o.kind === 'GitRepository' && o.name === 'flux-system')
+  const pool = status?.loadBalancer.pool?.join(', ')
   const installed = addons ? addonCatalog.filter((d) => stateOf(d.key) !== 'disabled') : []
   const available = addons ? addonCatalog.filter((d) => stateOf(d.key) === 'disabled') : []
 
@@ -34,7 +35,7 @@ export function Addons({ ctx }: { ctx: ClusterCtx }) {
           <div class="grid grid-cols-1 lg:grid-cols-2 gap-3 items-start">
             {installed.map((d) => {
               const a = addons?.find((x) => x.key === d.key)
-              const link = d.key === 'traefik' && status?.ingressIP ? `http://${status.ingressIP}` : undefined
+              const link = d.key === 'traefik' && status?.loadBalancer.ip ? `http://${status.loadBalancer.ip}` : undefined
               const st = a?.state ?? (addons ? 'disabled' : null)
               return (
                 <div key={d.key} class="panel p-4 flex gap-3">
@@ -53,10 +54,10 @@ export function Addons({ ctx }: { ctx: ClusterCtx }) {
                         {a.release && <><span class="text-muted">Installed</span><span class="mono">{a.release.chart} {a.release.chartVersion}{a.release.appVersion ? ` (app ${a.release.appVersion})` : ''}{a.pinnedVersion && a.pinnedVersion !== a.release.chartVersion && <span class="text-warn"> · pinned {a.pinnedVersion}</span>}</span></>}
                         {a.release && <><span class="text-muted">Helm status</span><span class={a.release.status === 'deployed' ? '' : 'text-bad'}>{a.release.status}{a.release.lastDeployed ? ` · ${fmt.when(new Date(a.release.lastDeployed * 1000).toISOString())}` : ''}</span></>}
                         {a.readiness && <><span class="text-muted">Workloads</span><span class={a.readiness.ready === a.readiness.total ? '' : 'text-warn'}>{a.readiness.ready}/{a.readiness.total} available in {a.readiness.namespace}{a.readiness.detail?.length ? ` — ${a.readiness.detail.join(', ')}` : ''}</span></>}
-                        {a.key === 'metallb' && <><span class="text-muted">Pool</span><span class="mono">{cluster.spec.spec.platform.metallb.range || '—'}</span></>}
+                        {a.key === 'metallb' && <><span class="text-muted">Pool</span><span class="flex items-center gap-2"><span class="mono">{pool || '—'}</span>{status?.apiReachable && cluster.spec.spec.platform.metallb.enabled && cluster.spec.spec.platform.metallb.range !== (pool ?? '') && <Pending cluster={name} />}</span></>}
                         {a.key === 'builds' && <><span class="text-muted">Registry</span><span class="mono">registry.kubit → {a.address ?? '—'}</span></>}
-                        {a.key === 'flux' && <><span class="text-muted self-center">Repository</span><span class="flex items-center gap-2 min-w-0"><span class="mono truncate min-w-0" title={repo?.url}>{repo ? [repo.url, repo.branch, repo.path].filter(Boolean).join(' · ') : 'not set'}</span><a class="btn btn-sm ml-auto shrink-0" href={`/clusters/${name}/settings?view=apps`}>Settings</a></span></>}
-                        {a.values && Object.keys(a.values).length > 0 && <><span class="text-muted">Values</span><span class="mono truncate" title={JSON.stringify(a.values)}>{Object.keys(a.values).join(', ')} overridden</span></>}
+                        {a.key === 'flux' && <><span class="text-muted self-center">Repository</span><span class="flex items-center gap-2 min-w-0"><span class="mono truncate min-w-0" title={source?.url}>{source?.url ?? '—'}</span>{source && declaredRepo && declaredRepo.url !== source.url && <Pending cluster={name} />}<a class="btn btn-sm ml-auto shrink-0" href={`/clusters/${name}/settings?view=apps`}>Settings</a></span></>}
+                        {a.release?.values && a.release.values.length > 0 && <><span class="text-muted">Values</span><span class="mono truncate" title={a.release.values.join(', ')}>{a.release.values.join(', ')}</span></>}
                       </div>
                     )}
                     {a?.key === 'flux' && sync && sync.length > 0 && <FluxSync objects={sync} />}

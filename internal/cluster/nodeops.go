@@ -68,13 +68,45 @@ func (m *Manager) reinstallWith(ctx context.Context, c *config.Cluster, kc *k8s.
 	if err := m.installTalos(ctx, n, talosconfig, image, version, step, sink); err != nil {
 		return err
 	}
+	sink.Emit(Info, step, n.Hostname, "installed; draining before the reboot")
 	pending := fmt.Sprintf("Talos %s is installed and takes effect on the next reboot", version)
 	if n.Role == config.RoleControlPlane {
 		if err := m.etcdTolerates(ctx, c, n, talosconfig); err != nil {
 			return fmt.Errorf("%w; %s", err, pending)
 		}
 	}
-	hold, err := holdCordon(ctx, kc, n.Hostname)
+	cy := nodeCycle{c: c, kc: kc, n: n, talosconfig: talosconfig, step: step, sink: sink}
+	reboot := func() (bool, error) {
+		rebooted, err := m.applyIfBehind(ctx, n, cfgs.staged, talosconfig, step, sink)
+		if err != nil {
+			return rebooted, fmt.Errorf("machine config for the new image: %w", err)
+		}
+		if rebooted {
+			return true, nil
+		}
+		return m.rebootRequested(ctx, cy, "rebooting into Talos "+version)
+	}
+	after := func() error {
+		if err := m.applyBehindAndWait(ctx, c, kc, n, cfgs.final, talosconfig, step, sink); err != nil {
+			return fmt.Errorf("machine config for Talos %s: %w", version, err)
+		}
+		return nil
+	}
+	return m.drainReboot(ctx, cy, cordonByUpgrade, pending, reboot, after)
+}
+
+type nodeCycle struct {
+	c           *config.Cluster
+	kc          *k8s.Client
+	n           config.Node
+	talosconfig []byte
+	step        string
+	sink        Sink
+}
+
+func (m *Manager) drainReboot(ctx context.Context, cy nodeCycle, reason, pending string, reboot func() (rebooted bool, err error), after func() error) error {
+	n, kc, sink := cy.n, cy.kc, cy.sink
+	hold, err := holdCordon(ctx, kc, n.Hostname, reason)
 	if err != nil {
 		return err
 	}
@@ -85,42 +117,49 @@ func (m *Manager) reinstallWith(ctx context.Context, c *config.Cluster, kc *k8s.
 		uctx, cancel := cleanupCtx(ctx)
 		defer cancel()
 		if uerr := kc.Uncordon(uctx, n.Hostname); uerr != nil {
-			sink.Emit(Warn, step, n.Hostname, "could not uncordon: %v", uerr)
+			sink.Emit(Warn, cy.step, n.Hostname, "could not uncordon: %v", uerr)
 		}
 		return err
 	}
 	before := kubeBootID(ctx, kc, n.Hostname)
-	if err := kc.DrainAll(ctx, n.Hostname, 5*time.Minute, sinkWriter{sink, step, n.Hostname}); err != nil {
-		return undo(fmt.Errorf("%w; %s", err, pending))
+	if err := kc.DrainAll(ctx, n.Hostname, 5*time.Minute, sinkWriter{sink, cy.step, n.Hostname}); err != nil {
+		if pending != "" {
+			err = fmt.Errorf("%w; %s", err, pending)
+		}
+		return undo(err)
 	}
-	rebooted, err := m.applyIfBehind(ctx, n, cfgs.staged, talosconfig, step, sink)
-	if err != nil {
-		err = fmt.Errorf("machine config for the new image: %w", err)
+	if rebooted, err := reboot(); err != nil {
 		if rebooted {
 			return err
 		}
 		return undo(err)
 	}
-	if !rebooted {
-		err := m.rebootAndWait(ctx, n.IP, talosconfig, func() {
-			sink.Emit(Info, step, n.Hostname, "rebooting into Talos %s", version)
-		})
-		if err != nil {
-			return fmt.Errorf("reboot: %w", err)
+	sink.Emit(Info, cy.step, n.Hostname, "rebooted; waiting for Ready")
+	if err := m.waitBack(ctx, cy.c, kc, n, before, cy.talosconfig); err != nil {
+		return fmt.Errorf("after the reboot: %w", err)
+	}
+	if after != nil {
+		if err := after(); err != nil {
+			return err
 		}
 	}
-	sink.Emit(Info, step, n.Hostname, "rebooted; waiting for Ready")
-	if err := m.waitBack(ctx, c, kc, n, before, talosconfig); err != nil {
-		return fmt.Errorf("after upgrade: %w", err)
-	}
-	if err := m.applyBehindAndWait(ctx, c, kc, n, cfgs.final, talosconfig, step, sink); err != nil {
-		return fmt.Errorf("machine config for Talos %s: %w", version, err)
-	}
 	if hold == cordonUser {
-		sink.Emit(Info, step, n.Hostname, "left cordoned, as before the upgrade")
+		sink.Emit(Info, cy.step, n.Hostname, "left cordoned, as before")
 		return nil
 	}
 	return kc.Uncordon(ctx, n.Hostname)
+}
+
+func (m *Manager) rebootRequested(ctx context.Context, cy nodeCycle, message string) (bool, error) {
+	requested := false
+	err := m.rebootAndWait(ctx, cy.n.IP, cy.talosconfig, func() {
+		requested = true
+		cy.sink.Emit(Info, cy.step, cy.n.Hostname, "%s", message)
+	})
+	if err != nil {
+		return requested, fmt.Errorf("reboot: %w", err)
+	}
+	return true, nil
 }
 
 func (m *Manager) installTalos(ctx context.Context, n config.Node, talosconfig []byte, image, version, step string, sink Sink) error {
@@ -139,11 +178,13 @@ func (m *Manager) installTalos(ctx context.Context, n config.Node, talosconfig [
 	if err := installImage(ctx, tc, name, installTimeout, progress); err != nil {
 		return fmt.Errorf("install: %w", err)
 	}
-	sink.Emit(Info, step, n.Hostname, "installed; draining before the reboot")
 	return nil
 }
 
-const cordonByUpgrade = "upgrade"
+const (
+	cordonByUpgrade = "upgrade"
+	cordonByRestart = "restart"
+)
 
 type cordonHold int
 
@@ -163,7 +204,7 @@ func cordonOf(unschedulable bool, by string) cordonHold {
 	return cordonNone
 }
 
-func holdCordon(ctx context.Context, kc *k8s.Client, hostname string) (cordonHold, error) {
+func holdCordon(ctx context.Context, kc *k8s.Client, hostname, reason string) (cordonHold, error) {
 	unschedulable, by, err := kc.CordonState(ctx, hostname)
 	if err != nil {
 		return cordonNone, err
@@ -171,7 +212,7 @@ func holdCordon(ctx context.Context, kc *k8s.Client, hostname string) (cordonHol
 	if cordonOf(unschedulable, by) == cordonUser {
 		return cordonUser, nil
 	}
-	return cordonKubit, kc.MarkCordon(ctx, hostname, cordonByUpgrade)
+	return cordonKubit, kc.MarkCordon(ctx, hostname, reason)
 }
 
 func releaseCordon(ctx context.Context, kc *k8s.Client, hostname, step string, sink Sink) error {

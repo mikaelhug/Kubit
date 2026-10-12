@@ -13,6 +13,7 @@ import (
 
 	"github.com/cosi-project/runtime/pkg/safe"
 	"github.com/siderolabs/talos/pkg/machinery/api/machine"
+	"github.com/siderolabs/talos/pkg/machinery/constants"
 	"github.com/siderolabs/talos/pkg/machinery/nethelpers"
 	"github.com/siderolabs/talos/pkg/machinery/resources/block"
 	"github.com/siderolabs/talos/pkg/machinery/resources/hardware"
@@ -51,6 +52,8 @@ type Inventory struct {
 	Nameservers   []string       `json:"nameservers,omitempty"`
 	BootTime      string         `json:"bootTime,omitempty"`
 	Extensions    []Extension    `json:"extensions,omitempty"`
+	SystemDisk    string         `json:"systemDisk,omitempty"`
+	Volumes       []Volume       `json:"volumes,omitempty"`
 	Etcd          *EtcdMember    `json:"etcd,omitempty"`
 }
 
@@ -66,6 +69,15 @@ func (inv Inventory) MarshalJSON() ([]byte, error) {
 	return json.Marshal(p)
 }
 
+type Volume struct {
+	Name      string `json:"name"`
+	Disk      string `json:"disk"`
+	Device    string `json:"device"`
+	SizeBytes uint64 `json:"sizeBytes"`
+	Mount     string `json:"mount,omitempty"`
+	Phase     string `json:"phase"`
+}
+
 type Extension struct {
 	Name    string `json:"name"`
 	Version string `json:"version"`
@@ -74,6 +86,7 @@ type Extension struct {
 
 type EtcdMember struct {
 	MemberID     string   `json:"memberId"`
+	LeaderID     uint64   `json:"-"`
 	Leader       bool     `json:"leader"`
 	Learner      bool     `json:"learner"`
 	DBSizeBytes  int64    `json:"dbSizeBytes"`
@@ -230,7 +243,43 @@ func (c *Client) Inspect(ctx context.Context) (*Inventory, error) {
 		}
 		sort.Slice(inv.Extensions, func(i, j int) bool { return inv.Extensions[i].Name < inv.Extensions[j].Name })
 	}
+	if sd, err := safe.StateGetByID[*block.SystemDisk](ctx, c.COSI, block.SystemDiskID); err == nil {
+		inv.SystemDisk = sd.TypedSpec().DevPath
+	}
+	if vols, err := safe.StateListAll[*block.VolumeStatus](ctx, c.COSI); err == nil {
+		for v := range vols.All() {
+			id, s := v.Metadata().ID(), v.TypedSpec()
+			name, user := strings.CutPrefix(id, "u-")
+			if !user && id != constants.EphemeralPartitionLabel && id != constants.StatePartitionLabel || s.Size == 0 {
+				continue
+			}
+			disk := s.ParentLocation
+			if disk == "" {
+				disk = s.Location
+			}
+			mount := s.MountSpec.TargetPath
+			if user && mount != "" && !strings.HasPrefix(mount, "/") {
+				mount = "/var/mnt/" + mount
+			}
+			inv.Volumes = append(inv.Volumes, Volume{Name: name, Disk: disk, Device: s.Location, SizeBytes: s.Size, Mount: mount, Phase: s.Phase.String()})
+		}
+		sort.Slice(inv.Volumes, func(i, j int) bool { return inv.Volumes[i].Name < inv.Volumes[j].Name })
+	}
 	return inv, nil
+}
+
+func (inv *Inventory) Schematic() string {
+	for _, e := range inv.Extensions {
+		if e.Name == constants.ImageFactorySchematicExtensionName {
+			return e.Version
+		}
+	}
+	return ""
+}
+
+func (inv *Inventory) HasExtension(name string) bool {
+	short := name[strings.LastIndex(name, "/")+1:]
+	return slices.ContainsFunc(inv.Extensions, func(e Extension) bool { return e.Name == name || e.Name == short })
 }
 
 func (c *Client) EtcdMemberInfo(ctx context.Context) (*EtcdMember, error) {
@@ -244,11 +293,24 @@ func (c *Client) EtcdMemberInfo(ctx context.Context) (*EtcdMember, error) {
 			continue
 		}
 		return &EtcdMember{
-			MemberID: fmt.Sprintf("%x", ms.MemberId), Leader: ms.Leader == ms.MemberId, Learner: ms.IsLearner,
+			MemberID: fmt.Sprintf("%x", ms.MemberId), LeaderID: ms.Leader, Leader: ms.Leader == ms.MemberId, Learner: ms.IsLearner,
 			DBSizeBytes: ms.DbSize, DBInUseBytes: ms.DbSizeInUse, RaftIndex: ms.RaftIndex, RaftTerm: ms.RaftTerm, Errors: ms.Errors,
 		}, nil
 	}
 	return nil, errors.New("no etcd member status")
+}
+
+func (c *Client) HasAddress(ctx context.Context, ip string) bool {
+	list, err := safe.StateListAll[*network.AddressStatus](c.nodeContext(ctx), c.COSI)
+	if err != nil {
+		return false
+	}
+	for a := range list.All() {
+		if a.TypedSpec().Address.Addr().String() == ip {
+			return true
+		}
+	}
+	return false
 }
 
 func (inv *Inventory) PrimaryMAC() string {

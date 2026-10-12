@@ -17,7 +17,10 @@ import (
 	"k8s.io/kubectl/pkg/drain"
 )
 
-const CordonedBy = "kubit.dev/cordoned-by"
+const (
+	CordonedBy = "kubit.dev/cordoned-by"
+	OffBoot    = "kubit.dev/off"
+)
 
 func (c *Client) Drain(ctx context.Context, name string, timeout time.Duration, log io.Writer) error {
 	return c.drain(ctx, name, drainHelper(ctx, c.Interface, timeout, log, false))
@@ -99,11 +102,19 @@ func (c *Client) CordonState(ctx context.Context, name string) (unschedulable bo
 }
 
 func (c *Client) MarkCordon(ctx context.Context, name, by string) error {
-	return c.annotateCordon(ctx, name, fmt.Sprintf("%q", by))
+	return c.annotate(ctx, name, CordonedBy, fmt.Sprintf("%q", by))
 }
 
-func (c *Client) annotateCordon(ctx context.Context, name, value string) error {
-	patch := fmt.Sprintf(`{"metadata":{"annotations":{%q:%s}}}`, CordonedBy, value)
+func (c *Client) MarkOff(ctx context.Context, name, bootID string) error {
+	return c.annotate(ctx, name, OffBoot, fmt.Sprintf("%q", bootID))
+}
+
+func (c *Client) ClearOff(ctx context.Context, name string) error {
+	return c.annotate(ctx, name, OffBoot, "null")
+}
+
+func (c *Client) annotate(ctx context.Context, name, key, value string) error {
+	patch := fmt.Sprintf(`{"metadata":{"annotations":{%q:%s}}}`, key, value)
 	_, err := c.CoreV1().Nodes().Patch(ctx, name, types.MergePatchType, []byte(patch), metav1.PatchOptions{})
 	return err
 }
@@ -119,7 +130,7 @@ func (c *Client) Uncordon(ctx context.Context, name string) error {
 	if _, ok := node.Annotations[CordonedBy]; !ok {
 		return nil
 	}
-	return c.annotateCordon(ctx, name, "null")
+	return c.annotate(ctx, name, CordonedBy, "null")
 }
 
 func (c *Client) DeleteNode(ctx context.Context, name string) error {

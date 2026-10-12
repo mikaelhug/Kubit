@@ -16,7 +16,7 @@ import (
 type AddonStatus struct {
 	Key       string           `json:"key"`
 	Enabled   bool             `json:"enabled"`
-	Values    map[string]any   `json:"values,omitempty"`
+	Installed bool             `json:"installed"`
 	Pinned    string           `json:"pinnedVersion,omitempty"`
 	Address   string           `json:"address,omitempty"`
 	Release   *k8s.HelmRelease `json:"release,omitempty"`
@@ -62,29 +62,29 @@ func AddonNamespace(ns string) bool {
 	return ok
 }
 
-func addonSpec(c *config.Cluster, key string) (bool, map[string]any) {
+func addonEnabled(c *config.Cluster, key string) bool {
 	p := c.Spec.Platform
 	switch key {
 	case "backup":
-		return c.Spec.Backup.Enabled(), nil
+		return c.Spec.Backup.Enabled()
 	case "metallb":
-		return p.MetalLB.Enabled, p.MetalLB.Values
+		return p.MetalLB.Enabled
 	case "traefik":
-		return p.Traefik.Enabled, p.Traefik.Values
+		return p.Traefik.Enabled
 	case "gvisor":
-		return p.GVisor.Enabled, nil
+		return p.GVisor.Enabled
 	case "metricsServer":
-		return p.MetricsServer.Enabled, p.MetricsServer.Values
+		return p.MetricsServer.Enabled
 	case "certManager":
-		return p.CertManager.Enabled, p.CertManager.Values
+		return p.CertManager.Enabled
 	case "flux":
-		return p.Flux.Enabled, p.Flux.Values
+		return p.Flux.Enabled
 	case "longhorn":
-		return p.Longhorn.Enabled, p.Longhorn.Values
+		return p.Longhorn.Enabled
 	case "builds":
-		return p.Builds.Enabled, nil
+		return p.Builds.Enabled
 	}
-	return false, nil
+	return false
 }
 
 func (m *Manager) Addons(ctx context.Context, name string) ([]AddonStatus, error) {
@@ -100,14 +100,17 @@ func (m *Manager) Addons(ctx context.Context, name string) ([]AddonStatus, error
 	out := make([]AddonStatus, len(addonMeta))
 	var wg sync.WaitGroup
 	for i, meta := range addonMeta {
-		enabled, values := addonSpec(c, meta.key)
+		enabled := addonEnabled(c, meta.key)
 		st := &out[i]
 		pin := tofu.ChartVersions[meta.tofu]
-		*st = AddonStatus{Key: meta.key, Enabled: enabled, Values: values, Pinned: pin}
+		*st = AddonStatus{Key: meta.key, Enabled: enabled, Pinned: pin}
 		if meta.key == "builds" && c.RegistryIP() != "" {
 			st.Address = net.JoinHostPort(c.RegistryIP(), fmt.Sprint(config.RegistryPort))
 		}
 		chartless := pin == "" && meta.namespace != ""
+		if meta.namespace == "" && kerr == nil {
+			st.Installed = kc.ManifestAddonInstalled(ctx, meta.key)
+		}
 		if meta.namespace == "" || kerr != nil {
 			st.State = addonState(*st, meta.namespace == "", chartless)
 			continue
@@ -131,6 +134,7 @@ func (m *Manager) Addons(ctx context.Context, name string) ([]AddonStatus, error
 			if r, err := kc.NamespaceReadiness(ctx, meta.namespace); err == nil {
 				st.Readiness = r
 			}
+			st.Installed = st.Release != nil || chartless && st.Readiness != nil && st.Readiness.Total > 0
 			st.State = addonState(*st, false, chartless)
 		}()
 	}
@@ -170,8 +174,14 @@ func addonState(st AddonStatus, manifestOnly, chartless bool) string {
 		return "disabled"
 	case !st.Enabled && st.Release != nil:
 		return "orphaned"
-	case manifestOnly:
+	case manifestOnly && !st.Enabled && st.Installed:
+		return "orphaned"
+	case manifestOnly && !st.Enabled:
+		return "disabled"
+	case manifestOnly && st.Installed:
 		return "ready"
+	case manifestOnly:
+		return "pending"
 	case chartless && (st.Readiness == nil || st.Readiness.Total == 0):
 		return "pending"
 	case !chartless && st.Release == nil:

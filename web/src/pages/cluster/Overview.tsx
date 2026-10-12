@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'preact/hooks'
 import { api, fmt, type Sample, type Status } from '../../api'
 import { AlertGroup, EventRow } from '../../components/Alerts'
+import { LonghornUsage } from '../../components/LonghornUsage'
 import { behindText, useConfigStatus } from '../../configStatus'
 import { useNamespaces } from '../../components/NamespaceScope'
 import { RangeButtons, Sparkline, spanOf } from '../../components/Sparkline'
@@ -28,7 +29,11 @@ export function Overview({ ctx }: { ctx: ClusterCtx }) {
   const u = updatesFor(spec.talosVersion, spec.kubernetesVersion, versions.value)
 
   const down = !!status && !status.apiReachable
-  const workers = spec.nodes.filter((n) => n.role === 'worker').length
+  const workers = status ? status.nodes.filter((n) => n.role === 'worker').length : 0
+  const cp = status?.controlPlane
+  const lb = status?.loadBalancer
+  const observed = !!status && !down
+  const declaredLB = spec.platform.metallb.enabled && spec.platform.traefik.enabled
   const behind = useConfigStatus(name)?.behind ?? []
 
   return (
@@ -38,16 +43,17 @@ export function Overview({ ctx }: { ctx: ClusterCtx }) {
       <Reachability status={status} />
       <AlertGroup alerts={openAlerts(name)} />
       <div class="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-6 gap-3">
-        <Tile compact size="lg" label="Control plane" tone={!status ? 'muted' : cpDown === 0 ? 'good' : 'bad'} value={status ? `${cps.length - cpDown}/${cps.length}` : '—'} sub={spec.controlPlane.vip ? `VIP ${spec.controlPlane.vip}` : 'no VIP'} />
+        <Tile compact size="lg" label="Control plane" tone={!status ? 'muted' : cpDown === 0 ? 'good' : 'bad'} value={status ? `${cps.length - cpDown}/${cps.length}` : '—'} sub={!status?.configRead ? undefined : cp?.vip ? `VIP ${cp.vip}${cp.vipHolder ? ` on ${cp.vipHolder}` : ''}` : 'no VIP'} pending={!!status?.configRead && (spec.controlPlane.vip ?? '') !== (cp?.vip ?? '')} />
         <Tile compact size="lg" label="etcd quorum" tone={!status ? 'muted' : status.etcd.healthy ? 'good' : 'bad'} value={status ? `${status.etcd.members}/${status.etcd.expected}` : '—'} sub={status?.etcd.leader ? `leader ${status.etcd.leader}` : status?.etcd.alarms?.join(', ') || 'no leader reported'} />
         <Tile compact size="lg" label="Nodes Ready" tone={!t ? 'muted' : t.nodesReady === t.nodes ? 'good' : t.nodesReady === 0 ? 'bad' : 'warn'} value={t ? `${t.nodesReady}/${t.nodes}` : '—'} sub={`${workers} worker${workers === 1 ? '' : 's'}`} href={`/clusters/${name}/nodes`} />
         <WorkloadsCard cluster={name} pods={t?.pods} unreachable={down} />
-        <Tile compact size="lg" label="Load balancer" tone={down ? 'muted' : status?.ingressIP ? 'good' : spec.platform.metallb.enabled ? 'warn' : 'muted'} value={status?.ingressIP ?? (spec.platform.metallb.enabled ? 'pending' : 'off')} sub={spec.platform.metallb.enabled ? `pool ${spec.platform.metallb.range}` : undefined} href={`/clusters/${name}/network`} />
-        <BackupsCard cluster={name} status={status} schedule={spec.backup?.schedule} />
+        <Tile compact size="lg" label="Load balancer" tone={down || !lb ? 'muted' : lb.ip ? 'good' : lb.enabled ? 'warn' : 'muted'} value={!observed ? '—' : lb?.ip ?? (lb?.enabled ? 'no IP' : 'off')} sub={observed && lb?.pool?.length ? `pool ${lb.pool.join(', ')}` : undefined} href={`/clusters/${name}/network`} pending={observed && (declaredLB !== !!lb?.enabled || (spec.platform.metallb.enabled && spec.platform.metallb.range !== (lb?.pool?.[0] ?? '')))} />
+        <BackupsCard cluster={name} status={status} pending={observed && (spec.backup?.schedule ?? '') !== (status?.backup?.schedule ?? '')} />
       </div>
       <div class="grid grid-cols-1 lg:grid-cols-2 gap-4">
         <CapacityTrend name={name} status={status} />
         <div class="flex flex-col gap-4">
+          <StoragePanel name={name} enabled={!!status && !down} />
           <Section title="Recent events">
             <div class="panel divide-y divide-border/60 max-h-[260px] overflow-auto">
               {notable.length === 0 && <div class="p-4 text-[13px] text-muted">No events.</div>}
@@ -58,6 +64,12 @@ export function Overview({ ctx }: { ctx: ClusterCtx }) {
       </div>
     </>
   )
+}
+
+function StoragePanel({ name, enabled }: { name: string; enabled: boolean }) {
+  const { data } = useLive(() => api.longhorn(name), [name], [[name, 'storage']], { enabled, onError: 'silent' })
+  if (!enabled || !data?.live) return null
+  return <LonghornUsage view={data} href={`/clusters/${name}/storage`} />
 }
 
 function CapacityTrend({ name, status }: { name: string; status: Status | null }) {
@@ -95,6 +107,7 @@ function Reachability({ status }: { status: Status | null }) {
   const blind = status.observer === 'offline'
   const nodes = status.nodes
   const up = nodes.filter((n) => n.talosReachable).length
+  const off = nodes.filter((n) => n.off).length
   const item = (label: string, ok: boolean | null, detail: string) => (
     <span class="flex items-center gap-1.5" title={detail}>
       <StatusDot tone={ok === null ? 'muted' : ok ? 'good' : 'bad'} />
@@ -106,8 +119,8 @@ function Reachability({ status }: { status: Status | null }) {
     <div class={`panel px-3 py-2 text-[12.5px] flex flex-wrap items-center gap-x-5 gap-y-1 ${blind ? 'border-warn/50' : ''}`}>
       {blind
         ? <span class="text-warn">Kubit cannot reach the network{status.observerError ? ` (${status.observerError})` : ''}; showing the last known state.</span>
-        : <>
-          {item('Talos API', up === nodes.length, `${up}/${nodes.length} nodes`)}
+        : status.off ? <span class="text-muted">Cluster is off.</span> : <>
+          {item('Talos API', up === nodes.length - off, `${up}/${nodes.length - off} nodes${off ? ` · ${off} off` : ''}`)}
           {item('Kubernetes API', status.apiReachable, status.apiReachable ? 'reachable' : shortErr(status.apiError))}
         </>}
     </div>
@@ -136,10 +149,12 @@ function WorkloadsCard({ cluster, pods, unreachable }: { cluster: string; pods?:
 
 const day = 86_400_000
 
-function BackupsCard({ cluster, status, schedule }: { cluster: string; status?: { lastSnapshotAt?: string } | null; schedule?: string }) {
-  const at = status?.lastSnapshotAt
+function BackupsCard({ cluster, status, pending }: { cluster: string; status: Status | null; pending: boolean }) {
+  const backup = status?.backup
+  const at = [status?.lastSnapshotAt, backup?.lastSuccess].filter((t): t is string => !!t).sort().pop()
   const age = at ? now.value - Date.parse(at) : Infinity
-  const tone: Tone = age < day ? 'good' : age < 3 * day ? 'warn' : schedule ? 'bad' : 'muted'
+  const tone: Tone = backup?.failed ? 'bad' : age < day ? 'good' : age < 3 * day ? 'warn' : backup ? 'bad' : 'muted'
   const value = at ? <Ago iso={at} /> : 'none'
-  return <Tile compact size="lg" label="Last etcd snapshot" tone={tone} value={value} title={at ? fmt.datetime(at) : undefined} sub={schedule ? `cron ${schedule}` : 'manual only'} href={`/clusters/${cluster}/backups`} />
+  const sub = !status?.apiReachable ? undefined : backup?.failed ? 'last run failed' : backup ? `cron ${backup.schedule}` : 'manual only'
+  return <Tile compact size="lg" label="Last etcd snapshot" tone={tone} value={value} title={at ? fmt.datetime(at) : undefined} sub={sub} href={`/clusters/${cluster}/backups`} pending={pending} />
 }

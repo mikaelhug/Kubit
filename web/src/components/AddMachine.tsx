@@ -4,12 +4,14 @@ import { api, fmt, type DesignNode, type DesignRequest, type DesignView, type No
 import { modelOf, roleLabel, specsOf } from '../machine'
 import { addressOf } from '../net'
 import { clusters, toast, upsertCluster } from '../store'
-import { Dialog, ErrorBox, Field, Notice, Pill } from './ui'
+import { Check, Dialog, ErrorBox, Field, Notice, Pill } from './ui'
+import { ReplicasSelect } from './ReplicasSelect'
 import { DnsFields, dnsList, dnsPair, type DnsPair } from './DnsFields'
 import { DirPicker } from './DirPicker'
 import { AppsRepoFields, AppsReviewBlock, appsReady, appsRequest, noApps, useAppsRepo, type AppsChoice } from './AppsRepo'
 
 const newCluster = ''
+const addressSlot = '!w-[8.25rem] shrink-0'
 const auto = ''
 const maxName = 50
 const validName = /^[a-z0-9]([a-z0-9-]*[a-z0-9])?$/
@@ -54,6 +56,11 @@ function AddDialog({ machines, onClose }: { machines: NodeRow[]; onClose: (done:
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [apps, setApps] = useState<AppsChoice>(noApps)
+  const [longhorn, setLonghorn] = useState<boolean | undefined>(undefined)
+  const [imageAutomation, setImageAutomation] = useState<boolean | undefined>(undefined)
+  const [sched, setSched] = useState<boolean | undefined>(undefined)
+  const [storage, setStorage] = useState<Record<string, boolean>>({})
+  const [replicas, setReplicas] = useState<number | undefined>(undefined)
   const [root, setRoot] = useState('')
   const [dirEdited, setDirEdited] = useState(false)
   useEffect(() => {
@@ -81,9 +88,13 @@ function AddDialog({ machines, onClose }: { machines: NodeRow[]; onClose: (done:
     name: creating ? name.trim() || undefined : undefined,
     vip: creating ? withVip.trim() || undefined : undefined,
     apps: creating ? appsRequest(apps) : undefined,
+    longhorn: creating ? longhorn : undefined,
+    imageAutomation: creating ? imageAutomation : undefined,
+    allowScheduling: creating ? sched : undefined,
+    replicas: creating ? replicas : undefined,
     machines: machines.map((m) => {
       const a = addr[m.mac]?.trim()
-      return { mac: m.mac, role: roleOf(m) || undefined, address: a || undefined, gateway: a ? gateway.trim() : undefined, nameservers: a ? dnsList(dns) : undefined }
+      return { mac: m.mac, role: roleOf(m) || undefined, address: a || undefined, gateway: a ? gateway.trim() : undefined, nameservers: a ? dnsList(dns) : undefined, storage: storage[m.mac] }
     }),
   })
   const run = async (f: () => Promise<void>) => {
@@ -122,7 +133,10 @@ function AddDialog({ machines, onClose }: { machines: NodeRow[]; onClose: (done:
     if (on && !dnsList(dns).length) setDns(dnsPair(n.live.nameservers))
     recheck()
   }
+  const choose = (set: (on: boolean) => void) => (on: boolean) => { set(on); recheck() }
   const anyStatic = Object.keys(addr).length > 0
+  const appsSSH = !!preview?.apps?.url.startsWith('ssh://')
+  const allControlPlanes = !!preview?.nodes.every((n) => n.role === 'controlplane')
   const taken = preview?.nodes.some((n) => n.inUse) ?? false
   const write = () => run(async () => {
     const d = creating ? await api.createRepo(request(vip)) : await api.addNodes(target, { ...request(''), hash: preview?.hash })
@@ -135,7 +149,7 @@ function AddDialog({ machines, onClose }: { machines: NodeRow[]; onClose: (done:
   const title = machines.length === 1 ? `Add ${machines[0].ip}` : `Add ${machines.length} machines`
   if (preview) {
     return (
-      <Dialog title={title} width="max-w-2xl" onClose={() => onClose(false)} footer={
+      <Dialog title={title} width="max-w-3xl" onClose={() => onClose(false)} footer={
         <>
           <button class="btn" onClick={() => { seq.current++; setChecking(false); setPreview(null) }}>Back</button>
           <button class="btn btn-primary" disabled={busy || checking || !!preview.vipInUse || taken} onClick={write}>{busy ? 'Writing' : checking ? 'Checking addresses' : preview.apps ? 'Write files' : 'Write cluster.yaml'}</button>
@@ -155,18 +169,23 @@ function AddDialog({ machines, onClose }: { machines: NodeRow[]; onClose: (done:
                   <td class="mono">{n.hostname}</td>
                   <td>
                     <span class="flex items-center gap-2">
-                      <select class="input !w-24" value={addr[n.mac] !== undefined ? 'static' : 'dhcp'} onChange={(e) => setStatic(n, (e.target as HTMLSelectElement).value === 'static')} aria-label={`Address of ${n.hostname}`}>
+                      <select class="input !w-[4.75rem]" value={addr[n.mac] !== undefined ? 'static' : 'dhcp'} onChange={(e) => setStatic(n, (e.target as HTMLSelectElement).value === 'static')} aria-label={`Address of ${n.hostname}`}>
                         <option value="dhcp">DHCP</option>
                         <option value="static">Static</option>
                       </select>
                       {addr[n.mac] !== undefined
-                        ? <input class="input mono !w-40" value={addr[n.mac]} onInput={(e) => setAddr({ ...addr, [n.mac]: (e.target as HTMLInputElement).value })} onBlur={() => recheck()} onKeyDown={(e) => e.key === 'Enter' && recheck()} />
-                        : <span class="mono">{n.ip}</span>}
+                        ? <input class={`input mono ${addressSlot}`} value={addr[n.mac]} onInput={(e) => setAddr({ ...addr, [n.mac]: (e.target as HTMLInputElement).value })} onBlur={() => recheck()} onKeyDown={(e) => e.key === 'Enter' && recheck()} />
+                        : <span class={`mono pl-[9px] ${addressSlot}`}>{n.ip}</span>}
                     </span>
                     {n.inUse && <span class="block text-[11px] text-bad">in use</span>}
                   </td>
                   <td>{roleLabel(n.role)}</td>
-                  <td class="mono">{n.disk}{n.diskBytes ? <span class="text-muted"> · {fmt.bytes(n.diskBytes)}</span> : null}</td>
+                  <td>
+                    <span class="flex flex-col">
+                      <span class="mono">{n.disk}{n.diskBytes ? <span class="text-muted"> · {fmt.bytes(n.diskBytes)}</span> : null}</span>
+                      {n.storage && <Check checked={n.storage.on} disabled={!n.storage.fits} onChange={choose((on) => setStorage({ ...storage, [n.mac]: on }))}>Longhorn {n.storage.fits ? fmt.bytes(n.storage.bytes) : 'no room'}</Check>}
+                    </span>
+                  </td>
                 </tr>
               ))}
             </tbody>
@@ -186,9 +205,20 @@ function AddDialog({ machines, onClose }: { machines: NodeRow[]; onClose: (done:
           </Field>
         )}
         {preview.vipInUse ? <Notice tone="bad">{preview.vip} is in use.</Notice> : <div class="text-[13px]"><span class="text-muted">API </span><span class="mono">{preview.endpoint}</span></div>}
+        {preview.new && (
+          <div class="flex flex-col gap-2">
+            <Check checked={preview.allowScheduling} disabled={allControlPlanes} onChange={choose(setSched)}>Schedule workloads on control planes</Check>
+            <span class="flex flex-wrap items-center gap-x-3 gap-y-1">
+              <Check checked={!!preview.storage} onChange={choose(setLonghorn)}>Longhorn storage on system disks</Check>
+              {preview.storage && <ReplicasSelect value={replicas ? Math.min(replicas, preview.storageNodes ?? replicas) : 0} auto={preview.replicasAuto ?? 1} max={preview.storageNodes ?? 1} usable={preview.usableByReplicas} onChange={(r) => { setReplicas(r || undefined); recheck() }} />}
+              {preview.usableBytes ? <span class="mono text-[12px] text-muted">{fmt.bytes(preview.usableBytes)} usable</span> : null}
+            </span>
+          </div>
+        )}
         {preview.apps && (
           <div class="flex flex-col gap-2 border-t border-border pt-4">
             <span class="text-[13px] font-medium">Apps repository</span>
+            {appsSSH && <Check checked={preview.apps.imageAutomation} onChange={choose(setImageAutomation)}>Image automation</Check>}
             <AppsReviewBlock review={preview.apps} />
           </div>
         )}
@@ -198,7 +228,7 @@ function AddDialog({ machines, onClose }: { machines: NodeRow[]; onClose: (done:
     )
   }
   return (
-    <Dialog title={title} width="max-w-2xl" onClose={() => onClose(false)} footer={
+    <Dialog title={title} width="max-w-3xl" onClose={() => onClose(false)} footer={
       <>
         <button class="btn" onClick={() => onClose(false)}>Cancel</button>
         <button class="btn btn-primary" disabled={busy || (creating && (!effectiveDir.trim() || !effectiveName || badName || !!appsError || !appsReady(apps, appsRepo)))} onClick={() => review()}>{busy ? 'Designing' : 'Review'}</button>
@@ -221,8 +251,8 @@ function AddDialog({ machines, onClose }: { machines: NodeRow[]; onClose: (done:
           </Field>
         )
         const clusterName = (
-          <Field label="Name" hint={badName ? <span class="text-bad">Lowercase letters, digits and hyphens{nameFrom(effectiveName) ? `, e.g. ${nameFrom(effectiveName)}` : ''}.</span> : undefined}>
-            <input ref={nameInput} class="input mono" value={name} placeholder={defaultName || 'production'} onInput={(e) => setName((e.target as HTMLInputElement).value)} />
+          <Field label="Name" error={badName ? `Lowercase letters, digits and hyphens${nameFrom(effectiveName) ? `, e.g. ${nameFrom(effectiveName)}` : ''}.` : undefined}>
+            <input ref={nameInput} class="input mono" aria-invalid={!!badName} value={name} placeholder={defaultName || 'production'} onInput={(e) => setName((e.target as HTMLInputElement).value)} />
           </Field>
         )
         return root ? <>{clusterName}{repoDir}</> : <>{repoDir}{clusterName}</>

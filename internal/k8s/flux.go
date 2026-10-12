@@ -17,6 +17,7 @@ type FluxObject struct {
 	Reason    string `json:"reason,omitempty"`
 	Message   string `json:"message,omitempty"`
 	Revision  string `json:"revision,omitempty"`
+	URL       string `json:"url,omitempty"`
 	Suspended bool   `json:"suspended,omitempty"`
 	Since     string `json:"since,omitempty"`
 }
@@ -59,27 +60,13 @@ func (c *Client) FluxObjects(ctx context.Context) ([]FluxObject, error) {
 }
 
 func (c *Client) cachedFluxObjects() ([]FluxObject, bool) {
-	k := c.cache.Load()
-	if k == nil {
-		return nil, false
-	}
-	stores, ok := k.fluxStores()
-	if !ok {
-		return nil, false
-	}
 	out := []FluxObject{}
 	for _, kind := range fluxKinds {
-		store := stores[kind.gvr]
-		if store == nil {
-			continue
+		objs, ok := c.cachedObjects(kind.gvr)
+		if !ok {
+			return nil, false
 		}
-		var objs []*unstructured.Unstructured
-		for _, obj := range store.List() {
-			if u, ok := obj.(*unstructured.Unstructured); ok {
-				objs = append(objs, u)
-			}
-		}
-		for _, u := range sortedValues(objs) {
+		for _, u := range objs {
 			out = append(out, fluxObject(kind.kind, u))
 		}
 	}
@@ -92,6 +79,7 @@ func fluxObject(kind string, u unstructured.Unstructured) FluxObject {
 	switch kind {
 	case "GitRepository", "OCIRepository", "HelmRepository":
 		o.Revision, _, _ = unstructured.NestedString(u.Object, "status", "artifact", "revision")
+		o.URL, _, _ = unstructured.NestedString(u.Object, "spec", "url")
 	case "Kustomization":
 		o.Revision, _, _ = unstructured.NestedString(u.Object, "status", "lastAppliedRevision")
 	case "HelmRelease":

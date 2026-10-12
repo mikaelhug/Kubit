@@ -51,7 +51,7 @@ variable "builds" {
 }
 
 variable "longhorn" {
-  type = object({ enabled = bool, values = optional(any, {}), replicas = optional(number, 3) })
+  type = object({ enabled = bool, values = optional(any, {}), replicas = number, reserved = number })
 }
 
 variable "oidc_admin_group" {

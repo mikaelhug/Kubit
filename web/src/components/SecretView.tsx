@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'preact/hooks'
 import { api, type SecretFile } from '../api'
-import { gitLabel, isSecret, keyProblems, newRow, patchOf, reviewEmpty, reviewOf, rowsOf, typeLabel, type Review, type Row } from '../secrets'
+import { fileProblem, gitLabel, isSecret, keyProblems, newRow, patchOf, reviewEmpty, reviewOf, rowsOf, typeLabel, type Review, type Row } from '../secrets'
 import { toast } from '../store'
 import { FluxCell } from './SecretsTable'
 import { Ago } from './Time'
@@ -183,13 +183,23 @@ function ReviewDialog({ review, onClose, onSave }: { review: Review; onClose: ()
 
 function RenameDialog({ file, onClose, onDone }: { file: SecretFile; onClose: () => void; onDone: (to: string) => void }) {
   const [to, setTo] = useState(file.path)
+  const [touched, setTouched] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  const valid = /\.sops\.ya?ml$/.test(to) && to !== file.path
-  const save = () => api.moveSecret(file.repo, file.path, to.trim(), file.hash).then(() => onDone(to.trim())).catch((e) => setError(e.message))
+  const dest = to.trim()
+  const problem = touched ? fileProblem(dest) : ''
+  const save = () => {
+    setTouched(true)
+    if (fileProblem(dest)) return
+    api.moveSecret(file.repo, file.path, dest, file.hash).then(() => onDone(dest)).catch((e) => setError(e.message))
+  }
   return (
-    <Dialog title="Rename file" onClose={onClose} footer={<><button class="btn" onClick={onClose}>Cancel</button><button class="btn btn-primary" disabled={!valid} onClick={save}>Rename</button></>}>
-      <ErrorBox error={error} />
-      <Field label="Path"><input class="input mono" value={to} autofocus onInput={(e) => setTo((e.target as HTMLInputElement).value)} /></Field>
+    <Dialog title="Rename file" onClose={onClose} footer={<><button type="button" class="btn" onClick={onClose}>Cancel</button><button type="submit" form="rename-secret" class="btn btn-primary" disabled={dest === file.path}>Rename</button></>}>
+      <form id="rename-secret" class="flex flex-col gap-4" noValidate onSubmit={(e) => { e.preventDefault(); save() }}>
+        <ErrorBox error={error} />
+        <Field label="Path" error={problem || undefined}>
+          <input class="input mono" value={to} autofocus spellcheck={false} autocomplete="off" aria-invalid={!!problem} onInput={(e) => setTo((e.target as HTMLInputElement).value)} onBlur={() => setTouched(true)} />
+        </Field>
+      </form>
     </Dialog>
   )
 }

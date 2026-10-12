@@ -52,6 +52,7 @@ type longhornVars struct {
 	Enabled  bool           `json:"enabled"`
 	Values   map[string]any `json:"values"`
 	Replicas int            `json:"replicas"`
+	Reserved int            `json:"reserved"`
 }
 
 type fluxVars struct {
@@ -197,7 +198,7 @@ func Vars(c *config.Cluster, kubeconfigPath, ingressIP string) map[string]any {
 		"cert_manager":     addonVars{p.CertManager.Enabled, vals(p.CertManager.Values)},
 		"builds":           buildsVars{Enabled: p.Builds.Enabled, IP: c.RegistryIP()},
 		"flux":             fluxVars{Enabled: p.Flux.Enabled, ImageAutomation: p.Flux.ImageAutomation, Values: vals(p.Flux.Values), Repository: fluxSource(p.Flux.Repository)},
-		"longhorn":         longhornVars{Enabled: p.Longhorn.Enabled, Values: vals(p.Longhorn.Values), Replicas: c.LonghornReplicas()},
+		"longhorn":         longhornVars{Enabled: p.Longhorn.Enabled, Values: vals(p.Longhorn.Values), Replicas: c.LonghornReplicas(), Reserved: config.LonghornReservedPct},
 		"oidc_admin_group": c.Spec.Auth.AdminGroupSubject(),
 		"backup":           backupVarsOf(c),
 		"chart_versions":   chartVersionVars(),

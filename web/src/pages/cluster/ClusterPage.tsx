@@ -36,7 +36,7 @@ export function ClusterPage({ name, section = 'overview' }: { name: string; sect
           <PlanPill plan={plans.value.get(name)} href={`/clusters/${name}/changes`} />
           {pending ? <span class="text-[12px] text-muted">{declared ? 'Not created yet.' : 'No node answers yet.'}</span> : (
             <>
-              <SeenAgo contact={status?.lastContactAt} observed={status?.observedAt} blind={!!status && (status.observer === 'offline' || (!status.apiReachable && !status.nodes.some((n) => n.talosReachable)))} />
+              <SeenAgo contact={status?.lastContactAt} observed={status?.observedAt} blind={!!status && !status.off && (status.observer === 'offline' || (!status.apiReachable && !status.nodes.some((n) => n.talosReachable)))} />
               <CheckNow name={name} />
             </>
           )}

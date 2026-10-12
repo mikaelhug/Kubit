@@ -82,7 +82,11 @@ func Design(name string, machines []Machine, opts DesignOptions) (*Cluster, []Wa
 		}
 	}
 	cps := len(c.ControlPlanes())
-	sched := topo.AllowScheduling || cps == len(c.Spec.Nodes)
+	sched := topo.AllowScheduling
+	if opts.AllowScheduling != nil {
+		sched = *opts.AllowScheduling
+	}
+	sched = sched || cps == len(c.Spec.Nodes)
 	c.Spec.ControlPlane.AllowScheduling = &sched
 	if cps >= 3 && len(machines) > 0 {
 		c.Spec.ControlPlane.VIP = opts.VIP
@@ -138,10 +142,11 @@ func (c *Cluster) NextHostname(role Role) string {
 }
 
 type DesignOptions struct {
-	MetalLBRange string
-	Roles        map[string]Role
-	VIP          string
-	Networks     map[string]*NodeNetwork
+	MetalLBRange    string
+	Roles           map[string]Role
+	VIP             string
+	Networks        map[string]*NodeNetwork
+	AllowScheduling *bool
 }
 
 const (
@@ -214,6 +219,9 @@ func Lint(c *Cluster, machines []Machine) []Warning {
 			warn("warn", "no-disk", n.Hostname, "%s has no install disk candidate.", n.Hostname)
 		} else if m.Disks[0].SizeBytes < 20<<30 {
 			warn("warn", "small-disk", n.Hostname, "%s: largest disk is %d GiB; Talos wants 10 GiB plus room for images and etcd.", n.Hostname, m.Disks[0].SizeBytes>>30)
+		}
+		if need := c.SystemDiskBytes(); len(m.Disks) > 0 && c.SharesSystemDisk(n) && m.Disks[0].SizeBytes < need {
+			warn("warn", "system-disk-small", n.Hostname, "%s: the %d GiB install disk is smaller than /var plus data-system (%d GiB).", n.Hostname, m.Disks[0].SizeBytes>>30, need>>30)
 		}
 		if n.Role == RoleWorker && c.Spec.Platform.AddOns() && m.MemBytes > 0 && m.MemBytes < MinWorkerBytes {
 			warn("warn", "worker-undersized", n.Hostname, "Worker %s has under ~1.5 GiB usable RAM; give it a 2 GiB machine (provisioning will refuse it).", n.Hostname)

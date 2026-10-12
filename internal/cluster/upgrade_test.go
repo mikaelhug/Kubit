@@ -151,16 +151,16 @@ func TestUpgradeReleasesKubitsCordonButNeverTheUsers(t *testing.T) {
 		&corev1.Node{ObjectMeta: metav1.ObjectMeta{Name: "w-02"}},
 	)}
 	ctx := context.Background()
-	if hold, err := holdCordon(ctx, kc, "w-01"); err != nil || hold != cordonUser {
+	if hold, err := holdCordon(ctx, kc, "w-01", cordonByUpgrade); err != nil || hold != cordonUser {
 		t.Fatalf("a node cordoned before the upgrade is the user's: %v %v", hold, err)
 	}
-	if hold, err := holdCordon(ctx, kc, "w-02"); err != nil || hold != cordonKubit {
+	if hold, err := holdCordon(ctx, kc, "w-02", cordonByUpgrade); err != nil || hold != cordonKubit {
 		t.Fatalf("a schedulable node is marked: %v %v", hold, err)
 	}
 	if err := kc.DrainAll(ctx, "w-02", time.Second, io.Discard); err != nil {
 		t.Fatal(err)
 	}
-	if hold, err := holdCordon(ctx, kc, "w-02"); err != nil || hold != cordonKubit {
+	if hold, err := holdCordon(ctx, kc, "w-02", cordonByUpgrade); err != nil || hold != cordonKubit {
 		t.Fatalf("a retry must still see Kubit's cordon: %v %v", hold, err)
 	}
 	for _, name := range []string{"w-01", "w-02"} {

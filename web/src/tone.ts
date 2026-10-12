@@ -5,6 +5,16 @@ export const toneBg: Record<Tone, string> = { good: 'bg-good', warn: 'bg-warn', 
 export const tonePill: Record<Tone, string> = { good: 'bg-good/15 text-good', warn: 'bg-warn/15 text-warn', bad: 'bg-bad/15 text-bad', info: 'bg-info/15 text-info', muted: 'bg-panel-2 text-muted' }
 export const toneBorder: Record<Tone, string> = { good: 'border-good/40 bg-good/10 text-good', warn: 'border-warn/40 bg-warn/10 text-warn', bad: 'border-bad/40 bg-bad/10 text-bad', info: 'border-info/40 bg-info/10 text-info', muted: 'border-border bg-panel-2 text-muted' }
 
+export type UsageLevel = 'ok' | 'warn' | 'bad'
+
+export function usageLevel(used: number, cap: number): UsageLevel {
+  const ratio = cap > 0 ? used / cap : 0
+  return ratio > 0.9 ? 'bad' : ratio > 0.75 ? 'warn' : 'ok'
+}
+
+export const usageColor: Record<UsageLevel, string> = { ok: 'var(--accent)', warn: 'var(--warn)', bad: 'var(--bad)' }
+export const usageText: Record<UsageLevel, string> = { ok: '', warn: 'text-warn', bad: 'text-bad' }
+
 export function stateTone(state: string): Tone {
   switch (state) {
     case 'ready': case 'running': case 'maintenance': case 'succeeded': return 'good'
