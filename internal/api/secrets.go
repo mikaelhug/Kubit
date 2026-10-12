@@ -65,6 +65,10 @@ type clusterFlux struct {
 	dir       string
 }
 
+func (cf clusterFlux) reads(recipients []string) bool {
+	return cf.recipient != "" && slices.Contains(recipients, cf.recipient)
+}
+
 func (s *Server) fluxOf(name, dir string) clusterFlux {
 	cf := clusterFlux{dir: dir}
 	if k, err := s.manager.SOPSKey(name); err == nil {
@@ -141,7 +145,7 @@ func (s *Server) attribute(v *secretFileView, r servedRepo, fluxOf []string, flu
 			continue
 		}
 		v.Cluster, v.Skipped = name, repo.Applied(r.Dir, root, v.Path)
-		v.FluxReads = cf.recipient != "" && slices.Contains(v.Recipients, cf.recipient)
+		v.FluxReads = cf.reads(v.Recipients)
 		return
 	}
 	if r.Cluster == "" {
@@ -149,7 +153,7 @@ func (s *Server) attribute(v *secretFileView, r servedRepo, fluxOf []string, flu
 	}
 	cf := fluxes[r.Cluster]
 	v.Cluster = r.Cluster
-	v.FluxReads = cf.recipient != "" && slices.Contains(v.Recipients, cf.recipient)
+	v.FluxReads = cf.reads(v.Recipients)
 	switch {
 	case !cf.source.Enabled:
 		v.Skipped = "Flux is off"
@@ -209,7 +213,7 @@ func (s *Server) handleClusterSecrets(w http.ResponseWriter, r *http.Request) {
 		for _, f := range sr.Files {
 			if f.Cluster == "" && flux {
 				f.Cluster, f.Skipped = name, "outside every Flux path"
-				f.FluxReads = cf.recipient != "" && slices.Contains(f.Recipients, cf.recipient)
+				f.FluxReads = cf.reads(f.Recipients)
 			}
 			if f.Cluster == name {
 				out.Files = append(out.Files, f)

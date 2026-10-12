@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'preact/hooks'
 import { api } from '../api'
-import { defaultFile, dockerConfig, fileProblem, keyProblems, nameProblem, namespaceProblem, newRow, type Row } from '../secrets'
+import { defaultFile, dockerConfig, fileProblem, keyProblems, nameProblem, namespaceProblem, newRow, required, type Row } from '../secrets'
 import { toast } from '../store'
 import { useNamespaces } from './NamespaceScope'
 import { Dialog, ErrorBox, Field, inputValue } from './ui'
@@ -13,9 +13,9 @@ const templates: [Template, string][] = [['opaque', 'Opaque'], ['tls', 'TLS'], [
 const secretKind = { kind: 'Secret' }
 const formId = 'new-secret'
 
-const required = (v: string) => (v ? '' : 'Required')
+const missing = (v: string) => (v ? '' : required)
 const noSpaces = (v: string) => (/\s/.test(v) ? 'No spaces' : '')
-const pemProblem = (v: string, block: RegExp, what: string) => (!v.trim() ? 'Required' : block.test(v) ? '' : `Not a PEM ${what}`)
+const pemProblem = (v: string, block: RegExp, what: string) => (!v.trim() ? required : block.test(v) ? '' : `Not a PEM ${what}`)
 
 export function NewSecretDialog({ cluster, targets, onClose, onCreated }: { cluster: string; targets: SecretTarget[]; onClose: () => void; onCreated: (repo: number, path: string) => void }) {
   const [target, setTarget] = useState(0)
@@ -50,9 +50,9 @@ export function NewSecretDialog({ cluster, targets, onClose, onCreated }: { clus
       key: pemProblem(tls.key, /-----BEGIN [A-Z ]*PRIVATE KEY-----/, 'private key'),
     }),
     ...(template === 'registry' && {
-      server: required(reg.server) || noSpaces(reg.server),
-      username: required(reg.username) || noSpaces(reg.username),
-      password: required(reg.password),
+      server: missing(reg.server) || noSpaces(reg.server),
+      username: missing(reg.username) || noSpaces(reg.username),
+      password: missing(reg.password),
     }),
   }
   const typing: Record<string, string> = { name: nameProblem(name, true), namespace: namespaceProblem(namespace, true), server: noSpaces(reg.server), username: noSpaces(reg.username) }
@@ -60,7 +60,7 @@ export function NewSecretDialog({ cluster, targets, onClose, onCreated }: { clus
   const blur = (id: string) => () => setTouched((s) => (s.has(id) ? s : new Set(s).add(id)))
   const keyError = (r: Row) => {
     const e = keyErrors.get(r.id)
-    if (e === 'Required' || (!e && noKeys && r === rows[0])) return attempts ? 'Required' : undefined
+    if (e === required || (!e && noKeys && r === rows[0])) return attempts ? required : undefined
     return e
   }
   const valid = !!t && Object.values(problems).every((p) => !p) && (template !== 'opaque' || (!noKeys && keyErrors.size === 0))

@@ -93,6 +93,8 @@ export function reviewOf(before: Row[], after: Row[]): Review {
 
 export const reviewEmpty = (r: Review) => !r.added.length && !r.changed.length && !r.removed.length && !r.renamed.length
 
+export const required = 'Required'
+
 function charProblem(v: string, max: number, allowed: RegExp, lowercase: boolean) {
   if (v.length > max) return `At most ${max} characters`
   if (lowercase && /[A-Z]/.test(v)) return 'Lowercase only'
@@ -106,7 +108,7 @@ export function keyProblems(file: Pick<SecretFile, 'kind'>, rows: Row[]): Map<st
   for (const r of rows) {
     const k = r.key.trim()
     const chars = isSecret(file) ? charProblem(k, 253, /[-._a-zA-Z0-9]/, false) : ''
-    if (!k) out.set(r.id, 'Required')
+    if (!k) out.set(r.id, required)
     else if (chars) out.set(r.id, chars)
     else if (!isSecret(file) && k.split('.').some((p) => !p)) out.set(r.id, 'Empty path segment')
     else if (seen.has(k)) out.set(r.id, 'Duplicate key')
@@ -116,7 +118,7 @@ export function keyProblems(file: Pick<SecretFile, 'kind'>, rows: Row[]): Map<st
 }
 
 function dnsProblem(v: string, max: number, dots: boolean, typing: boolean) {
-  if (!v) return typing ? '' : 'Required'
+  if (!v) return typing ? '' : required
   const chars = charProblem(v, max, dots ? /[-.a-z0-9]/ : /[-a-z0-9]/, true)
   if (chars || typing) return chars
   const parts = dots ? v.split('.') : [v]
@@ -128,7 +130,7 @@ export const nameProblem = (name: string, typing = false) => dnsProblem(name, 25
 export const namespaceProblem = (ns: string, typing = false) => (ns ? dnsProblem(ns, 63, false, typing) : '')
 
 export function fileProblem(path: string) {
-  if (!path) return 'Required'
+  if (!path) return required
   if (path.startsWith('/') || path.split('/').includes('..')) return 'Must stay inside the repo'
   return /\.sops\.ya?ml$/.test(path) ? '' : 'Must end in .sops.yaml'
 }

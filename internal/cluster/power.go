@@ -306,6 +306,7 @@ func (m *Manager) PowerOnNodes(ctx context.Context, d *Desired, hosts []string, 
 			return fmt.Errorf("%s has no mac in cluster.yaml", n.Hostname)
 		}
 	}
+	failed, sent := map[string]error{}, map[string]bool{}
 	if err := sink.Run("wake", func() error {
 		for round := range 3 {
 			if round > 0 {
@@ -317,14 +318,21 @@ func (m *Manager) PowerOnNodes(ctx context.Context, d *Desired, hosts []string, 
 			}
 			for _, n := range nodes {
 				if err := netx.Wake(ctx, n.MAC, wakeTargets(n)); err != nil {
-					return fmt.Errorf("%s: %w", n.Hostname, err)
+					failed[n.Hostname] = fmt.Errorf("%s: %w", n.Hostname, err)
+				} else {
+					sent[n.Hostname] = true
 				}
 			}
 		}
+		var errs []error
 		for _, n := range nodes {
+			if err := failed[n.Hostname]; err != nil && !sent[n.Hostname] {
+				errs = append(errs, err)
+				continue
+			}
 			sink.Emit(Info, "wake", n.Hostname, "magic packet sent to %s", n.MAC)
 		}
-		return nil
+		return errors.Join(errs...)
 	}); err != nil {
 		return err
 	}
