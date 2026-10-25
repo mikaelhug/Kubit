@@ -109,6 +109,9 @@ func (m *Manager) ImageStatus(ctx context.Context, name string) (ImageStatus, er
 }
 
 func (m *Manager) installerImage(c *config.Cluster, n config.Node) string {
+	if i := c.NodeIndex(n.Hostname); i >= 0 {
+		n = c.Spec.Nodes[i]
+	}
 	return m.Factory.InstallerImage(c.Spec.SchematicID, c.NodeTalosVersion(n))
 }
 

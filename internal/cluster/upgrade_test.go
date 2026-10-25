@@ -145,6 +145,28 @@ func TestAddNodeRefusesAnExistingMember(t *testing.T) {
 	}
 }
 
+func TestAnUpgradeFromNodesOnTheirLiveTalosPullsTheTargetInstaller(t *testing.T) {
+	c := parsedSpec(t, loopbackCluster)
+	c.Spec.TalosVersion = "v1.14.2"
+	c.Spec.SchematicID = "sch"
+	c.Spec.Nodes[0].TalosVersion = "v1.14.2"
+	next := c.Clone()
+	next.Spec.TalosVersion = "v1.14.4"
+	next.Spec.Nodes[0].TalosVersion = "v1.14.4"
+	m := NewManager(testStore(t), t.TempDir())
+	want := m.Factory.InstallerImage("sch", "v1.14.4")
+	if got := m.installerImage(next, c.Spec.Nodes[0]); got != want {
+		t.Errorf("pulled %s, want %s", got, want)
+	}
+	staged, err := config.Generate(declared(c), bundle(t), m.installers(next))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg := string(staged.Nodes["cp-01"]); !strings.Contains(cfg, want) {
+		t.Errorf("the staged config must install %s:\n%s", want, cfg)
+	}
+}
+
 func TestUpgradeReleasesKubitsCordonButNeverTheUsers(t *testing.T) {
 	kc := &k8s.Client{Interface: fake.NewClientset(
 		&corev1.Node{ObjectMeta: metav1.ObjectMeta{Name: "w-01"}, Spec: corev1.NodeSpec{Unschedulable: true}},
