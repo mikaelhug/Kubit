@@ -37,7 +37,7 @@ apiVersion: kubit.dev/v1
 kind: Cluster
 metadata: { name: dev }
 spec:
-  talosVersion: v1.14.2            # default: machinery's version
+  talosVersion: v1.14.4            # default: machinery's version
   kubernetesVersion: v1.37.1
   extensions: []                   # default: derived from gvisor and longhorn
   controlPlane:
