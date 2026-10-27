@@ -1,6 +1,8 @@
-import { useEffect, useRef } from 'preact/hooks'
+import { useEffect, useLayoutEffect, useRef } from 'preact/hooks'
 import { fmt, type ApplyLine, type ApplyRun, type RunKind } from '../api'
 import { ErrorBox, Pill } from './ui'
+
+const pageGutter = 21
 
 const titles: Record<RunKind, string> = { apply: 'Apply', destroy: 'Destroy', restart: 'Restart', shutdown: 'Shut down', 'power-on': 'Power on', snapshot: 'Snapshot' }
 
@@ -9,8 +11,22 @@ export function RunLog({ run, capped, onClose }: { run: ApplyRun; capped?: boole
   const pinned = useRef(true)
   useEffect(() => {
     const el = log.current
-    if (capped && el && pinned.current) el.scrollTop = el.scrollHeight
-  }, [run.lines.length, capped])
+    if (el && pinned.current) el.scrollTop = el.scrollHeight
+  }, [run.lines.length])
+  useLayoutEffect(() => {
+    const el = log.current
+    const main = el?.closest('main')
+    if (capped || !el || !main) return
+    const fit = () => {
+      const top = el.getBoundingClientRect().top - main.getBoundingClientRect().top + main.scrollTop
+      el.style.maxHeight = `${Math.max(240, main.clientHeight - top - pageGutter)}px`
+    }
+    fit()
+    const seen = new ResizeObserver(fit)
+    seen.observe(el.parentElement!.parentElement!)
+    seen.observe(main)
+    return () => seen.disconnect()
+  }, [capped])
   const follow = () => {
     const el = log.current
     if (el) pinned.current = el.scrollHeight - el.scrollTop - el.clientHeight < 24
@@ -24,7 +40,7 @@ export function RunLog({ run, capped, onClose }: { run: ApplyRun; capped?: boole
         {onClose && !run.running && <button class="btn btn-sm ml-auto" onClick={onClose} aria-label="Close">✕</button>}
       </div>
       {run.error && <div class="px-3 pt-2"><ErrorBox error={run.error} /></div>}
-      <pre ref={log} onScroll={follow} class={`log !rounded-none !border-0 ${capped ? '' : '!max-h-none'}`}>{run.lines.map(logLine).join('\n')}</pre>
+      <pre ref={log} onScroll={follow} class="log !rounded-none !border-0">{run.lines.map(logLine).join('\n')}</pre>
     </div>
   )
 }
