@@ -24,7 +24,7 @@ func TestTemplatesValidateWithTheLockedProviders(t *testing.T) {
 		t.Fatal(err)
 	}
 	dir := t.TempDir()
-	if err := tofu.Render(dir, c, "/x/kubeconfig", ""); err != nil {
+	if err := tofu.Render(dir, c, "/x/kubeconfig", "", tofu.NewestVersions()); err != nil {
 		t.Fatal(err)
 	}
 	cache := filepath.Join(os.TempDir(), "kubit-tofu-plugins")

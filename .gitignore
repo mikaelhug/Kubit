@@ -24,3 +24,5 @@ master.key
 *.tfstate.*
 .env
 /kubit
+/dist/
+/app/.build/

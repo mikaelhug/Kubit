@@ -16,7 +16,6 @@ import (
 	"github.com/mikaelhug/kubit/internal/talos"
 	machineapi "github.com/siderolabs/talos/pkg/machinery/api/machine"
 	"github.com/siderolabs/talos/pkg/machinery/compatibility"
-	"github.com/siderolabs/talos/pkg/machinery/gendata"
 	utilversion "k8s.io/apimachinery/pkg/util/version"
 )
 
@@ -289,11 +288,10 @@ func checkKubernetesStep(from, to string) error {
 }
 
 func kubernetesSupported(talosVersion, kubeVersion string) (known bool, err error) {
-	tv, err := utilversion.ParseGeneric(talosVersion)
-	if err != nil {
+	if _, err := utilversion.ParseGeneric(talosVersion); err != nil {
 		return false, fmt.Errorf("Talos version %q unreadable: %w", talosVersion, err)
 	}
-	if tv.GreaterThan(utilversion.MustParseGeneric(gendata.VersionTag)) {
+	if config.TalosAboveKubit(talosVersion) {
 		return false, nil
 	}
 	t, err := compatibility.ParseTalosVersion(&machineapi.VersionInfo{Tag: talosVersion})

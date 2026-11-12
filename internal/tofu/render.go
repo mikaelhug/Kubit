@@ -18,7 +18,7 @@ var templates embed.FS
 
 const templateRoot = "templates/platform"
 
-func Render(dir string, c *config.Cluster, kubeconfigPath, ingressIP string) error {
+func Render(dir string, c *config.Cluster, kubeconfigPath, ingressIP string, versions map[string]string) error {
 	err := fs.WalkDir(templates, templateRoot, func(p string, e fs.DirEntry, err error) error {
 		if err != nil {
 			return err
@@ -36,7 +36,7 @@ func Render(dir string, c *config.Cluster, kubeconfigPath, ingressIP string) err
 	if err != nil {
 		return err
 	}
-	b, err := json.MarshalIndent(Vars(c, kubeconfigPath, ingressIP), "", "  ")
+	b, err := json.MarshalIndent(Vars(c, kubeconfigPath, ingressIP, versions), "", "  ")
 	if err != nil {
 		return err
 	}
@@ -147,21 +147,12 @@ func merged(defaults, over map[string]any) map[string]any {
 	return out
 }
 
-var ChartVersions = map[string]string{
-	"metallb":        "0.16.1",
-	"traefik":        "41.6.1",
-	"metrics-server": "3.14.0",
-	"cert-manager":   "v1.21.2",
-	"flux":           "2.19.1",
-	"longhorn":       "1.10.1",
-	"talos-backup":   "v0.1.0-beta.2",
-}
-
-func chartVersionVars() map[string]string {
-	out := make(map[string]string, len(ChartVersions))
-	for addon, v := range ChartVersions {
+func chartVersionVars(versions map[string]string) map[string]string {
+	out := make(map[string]string, len(versions)+1)
+	for addon, v := range versions {
 		out[strings.ReplaceAll(addon, "-", "_")] = v
 	}
+	out["talos_backup"] = TalosBackupVersion
 	return out
 }
 
@@ -186,7 +177,7 @@ func fluxSource(r *config.FluxRepository) *config.FluxRepository {
 	return &s
 }
 
-func Vars(c *config.Cluster, kubeconfigPath, ingressIP string) map[string]any {
+func Vars(c *config.Cluster, kubeconfigPath, ingressIP string, versions map[string]string) map[string]any {
 	p := c.Spec.Platform
 	return map[string]any{
 		"kubeconfig":       kubeconfigPath,
@@ -201,6 +192,6 @@ func Vars(c *config.Cluster, kubeconfigPath, ingressIP string) map[string]any {
 		"longhorn":         longhornVars{Enabled: p.Longhorn.Enabled, Values: vals(p.Longhorn.Values), Replicas: c.LonghornReplicas(), Reserved: config.LonghornReservedPct},
 		"oidc_admin_group": c.Spec.Auth.AdminGroupSubject(),
 		"backup":           backupVarsOf(c),
-		"chart_versions":   chartVersionVars(),
+		"chart_versions":   chartVersionVars(versions),
 	}
 }

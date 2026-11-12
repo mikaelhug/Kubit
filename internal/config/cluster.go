@@ -332,6 +332,15 @@ func (c *Cluster) NodeTalosVersion(n Node) string {
 	return c.Spec.TalosVersion
 }
 
+func TalosAboveKubit(v string) bool {
+	tv, err := utilversion.ParseGeneric(v)
+	if err != nil {
+		return false
+	}
+	kv := utilversion.MustParseGeneric(gendata.VersionTag)
+	return tv.Major() > kv.Major() || tv.Major() == kv.Major() && tv.Minor() > kv.Minor()
+}
+
 func TalosBefore(a, b string) bool {
 	va, err := utilversion.ParseGeneric(a)
 	if err != nil {

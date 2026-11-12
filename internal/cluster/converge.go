@@ -307,7 +307,8 @@ func (m *Manager) planWith(ctx context.Context, d *Desired, p *Plan, ls *liveSta
 		p.Changes = append(p.Changes, ch)
 	}
 	if ls.api && len(p.Problems) == 0 {
-		groups, err := m.planPlatformFor(ctx, d, p.applied, opts.ReadOnly)
+		groups, problems, err := m.planPlatformFor(ctx, d, p.applied, opts.ReadOnly)
+		p.Problems = append(p.Problems, problems...)
 		if err != nil {
 			p.Problems = append(p.Problems, "platform: "+err.Error())
 		}

@@ -30,11 +30,18 @@ func (s *Server) pxeCommand() string {
 	if p, err := os.Executable(); err == nil {
 		bin = p
 	}
-	cmd := "sudo " + bin + " pxe"
+	cmd := "sudo " + shellArg(bin) + " pxe"
 	for _, r := range s.servedRepos() {
-		cmd += " " + r.Dir
+		cmd += " " + shellArg(r.Dir)
 	}
 	return cmd
+}
+
+func shellArg(s string) string {
+	if !strings.ContainsAny(s, " \t'\"") {
+		return s
+	}
+	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
 }
 
 func fetchPXE(ctx context.Context, statusURL string) ([]byte, error) {

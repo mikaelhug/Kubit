@@ -1,0 +1,273 @@
+name: Weekly dependency release
+
+on:
+  schedule:
+    - cron: '0 7 * * 1'
+  workflow_dispatch:
+    inputs:
+      ship:
+        description: Tag and release when validation passes
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: weekly
+  cancel-in-progress: false
+
+jobs:
+  prepare:
+    name: prepare
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      issues: read
+    outputs:
+      changed: ${{ steps.commit.outputs.changed }}
+      version: ${{ steps.commit.outputs.version }}
+      bump_sha: ${{ steps.commit.outputs.bump_sha }}
+      base_sha: ${{ steps.commit.outputs.base_sha }}
+      review_changed: ${{ steps.review.outputs.changed }}
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+
+      - uses: sigstore/cosign-installer@756fe2d284c7292c4e9b62c8a28f1e5629c59532 # v4.1.3
+
+      - name: Update dependencies
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: hack/deps.sh
+
+      - name: Commit
+        id: commit
+        run: |
+          set -euo pipefail
+          base=$(git rev-parse HEAD)
+          echo "base_sha=$base" >>"$GITHUB_OUTPUT"
+          if [ ! -s out/changes.tsv ] || git diff --quiet; then
+            echo "changed=false" >>"$GITHUB_OUTPUT"
+            exit 0
+          fi
+          last=$(git tag --merged HEAD --list 'v[0-9]*.[0-9]*.[0-9]*' --sort=-v:refname | head -1)
+          if [ -z "$last" ]; then
+            echo "::warning::Tag v0.1.0 first."
+            last=v0.0.0
+          fi
+          IFS=. read -r ma mi pa <<<"${last#v}"
+          if cut -f4 out/changes.tsv | grep -qx minor; then
+            next="$ma.$((mi + 1)).0"
+          else
+            next="$ma.$mi.$((pa + 1))"
+          fi
+          {
+            echo "Kubit $next"
+            echo
+            echo "| Component | From | To | Kind |"
+            echo "| --- | --- | --- | --- |"
+            awk -F'\t' '{printf "| %s | %s | %s | %s |\n", $1, $2, $3, $4}' out/changes.tsv
+          } >out/notes.md
+          {
+            cat out/notes.md
+            echo
+            awk -F'\t' '{printf "Bump: %s %s %s\n", $1, $2, $3}' out/changes.tsv
+          } >out/message.txt
+          git config user.name kubit-bot
+          git config user.email actions@users.noreply.github.com
+          git add -A -- . ':!out'
+          git commit -q -F out/message.txt
+          git bundle create out/bump.bundle "$base..HEAD"
+          echo "changed=true" >>"$GITHUB_OUTPUT"
+          echo "version=$next" >>"$GITHUB_OUTPUT"
+          echo "bump_sha=$(git rev-parse HEAD)" >>"$GITHUB_OUTPUT"
+          cat out/notes.md >>"$GITHUB_STEP_SUMMARY"
+
+      - name: Compare the review list
+        id: review
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          hash=$(shasum -a 256 out/review.tsv | cut -c1-16)
+          body=$(gh issue list --repo "$GITHUB_REPOSITORY" --state open --search 'in:title "Dependency review"' --json body --jq '.[0].body // ""')
+          if [ -s out/review.tsv ] && ! grep -q "review:$hash" <<<"$body"; then
+            echo "changed=true" >>"$GITHUB_OUTPUT"
+          elif [ ! -s out/review.tsv ] && [ -n "$body" ]; then
+            echo "changed=true" >>"$GITHUB_OUTPUT"
+          else
+            echo "changed=false" >>"$GITHUB_OUTPUT"
+          fi
+          echo "hash=$hash" >>"$GITHUB_OUTPUT"
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: weekly
+          path: out/
+          retention-days: 7
+
+  validate:
+    name: validate
+    needs: prepare
+    if: needs.prepare.outputs.changed == 'true'
+    runs-on: xcode-27
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: ${{ needs.prepare.outputs.base_sha }}
+          persist-credentials: false
+
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: weekly
+          path: out
+
+      - name: Check out the bump
+        env:
+          BUMP_SHA: ${{ needs.prepare.outputs.bump_sha }}
+        run: |
+          set -euo pipefail
+          git fetch -q out/bump.bundle "$BUMP_SHA"
+          git checkout -q "$BUMP_SHA"
+          [ "$(git rev-parse HEAD)" = "$BUMP_SHA" ]
+
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+
+      - name: Build and test
+        run: |
+          set -euo pipefail
+          make build
+          make test
+          (cd web && npm test)
+          go test -tags integration ./internal/tofu/...
+          swift test --package-path app
+          hack/build-app.sh local
+          lipo -archs dist/Kubit.app/Contents/Resources/bin/kubit
+          dist/Kubit.app/Contents/Resources/bin/kubit version
+
+  ship:
+    name: ship
+    needs: [prepare, validate]
+    if: >-
+      needs.prepare.outputs.changed == 'true' &&
+      needs.validate.result == 'success' &&
+      github.ref == 'refs/heads/main' &&
+      (github.event_name == 'schedule' || inputs.ship)
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: ${{ needs.prepare.outputs.base_sha }}
+          fetch-depth: 0
+          ssh-key: ${{ secrets.AUTOMATION_SSH_KEY }}
+
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: weekly
+          path: out
+
+      - name: Tag and push
+        env:
+          BUMP_SHA: ${{ needs.prepare.outputs.bump_sha }}
+          BASE_SHA: ${{ needs.prepare.outputs.base_sha }}
+          VERSION: ${{ needs.prepare.outputs.version }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          git tag --list 'v[0-9]*.[0-9]*.[0-9]*' --merged "$BASE_SHA" | grep -q . || { echo "::error::Tag v0.1.0 first."; exit 1; }
+          git fetch -q out/bump.bundle "$BUMP_SHA"
+          [ "$(git rev-parse "$BUMP_SHA^{commit}")" = "$BUMP_SHA" ]
+          [ "$(git ls-remote origin refs/heads/main | cut -f1)" = "$BASE_SHA" ] || { echo "::error::main moved during the run"; exit 1; }
+          git config user.name kubit-bot
+          git config user.email actions@users.noreply.github.com
+          git tag -a "v$VERSION" -F out/notes.md "$BUMP_SHA"
+          git push origin "v$VERSION"
+          git push origin "$BUMP_SHA:refs/heads/main"
+          for _ in $(seq 1 10); do
+            if gh run list --repo "$GITHUB_REPOSITORY" --workflow release.yml --branch "v$VERSION" --json databaseId --jq '.[0].databaseId' | grep -q .; then
+              echo "Release run started for v$VERSION" >>"$GITHUB_STEP_SUMMARY"
+              exit 0
+            fi
+            sleep 30
+          done
+          echo "::error::no release run started for v$VERSION"
+          exit 1
+
+  review:
+    name: review
+    needs: prepare
+    if: needs.prepare.outputs.review_changed == 'true'
+    runs-on: ubuntu-24.04
+    permissions:
+      issues: write
+    steps:
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: weekly
+          path: out
+
+      - name: Update the review issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          number=$(gh issue list --repo "$GITHUB_REPOSITORY" --state open --search 'in:title "Dependency review"' --json number --jq '.[0].number // ""')
+          if [ ! -s out/review.tsv ]; then
+            [ -n "$number" ] && gh issue close "$number" --repo "$GITHUB_REPOSITORY"
+            exit 0
+          fi
+          hash=$(shasum -a 256 out/review.tsv | cut -c1-16)
+          {
+            echo "| Component | Current | Available | Kind |"
+            echo "| --- | --- | --- | --- |"
+            awk -F'\t' '{printf "| %s | %s | %s | %s |\n", $1, $2, $3, $4}' out/review.tsv
+            echo
+            echo "<!-- review:$hash -->"
+          } >out/review.md
+          if [ -n "$number" ]; then
+            gh issue edit "$number" --repo "$GITHUB_REPOSITORY" --body-file out/review.md
+          else
+            gh issue create --repo "$GITHUB_REPOSITORY" --title "Dependency review" --body-file out/review.md
+          fi
+
+  prune:
+    name: prune
+    needs: [prepare, validate, ship, review]
+    if: always()
+    runs-on: ubuntu-24.04
+    permissions:
+      actions: write
+    steps:
+      - name: Delete earlier empty runs
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          for id in $(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/weekly.yml/runs?status=success&per_page=50" --jq '.workflow_runs[].id'); do
+            [ "$id" = "$GITHUB_RUN_ID" ] && continue
+            ran=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$id/jobs" --jq '[.jobs[] | select(.name == "validate" or .name == "ship" or .name == "review") | select(.conclusion != "skipped")] | length')
+            if [ "$ran" = 0 ]; then
+              gh api -X DELETE "repos/$GITHUB_REPOSITORY/actions/runs/$id"
+              echo "deleted run $id"
+            fi
+          done

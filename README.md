@@ -39,7 +39,15 @@ it. Click through the web console or edit the file yourself. Both end up in the 
 
 ## Get started
 
-You need Go 1.26+, Node 20+ and git, on macOS or Linux.
+On macOS 15 or later, download `Kubit-X.Y.Z-macos-universal.zip` from the
+[latest release](https://github.com/mikaelhug/Kubit/releases/latest), unzip it and move
+`Kubit.app` to Applications. Kubit runs in the menu bar: choose a workspace folder (Kubit
+serves every cluster repo inside it), then *Open Console*. *Install Command Line Tool* puts
+`kubit` in `/usr/local/bin`. A release that is not notarized needs *Open Anyway* in System
+Settings › Privacy & Security once. The app tells you about new releases and installs one
+when you choose *Install* ([Releasing](docs/releasing.md)).
+
+On Linux, or to build it yourself, you need Go 1.26+, Node 20+ and git:
 
 ```sh
 git clone https://github.com/mikaelhug/Kubit.git

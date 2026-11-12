@@ -10,3 +10,5 @@
   WebSocket and HTTP API, the Secrets editor, the settings file.
 - [Development](development.md): source layout, building, dev VMs and the end-to-end
   scenario.
+- [Releasing](releasing.md): the app build, signing, the release and weekly dependency
+  workflows, rollback, updates and setup.

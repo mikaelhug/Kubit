@@ -5,6 +5,7 @@ import (
 	stdx509 "crypto/x509"
 	"encoding/base64"
 	"encoding/pem"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -15,6 +16,8 @@ import (
 	"github.com/mikaelhug/kubit/internal/config"
 	"github.com/mikaelhug/kubit/internal/sops"
 	clientconfig "github.com/siderolabs/talos/pkg/machinery/client/config"
+	"github.com/siderolabs/talos/pkg/machinery/gendata"
+	utilversion "k8s.io/apimachinery/pkg/util/version"
 	"k8s.io/client-go/tools/clientcmd"
 )
 
@@ -145,5 +148,23 @@ func TestSopsCLIOpensTheSecrets(t *testing.T) {
 	out, err := cmd.CombinedOutput()
 	if err != nil || !bytes.Contains(out, []byte("statePassphrase:")) || !bytes.Contains(out, []byte("AGE-SECRET-KEY-")) {
 		t.Fatalf("sops -d: %v\n%s", err, out)
+	}
+}
+
+func TestPlanRefusesATalosMinorAboveTheMachineryMinor(t *testing.T) {
+	kv := utilversion.MustParseGeneric(gendata.VersionTag)
+	for v, refused := range map[string]bool{
+		fmt.Sprintf("v%d.%d.99", kv.Major(), kv.Minor()):  false,
+		fmt.Sprintf("v%d.%d.0", kv.Major(), kv.Minor()+1): true,
+	} {
+		dir := t.TempDir()
+		body := strings.Replace(spec, "spec:\n", "spec:\n  talosVersion: "+v+"\n", 1)
+		if err := os.WriteFile(filepath.Join(dir, ClusterFile), []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		_, _, err := LoadSpec(dir)
+		if got := err != nil && strings.Contains(err.Error(), "needs a newer Kubit"); got != refused {
+			t.Errorf("%s: refused=%v, err=%v", v, got, err)
+		}
 	}
 }

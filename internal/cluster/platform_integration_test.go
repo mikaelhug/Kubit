@@ -69,7 +69,7 @@ func TestPlatformStateStaysEncryptedAndAPlanWritesNothing(t *testing.T) {
 	if err := legacy.WriteKubeconfig(kc); err != nil {
 		t.Fatal(err)
 	}
-	if err := tofu.Render(legacy.Dir, c, legacy.Kubeconfig, ""); err != nil {
+	if err := tofu.Render(legacy.Dir, c, legacy.Kubeconfig, "", tofu.NewestVersions()); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.MkdirAll(filepath.Dir(d.RepoState), 0o755); err != nil {
@@ -93,7 +93,7 @@ func TestPlatformStateStaysEncryptedAndAPlanWritesNothing(t *testing.T) {
 		t.Fatalf("the repo state an older Kubit wrote is encrypted: %v\n%s", err, b)
 	}
 
-	r, move, err := m.openPlatform(ctx, d, c, false, nil)
+	r, move, err := m.openPlatform(ctx, d, c, tofu.NewestVersions(), false, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -111,7 +111,7 @@ func TestPlatformStateStaysEncryptedAndAPlanWritesNothing(t *testing.T) {
 		t.Fatalf("a plan writes no state into the cluster: %v", err)
 	}
 
-	r, _, err = m.openPlatform(ctx, d, c, true, nil)
+	r, _, err = m.openPlatform(ctx, d, c, tofu.NewestVersions(), true, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

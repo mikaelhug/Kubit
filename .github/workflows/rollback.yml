@@ -1,0 +1,71 @@
+name: Rollback a weekly release
+
+on:
+  workflow_dispatch:
+    inputs:
+      bad_version:
+        description: Release to undo, e.g. v0.4.0
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: weekly
+  cancel-in-progress: false
+
+jobs:
+  rollback:
+    runs-on: ubuntu-24.04
+    if: github.ref == 'refs/heads/main'
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          fetch-depth: 0
+          ssh-key: ${{ secrets.AUTOMATION_SSH_KEY }}
+
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+
+      - name: Revert
+        id: revert
+        env:
+          BAD: ${{ inputs.bad_version }}
+        run: |
+          set -euo pipefail
+          [[ $BAD =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "::error::$BAD is not vX.Y.Z"; exit 1; }
+          commit=$(git rev-list -n1 "$BAD")
+          git log -1 --format=%B "$commit" | grep -q '^Bump: ' || { echo "::error::$BAD is not a weekly bump"; exit 1; }
+          git config user.name kubit-bot
+          git config user.email actions@users.noreply.github.com
+          git revert --no-edit "$commit"
+          git log -1 --format=%B "$commit" | sed -n 's/^Bump: \([^ ]*\) [^ ]* \([^ ]*\)$/\1 \2/p' >>hack/deps.blocked
+          sort -u -o hack/deps.blocked hack/deps.blocked
+          last=$(git tag --merged HEAD --list 'v[0-9]*.[0-9]*.[0-9]*' --sort=-v:refname | head -1)
+          IFS=. read -r ma mi _ <<<"${last#v}"
+          next="v$ma.$((mi + 1)).0"
+          git add hack/deps.blocked
+          git commit -q --amend -m "release: $next, rollback of $BAD" -m "$(git log -1 --format=%B "$commit" | sed -n 's/^Bump: /Blocked: /p')"
+          echo "next=$next" >>"$GITHUB_OUTPUT"
+
+      - name: Build and test
+        run: |
+          set -euo pipefail
+          make build
+          make test
+
+      - name: Tag and push
+        env:
+          NEXT: ${{ steps.revert.outputs.next }}
+          BAD: ${{ inputs.bad_version }}
+        run: |
+          set -euo pipefail
+          git tag -a "$NEXT" -m "Kubit ${NEXT#v}" -m "Rolls back $BAD."
+          git push origin "$NEXT"
+          git push origin HEAD:refs/heads/main

@@ -106,7 +106,9 @@ clear; without a VIP, `controlPlane.endpoint` must follow a control plane that m
 installer. *Update* on the Nodes tab writes the version on the selected nodes; a node
 version equal to `spec.talosVersion` is dropped, and when every node carries the same one it
 moves to `spec.talosVersion`. *Upgrade* (Home, Overview) sets `spec.talosVersion` and drops
-node versions that are not newer.
+node versions that are not newer. Kubit accepts every patch of the Talos minor its machinery
+library has (`kubit version`) and older minors from v1.14; a newer minor needs a newer Kubit,
+and the console does not offer it.
 
 **Wake-on-LAN.** *Power on* sends a magic packet to the node's `mac`. The NIC must keep
 Wake-on-LAN armed through a shutdown: enable it in the firmware and, where the driver turns

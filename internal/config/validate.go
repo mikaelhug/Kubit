@@ -147,6 +147,9 @@ func checkTalosVersion(field, v string) error {
 	if !contract.UnattendedInstallConfig() || !contract.MultidocKubernetesConfigSupported() {
 		return fmt.Errorf("%s %s: Kubit requires Talos %s or newer", field, v, MinTalosVersion)
 	}
+	if TalosAboveKubit(v) {
+		return fmt.Errorf("%s: Talos %s needs a newer Kubit", field, v)
+	}
 	return nil
 }
 

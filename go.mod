@@ -4,6 +4,7 @@ go 1.26.5
 
 require (
 	filippo.io/age v1.3.2
+	github.com/Masterminds/semver/v3 v3.5.0
 	github.com/coder/websocket v1.8.15
 	github.com/cosi-project/runtime v1.16.3
 	github.com/fsnotify/fsnotify v1.9.0
@@ -33,7 +34,6 @@ require (
 	filippo.io/hpke v0.4.0 // indirect
 	github.com/Azure/go-ansiterm v0.0.0-20250102033503-faa5f7b0171c // indirect
 	github.com/MakeNowJust/heredoc v1.0.0 // indirect
-	github.com/Masterminds/semver/v3 v3.5.0 // indirect
 	github.com/ProtonMail/go-crypto v1.4.1 // indirect
 	github.com/ProtonMail/gopenpgp/v3 v3.4.1 // indirect
 	github.com/adrg/xdg v0.5.3 // indirect

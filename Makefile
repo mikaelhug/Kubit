@@ -1,7 +1,7 @@
 BIN     := bin/kubit
-VERSION := $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
+VERSION := $(shell git describe --tags --always --dirty --match 'v[0-9]*.[0-9]*.[0-9]*' 2>/dev/null || echo dev)
 
-.PHONY: build test web clean tofu-lock
+.PHONY: build test web clean tofu-lock app
 
 build: web
 	go build -ldflags "-X main.version=$(VERSION)" -o $(BIN) ./cmd/kubit
@@ -19,5 +19,8 @@ test:
 tofu-lock:
 	hack/tofu-lock.sh
 
+app:
+	hack/build-app.sh
+
 clean:
-	rm -rf bin web/dist
+	rm -rf bin web/dist dist app/.build

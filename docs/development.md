@@ -6,6 +6,7 @@
 cmd/kubit/   CLI (cobra)
 internal/    api, cluster, config, factory, k8s, pxe, store, talos, tofu, watch, …
 web/         Vite + Preact + TypeScript + Tailwind; dist/ embedded via go:embed
+app/         Kubit.app menu bar app (SwiftUI)
 hack/vm/     vfkit harness: Talos arm64 VMs on Apple Virtualization.framework
 hack/qemu/   QEMU/KVM lab for a Linux box (untested)
 ```
@@ -15,6 +16,7 @@ hack/qemu/   QEMU/KVM lab for a Linux box (untested)
 ```
 make build   # web + go build → bin/kubit
 make test
+make app     # dist/Kubit.app and its zip, see releasing.md
 ```
 
 Go 1.26+, Node 20+. Talos machinery v1.14.4 (Kubernetes 1.37.1 default). Credentials

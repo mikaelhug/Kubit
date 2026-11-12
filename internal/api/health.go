@@ -99,7 +99,7 @@ func (s *Server) handleVersions(w http.ResponseWriter, r *http.Request) {
 	v := Versions{Talos: []string{}, MinTalos: config.MinTalosVersion, KubernetesLatest: "v" + constants.DefaultKubernetesVersion}
 	if list, err := s.factoryVersions(r.Context()); err == nil {
 		for _, t := range list {
-			if strings.HasPrefix(t, "v1.") && talosAtLeast(t, config.MinTalosVersion) {
+			if strings.HasPrefix(t, "v1.") && talosAtLeast(t, config.MinTalosVersion) && !config.TalosAboveKubit(t) {
 				v.Talos = append(v.Talos, t)
 			}
 		}
@@ -131,7 +131,7 @@ func (s *Server) latestStableTalos(ctx context.Context) string {
 	list, _ := s.factoryVersions(ctx)
 	latest := ""
 	for _, t := range list {
-		if strings.HasPrefix(t, "v1.") && splitVer(t).pre == "" && (latest == "" || versionLess(latest, t)) {
+		if strings.HasPrefix(t, "v1.") && splitVer(t).pre == "" && !config.TalosAboveKubit(t) && (latest == "" || versionLess(latest, t)) {
 			latest = t
 		}
 	}

@@ -203,7 +203,16 @@ runs.
 - The Traefik address pin is read from the live Service (its MetalLB annotation, else its
   address), so a failed apply never loses it.
 
-Charts are pinned in `internal/tofu/render.go`. Notes:
+Chart versions come from `internal/tofu/charts.json`, which the weekly release job extends
+([Releasing](releasing.md)). Each chart lists steps, the latest patch of each minor, with
+the chart's Kubernetes constraint. A fresh install takes the newest step. Longhorn and
+cert-manager upgrade one minor per apply (the plan reads `longhorn 1.10.1 → 1.11.3 (1 of 2)`
+and the next plan shows the next step); the other charts go to the newest step. The plan
+refuses a step whose Kubernetes constraint excludes the cluster's version, a Traefik step
+that needs another Gateway API minor than Kubit ships, and an installed Longhorn or
+cert-manager more than one minor behind the oldest step.
+
+Notes:
 
 - `metallb-system` and `longhorn-system` are `privileged`; MetalLB is layer-2 only (FRR
   off); control planes keep LoadBalancer announcements when they run workloads.
@@ -275,9 +284,11 @@ once decrypted with `age -d` (`talosctl bootstrap --recover-from`).
 Kubit runs only when you start it. `kubit` (or `kubit serve`) binds its port, so a
 second daemon on the same port refuses to start; Ctrl-C or *Stop Kubit* stops it
 cleanly. Clusters never depend on Kubit: while it is
-stopped, alerts and discovery pause. Start it from a terminal that
-stays open: on macOS a daemon started by an app that has quit loses local-network
-access. Under `sudo` (`kubit pxe`) Kubit uses the invoking user's `~/.kubit`.
+stopped, alerts and discovery pause. On macOS, `Kubit.app` runs the
+daemon from the menu bar for its workspace folder, restarts it when it crashes and stops it
+on *Quit*; when a daemon already runs in a terminal, the app uses that one. Without the app,
+start it from a terminal that stays open: on macOS a daemon started by an app that has quit
+loses local-network access. Under `sudo` (`kubit pxe`) Kubit uses the invoking user's `~/.kubit`.
 
 Deleting `~/.kubit` loses nothing but downloads.
 

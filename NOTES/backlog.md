@@ -117,6 +117,14 @@
 
 - Storage trend: Longhorn totals are not sampled; a trend next to CPU and memory would add
   Longhorn list calls to every watcher tick.
+- Update notice in the console: the app knows a new release is out, the console does not.
+
+## Release
+- `internal/api` tests failed intermittently on a tree with the dependencies of 2026-11-12
+  bumped (fsnotify 1.10.1 a suspect; TempDir cleanup "bad file descriptor"); the weekly
+  validate job will refuse such a bump until it is understood.
+- Longhorn 1.10.2's chart file does not match the digest in charts.longhorn.io's index; the
+  weekly job skips it.
 
 ## Dev harness
 - vfkit console: direct-kernel boot with `console=hvc0` would give a readable log.

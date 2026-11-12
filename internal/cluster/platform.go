@@ -2,6 +2,7 @@ package cluster
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -74,7 +75,7 @@ func (m *Manager) stateMoveFor(ctx context.Context, d *Desired) (stateMove, erro
 	return 0, fmt.Errorf("platform state: %w", err)
 }
 
-func (m *Manager) openPlatform(ctx context.Context, d *Desired, c *config.Cluster, apply bool, log func(tofu.Line)) (*tofu.Runner, stateMove, error) {
+func (m *Manager) openPlatform(ctx context.Context, d *Desired, c *config.Cluster, versions map[string]string, apply bool, log func(tofu.Line)) (*tofu.Runner, stateMove, error) {
 	move, err := m.stateMoveFor(ctx, d)
 	if err != nil {
 		return nil, 0, err
@@ -94,19 +95,19 @@ func (m *Manager) openPlatform(ctx context.Context, d *Desired, c *config.Cluste
 	if d.GitKey != "" {
 		r.Env = append(r.Env, "TF_VAR_flux_git_identity="+d.GitKey, "TF_VAR_flux_git_known_hosts="+d.KnownHosts)
 	}
-	if err := m.preparePlatform(ctx, r, d, c, move, apply); err != nil {
+	if err := m.preparePlatform(ctx, r, d, c, versions, move, apply); err != nil {
 		r.Close()
 		return nil, 0, err
 	}
 	return r, move, nil
 }
 
-func (m *Manager) preparePlatform(ctx context.Context, r *tofu.Runner, d *Desired, c *config.Cluster, move stateMove, apply bool) error {
+func (m *Manager) preparePlatform(ctx context.Context, r *tofu.Runner, d *Desired, c *config.Cluster, versions map[string]string, move stateMove, apply bool) error {
 	kubeconfig := m.liveKubeconfig(d)
 	if err := r.WriteKubeconfig(kubeconfig); err != nil {
 		return err
 	}
-	if err := tofu.Render(r.Dir, c, r.Kubeconfig, m.ingressPin(ctx, c.Metadata.Name, kubeconfig)); err != nil {
+	if err := tofu.Render(r.Dir, c, r.Kubeconfig, m.ingressPin(ctx, c.Metadata.Name, kubeconfig), versions); err != nil {
 		return err
 	}
 	switch {
@@ -159,26 +160,35 @@ func (m *Manager) ingressPin(ctx context.Context, name string, kubeconfig []byte
 	return ""
 }
 
-func (m *Manager) planPlatformFor(ctx context.Context, d *Desired, applied *config.Cluster, readOnly bool) ([]tofu.Group, error) {
+func (m *Manager) planPlatformFor(ctx context.Context, d *Desired, applied *config.Cluster, readOnly bool) ([]tofu.Group, []string, error) {
 	c := d.Cluster.Clone()
 	c.Spec.Nodes = applied.Spec.Nodes
-	r, move, err := m.openPlatform(ctx, d, c, false, nil)
+	charts, err := m.chartTargets(ctx, c, m.liveKubeconfig(d))
+	if err != nil || len(charts.problems) > 0 {
+		return nil, charts.problems, err
+	}
+	r, move, err := m.openPlatform(ctx, d, c, charts.versions, false, nil)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	defer r.Close()
 	r.ReadOnly = readOnly
 	if _, err := r.Plan(ctx); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	groups, err := r.ShowPlan(ctx)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
+	}
+	for i, g := range groups {
+		if row := charts.rows[g.Addon]; row != "" {
+			groups[i].Actions = row + ", " + g.Actions
+		}
 	}
 	if g, ok := move.change(d); ok {
 		groups = append([]tofu.Group{g}, groups...)
 	}
-	return groups, nil
+	return groups, nil, nil
 }
 
 func (m *Manager) ApplyPlatform(ctx context.Context, name string, sink Sink) error {
@@ -202,7 +212,14 @@ func (m *Manager) ApplyPlatform(ctx context.Context, name string, sink Sink) err
 		move stateMove
 	)
 	if err := sink.Run("init", func() error {
-		r, move, err = m.openPlatform(ctx, d, c, true, tofuLogger(sink))
+		charts, err := m.chartTargets(ctx, c, m.liveKubeconfig(d))
+		if err != nil {
+			return err
+		}
+		if len(charts.problems) > 0 {
+			return errors.New(strings.Join(charts.problems, "\n"))
+		}
+		r, move, err = m.openPlatform(ctx, d, c, charts.versions, true, tofuLogger(sink))
 		if msg := move.done(d); err == nil && msg != "" {
 			sink.Emit(Warn, "init", "", "%s", msg)
 		}

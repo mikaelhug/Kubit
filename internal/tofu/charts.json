@@ -1,0 +1,75 @@
+{
+  "cert-manager": {
+    "repo": "https://charts.jetstack.io",
+    "chart": "cert-manager",
+    "stepMinors": true,
+    "steps": [
+      {
+        "version": "v1.21.2",
+        "digest": "73a56e1728edd6c99f1f31082618c3259d279a76b7ebd3d4bdc5475c2442d34a",
+        "kubeVersion": ">= 1.22.0-0"
+      }
+    ]
+  },
+  "flux": {
+    "repo": "https://fluxcd-community.github.io/helm-charts",
+    "chart": "flux2",
+    "stepMinors": false,
+    "steps": [
+      {
+        "version": "2.19.1",
+        "digest": "baf8853e93a10646996b799e3d59af63e9be1daba95d5dcf661f321cd5ffa692",
+        "kubeVersion": ""
+      }
+    ]
+  },
+  "longhorn": {
+    "repo": "https://charts.longhorn.io",
+    "chart": "longhorn",
+    "stepMinors": true,
+    "steps": [
+      {
+        "version": "1.10.1",
+        "digest": "a871d397e19cf3243949abd41fd294869f5c2c490014f29e71866a2433ec7fb9",
+        "kubeVersion": ">=1.25.0-0"
+      }
+    ]
+  },
+  "metallb": {
+    "repo": "https://metallb.github.io/metallb",
+    "chart": "metallb",
+    "stepMinors": false,
+    "steps": [
+      {
+        "version": "0.16.1",
+        "digest": "fb06bb584fcb7856f15733b2a6a2aff5b61b5c350687e341c163ae24a5938adc",
+        "kubeVersion": ">= 1.19.0-0"
+      }
+    ]
+  },
+  "metrics-server": {
+    "repo": "https://kubernetes-sigs.github.io/metrics-server",
+    "chart": "metrics-server",
+    "stepMinors": false,
+    "steps": [
+      {
+        "version": "3.14.0",
+        "digest": "c2ca1185c01e6e7f53dd1b7d131f0c9b3fa50e003ed068b784563a1b5a3422a1",
+        "kubeVersion": ""
+      }
+    ]
+  },
+  "traefik": {
+    "repo": "https://traefik.github.io/charts",
+    "chart": "traefik",
+    "stepMinors": false,
+    "steps": [
+      {
+        "version": "41.6.1",
+        "digest": "1e65d46bae0ba0baef460a1d82686b50f156372865a3d7d8a85b51c3855b2ef9",
+        "kubeVersion": ">=1.25.0-0",
+        "gatewayAPI": "v1.6.1"
+      }
+    ]
+  }
+}

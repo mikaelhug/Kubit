@@ -34,7 +34,7 @@ func TestEveryChartVersionTheTemplatesReadIsRendered(t *testing.T) {
 		t.Fatal(err)
 	}
 	dir := t.TempDir()
-	if err := tofu.Render(dir, c, "/x/kubeconfig", ""); err != nil {
+	if err := tofu.Render(dir, c, "/x/kubeconfig", "", tofu.NewestVersions()); err != nil {
 		t.Fatal(err)
 	}
 	raw, _ := os.ReadFile(filepath.Join(dir, "terraform.tfvars.json"))
@@ -63,8 +63,8 @@ func TestEveryChartVersionTheTemplatesReadIsRendered(t *testing.T) {
 			}
 		}
 	}
-	if seen != len(tofu.ChartVersions) {
-		t.Errorf("templates read %d chart versions, Go pins %d", seen, len(tofu.ChartVersions))
+	if seen != len(vars.Charts) {
+		t.Errorf("templates read %d chart versions, Go renders %d", seen, len(vars.Charts))
 	}
 }
 
@@ -74,7 +74,7 @@ func TestGatewayAPICRDsSurviveHelmAndFitTheStateSecret(t *testing.T) {
 		t.Fatal(err)
 	}
 	dir := t.TempDir()
-	if err := tofu.Render(dir, c, "/x/kubeconfig", ""); err != nil {
+	if err := tofu.Render(dir, c, "/x/kubeconfig", "", tofu.NewestVersions()); err != nil {
 		t.Fatal(err)
 	}
 	crds, err := os.ReadFile(filepath.Join(dir, "charts", "gateway-api", "templates", "crds.yaml"))
@@ -109,7 +109,7 @@ func TestLockFileHasProviderHashesForEveryPlatform(t *testing.T) {
 		t.Fatal(err)
 	}
 	dir := t.TempDir()
-	if err := tofu.Render(dir, c, "/x/kubeconfig", ""); err != nil {
+	if err := tofu.Render(dir, c, "/x/kubeconfig", "", tofu.NewestVersions()); err != nil {
 		t.Fatal(err)
 	}
 	versions, _ := os.ReadFile(filepath.Join(dir, "versions.tf"))

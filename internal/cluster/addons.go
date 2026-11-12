@@ -102,7 +102,7 @@ func (m *Manager) Addons(ctx context.Context, name string) ([]AddonStatus, error
 	for i, meta := range addonMeta {
 		enabled := addonEnabled(c, meta.key)
 		st := &out[i]
-		pin := tofu.ChartVersions[meta.tofu]
+		pin := tofu.PinnedVersion(meta.tofu)
 		*st = AddonStatus{Key: meta.key, Enabled: enabled, Pinned: pin}
 		if meta.key == "builds" && c.RegistryIP() != "" {
 			st.Address = net.JoinHostPort(c.RegistryIP(), fmt.Sprint(config.RegistryPort))
