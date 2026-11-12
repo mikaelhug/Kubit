@@ -3,7 +3,7 @@ import PackageDescription
 
 let package = Package(
     name: "KubitApp",
-    platforms: [.macOS(.v15)],
+    platforms: [.macOS("27.0")],
     products: [
         .executable(name: "KubitApp", targets: ["KubitApp"])
     ],

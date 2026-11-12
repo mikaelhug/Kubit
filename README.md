@@ -39,7 +39,7 @@ it. Click through the web console or edit the file yourself. Both end up in the 
 
 ## Get started
 
-On macOS 15 or later, download `Kubit-X.Y.Z-macos-universal.zip` from the
+On a Mac with Apple silicon and macOS 27 or later, download `Kubit-X.Y.Z-macos-arm64.zip` from the
 [latest release](https://github.com/mikaelhug/Kubit/releases/latest), unzip it and move
 `Kubit.app` to Applications. Kubit runs in the menu bar: choose a workspace folder (Kubit
 serves every cluster repo inside it), then *Open Console*. *Install Command Line Tool* puts

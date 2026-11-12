@@ -1,7 +1,7 @@
 # Releasing
 
 Kubit ships as `Kubit.app`, a menu bar app that runs the daemon. A GitHub Release holds
-`Kubit-X.Y.Z-macos-universal.zip`, its Ed25519 signature `.zip.sig` and `SHA256SUMS`.
+`Kubit-X.Y.Z-macos-arm64.zip`, its Ed25519 signature `.zip.sig` and `SHA256SUMS`.
 
 ## Versions
 
@@ -11,12 +11,12 @@ A weekly release is a minor when any dependency moved a minor, else a patch.
 
 ## Build
 
-`make app` (`hack/build-app.sh`) builds the console, `kubit` for darwin arm64 and amd64
-(`CGO_ENABLED=0`, joined with `lipo`) and `KubitApp` from `app/`, assembles
+`make app` (`hack/build-app.sh`) builds the console, `kubit` for darwin arm64
+(`CGO_ENABLED=0`) and `KubitApp` from `app/`, assembles
 `dist/Kubit.app`, signs it and zips it. `hack/build-app.sh release` takes the version from
 the exact tag on HEAD and requires `app/release.pub`; a local build is `0.0.0` unless
-`KUBIT_VERSION` is set. A universal `KubitApp` needs full Xcode; with the Command Line
-Tools only it builds for the host.
+`KUBIT_VERSION` is set. Kubit.app needs Apple silicon and macOS 27; `kubit` itself still
+builds for Linux and Intel with `make build`.
 
 | Variable | Effect |
 |---|---|

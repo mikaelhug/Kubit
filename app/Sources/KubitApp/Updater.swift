@@ -107,7 +107,7 @@ final class Updater {
         guard let latest = version(tag: json.tag_name), let mine = version(json: current),
               latest.lexicographicallyPrecedes(mine) == false, latest != mine else { return .current }
         let v = latest.map(String.init).joined(separator: ".")
-        let zipName = "Kubit-\(v)-macos-universal.zip"
+        let zipName = "Kubit-\(v)-macos-arm64.zip"
         let sigName = zipName + ".sig"
         guard let zip = json.assets.first(where: { $0.name == zipName }).flatMap({ URL(string: $0.browser_download_url) }),
               let sig = json.assets.first(where: { $0.name == sigName }).flatMap({ URL(string: $0.browser_download_url) }),

@@ -96,7 +96,7 @@ jobs:
         run: |
           set -euo pipefail
           echo "$KEY_B64" | base64 --decode >"$RUNNER_TEMP/ac.p8"
-          zip=$(ls dist/Kubit-*-macos-universal.zip)
+          zip=$(ls dist/Kubit-*-macos-arm64.zip)
           result=$(xcrun notarytool submit "$zip" --key "$RUNNER_TEMP/ac.p8" --key-id "$KEY_ID" --issuer "$ISSUER" --wait --output-format json)
           echo "$result"
           if [ "$(echo "$result" | jq -r .status)" != Accepted ]; then
@@ -116,7 +116,7 @@ jobs:
           RELEASE_KEY: ${{ secrets.KUBIT_RELEASE_KEY }}
         run: |
           set -euo pipefail
-          zip=$(ls dist/Kubit-*-macos-universal.zip)
+          zip=$(ls dist/Kubit-*-macos-arm64.zip)
           go run ./hack/release-sign sign "$zip"
           go run ./hack/release-sign verify "$zip" "$(cat app/release.pub)"
           (cd dist && shasum -a 256 Kubit-*.zip Kubit-*.zip.sig >SHA256SUMS)
@@ -134,7 +134,7 @@ jobs:
         with:
           body_path: dist/notes.md
           files: |
-            dist/Kubit-*-macos-universal.zip
-            dist/Kubit-*-macos-universal.zip.sig
+            dist/Kubit-*-macos-arm64.zip
+            dist/Kubit-*-macos-arm64.zip.sig
             dist/SHA256SUMS
           fail_on_unmatched_files: true

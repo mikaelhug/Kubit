@@ -159,7 +159,7 @@ jobs:
           go test -tags integration ./internal/tofu/...
           swift test --package-path app
           hack/build-app.sh local
-          lipo -archs dist/Kubit.app/Contents/Resources/bin/kubit
+          lipo -archs dist/Kubit.app/Contents/MacOS/KubitApp && lipo -archs dist/Kubit.app/Contents/Resources/bin/kubit
           dist/Kubit.app/Contents/Resources/bin/kubit version
 
   ship:

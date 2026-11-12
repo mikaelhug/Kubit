@@ -28,22 +28,14 @@ pubkey=${KUBIT_RELEASE_PUBKEY:-$(cat app/release.pub 2>/dev/null || true)}
 echo "==> web console"
 make web
 
-echo "==> kubit $version (arm64, amd64)"
+echo "==> kubit $version"
 mkdir -p "$dist/bin"
-for arch in arm64 amd64; do
-	CGO_ENABLED=0 GOOS=darwin GOARCH=$arch go build -trimpath \
-		-ldflags "-s -w -X main.version=v$version" -o "$dist/bin/kubit-$arch" ./cmd/kubit
-done
-lipo -create -output "$dist/bin/kubit" "$dist/bin/kubit-arm64" "$dist/bin/kubit-amd64"
+CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 go build -trimpath \
+	-ldflags "-s -w -X main.version=v$version" -o "$dist/bin/kubit" ./cmd/kubit
 
 echo "==> KubitApp"
-archs=(--arch arm64 --arch x86_64)
-if ! xcode-select -p | grep -q '\.app/'; then
-	echo "    no Xcode selected: building KubitApp for $(uname -m) only"
-	archs=()
-fi
-swift build -c release --package-path app --product KubitApp ${archs[@]+"${archs[@]}"}
-appbin=$(swift build -c release --package-path app --product KubitApp ${archs[@]+"${archs[@]}"} --show-bin-path)/KubitApp
+swift build -c release --package-path app --product KubitApp --arch arm64
+appbin=$(swift build -c release --package-path app --product KubitApp --arch arm64 --show-bin-path)/KubitApp
 
 echo "==> assemble $app"
 rm -rf "$app"
@@ -68,7 +60,7 @@ cat >"$app/Contents/Info.plist" <<EOF
 	<key>CFBundlePackageType</key><string>APPL</string>
 	<key>CFBundleShortVersionString</key><string>$version</string>
 	<key>CFBundleVersion</key><string>$version</string>
-	<key>LSMinimumSystemVersion</key><string>15.0</string>
+	<key>LSMinimumSystemVersion</key><string>27.0</string>
 	<key>LSUIElement</key><true/>
 	<key>LSApplicationCategoryType</key><string>public.app-category.developer-tools</string>
 	<key>NSHighResolutionCapable</key><true/>
@@ -108,8 +100,8 @@ sign --identifier dev.kubit.kubit "$app/Contents/Resources/bin/kubit"
 sign "$app"
 codesign --verify --deep --strict "$app"
 
-zip="$dist/Kubit-$version-macos-universal.zip"
+zip="$dist/Kubit-$version-macos-arm64.zip"
 rm -f "$zip"
 ditto -c -k --keepParent "$app" "$zip"
-lipo -archs "$app/Contents/Resources/bin/kubit"
+for b in "$app/Contents/MacOS/KubitApp" "$app/Contents/Resources/bin/kubit"; do echo "$(basename "$b"): $(lipo -archs "$b")"; done
 echo "==> $zip"
