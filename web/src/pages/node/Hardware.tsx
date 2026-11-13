@@ -29,6 +29,7 @@ const dimmColumns: Column<Dimm>[] = [
 
 const diskColumns: Column<Disk>[] = [
   { id: 'dev', header: 'Device', mono: true, sort: (d) => d.devPath, cell: (d) => or(d.devPath) },
+  { id: 'id', header: 'ID', mono: true, wrap: true, cell: (d) => or(d.id) },
   { id: 'size', header: 'Size', align: 'right', sort: (d) => d.sizeBytes, cell: (d) => fmt.bytes(d.sizeBytes) },
   { id: 'model', header: 'Model', sort: (d) => d.model ?? '', cell: (d) => or(d.model) },
   { id: 'serial', header: 'Serial', mono: true, cell: (d) => or(d.serial) },

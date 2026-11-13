@@ -64,7 +64,7 @@ spec:
       arch: arm64
       kvm: true
       installDisk: { path: /dev/vda }
-      dataDisks: [/dev/vdb]        # whole disks → xfs at /var/mnt/data-N
+      dataDisks: [/dev/disk/by-id/ata-Samsung_SSD_870_EVO_1TB_S6PTNX0T123456]  # whole disks → xfs at /var/mnt/data-N
     - hostname: gpu-01
       ip: 192.168.64.150
       talosVersion: v1.14.3        # default: spec.talosVersion
@@ -131,10 +131,15 @@ last (cluster → node) and every plan validates the generated
 configs with Talos's metal-mode rules. `config.Lint` reports advisory findings.
 Talos < 1.14 is rejected.
 
-**Disks.** `installDisk` holds Talos; each `dataDisks` entry becomes a whole-disk xfs
-`UserVolumeConfig` at `/var/mnt/data-N`. With `storage.systemDisk` a node without data
-disks keeps `ephemeralSize` for `/var` and gives the rest of the install disk to
-`data-system` (fresh installs only; Longhorn must be on). Longhorn places replicas only on
+**Disks.** A disk path is either a `/dev/disk/by-id/…` link, which survives reboots and added
+disks, or a kernel name like `/dev/sdb`, which can change between boots. Discovery writes the
+by-id link when the disk has one, and the node's Hardware tab shows it as *ID*.
+`installDisk` holds Talos; each `dataDisks` entry becomes a whole-disk xfs
+`UserVolumeConfig` at `/var/mnt/data-N`. With `storage.systemDisk` a node keeps
+`ephemeralSize` for `/var` and gives the rest of the install disk to `data-system` (fresh
+installs only; Longhorn must be on). Data disks can be added to an installed node; its
+`data-system` stays. Longhorn takes a new disk on an existing node only when it is added on
+the Longhorn node. Longhorn places replicas only on
 nodes that run workloads: workers, and control planes while `controlPlane.allowScheduling` is
 on. Which disks carry `data-system` is fixed per node at install; the review gives control
 planes that don't run workloads `storage: { systemDisk: false }`, so changing

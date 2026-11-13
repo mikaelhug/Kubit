@@ -11,7 +11,7 @@ func Machine(ip string, inv *talos.Inventory) config.Machine {
 		m.Arch = config.ArchAMD64
 	}
 	for _, d := range inv.InstallCandidates() {
-		m.Disks = append(m.Disks, config.MachineDisk{DevPath: d.DevPath, SizeBytes: d.SizeBytes})
+		m.Disks = append(m.Disks, config.MachineDisk{DevPath: d.DevPath, ID: d.ID, SizeBytes: d.SizeBytes})
 	}
 	return m
 }

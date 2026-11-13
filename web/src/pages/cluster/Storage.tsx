@@ -7,7 +7,7 @@ import { NamespaceScope, useNamespaceScope } from '../../components/NamespaceSco
 import { ReplicasSelect } from '../../components/ReplicasSelect'
 import { Age } from '../../components/Time'
 import { Check, ErrorBox, Notice, Pending, Pill, Section, UsedOf } from '../../components/ui'
-import { longhornCapacity } from '../../components/LonghornUsage'
+import { longhornCapacity, longhornUsed } from '../../components/LonghornUsage'
 import { kubeHealth, roleLabel, talosHealth } from '../../machine'
 import { toast, writeClusterYaml } from '../../store'
 import { createdSort } from '../../time'
@@ -79,7 +79,7 @@ function LonghornSection({ cluster, macs, view, status }: { cluster: string; mac
       ? <Check checked={n.systemDisk} disabled={busy} onChange={(on) => write((hash) => api.setNodeStorage(cluster, n.hostname, { systemDisk: on, hash }))}>data-system</Check>
       : n.disks.length ? <span class="mono">{n.disks.map((d) => d.split('/').pop()).join(', ')}</span> : <span class="text-muted">—</span> },
     { id: 'scheduled', header: 'Scheduled', align: 'right', sort: (n) => n.live?.scheduledBytes ?? -1, cell: (n) => n.live ? <UsedOf used={n.live.scheduledBytes} cap={longhornCapacity(n.live)} /> : <span class="text-muted">—</span> },
-    { id: 'used', header: 'Used', align: 'right', sort: (n) => n.live ? n.live.maximumBytes - n.live.availableBytes : -1, cell: (n) => n.live ? <UsedOf used={n.live.maximumBytes - n.live.availableBytes} cap={n.live.maximumBytes} /> : <span class="text-muted">—</span> },
+    { id: 'used', header: 'Used', align: 'right', sort: (n) => n.live ? longhornUsed(n.live) : -1, cell: (n) => n.live ? <UsedOf used={longhornUsed(n.live)} cap={n.live.maximumBytes} /> : <span class="text-muted">—</span> },
     { id: 'replicas', header: 'Replicas', align: 'right', sort: (n) => n.live?.replicas ?? -1, cell: (n) => n.live ? n.live.replicas : <span class="text-muted">—</span> },
     { id: 'state', header: 'State', cell: (n) => { const [tone, label, reason] = nodeState(n, nodeStatus.get(n.hostname), !!status?.apiReachable); return <span class="inline-flex items-center gap-2"><Pill tone={tone}>{label}</Pill>{reason && <span class="text-[12px] text-muted">{reason}</span>}</span> } },
   ]

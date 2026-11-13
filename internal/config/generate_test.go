@@ -205,7 +205,12 @@ func TestSystemVolumeSplitIsALayoutChange(t *testing.T) {
 			t.Errorf("system_disk=%v: matched=%v err=%v", system, ok, err)
 		}
 	}
-	if vol, err := config.LayoutChange(g.Nodes["worker-01"], g.Nodes["cp-01"]); err != nil || vol == "" {
+	c.SetSystemDisk(&c.Spec.Nodes[c.NodeIndex("cp-01")], false)
+	off, err := config.Generate(c, sharedSecrets(t), installer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if vol, err := config.LayoutChange(off.Nodes["cp-01"], g.Nodes["cp-01"]); err != nil || vol == "" {
 		t.Errorf("a system volume split is a layout change: %q %v", vol, err)
 	}
 	if vol, err := config.LayoutChange(g.Nodes["cp-01"], g.Nodes["cp-01"]); err != nil || vol != "" {

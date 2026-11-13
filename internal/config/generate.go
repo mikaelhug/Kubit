@@ -445,6 +445,8 @@ func volumeConfig(docs *[]config.Document, name string) *block.VolumeConfigV1Alp
 func diskSelector(d InstallDisk) (cel.Expression, error) {
 	var terms []string
 	switch {
+	case strings.HasPrefix(d.Path, "/dev/disk/"):
+		terms = append(terms, fmt.Sprintf("%q in disk.symlinks", d.Path))
 	case d.Path != "":
 		terms = append(terms, fmt.Sprintf("disk.dev_path == %q", d.Path))
 	case d.Selector != nil:

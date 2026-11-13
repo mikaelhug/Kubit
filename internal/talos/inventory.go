@@ -108,6 +108,7 @@ type Disk struct {
 	WWID       string   `json:"wwid,omitempty"`
 	Firmware   string   `json:"firmware,omitempty"`
 	Links      []string `json:"links,omitempty"`
+	ID         string   `json:"id,omitempty"`
 }
 
 type Link struct {
@@ -190,7 +191,7 @@ func (c *Client) Inspect(ctx context.Context) (*Inventory, error) {
 		inv.Disks = append(inv.Disks, Disk{
 			DevPath: s.DevPath, SizeBytes: s.Size, Model: s.Model, Transport: s.Transport,
 			Rotational: s.Rotational, Readonly: s.Readonly, CDROM: s.CDROM,
-			Serial: s.Serial, WWID: s.WWID, Firmware: s.FirmwareVersion, Links: byIDLinks(s.Symlinks),
+			Serial: s.Serial, WWID: s.WWID, Firmware: s.FirmwareVersion, Links: byIDLinks(s.Symlinks), ID: stableID(byIDLinks(s.Symlinks)),
 		})
 	}
 	sort.Slice(inv.Disks, func(i, j int) bool { return inv.Disks[i].DevPath < inv.Disks[j].DevPath })
@@ -336,6 +337,30 @@ func byIDLinks(symlinks []string) []string {
 	}
 	sort.Strings(out)
 	return out
+}
+
+func stableID(links []string) string {
+	rank := func(l string) int {
+		switch {
+		case strings.HasPrefix(l, "nvme-eui.") || strings.HasPrefix(l, "nvme-nvme."):
+			return 2
+		case strings.HasPrefix(l, "ata-") || strings.HasPrefix(l, "nvme-") || strings.HasPrefix(l, "usb-"):
+			return 0
+		case strings.HasPrefix(l, "wwn-"):
+			return 1
+		}
+		return 3
+	}
+	pick := ""
+	for _, l := range links {
+		if pick == "" || rank(l) < rank(pick) {
+			pick = l
+		}
+	}
+	if pick == "" {
+		return ""
+	}
+	return "/dev/disk/by-id/" + pick
 }
 
 func (inv *Inventory) InstallCandidates() []Disk {

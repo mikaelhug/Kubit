@@ -51,7 +51,7 @@ func (s Storage) CheckEphemeral() error {
 }
 
 func (c *Cluster) SharesSystemDisk(n Node) bool {
-	return c.Spec.Platform.Longhorn.Enabled && len(n.DataDisks) == 0 && c.UsesSystemDisk(n)
+	return c.Spec.Platform.Longhorn.Enabled && c.UsesSystemDisk(n)
 }
 
 func (c *Cluster) UsesSystemDisk(n Node) bool {

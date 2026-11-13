@@ -1,6 +1,7 @@
 package config
 
 import (
+	"cmp"
 	"fmt"
 	"net/netip"
 	"regexp"
@@ -23,6 +24,7 @@ type Machine struct {
 
 type MachineDisk struct {
 	DevPath   string
+	ID        string
 	SizeBytes uint64
 }
 
@@ -101,7 +103,7 @@ func Design(name string, machines []Machine, opts DesignOptions) (*Cluster, []Wa
 func (c *Cluster) NodeFor(m Machine, hostname string, role Role) Node {
 	n := Node{Hostname: hostname, IP: m.IP, MAC: m.MAC, UUID: m.UUID, Arch: m.Arch, Role: role, KVM: m.KVM && c.Spec.Platform.GVisor.Enabled}
 	if len(m.Disks) > 0 {
-		n.InstallDisk = InstallDisk{Path: m.Disks[0].DevPath}
+		n.InstallDisk = InstallDisk{Path: cmp.Or(m.Disks[0].ID, m.Disks[0].DevPath)}
 	}
 	return n
 }
