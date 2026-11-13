@@ -57,7 +57,7 @@ export function NodePage({ ip: ipParam, mac }: { ip?: string; mac?: string }) {
       <div class="p-5 flex flex-col gap-4 max-w-[1300px]">
         <ErrorBox error={!node && live.value ? `No machine ${mac ?? ipParam} is known.` : null} />
         {shown === 'overview' && <OverviewTab inv={inv} invErr={invErr} k8s={k8s} k8sErr={k8sErr} node={node} spec={spec} storage={node?.declared?.dataSystem ? cluster?.spec.spec.storage ?? {} : undefined} />}
-        {shown === 'hardware' && <HardwareTab inv={inv} invErr={invErr} node={node} />}
+        {shown === 'hardware' && <HardwareTab inv={inv} invErr={invErr} node={node} spec={spec} />}
         {shown === 'kubernetes' && <KubernetesTab cluster={node?.cluster ?? ''} k8s={k8s} err={k8sErr} />}
         {shown === 'services' && <ServicesTab ip={ip} node={node} />}
         {shown === 'logs' && <LogsTab ip={ip} node={node} />}

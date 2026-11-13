@@ -133,13 +133,15 @@ Talos < 1.14 is rejected.
 
 **Disks.** A disk path is either a `/dev/disk/by-id/…` link, which survives reboots and added
 disks, or a kernel name like `/dev/sdb`, which can change between boots. Discovery writes the
-by-id link when the disk has one, and the node's Hardware tab shows it as *ID*.
+by-id link when the disk has one, and the node's Hardware tab shows it as *ID*. *Add as data disk*
+on that tab appends a free local disk's by-id link to the node's `dataDisks`. Talos formats a
+data disk only when it is blank; the plan lists a used one as a **wipe**, applied only when
+allowed (see [operations](operations.md)).
 `installDisk` holds Talos; each `dataDisks` entry becomes a whole-disk xfs
 `UserVolumeConfig` at `/var/mnt/data-N`. With `storage.systemDisk` a node keeps
 `ephemeralSize` for `/var` and gives the rest of the install disk to `data-system` (fresh
 installs only; Longhorn must be on). Data disks can be added to an installed node; its
-`data-system` stays. Longhorn takes a new disk on an existing node only when it is added on
-the Longhorn node. Longhorn places replicas only on
+`data-system` stays. Apply adds it to the node's Longhorn disks. Longhorn places replicas only on
 nodes that run workloads: workers, and control planes while `controlPlane.allowScheduling` is
 on. Which disks carry `data-system` is fixed per node at install; the review gives control
 planes that don't run workloads `storage: { systemDisk: false }`, so changing

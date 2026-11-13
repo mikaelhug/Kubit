@@ -15,7 +15,7 @@ const hardware = (n: NodeRow) => {
   const disks = installCandidates(n)
   return (
     <span class="whitespace-nowrap" title={disks.map((d) => `${d.devPath} ${fmt.bytes(d.sizeBytes)}${d.rotational ? ' HDD' : ''}`).join(', ')}>
-      {specsOf(inv)}{disks.length > 1 ? ` +${disks.length - 1}` : ''}
+      {specsOf(inv)}
       <span class="block text-[10px] text-muted">{inv.arch || n.arch}{inv.kvm ? ' · kvm' : ''}</span>
     </span>
   )

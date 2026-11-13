@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -71,30 +72,33 @@ func (s *Server) handleNodes(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) nodeClient(r *http.Request) (*talos.Client, *store.Machine, error) {
-	ip := r.PathValue("ip")
-	row, err := s.store.GetNode(ip)
+	row, err := s.store.GetNode(r.PathValue("ip"))
 	if err != nil {
 		return nil, nil, err
 	}
-	if row.IP == "" {
-		return nil, nil, conflict("No address is known for this machine.")
+	tc, err := s.dial(r.Context(), row)
+	return tc, row, err
+}
+
+func (s *Server) dial(ctx context.Context, row *store.Machine) (*talos.Client, error) {
+	ip := row.IP
+	if ip == "" {
+		return nil, conflict("No address is known for this machine.")
 	}
 	if !row.Talos() {
-		return nil, nil, conflict(noTalosReason(row))
+		return nil, conflict(noTalosReason(row))
 	}
-	if !talos.PortOpen(r.Context(), ip, 2*time.Second) {
-		return nil, nil, &statusError{Status: http.StatusBadGateway, Msg: fmt.Sprintf("Talos API at %s:%s is not answering.", ip, talos.Port)}
+	if !talos.PortOpen(ctx, ip, 2*time.Second) {
+		return nil, &statusError{Status: http.StatusBadGateway, Msg: fmt.Sprintf("Talos API at %s:%s is not answering.", ip, talos.Port)}
 	}
 	if row.Cluster == "" {
-		tc, err := talos.DialMaintenance(r.Context(), ip)
-		return tc, row, err
+		return talos.DialMaintenance(ctx, ip)
 	}
 	sec, err := s.store.GetClusterSecrets(row.Cluster)
 	if err != nil {
-		return nil, nil, err
+		return nil, err
 	}
-	tc, err := talos.Dial(r.Context(), ip, sec.Talosconfig)
-	return tc, row, err
+	return talos.Dial(ctx, ip, sec.Talosconfig)
 }
 
 func (s *Server) handleNodeLogs(w http.ResponseWriter, r *http.Request) {

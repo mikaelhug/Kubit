@@ -40,7 +40,7 @@ export function modelName(inv?: Inventory | null) {
 export const modelOf = (m?: NodeRow | null) => modelName(m?.inventory)
 
 function diskCandidates(inv?: Inventory | null) {
-  return (inv?.disks ?? []).filter((d) => d.devPath && !d.readonly && !d.cdrom && d.transport !== 'usb').sort((a, b) => b.sizeBytes - a.sizeBytes)
+  return (inv?.disks ?? []).filter((d) => d.local).sort((a, b) => Number(a.rotational) - Number(b.rotational) || b.sizeBytes - a.sizeBytes)
 }
 export const installCandidates = (m?: NodeRow | null) => diskCandidates(m?.inventory)
 
@@ -48,8 +48,10 @@ export const memoryOf = (inv?: Inventory | null) => inv?.memory?.reduce((a, m) =
 
 export function specsOf(inv?: Inventory | null) {
   if (!inv) return ''
-  const disk = diskCandidates(inv)[0]
-  return [`${inv.cpus} CPU`, fmt.bytes(memoryOf(inv)), disk && `${fmt.bytes(disk.sizeBytes)}${disk.transport ? ` ${disk.transport}` : ''}`].filter(Boolean).join(' · ')
+  const disks = diskCandidates(inv)
+  const os = disks.find((d) => d.devPath === inv.systemDisk) ?? disks[0]
+  const ordered = os ? [os, ...disks.filter((d) => d !== os)] : []
+  return [`${inv.cpus} CPU`, fmt.bytes(memoryOf(inv)), ...ordered.map((d) => `${fmt.bytes(d.sizeBytes)}${d.transport ? ` ${d.transport}` : ''}`)].join(' · ')
 }
 
 export const roleLabel = (role?: string) => (role === 'controlplane' ? 'control plane' : 'worker')

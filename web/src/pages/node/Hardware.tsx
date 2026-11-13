@@ -1,8 +1,10 @@
 import type { ComponentChildren } from 'preact'
-import { fmt, type Inventory, type NodeRow } from '../../api'
+import { useState } from 'preact/hooks'
+import { api, fmt, type Inventory, type NodeRow, type NodeSpec } from '../../api'
 import { DataTable, type Column } from '../../components/DataTable'
-import { KeyValue, Notice, Pill, Section, Tile } from '../../components/ui'
+import { ConfirmDialog, KeyValue, Notice, Pending, Pill, Section, Tile } from '../../components/ui'
 import { memoryOf, modelName } from '../../machine'
+import { toast, writeClusterYaml } from '../../store'
 
 type Disk = Inventory['disks'][number]
 type Link = Inventory['links'][number]
@@ -73,7 +75,33 @@ function memoryTile(inv: Inventory, dimms: Dimm[]) {
   return <Tile label="Memory" value={fmt.bytes(memoryOf(inv))} sub={[kind, slots].filter(Boolean).join(' · ') || undefined} />
 }
 
-export function HardwareTab({ inv: live, invErr, node }: { inv: Inventory | null; invErr: string | null; node: NodeRow | null }) {
+const contentsOf = (d: Disk) => [d.format, ...(d.partitions ?? [])].filter(Boolean).join(', ')
+
+function diskUse(inv: Inventory, cluster: string, spec: NodeSpec | undefined, add: (d: Disk) => void): Column<Disk> {
+  return {
+    id: 'use', header: 'Use', cell: (d) => {
+      const i = d.id ? spec?.dataDisks?.indexOf(d.id) ?? -1 : -1
+      if (i >= 0) {
+        const name = `data-${i + 1}`
+        const vol = inv.volumes?.find((v) => v.name === name)
+        if (vol?.phase === 'ready') return <Pill tone="good">{name}</Pill>
+        return (
+          <span class="inline-flex items-center gap-2">
+            <Pill tone={vol?.error ? 'bad' : 'muted'}>{name}</Pill>
+            {vol?.error && <span class="text-[12px] text-muted">{vol.error}</span>}
+            <Pending cluster={cluster} />
+          </span>
+        )
+      }
+      if (d.devPath === inv.systemDisk) return <Pill tone="muted">system</Pill>
+      if (cluster && spec && d.id && d.local && !inv.volumes?.some((v) => v.disk === d.devPath && v.phase === 'ready')) return <button class="btn btn-sm" onClick={() => add(d)}>Add as data disk</button>
+      return null
+    },
+  }
+}
+
+export function HardwareTab({ inv: live, invErr, node, spec }: { inv: Inventory | null; invErr: string | null; node: NodeRow | null; spec?: NodeSpec }) {
+  const [adding, setAdding] = useState<Disk | null>(null)
   if (!node) return <div class="text-muted">Loading</div>
   const found: Inventory | null = live ?? node.inventory ?? null
   const inv = found && { ...found, disks: found.disks ?? [], links: found.links ?? [] }
@@ -102,8 +130,19 @@ export function HardwareTab({ inv: live, invErr, node }: { inv: Inventory | null
         </Section>
       )}
       <Section title="Disks">
-        <DataTable search={false} columns={withData(diskColumns, inv.disks, { serial: (d) => d.serial, firmware: (d) => d.firmware })} rows={inv.disks} rowKey={(d) => d.devPath} />
+        <DataTable search={false} columns={[...withData(diskColumns, inv.disks, { serial: (d) => d.serial, firmware: (d) => d.firmware }), diskUse(inv, node.cluster ?? '', spec, setAdding)]} rows={inv.disks} rowKey={(d) => d.devPath} />
       </Section>
+      {adding && spec && node.cluster && (
+        <ConfirmDialog title={`Add ${adding.model || adding.devPath} as a data disk`} action="Write cluster.yaml" tone={contentsOf(adding) ? 'danger' : 'primary'}
+          impact={<>
+            <span class="mono break-all">{adding.id} → /var/mnt/data-{(spec.dataDisks?.length ?? 0) + 1}</span>
+            {contentsOf(adding) && <span>Apply erases this disk ({contentsOf(adding)}).</span>}
+          </>}
+          onClose={() => setAdding(null)}
+          onConfirm={() => writeClusterYaml(node.cluster!, (hash) => api.addDataDisk(node.cluster!, spec.hostname, { path: adding.id!, hash }))
+            .then(() => { setAdding(null); toast('cluster.yaml saved; planning', 'good') })
+            .catch((e) => toast(e.message, 'error'))} />
+      )}
       <Section title="Network links">
         <DataTable search={false} columns={withData(linkColumns, inv.links, { speed: (l) => l.speedMbps })} rows={inv.links} rowKey={(l) => l.name} />
       </Section>

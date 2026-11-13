@@ -1,6 +1,7 @@
 package talos
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -76,6 +77,7 @@ type Volume struct {
 	SizeBytes uint64 `json:"sizeBytes"`
 	Mount     string `json:"mount,omitempty"`
 	Phase     string `json:"phase"`
+	Error     string `json:"error,omitempty"`
 }
 
 type Extension struct {
@@ -109,6 +111,8 @@ type Disk struct {
 	Firmware   string   `json:"firmware,omitempty"`
 	Links      []string `json:"links,omitempty"`
 	ID         string   `json:"id,omitempty"`
+	Format     string   `json:"format,omitempty"`
+	Partitions []string `json:"partitions,omitempty"`
 }
 
 type Link struct {
@@ -179,22 +183,9 @@ func (c *Client) Inspect(ctx context.Context) (*Inventory, error) {
 	inv.Memory = c.memoryModules(ctx)
 	inv.KVM = c.exists(ctx, "/dev/kvm")
 
-	disks, err := safe.StateListAll[*block.Disk](ctx, c.COSI)
-	if err != nil {
-		return nil, fmt.Errorf("disks: %w", err)
+	if err := c.storage(ctx, inv); err != nil {
+		return nil, err
 	}
-	for d := range disks.All() {
-		s := d.TypedSpec()
-		if strings.HasPrefix(s.DevPath, "/dev/loop") || strings.HasPrefix(s.DevPath, "/dev/zram") {
-			continue
-		}
-		inv.Disks = append(inv.Disks, Disk{
-			DevPath: s.DevPath, SizeBytes: s.Size, Model: s.Model, Transport: s.Transport,
-			Rotational: s.Rotational, Readonly: s.Readonly, CDROM: s.CDROM,
-			Serial: s.Serial, WWID: s.WWID, Firmware: s.FirmwareVersion, Links: byIDLinks(s.Symlinks), ID: stableID(byIDLinks(s.Symlinks)),
-		})
-	}
-	sort.Slice(inv.Disks, func(i, j int) bool { return inv.Disks[i].DevPath < inv.Disks[j].DevPath })
 
 	addrs := map[string][]string{}
 	if al, err := safe.StateListAll[*network.AddressStatus](ctx, c.COSI); err == nil {
@@ -244,29 +235,95 @@ func (c *Client) Inspect(ctx context.Context) (*Inventory, error) {
 		}
 		sort.Slice(inv.Extensions, func(i, j int) bool { return inv.Extensions[i].Name < inv.Extensions[j].Name })
 	}
+	return inv, nil
+}
+
+func (c *Client) Storage(ctx context.Context) (*Inventory, error) {
+	inv := &Inventory{IP: c.IP}
+	if err := c.storage(ctx, inv); err != nil {
+		return nil, err
+	}
+	return inv, nil
+}
+
+func (c *Client) storage(ctx context.Context, inv *Inventory) error {
+	disks, err := safe.StateListAll[*block.Disk](ctx, c.COSI)
+	if err != nil {
+		return fmt.Errorf("disks: %w", err)
+	}
+	formats := map[string]string{}
+	parts := map[string][]string{}
+	if dvs, err := safe.StateListAll[*block.DiscoveredVolume](ctx, c.COSI); err == nil {
+		for dv := range dvs.All() {
+			s := dv.TypedSpec()
+			if s.ParentDevPath == "" {
+				formats[s.DevPath] = s.Name
+				continue
+			}
+			parts[s.ParentDevPath] = append(parts[s.ParentDevPath], cmp.Or(s.Name, "unknown"))
+		}
+	}
+	for d := range disks.All() {
+		s := d.TypedSpec()
+		if strings.HasPrefix(s.DevPath, "/dev/loop") || strings.HasPrefix(s.DevPath, "/dev/zram") {
+			continue
+		}
+		links := byIDLinks(s.Symlinks)
+		inv.Disks = append(inv.Disks, Disk{
+			DevPath: s.DevPath, SizeBytes: s.Size, Model: s.Model, Transport: s.Transport,
+			Rotational: s.Rotational, Readonly: s.Readonly, CDROM: s.CDROM,
+			Serial: s.Serial, WWID: s.WWID, Firmware: s.FirmwareVersion, Links: links, ID: stableID(links),
+			Format: formats[s.DevPath], Partitions: parts[s.DevPath],
+		})
+	}
+	sort.Slice(inv.Disks, func(i, j int) bool { return inv.Disks[i].DevPath < inv.Disks[j].DevPath })
 	if sd, err := safe.StateGetByID[*block.SystemDisk](ctx, c.COSI, block.SystemDiskID); err == nil {
 		inv.SystemDisk = sd.TypedSpec().DevPath
 	}
-	if vols, err := safe.StateListAll[*block.VolumeStatus](ctx, c.COSI); err == nil {
-		for v := range vols.All() {
-			id, s := v.Metadata().ID(), v.TypedSpec()
-			name, user := strings.CutPrefix(id, "u-")
-			if !user && id != constants.EphemeralPartitionLabel && id != constants.StatePartitionLabel || s.Size == 0 {
-				continue
-			}
-			disk := s.ParentLocation
-			if disk == "" {
-				disk = s.Location
-			}
-			mount := s.MountSpec.TargetPath
-			if user && mount != "" && !strings.HasPrefix(mount, "/") {
-				mount = "/var/mnt/" + mount
-			}
-			inv.Volumes = append(inv.Volumes, Volume{Name: name, Disk: disk, Device: s.Location, SizeBytes: s.Size, Mount: mount, Phase: s.Phase.String()})
-		}
-		sort.Slice(inv.Volumes, func(i, j int) bool { return inv.Volumes[i].Name < inv.Volumes[j].Name })
+	vols, err := safe.StateListAll[*block.VolumeStatus](ctx, c.COSI)
+	if err != nil {
+		return nil
 	}
-	return inv, nil
+	for v := range vols.All() {
+		id, s := v.Metadata().ID(), v.TypedSpec()
+		name, user := strings.CutPrefix(id, "u-")
+		if !user && id != constants.EphemeralPartitionLabel && id != constants.StatePartitionLabel || s.Size == 0 {
+			continue
+		}
+		disk := s.ParentLocation
+		if disk == "" {
+			disk = s.Location
+		}
+		mount := s.MountSpec.TargetPath
+		if user && mount != "" && !strings.HasPrefix(mount, "/") {
+			mount = "/var/mnt/" + mount
+		}
+		inv.Volumes = append(inv.Volumes, Volume{Name: name, Disk: disk, Device: s.Location, SizeBytes: s.Size, Mount: mount, Phase: s.Phase.String(), Error: s.ErrorMessage})
+	}
+	sort.Slice(inv.Volumes, func(i, j int) bool { return inv.Volumes[i].Name < inv.Volumes[j].Name })
+	return nil
+}
+
+func (inv *Inventory) DiskByLink(path string) (Disk, bool) {
+	link, ok := strings.CutPrefix(path, "/dev/disk/by-id/")
+	for _, d := range inv.Disks {
+		if ok && slices.Contains(d.Links, link) || d.DevPath == path {
+			return d, true
+		}
+	}
+	return Disk{}, false
+}
+
+func (inv *Inventory) ReadyVolumeOn(devPath string) bool {
+	return slices.ContainsFunc(inv.Volumes, func(v Volume) bool { return v.Disk == devPath && v.Phase == "ready" })
+}
+
+func (inv *Inventory) VolumeOn(devPath string) (Volume, bool) {
+	i := slices.IndexFunc(inv.Volumes, func(v Volume) bool { return v.Disk == devPath })
+	if i < 0 {
+		return Volume{}, false
+	}
+	return inv.Volumes[i], true
 }
 
 func (inv *Inventory) Schematic() string {
@@ -363,10 +420,22 @@ func stableID(links []string) string {
 	return "/dev/disk/by-id/" + pick
 }
 
+func (d Disk) Local() bool {
+	return d.DevPath != "" && !d.Readonly && !d.CDROM && d.Transport != "usb" && d.Transport != "iscsi"
+}
+
+func (d Disk) MarshalJSON() ([]byte, error) {
+	type plain Disk
+	return json.Marshal(struct {
+		plain
+		Local bool `json:"local"`
+	}{plain(d), d.Local()})
+}
+
 func (inv *Inventory) InstallCandidates() []Disk {
 	var out []Disk
 	for _, d := range inv.Disks {
-		if d.DevPath == "" || d.Readonly || d.CDROM || d.Transport == "usb" {
+		if !d.Local() {
 			continue
 		}
 		out = append(out, d)

@@ -1,7 +1,9 @@
 package api
 
 import (
+	"context"
 	"net/http"
+	"strings"
 
 	"github.com/mikaelhug/kubit/internal/config"
 	"github.com/mikaelhug/kubit/internal/k8s"
@@ -44,6 +46,63 @@ func (s *Server) storageRoutes() {
 	s.mux.HandleFunc("GET /api/v1/clusters/{name}/storage", s.handleStorage)
 	s.mux.HandleFunc("GET /api/v1/clusters/{name}/storage/longhorn", s.handleLonghorn)
 	s.mux.HandleFunc("PUT /api/v1/clusters/{name}/nodes/{hostname}/storage", s.handleNodeStorage)
+	s.mux.HandleFunc("POST /api/v1/clusters/{name}/nodes/{hostname}/data-disks", s.handleAddDataDisk)
+}
+
+func (s *Server) handleAddDataDisk(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Path string `json:"path"`
+		Hash string `json:"hash"`
+	}
+	if !decode(w, r, &req) {
+		return
+	}
+	ns, err := s.nodeOf(r)
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+	if err := s.checkFreeDisk(r.Context(), ns.n, req.Path); err != nil {
+		writeErr(w, err)
+		return
+	}
+	if err := repo.AddNodeDataDisk(ns.dir, req.Hash, ns.n.Hostname, req.Path); err != nil {
+		writeErr(w, editErr(err))
+		return
+	}
+	writeHash(w, ns.dir)
+}
+
+func (s *Server) checkFreeDisk(ctx context.Context, n config.Node, path string) error {
+	if !strings.HasPrefix(path, "/dev/disk/by-id/") {
+		return badRequest("A data disk needs a /dev/disk/by-id path.")
+	}
+	row, err := s.store.GetMachine(n.MAC)
+	if err != nil {
+		return err
+	}
+	tc, err := s.dial(ctx, row)
+	if err != nil {
+		return err
+	}
+	defer tc.Close()
+	inv, err := tc.Inspect(ctx)
+	if err != nil {
+		return err
+	}
+	s.manager.RecordInventory(row.MAC, row.IP, inv)
+	d, ok := inv.DiskByLink(path)
+	switch {
+	case !ok:
+		return conflict(path + " is not on " + n.Hostname + ".")
+	case !d.Local():
+		return conflict(path + " is not a local disk.")
+	case d.DevPath == inv.SystemDisk:
+		return conflict(path + " is the system disk.")
+	case inv.ReadyVolumeOn(d.DevPath):
+		return conflict(path + " already holds a volume.")
+	}
+	return nil
 }
 
 func (s *Server) handleStorage(w http.ResponseWriter, r *http.Request) {

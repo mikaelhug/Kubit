@@ -2,11 +2,14 @@ package k8s
 
 import (
 	"context"
+	"encoding/json"
 	"sort"
 	"strconv"
 
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/apimachinery/pkg/types"
 )
 
 const longhornNamespace = "longhorn-system"
@@ -176,4 +179,19 @@ func int64Of(v any) int64 {
 		return int64(n)
 	}
 	return 0
+}
+
+func (c *Client) AddLonghornDisk(ctx context.Context, node, name, path string, reservedBytes int64) error {
+	dyn, err := c.dynClient()
+	if err != nil {
+		return err
+	}
+	patch, err := json.Marshal(map[string]any{"spec": map[string]any{"disks": map[string]any{name: map[string]any{
+		"path": path, "allowScheduling": true, "storageReserved": reservedBytes, "diskType": "filesystem", "evictionRequested": false, "tags": []string{},
+	}}}})
+	if err != nil {
+		return err
+	}
+	_, err = dyn.Resource(longhornNodeGVR).Namespace(longhornNamespace).Patch(ctx, node, types.MergePatchType, patch, metav1.PatchOptions{})
+	return err
 }

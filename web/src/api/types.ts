@@ -63,11 +63,11 @@ export interface ClusterRow { name: string; state: string; spec: ClusterSpec; ha
 export interface Inventory {
   ip: string; hostname?: string; uuid?: string; serial?: string; cpus: number; cpuModel?: string; cpuCores?: number; cpuSockets?: number; memoryBytes: number; kvm: boolean; virtual?: boolean; arch: string; talosVersion: string; platform: string; stage: string; manufacturer?: string; product?: string; systemVersion?: string; biosVersion?: string
   memory?: { slot: string; bank?: string; sizeBytes: number; empty?: boolean; type?: string; speedMTs?: number; configuredMTs?: number; manufacturer?: string; part?: string; serial?: string }[]
-  disks: { devPath: string; sizeBytes: number; model?: string; transport?: string; rotational: boolean; readonly: boolean; cdrom: boolean; serial?: string; wwid?: string; firmware?: string; links?: string[]; id?: string }[]
+  disks: { devPath: string; sizeBytes: number; model?: string; transport?: string; rotational: boolean; readonly: boolean; cdrom: boolean; serial?: string; wwid?: string; firmware?: string; links?: string[]; id?: string; local: boolean; format?: string; partitions?: string[] }[]
   links: { name: string; mac: string; up: boolean; addresses?: string[]; speedMbps?: number; mtu?: number }[]
   pci?: { address: string; kind?: string; vendor?: string; product?: string; driver?: string }[]
   bootTime?: string; extensions?: { name: string; version: string; author?: string }[]
-  systemDisk?: string; volumes?: { name: string; disk: string; device: string; sizeBytes: number; mount?: string; phase: string }[]
+  systemDisk?: string; volumes?: { name: string; disk: string; device: string; sizeBytes: number; mount?: string; phase: string; error?: string }[]
   etcd?: { memberId: string; leader: boolean; learner: boolean; dbSizeBytes: number; dbInUseBytes: number; raftIndex: number; raftTerm: number; errors?: string[] }
 }
 export interface ConfigStatus { behind: string[] }

@@ -40,16 +40,18 @@ type Desired struct {
 }
 
 const (
-	ActCreate     = "create"
-	ActAdd        = "add"
-	ActConfig     = "config"
-	ActTalos      = "upgrade talos"
-	ActKubernetes = "upgrade kubernetes"
-	ActRemove     = "remove"
-	ActPlatform   = "platform"
-	ActAddress    = "address"
-	ActReimage    = "re-image"
-	ActEndpoint   = "endpoint"
+	ActCreate       = "create"
+	ActAdd          = "add"
+	ActConfig       = "config"
+	ActTalos        = "upgrade talos"
+	ActKubernetes   = "upgrade kubernetes"
+	ActRemove       = "remove"
+	ActPlatform     = "platform"
+	ActAddress      = "address"
+	ActReimage      = "re-image"
+	ActEndpoint     = "endpoint"
+	ActWipe         = "wipe"
+	ActLonghornDisk = "longhorn disk"
 )
 
 type Change struct {
@@ -84,16 +86,18 @@ func (p *Plan) ConfigStatus() ConfigStatus {
 func (c Change) OneTime() bool { return c.Action == ActPlatform && c.Target == "state" }
 
 type Plan struct {
-	Hash     string    `json:"hash"`
-	Cluster  string    `json:"cluster"`
-	Changes  []Change  `json:"changes"`
-	Installs []Install `json:"installs,omitempty"`
-	Problems []string  `json:"problems,omitempty"`
-	applied  *config.Cluster
-	target   *config.Cluster
-	adds     []config.Node
-	removes  []string
-	moves    []addrChange
+	Hash          string    `json:"hash"`
+	Cluster       string    `json:"cluster"`
+	Changes       []Change  `json:"changes"`
+	Installs      []Install `json:"installs,omitempty"`
+	Problems      []string  `json:"problems,omitempty"`
+	applied       *config.Cluster
+	target        *config.Cluster
+	adds          []config.Node
+	removes       []string
+	moves         []addrChange
+	wipes         []diskWipe
+	longhornDisks []longhornDisk
 }
 
 func (p *Plan) Empty() bool { return len(p.Changes) == 0 && len(p.Problems) == 0 }
@@ -104,6 +108,7 @@ func (p *Plan) has(action string) bool {
 
 type ConvergeOptions struct {
 	AllowRemoval bool
+	AllowWipe    bool
 	ReadOnly     bool
 }
 
@@ -306,6 +311,7 @@ func (m *Manager) planWith(ctx context.Context, d *Desired, p *Plan, ls *liveSta
 		p.removes = append(p.removes, h)
 		p.Changes = append(p.Changes, ch)
 	}
+	m.planDisks(ctx, d, p, ls, opts)
 	if ls.api && len(p.Problems) == 0 {
 		groups, problems, err := m.planPlatformFor(ctx, d, p.applied, opts.ReadOnly)
 		p.Problems = append(p.Problems, problems...)
@@ -706,6 +712,9 @@ func (m *Manager) Converge(ctx context.Context, d *Desired, p *Plan, opts Conver
 		if ch.Action == ActRemove && !opts.AllowRemoval {
 			return fmt.Errorf("plan removes %s; pass --allow-removal", ch.Target)
 		}
+		if ch.Action == ActWipe && !opts.AllowWipe {
+			return fmt.Errorf("plan wipes %s on %s; pass --allow-wipe", ch.Detail, ch.Target)
+		}
 	}
 	c := d.Cluster
 	name := c.Metadata.Name
@@ -729,6 +738,9 @@ func (m *Manager) Converge(ctx context.Context, d *Desired, p *Plan, opts Conver
 			return fmt.Errorf("add %s: %w", n.Hostname, err)
 		}
 	}
+	if err := m.wipeDisks(ctx, d, p, sink); err != nil {
+		return err
+	}
 	if p.has(ActConfig) {
 		cur, _, err := m.LoadCluster(name)
 		if err != nil {
@@ -737,6 +749,12 @@ func (m *Manager) Converge(ctx context.Context, d *Desired, p *Plan, opts Conver
 		if err := m.ApplyConfigs(ctx, cur, "", sink); err != nil {
 			return err
 		}
+	}
+	if err := m.waitWiped(ctx, d, p, sink); err != nil {
+		return err
+	}
+	if err := m.addLonghornDisks(ctx, d, p, sink); err != nil {
+		return err
 	}
 	if p.has(ActTalos) {
 		if err := m.UpgradeTalos(ctx, c, sink); err != nil {

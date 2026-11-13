@@ -138,6 +138,24 @@ func mapping(m *yaml.Node, key string) *yaml.Node {
 	return v
 }
 
+func AddNodeDataDisk(dir, hash, hostname, path string) error {
+	if err := requireHash(hash); err != nil {
+		return err
+	}
+	return editNode(dir, hash, hostname, func(item *yaml.Node) error {
+		disks := yamlx.Value(item, "dataDisks")
+		if disks == nil {
+			disks = &yaml.Node{Kind: yaml.SequenceNode, Tag: "!!seq"}
+			setKey(item, "dataDisks", disks)
+		}
+		if disks.Kind != yaml.SequenceNode {
+			return fmt.Errorf("%s.dataDisks is not a list", hostname)
+		}
+		disks.Content = append(disks.Content, &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: path})
+		return nil
+	})
+}
+
 func SetNodeSystemDisk(dir, hash, hostname string, on bool) error {
 	if err := requireHash(hash); err != nil {
 		return err

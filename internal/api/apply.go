@@ -55,6 +55,7 @@ func (s *Server) handleApplyRun(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleApply(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		AllowRemoval bool   `json:"allowRemoval"`
+		AllowWipe    bool   `json:"allowWipe"`
 		PlanHash     string `json:"planHash"`
 	}
 	_ = json.NewDecoder(r.Body).Decode(&req)
@@ -72,7 +73,7 @@ func (s *Server) handleApply(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, conflict("The plan changed since you reviewed it; review the new plan."))
 		return
 	}
-	opts := cluster.ConvergeOptions{AllowRemoval: req.AllowRemoval}
+	opts := cluster.ConvergeOptions{AllowRemoval: req.AllowRemoval, AllowWipe: req.AllowWipe}
 	if err := s.startRun(name, "apply", func(ctx context.Context, sink cluster.Sink) error {
 		return s.applyReviewed(ctx, name, d, req.PlanHash, opts, sink)
 	}); err != nil {

@@ -89,7 +89,13 @@ held by a process on this machine that no longer runs is taken over instead of w
    its static address gets an **address** entry, and create writes its `ip:` once it is
    Ready. The platform follows in the same apply, so the next plan is empty.
 3. **add** each declared machine in maintenance mode.
-4. **config**: dry-run first, apply only where Talos reports a diff, wait for Ready.
+4. **wipe**, only with `--allow-wipe` (the console's *Erase* checkbox): each declared data
+   disk that holds a partition table or filesystem and no Talos volume yet. Never the
+   system disk, never a disk any Talos volume uses; Talos's own in-use check stays on.
+   **config**: dry-run first, apply only where Talos reports a diff, wait for Ready; then
+   wait until each wiped disk is formatted and mounted.
+   **longhorn disk**: each data mount missing from its Longhorn node is added to it, with
+   5 % reserved. Longhorn reads its default-disk annotation only when a node first joins.
 5. **upgrade talos**, then **upgrade kubernetes**, node by node, control planes first.
 6. **remove** members no longer declared, only with `--allow-removal` (drain → delete →
    graceful reset; refuses the last control plane, the no-VIP endpoint, or two left).

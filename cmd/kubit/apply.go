@@ -34,7 +34,7 @@ func dirArg(args []string) string {
 }
 
 func planCmd() *cobra.Command {
-	var detailed, allowRemoval, asJSON bool
+	var detailed, allowRemoval, allowWipe, asJSON bool
 	cmd := &cobra.Command{
 		Use:   "plan [dir]",
 		Short: "Show what kubit apply would change in the cluster declared in dir",
@@ -44,7 +44,7 @@ func planCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			p, err := m.Plan(cmd.Context(), d, cluster.ConvergeOptions{AllowRemoval: allowRemoval, ReadOnly: true})
+			p, err := m.Plan(cmd.Context(), d, cluster.ConvergeOptions{AllowRemoval: allowRemoval, AllowWipe: allowWipe, ReadOnly: true})
 			if err != nil {
 				return err
 			}
@@ -66,12 +66,13 @@ func planCmd() *cobra.Command {
 	}
 	cmd.Flags().BoolVar(&detailed, "detailed-exitcode", false, "exit 2 when there are changes")
 	cmd.Flags().BoolVar(&allowRemoval, "allow-removal", false, "plan node removals as allowed")
+	cmd.Flags().BoolVar(&allowWipe, "allow-wipe", false, "plan data disk wipes as allowed")
 	cmd.Flags().BoolVar(&asJSON, "json", false, "print the plan as JSON")
 	return cmd
 }
 
 func applyCmd() *cobra.Command {
-	var allowRemoval, yes bool
+	var allowRemoval, allowWipe, yes bool
 	var reviewed string
 	cmd := &cobra.Command{
 		Use:   "apply [dir]",
@@ -83,7 +84,7 @@ func applyCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			opts := cluster.ConvergeOptions{AllowRemoval: allowRemoval}
+			opts := cluster.ConvergeOptions{AllowRemoval: allowRemoval, AllowWipe: allowWipe}
 			unlock, err := m.LockApply(ctx, d, lockHolder())
 			if err != nil {
 				return err
@@ -122,6 +123,7 @@ func applyCmd() *cobra.Command {
 		}),
 	}
 	cmd.Flags().BoolVar(&allowRemoval, "allow-removal", false, "remove nodes that are no longer declared (drain, delete, reset)")
+	cmd.Flags().BoolVar(&allowWipe, "allow-wipe", false, "wipe data disks that hold another format")
 	cmd.Flags().BoolVarP(&yes, "yes", "y", false, "apply without asking")
 	cmd.Flags().StringVar(&reviewed, "plan", "", "apply only if the plan still has this hash (from kubit plan)")
 	return cmd

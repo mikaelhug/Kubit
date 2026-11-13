@@ -18,11 +18,13 @@ export function Changes({ ctx }: { ctx: ClusterCtx }) {
   const [error, setError] = useState<string | null>(null)
   const [confirm, setConfirm] = useState(false)
   const [allowRemoval, setAllowRemoval] = useState(false)
+  const [allowWipe, setAllowWipe] = useState(false)
   const run = applyRuns.value.get(name)
   const running = !!run?.running
   useEffect(() => { loadApplyRun(name) }, [name])
   const checking = summary?.state === 'checking'
-  const removals = plan?.changes.some((c) => c.blocked) ?? false
+  const removals = plan?.changes.some((c) => c.blocked && c.action === 'remove') ?? false
+  const wipes = plan?.changes.filter((c) => c.action === 'wipe').length ?? 0
   const applicable = !!plan && summary?.state === 'ready' && plan.changes.length > 0 && !running
   const replan = () => { setError(null); api.replan(name).catch((e) => setError(e.message)) }
 
@@ -42,12 +44,13 @@ export function Changes({ ctx }: { ctx: ClusterCtx }) {
       {!plan && !checking && summary?.state !== 'failed' && <Notice tone="muted">No plan yet.</Notice>}
       {run && (run.running || run.lines.length > 0) && <RunLog run={run} />}
       {confirm && plan && (
-        <ConfirmDialog title={`Apply ${name}`} action="Apply" tone={removals ? 'danger' : 'primary'} onClose={() => setConfirm(false)}
-          impact={impactOf(plan) || removals ? <>
+        <ConfirmDialog title={`Apply ${name}`} action="Apply" tone={removals || wipes ? 'danger' : 'primary'} onClose={() => setConfirm(false)}
+          impact={impactOf(plan) || removals || wipes ? <>
             {impactOf(plan) && <span>{impactOf(plan)}</span>}
             {removals && <label class="flex items-center gap-2"><input type="checkbox" checked={allowRemoval} onChange={(e) => setAllowRemoval((e.target as HTMLInputElement).checked)} />Drain, delete and reset removed nodes</label>}
+            {wipes > 0 && <label class="flex items-center gap-2"><input type="checkbox" checked={allowWipe} onChange={(e) => setAllowWipe((e.target as HTMLInputElement).checked)} />Erase {wipes === 1 ? 'the listed data disk' : `${wipes} listed data disks`}</label>}
           </> : null}
-          onConfirm={() => api.apply(name, allowRemoval, plan.hash).then(() => setConfirm(false)).catch((e) => { setError(e.message); setConfirm(false) })} />
+          onConfirm={() => api.apply(name, { allowRemoval, allowWipe }, plan.hash).then(() => setConfirm(false)).catch((e) => { setError(e.message); setConfirm(false) })} />
       )}
     </Section>
   )
@@ -116,7 +119,7 @@ function ChangeRow({ c }: { c: PlanChange }) {
       <span class="font-medium">{c.action}</span>
       {c.target && <span class="mono">{c.target}</span>}
       {c.detail && <span class="text-muted truncate">{c.detail}</span>}
-      {c.blocked && <Pill tone="warn">needs removal allowed</Pill>}
+      {c.blocked && <Pill tone="warn">{c.action === 'wipe' ? 'needs erase allowed' : 'needs removal allowed'}</Pill>}
     </>
   )
   if (!c.diff) return <div class="px-3 py-2 flex items-center gap-2">{summary}</div>
