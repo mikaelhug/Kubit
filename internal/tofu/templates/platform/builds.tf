@@ -138,7 +138,7 @@ resource "kubectl_manifest" "builds_buildkitd" {
         spec = {
           containers = [{
             name            = "buildkitd"
-            image           = "moby/buildkit:v0.25.1"
+            image           = "moby/buildkit:v0.35.0"
             args            = ["--addr", "tcp://0.0.0.0:1234", "--addr", "unix:///run/buildkit/buildkitd.sock", "--config", "/etc/buildkit/buildkitd.toml"]
             ports           = [{ name = "buildkitd", containerPort = 1234 }]
             securityContext = { privileged = true }

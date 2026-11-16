@@ -5,8 +5,8 @@
     "stepMinors": true,
     "steps": [
       {
-        "version": "v1.21.2",
-        "digest": "73a56e1728edd6c99f1f31082618c3259d279a76b7ebd3d4bdc5475c2442d34a",
+        "version": "v1.21.3",
+        "digest": "9ec67938b2981d8b333af61b3fcf53e26b4f6f5deb7ccda3de4ea116bb373a17",
         "kubeVersion": ">= 1.22.0-0"
       }
     ]
@@ -20,6 +20,11 @@
         "version": "2.19.1",
         "digest": "baf8853e93a10646996b799e3d59af63e9be1daba95d5dcf661f321cd5ffa692",
         "kubeVersion": ""
+      },
+      {
+        "version": "2.20.0",
+        "digest": "61965e50b3fb5b95d6a040dca7ea8833769ce8a0d218a9aed87c432fc76d14bc",
+        "kubeVersion": ""
       }
     ]
   },
@@ -32,6 +37,21 @@
         "version": "1.10.1",
         "digest": "a871d397e19cf3243949abd41fd294869f5c2c490014f29e71866a2433ec7fb9",
         "kubeVersion": ">=1.25.0-0"
+      },
+      {
+        "version": "1.11.3",
+        "digest": "ab0682fe8ab2863c271bcfc230bc8c67a45dc0f2432cadbb917b3f52a23393d4",
+        "kubeVersion": ">=1.25.0-0"
+      },
+      {
+        "version": "1.12.2",
+        "digest": "3514c3a802ec910b3e97698f0b816c038d66547e1bf3d1a4ebad44a9f5b8ac8a",
+        "kubeVersion": ">=1.25.0-0"
+      },
+      {
+        "version": "1.13.0",
+        "digest": "e57f010d2a8bcf0da5b8b03ffecf49c5bc35ddc2663588ce8f22b7567b6133ed",
+        "kubeVersion": ">=1.34.0-0"
       }
     ]
   },
@@ -41,8 +61,8 @@
     "stepMinors": false,
     "steps": [
       {
-        "version": "0.16.1",
-        "digest": "fb06bb584fcb7856f15733b2a6a2aff5b61b5c350687e341c163ae24a5938adc",
+        "version": "0.16.2",
+        "digest": "96667a810bdf9b9d1e6d320af16a4e66c63ba56301bc21005e645cd7a1c298a4",
         "kubeVersion": ">= 1.19.0-0"
       }
     ]
@@ -69,6 +89,12 @@
         "digest": "1e65d46bae0ba0baef460a1d82686b50f156372865a3d7d8a85b51c3855b2ef9",
         "kubeVersion": ">=1.25.0-0",
         "gatewayAPI": "v1.6.1"
+      },
+      {
+        "version": "41.7.1",
+        "digest": "f9edd5ca699ff0f5eab14df6e4feefa15f7597a9b56f0b1c01f6089b1eecbaf1",
+        "kubeVersion": ">=1.25.0-0",
+        "gatewayAPI": "v1.6.2"
       }
     ]
   }

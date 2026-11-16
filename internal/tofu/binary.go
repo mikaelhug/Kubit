@@ -20,13 +20,13 @@ import (
 	utilversion "k8s.io/apimachinery/pkg/util/version"
 )
 
-const Version = "1.12.6"
+const Version = "1.13.9"
 
 var checksums = map[string]string{
-	"darwin_arm64": "e083ee43790ab9e19ad66d9933e24a7244a1412e1d5728f37999ae2163fdac95",
-	"darwin_amd64": "166388e5feed47e107e11721b6366bf91d21e47eccbced75f3cbe0c7184ffd9b",
-	"linux_amd64":  "5dc43da4f750f33873dc25e94587128709e819e544b7be9016b255316153c3a8",
-	"linux_arm64":  "e573979ba68a17fe7b881752051a694a7efcd970e39521f6a25775197861ed4d",
+	"darwin_arm64": "29ba2f4c78556a8d25476e5070fe4745495ef649c4a3b827170eb7436d23feb3",
+	"darwin_amd64": "ac5505dd19d896f327d0ab727d4b853413c694931a7602b31f93c3a3e9d46d00",
+	"linux_amd64":  "bc44eb6b06446ba83bd4072114891987f590f66cca712737a7f1147c50c539ce",
+	"linux_arm64":  "04f7c93828b859d420269ed30f923ffebf09157b5d7fb95bf8d88a4d208b7fa3",
 }
 
 var resolved sync.Map

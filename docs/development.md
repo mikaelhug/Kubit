@@ -19,7 +19,7 @@ make test
 make app     # dist/Kubit.app and its zip, see releasing.md
 ```
 
-Go 1.26+, Node 20+. Talos machinery v1.14.4 (Kubernetes 1.37.1 default). Credentials
+Go 1.26+, Node 20+. Talos machinery v1.14.6 (Kubernetes 1.37.1 default). Credentials
 never belong in this repo: `.gitignore` covers kubeconfig, talosconfig, `secrets*.yaml`,
 keys and tfstate, and `TestRepoHoldsNoCredentials` fails on any tracked one.
 

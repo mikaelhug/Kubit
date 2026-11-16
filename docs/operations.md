@@ -224,7 +224,7 @@ Notes:
   off); control planes keep LoadBalancer announcements when they run workloads.
 - Every add-on has resource requests; releases are `atomic`.
 - **Traefik** replaces ingress-nginx: IngressClass `traefik` (default) plus a
-  compatibility class `nginx`, Gateway API CRDs v1.6.1 shipped with Kubit as a local Helm
+  compatibility class `nginx`, Gateway API CRDs v1.6.2 shipped with Kubit as a local Helm
   chart (`gateway-api` in `kube-system`) whose CRDs carry `helm.sh/resource-policy: keep`,
   so turning Traefik off never deletes Gateways or routes.
 - **Longhorn** runs only on data disks or `data-system` (labelled at machine-config
