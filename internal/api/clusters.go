@@ -15,6 +15,7 @@ import (
 func (s *Server) clusterRoutes() {
 	r := s.mux
 	r.HandleFunc("GET /api/v1/clusters", s.handleClusters)
+	r.HandleFunc("GET /api/v1/repos", s.handleRepos)
 	r.HandleFunc("GET /api/v1/clusters/{name}/status", s.handleClusterStatus)
 	r.HandleFunc("POST /api/v1/clusters/{name}/check", s.handleClusterCheck)
 	r.HandleFunc("GET /api/v1/clusters/{name}/yaml", s.handleClusterYAML)

@@ -1,5 +1,5 @@
 import { batch, computed, effect, signal, type Signal } from '@preact/signals'
-import { api, type ApplyRun, type ClusterRow, type HealthEvent, type NodeRow, type PlanSummary, type Status, type Versions } from './api'
+import { api, type ApplyRun, type ClusterRow, type HealthEvent, type NodeRow, type PlanSummary, type ServedRepo, type Status, type Versions } from './api'
 import { editMap, setIn } from './maps'
 
 export const kubitKey = 'kubit'
@@ -19,6 +19,11 @@ export const statuses = signal<Map<string, Status>>(new Map())
 export const health = signal<Map<string, HealthEvent[]>>(new Map())
 export const applyRuns = signal<Map<string, ApplyRun>>(new Map())
 export const plans = signal<Map<string, PlanSummary>>(new Map())
+export const repos = signal<ServedRepo[]>([])
+
+export async function loadRepos() {
+  try { repos.value = await api.repos() } catch {}
+}
 
 export async function loadPlans() {
   try { plans.value = new Map((await api.plans()).map((p) => [p.cluster, p])) } catch {}

@@ -179,6 +179,7 @@ export interface DesignView {
 }
 
 export interface GitState { repo: boolean; branch?: string; upstream?: string; ahead: number; changes: { status: string; path: string }[] }
+export interface ServedRepo { dir: string; name: string; cluster?: string; error?: string }
 export interface RepoView { dir: string; git: GitState }
 
 export interface DiscoverState {

@@ -294,6 +294,7 @@ var removedFields = map[string]string{
 var (
 	unknownField = regexp.MustCompile(`field (\S+) not found in type \S+`)
 	yamlPrefix   = regexp.MustCompile(`yaml: (construct|unmarshal) errors:\s*`)
+	yamlLoad     = regexp.MustCompile(`go-yaml \w+ error in \w+(?: \([^)]*\))? at L(\d+)\.C\d+:`)
 )
 
 func explainParse(err error) error {
@@ -304,7 +305,8 @@ func explainParse(err error) error {
 		}
 		return "unknown field " + f
 	})
-	return errors.New(strings.TrimSpace(yamlPrefix.ReplaceAllString(msg, "")))
+	msg = yamlLoad.ReplaceAllString(yamlPrefix.ReplaceAllString(msg, ""), "line $1:")
+	return errors.New(strings.TrimSpace(msg))
 }
 
 func (c *Cluster) Marshal() ([]byte, error) {

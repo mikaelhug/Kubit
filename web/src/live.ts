@@ -1,7 +1,7 @@
 import { getToken, type Message } from './api'
 import { editMap, setIn } from './maps'
 import {
-  applyRuns, bumpAllRefreshes, bumpRefresh, connected, daemon, health, loadApplyRun, loadMachines, loadPlans, loadVersions, machineKey, machines, plans,
+  applyRuns, bumpAllRefreshes, bumpRefresh, connected, daemon, health, loadApplyRun, loadMachines, loadPlans, loadRepos, loadVersions, machineKey, machines, plans,
   reconnectAttempt, reloadClusters, resyncing, statuses, stopped, toast, upsertCluster,
 } from './store'
 
@@ -55,7 +55,7 @@ async function runResync() {
   try {
     while (resyncDone < resyncWanted) {
       resyncDone = resyncWanted
-      await Promise.all([reloadClusters(), loadMachines(), loadVersions(), loadPlans()])
+      await Promise.all([reloadClusters(), loadMachines(), loadVersions(), loadPlans(), loadRepos()])
       bumpAllRefreshes()
     }
   } finally {
@@ -123,6 +123,7 @@ function apply(m: Message) {
       break
     case 'refresh':
       if (m.scope === 'machines') loadMachines()
+      if (m.scope === 'repos') loadRepos()
       if (m.scope === 'apply' && m.cluster) loadApplyRun(m.cluster)
       bumpRefresh(m.cluster ?? '', m.scope ?? '')
       break

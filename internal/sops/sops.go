@@ -26,7 +26,11 @@ const Version = "3.13.3"
 
 const defaultUnencryptedSuffix = "_unencrypted"
 
-var ErrMAC = errors.New("sops: MAC mismatch; the file was changed without its key")
+var (
+	ErrMAC        = errors.New("sops: MAC mismatch; the file was changed without its key")
+	ErrNoIdentity = errors.New("sops: no age identity found")
+	ErrNoKey      = errors.New("sops: none of your age keys opens this file")
+)
 
 type Rule struct {
 	Age               []string `yaml:"-"`
@@ -433,7 +437,7 @@ func wrapKey(dataKey []byte, recipient string) (string, error) {
 
 func unwrapKey(keys []ageKey, ids []age.Identity) ([]byte, error) {
 	if len(ids) == 0 {
-		return nil, errors.New("sops: no age identity found; set SOPS_AGE_KEY_FILE or create " + DefaultKeyFile())
+		return nil, fmt.Errorf("%w; set SOPS_AGE_KEY_FILE or create %s", ErrNoIdentity, DefaultKeyFile())
 	}
 	for _, k := range keys {
 		r, err := age.Decrypt(armor.NewReader(strings.NewReader(k.Enc)), ids...)
@@ -449,7 +453,7 @@ func unwrapKey(keys []ageKey, ids []age.Identity) ([]byte, error) {
 	for _, k := range keys {
 		rcps = append(rcps, k.Recipient)
 	}
-	return nil, fmt.Errorf("sops: none of your age keys opens this file (recipients %s)", strings.Join(rcps, ", "))
+	return nil, fmt.Errorf("%w (recipients %s)", ErrNoKey, strings.Join(rcps, ", "))
 }
 
 func dropEncrypted(c string) string {

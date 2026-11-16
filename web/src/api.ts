@@ -1,5 +1,5 @@
 import { authedUrl, req } from './api/http'
-import type { AppsRepo, AppsRequest, AppsReview, AppsStatus, AddonStatus, Build, CertInfo, ApplyRun, ClusterRow, ConfigStatus, DesignRequest, DesignView, DirListing, DiscoverState, FluxObject, FluxRepository, HealthEvent, ImageStatus, Inventory, Namespace, NetworkView, NodeDetail, NodeNetworkView, NodeRow, PodEvent, Plan, PlanSummary, PodSummary, PxeStatus, RepoView, SecretEntry, SecretSpec, ClusterSecrets, DeployKey, SOPSKey, Sample, Service, Snapshot, Status, StorageView, LonghornView, Versions, Workload } from './api/types'
+import type { AppsRepo, AppsRequest, AppsReview, AppsStatus, AddonStatus, Build, CertInfo, ApplyRun, ClusterRow, ConfigStatus, DesignRequest, DesignView, DirListing, DiscoverState, FluxObject, FluxRepository, HealthEvent, ImageStatus, Inventory, Namespace, NetworkView, NodeDetail, NodeNetworkView, NodeRow, PodEvent, Plan, PlanSummary, PodSummary, PxeStatus, RepoView, ServedRepo, SecretEntry, SecretSpec, ClusterSecrets, DeployKey, SOPSKey, Sample, Service, Snapshot, Status, StorageView, LonghornView, Versions, Workload } from './api/types'
 
 export type * from './api/types'
 export { getToken } from './api/http'
@@ -7,6 +7,7 @@ export { fmt, splitList } from './api/format'
 
 export const api = {
   clusters: () => req<ClusterRow[]>('GET', '/clusters'),
+  repos: () => req<ServedRepo[]>('GET', '/repos'),
   design: (cluster: string, body: DesignRequest) => req<DesignView>('POST', '/design', { ...body, cluster: cluster || undefined }),
   designChecks: (cluster: string, body: DesignRequest) => req<DesignView>('POST', '/design/checks', { ...body, cluster: cluster || undefined }),
   createRepo: (body: DesignRequest) => req<DesignView>('POST', '/repos', body),

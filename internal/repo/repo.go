@@ -82,7 +82,7 @@ func LoadSpec(dir string) (*config.Cluster, []byte, error) {
 	}
 	c, err := config.Parse(b)
 	if err != nil {
-		return nil, nil, fmt.Errorf("%s: %w", filepath.Join(dir, ClusterFile), err)
+		return nil, nil, fmt.Errorf("%s: %w", dir, err)
 	}
 	return c, b, nil
 }

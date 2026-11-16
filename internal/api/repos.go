@@ -16,6 +16,7 @@ import (
 	"github.com/mikaelhug/kubit/internal/cluster"
 	"github.com/mikaelhug/kubit/internal/config"
 	"github.com/mikaelhug/kubit/internal/repo"
+	"github.com/mikaelhug/kubit/internal/sops"
 	"github.com/mikaelhug/kubit/internal/store"
 )
 
@@ -114,7 +115,37 @@ func (s *Server) appsChanged(ctx context.Context, dir string, replan bool) {
 	}
 }
 
-const scopeRepo = "repo"
+const (
+	scopeRepo  = "repo"
+	scopeRepos = "repos"
+)
+
+func (s *Server) handleRepos(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, s.servedRepos())
+}
+
+func repoProblem(dir string, err error) string {
+	switch {
+	case errors.Is(err, sops.ErrNoIdentity):
+		return "no age key to decrypt " + repo.SecretsFile + "."
+	case errors.Is(err, sops.ErrNoKey):
+		return "none of your age keys decrypts " + repo.SecretsFile + "."
+	case errors.Is(err, sops.ErrMAC):
+		return repo.SecretsFile + " was changed without its key."
+	}
+	msg := strings.TrimPrefix(err.Error(), dir+": ")
+	return strings.ReplaceAll(msg, dir+string(filepath.Separator), "")
+}
+
+func (s *Server) setRepoError(e *servedRepo, msg string) {
+	s.repos.mu.Lock()
+	changed := e.Error != msg
+	e.Error = msg
+	s.repos.mu.Unlock()
+	if changed {
+		s.refresh("", scopeRepos)
+	}
+}
 
 func (s *Server) refreshRepo(dir string) {
 	if e := s.repoAt(dir); e != nil && e.Cluster != "" {
@@ -195,9 +226,7 @@ func (s *Server) trackRepo(ctx context.Context, dir string, d *cluster.Desired, 
 	if _, err := s.manager.Track(ctx, d); err != nil {
 		log.Printf("repo %s: %v", dir, err)
 		if e := s.repoAt(dir); e != nil {
-			s.repos.mu.Lock()
-			e.Error = err.Error()
-			s.repos.mu.Unlock()
+			s.setRepoError(e, repoProblem(dir, err))
 		}
 	}
 	s.refreshLoaded(d.Cluster.Metadata.Name)
@@ -220,13 +249,14 @@ func (s *Server) readRepo(dir string) *cluster.Desired {
 		s.repos.mu.Unlock()
 	}
 	if _, err := os.Stat(filepath.Join(dir, repo.ClusterFile)); err != nil {
-		update(func(e *servedRepo) { e.Cluster, e.Error, e.subnets = "", "", nil })
+		update(func(e *servedRepo) { e.Cluster, e.subnets = "", nil })
+		s.setRepoError(entry, "")
 		return nil
 	}
 	r, err := repo.Load(dir)
 	if err != nil {
 		log.Printf("repo %s: %v", dir, err)
-		update(func(e *servedRepo) { e.Error = err.Error() })
+		s.setRepoError(entry, repoProblem(dir, err))
 		return nil
 	}
 	name, hash := r.Cluster.Metadata.Name, repo.Fingerprint(r.Spec)
@@ -240,12 +270,13 @@ func (s *Server) readRepo(dir string) *cluster.Desired {
 		}
 	}
 	update(func(e *servedRepo) {
-		e.Cluster, e.Name, e.Error, e.subnets, e.nodes = r.Cluster.Metadata.Name, r.Cluster.Metadata.Name, "", subnets, r.Cluster.Spec.Nodes
+		e.Cluster, e.Name, e.subnets, e.nodes = r.Cluster.Metadata.Name, r.Cluster.Metadata.Name, subnets, r.Cluster.Spec.Nodes
 	})
+	s.setRepoError(entry, "")
 	d, err := cluster.FromRepo(r)
 	if err != nil {
 		log.Printf("repo %s: %v", dir, err)
-		update(func(e *servedRepo) { e.Error = err.Error() })
+		s.setRepoError(entry, repoProblem(dir, err))
 		return nil
 	}
 	s.manager.Register(d)

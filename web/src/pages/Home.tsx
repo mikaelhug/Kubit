@@ -3,7 +3,7 @@ import { fmt } from '../api'
 import { AlertGroup } from '../components/Alerts'
 import { Upgrade } from '../components/Upgrade'
 import { ClusterPill, Notice, Pill, PlanPill, Section, Tile, planLabel } from '../components/ui'
-import { clusters, kubitKey, machineList, openAlerts, plans, statuses, versions } from '../store'
+import { clusters, kubitKey, machineList, openAlerts, plans, repos, statuses, versions } from '../store'
 import { addable } from '../machine'
 import { type Tone } from '../tone'
 import { updateText, updatesFor } from '../versions'
@@ -18,6 +18,7 @@ export function Home() {
     { key: kubitKey, label: 'Kubit', href: '/', alerts: openAlerts(kubitKey) },
   ].filter((g) => g.alerts.length > 0)
   const notices: { tone: Tone; text: ComponentChildren }[] = []
+  for (const r of repos.value) if (r.error) notices.push({ tone: 'bad', text: <>{r.name}: {r.error}</> })
   for (const c of list) {
     const u = updates.get(c.name)!
     if (u.talos || u.kubernetes) notices.push({ tone: 'info', text: <span class="flex flex-wrap items-center gap-2"><span>{c.name}: {updateText(u.talos, u.kubernetes)} available.</span><Upgrade cluster={c.name} talos={u.talos} kubernetes={u.kubernetes} /></span> })
