@@ -62,6 +62,7 @@ go_toolchain() {
 	done
 	if [ -n "$best" ] && ! blocked go "$best"; then
 		go mod edit -go="$best"
+		export GOTOOLCHAIN="go$best"
 		applied go "$cur" "$best"
 	fi
 }
