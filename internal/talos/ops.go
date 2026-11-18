@@ -122,16 +122,29 @@ func (c *Client) ShutdownMachine(ctx context.Context, force bool) error {
 	return c.Shutdown(c.nodeContext(ctx), client.WithShutdownForce(force))
 }
 
-func (c *Client) WakeOnLAN(ctx context.Context, mac string) (link string, armed bool, err error) {
+func (c *Client) linkWithMAC(ctx context.Context, mac string) (string, error) {
 	links, err := safe.StateListAll[*network.LinkStatus](c.nodeContext(ctx), c.COSI)
 	if err != nil {
-		return "", false, err
+		return "", err
 	}
 	for l := range links.All() {
-		if s := l.TypedSpec(); s.Physical() && netx.Normalize(s.HardwareAddr.String()) == netx.Normalize(mac) {
-			link = l.Metadata().ID()
-			break
+		s := l.TypedSpec()
+		if s.Physical() && (netx.Normalize(s.HardwareAddr.String()) == netx.Normalize(mac) || netx.Normalize(s.PermanentAddr.String()) == netx.Normalize(mac)) {
+			return l.Metadata().ID(), nil
 		}
+	}
+	return "", nil
+}
+
+func (c *Client) HasMAC(ctx context.Context, mac string) (bool, error) {
+	link, err := c.linkWithMAC(ctx, mac)
+	return link != "", err
+}
+
+func (c *Client) WakeOnLAN(ctx context.Context, mac string) (link string, armed bool, err error) {
+	link, err = c.linkWithMAC(ctx, mac)
+	if err != nil {
+		return "", false, err
 	}
 	if link == "" {
 		return "", false, fmt.Errorf("no link with MAC %s", mac)
@@ -277,6 +290,10 @@ func (c *Client) ResetToMaintenance(ctx context.Context) error {
 	return c.Reset(c.nodeContext(ctx), true, true)
 }
 
+func (c *Client) ResetAndPowerOff(ctx context.Context) error {
+	return c.Reset(c.nodeContext(ctx), true, false)
+}
+
 func (c *Client) WipeToMaintenance(ctx context.Context) error {
 	return c.ResetGeneric(c.nodeContext(ctx), &machineapi.ResetRequest{
 		Graceful: false,
@@ -348,6 +365,7 @@ type EtcdPeer struct {
 	ID       uint64
 	Hostname string
 	PeerURLs []string
+	Learner  bool
 }
 
 func (c *Client) EtcdPeers(ctx context.Context) ([]EtcdPeer, error) {
@@ -358,7 +376,7 @@ func (c *Client) EtcdPeers(ctx context.Context) ([]EtcdPeer, error) {
 	var out []EtcdPeer
 	for _, m := range resp.Messages {
 		for _, mm := range m.Members {
-			out = append(out, EtcdPeer{ID: mm.Id, Hostname: mm.Hostname, PeerURLs: mm.PeerUrls})
+			out = append(out, EtcdPeer{ID: mm.Id, Hostname: mm.Hostname, PeerURLs: mm.PeerUrls, Learner: mm.IsLearner})
 		}
 	}
 	return out, nil

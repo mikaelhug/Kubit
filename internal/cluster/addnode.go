@@ -52,6 +52,11 @@ func (m *Manager) AddNode(ctx context.Context, name string, n config.Node, sink 
 	if err := sink.Run("ready", func() error { return m.waitReady(ctx, c, []config.Node{n}, sink) }); err != nil {
 		return err
 	}
+	if n.Role == config.RoleControlPlane {
+		if err := sink.Run("etcd", func() error { return m.waitEtcdVoter(ctx, n, sec.Talosconfig, sink) }); err != nil {
+			return err
+		}
+	}
 	sink.Emit(Done, "ready", n.Hostname, "joined cluster %s as %s", name, n.Role)
 	return nil
 }

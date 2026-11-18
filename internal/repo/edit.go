@@ -60,14 +60,43 @@ func RemoveNode(dir, hash, hostname string) error {
 	if err := requireHash(hash); err != nil {
 		return err
 	}
-	return editNodes(dir, hash, func(nodes *yaml.Node) error {
-		for i, item := range nodes.Content {
-			if h := yamlx.Value(item, "hostname"); h != nil && h.Value == hostname {
-				nodes.Content = append(nodes.Content[:i], nodes.Content[i+1:]...)
-				return nil
-			}
+	return editNodes(dir, hash, func(nodes *yaml.Node) error { return deleteNodeItem(nodes, hostname) })
+}
+
+func deleteNodeItem(nodes *yaml.Node, hostname string) error {
+	for i, item := range nodes.Content {
+		if h := yamlx.Value(item, "hostname"); h != nil && h.Value == hostname {
+			nodes.Content = append(nodes.Content[:i], nodes.Content[i+1:]...)
+			return nil
 		}
-		return fmt.Errorf("%s is not in %s", hostname, ClusterFile)
+	}
+	return fmt.Errorf("%s is not in %s", hostname, ClusterFile)
+}
+
+func TakeOverControlPlane(dir, hash, worker, replaced, hostname string, nn *config.NodeNetwork) error {
+	if err := requireHash(hash); err != nil {
+		return err
+	}
+	return editNodes(dir, hash, func(nodes *yaml.Node) error {
+		if err := deleteNodeItem(nodes, replaced); err != nil {
+			return err
+		}
+		for _, item := range nodes.Content {
+			if h := yamlx.Value(item, "hostname"); h == nil || h.Value != worker {
+				continue
+			}
+			setKey(item, "hostname", &yaml.Node{Kind: yaml.ScalarNode, Value: hostname})
+			setKey(item, "role", &yaml.Node{Kind: yaml.ScalarNode, Value: string(config.RoleControlPlane)})
+			if nn != nil {
+				var v yaml.Node
+				if err := v.Encode(nn); err != nil {
+					return err
+				}
+				setKey(item, "network", &v)
+			}
+			return nil
+		}
+		return fmt.Errorf("%s is not in %s", worker, ClusterFile)
 	})
 }
 

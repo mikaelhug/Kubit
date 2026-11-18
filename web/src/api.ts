@@ -23,6 +23,7 @@ export const api = {
   setNodeStorage: (cluster: string, host: string, body: { systemDisk: boolean; hash: string }) => req<{ hash: string }>('PUT', `/clusters/${cluster}/nodes/${host}/storage`, body),
   addDataDisk: (cluster: string, host: string, body: { path: string; hash: string }) => req<{ hash: string }>('POST', `/clusters/${cluster}/nodes/${host}/data-disks`, body),
   removeNode: (cluster: string, hostname: string, hash: string) => req<{ hash: string }>('DELETE', `/clusters/${cluster}/nodes/${hostname}?hash=${hash}`),
+  takeOver: (cluster: string, hostname: string, body: { hostname: string; replaces: string; hash: string }) => req<{ hash: string }>('POST', `/clusters/${cluster}/nodes/${hostname}/takeover`, body),
   setAddon: (cluster: string, key: string, body: { enabled: boolean; range?: string; repository?: FluxRepository; imageAutomation?: boolean; replicas?: number; hash: string }) => req<{ hash: string }>('PUT', `/clusters/${cluster}/platform/${key}`, body),
   setVersions: (cluster: string, body: { talosVersion?: string; kubernetesVersion?: string; hostnames?: string[]; hash: string }) => req<{ hash: string }>('PUT', `/clusters/${cluster}/versions`, body),
   nodePower: (cluster: string, action: 'restart' | 'shutdown' | 'power-on', hostnames: string[], whole = false) => req<void>('POST', `/clusters/${cluster}/nodes/power`, { action, hostnames, whole }),

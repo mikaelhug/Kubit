@@ -31,6 +31,8 @@ const (
 	installTimeout   = 10 * time.Minute
 	bootstrapTimeout = 5 * time.Minute
 	readyTimeout     = 10 * time.Minute
+	voterTimeout     = 15 * time.Minute
+	evictStall       = 30 * time.Minute
 )
 
 type Manager struct {
@@ -120,7 +122,7 @@ func (m *Manager) installers(c *config.Cluster) func(config.Node) string {
 }
 
 func (m *Manager) machineConfigs(c *config.Cluster, bundle *secrets.Bundle) (*config.Generated, error) {
-	return config.Generate(declared(c), bundle, m.installers(c))
+	return config.Generate(c, bundle, m.installers(c))
 }
 
 func (m *Manager) loadSecrets(name string) (*Desired, *secrets.Bundle, error) {

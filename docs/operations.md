@@ -88,7 +88,12 @@ held by a process on this machine that no longer runs is taken over instead of w
    another one before bootstrapping etcd, while the nodes are empty. A node that comes up on
    its static address gets an **address** entry, and create writes its `ip:` once it is
    Ready. The platform follows in the same apply, so the next plan is empty.
-3. **add** each declared machine in maintenance mode.
+3. **rejoin**, only with `--allow-removal`: a declared node whose `mac` runs under another
+   hostname or role (Talos cannot change a node's role in place). After a `pre-swap` etcd
+   snapshot and the Longhorn eviction below, the machine is drained, deleted and reset, found
+   in maintenance mode by its MAC, and installed as declared.
+   **add** each declared machine in maintenance mode. A control plane counts as joined once it
+   is a voting etcd member (Talos adds it as a learner and promotes it within 10 minutes).
 4. **wipe**, only with `--allow-wipe` (the console's *Erase* checkbox): each declared data
    disk that holds a partition table or filesystem and no Talos volume yet. Never the
    system disk, never a disk any Talos volume uses; Talos's own in-use check stays on.
@@ -99,6 +104,11 @@ held by a process on this machine that no longer runs is taken over instead of w
 5. **upgrade talos**, then **upgrade kubernetes**, node by node, control planes first.
 6. **remove** members no longer declared, only with `--allow-removal` (drain → delete →
    graceful reset; refuses the last control plane, the no-VIP endpoint, or two left).
+   Before the first reset of a rejoin or removal, Kubit asks Longhorn to evict every
+   replica from those nodes and waits until none is left (it gives up after 30 minutes
+   without progress and lifts the eviction); the plan refuses when the other nodes lack the
+   space or the count for them. A node that still holds replicas is never reset. Its Longhorn
+   node is deleted with the Kubernetes node.
 7. **platform**: `tofu apply` of the add-ons, state in the cluster (below).
 
 **Address changes** plan as `address` rows (`cp-01  192.168.5.240 → 192.168.5.51`,
@@ -121,6 +131,23 @@ after a `pre-move` etcd snapshot:
 Other nodes then get the new endpoint through the normal config step. A move that needs a
 reboot for other reasons is refused: apply those changes first. An interrupted run resumes
 from the plan (`record` writes a missing `ip:`, `repair` fixes a stale etcd peer URL).
+
+**Replacing the endpoint control plane** (no VIP). Delete its entry from `cluster.yaml` and
+give the control plane that takes over the endpoint address as `network.addresses`, with
+`ip:` where it answers now (the node page's *Take over control plane* writes this for a
+worker). The endpoint URL never changes. The plan lists the new control plane (`rejoin` or
+`add`), `remove` of the old one (*power off*) and `address` onto the endpoint. Apply:
+
+1. Install the new control plane at its current address and wait until it votes in etcd.
+2. Remove the old one only while the successor votes and every member is healthy. Kubit
+   follows the API at the successor's own address (the API server certificate covers every
+   node address); the graceful reset leaves etcd and powers the machine off, so a DHCP
+   reservation cannot hand its address back.
+3. Move the successor onto the endpoint address as above.
+
+The endpoint answers nowhere from step 2 until the try apply in step 3; workers reach the API
+through KubePrism meanwhile. An interrupted run plans the remaining steps. Recovery is the
+`pre-swap` snapshot ([Backups](#backups)).
 
 **Node lost at both addresses.** Wait 3 minutes: an unconfirmed try apply rolls back to the
 old address. A confirmed node that answers nowhere needs a console: boot it, read its

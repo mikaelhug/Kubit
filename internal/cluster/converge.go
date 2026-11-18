@@ -98,6 +98,8 @@ type Plan struct {
 	moves         []addrChange
 	wipes         []diskWipe
 	longhornDisks []longhornDisk
+	rejoins       []rejoin
+	handover      *handover
 }
 
 func (p *Plan) Empty() bool { return len(p.Changes) == 0 && len(p.Problems) == 0 }
@@ -119,6 +121,7 @@ type liveNode struct {
 	inv    *talos.Inventory
 	image  nodeImage
 	live   config.LiveConfig
+	rejoin *liveMachine
 	err    error
 }
 
@@ -127,6 +130,7 @@ type liveState struct {
 	api      bool
 	etcd     bool
 	endpoint string
+	apiAt    string
 	nodes    map[string]*liveNode
 	kube     map[string]k8s.NodeStatus
 }
@@ -180,8 +184,8 @@ func (m *Manager) plan(ctx context.Context, d *Desired, opts ConvergeOptions) (*
 		return p, nil
 	}
 	ls := m.observe(ctx, d)
-	if ls.endpoint != "" {
-		m.pinEndpoint(d.Cluster.Metadata.Name, ls.endpoint)
+	if at := ls.pin(); at != "" {
+		m.pinEndpoint(d.Cluster.Metadata.Name, at)
 	}
 	return m.planWith(ctx, d, p, ls, opts)
 }
@@ -242,15 +246,31 @@ func (m *Manager) planWith(ctx context.Context, d *Desired, p *Plan, ls *liveSta
 		return p, nil
 	}
 	p.applied = appliedSpec(c, ls)
-	if cps := len(c.ControlPlanes()); cps < len(p.applied.ControlPlanes()) && cps < 3 {
+	var problems []string
+	p.handover, problems = planHandover(c, ls)
+	p.Problems = append(p.Problems, problems...)
+	live := len(p.applied.ControlPlanes())
+	if p.handover != nil {
+		live--
+	}
+	if cps := len(c.ControlPlanes()); cps < live && cps < 3 {
 		p.Problems = append(p.Problems, fmt.Sprintf("cluster.yaml leaves %d control plane(s); etcd needs 3 to survive a failure", cps))
 	}
 	for _, n := range c.Spec.Nodes {
 		ln := ls.nodes[n.Hostname]
 		switch {
 		case ln.member:
+		case ln.rejoin != nil:
+			p.planRejoin(n, ln, opts)
 		case ln.maint:
+			declaredIP := n.IP
 			n.IP = p.addressOf(n, ln)
+			if p.takesOver(n.Hostname) {
+				at := n.IP
+				n.IP = declaredIP
+				n = interim(n)
+				n.IP = at
+			}
 			p.adds = append(p.adds, n)
 			p.install(n)
 			p.Changes = append(p.Changes, Change{Action: ActAdd, Target: n.Hostname, Detail: fmt.Sprintf("%s at %s", n.Role, ln.addr)})
@@ -261,8 +281,16 @@ func (m *Manager) planWith(ctx context.Context, d *Desired, p *Plan, ls *liveSta
 			p.Problems = append(p.Problems, notInMaintenance(n, n.TargetIP(), ln))
 		}
 	}
-	p.Problems = append(p.Problems, takenTargets(ctx, p.adds, ls)...)
+	joining := slices.Clone(p.adds)
+	for _, r := range p.rejoins {
+		joining = append(joining, r.node)
+	}
+	p.Problems = append(p.Problems, takenTargets(ctx, joining, ls)...)
 	m.planAddresses(ctx, p, d, ls)
+	p.planTakeover(c, ls)
+	if ls.apiAt != "" && !p.movesTo(config.EndpointHost(c.Spec.ControlPlane.Endpoint)) {
+		p.Problems = append(p.Problems, "the Kubernetes API at "+c.Spec.ControlPlane.Endpoint+" does not answer")
+	}
 	if len(p.applied.Spec.Nodes) > 0 {
 		if err := m.EnsureSchematic(ctx, p.applied); err != nil {
 			return nil, err
@@ -300,16 +328,29 @@ func (m *Manager) planWith(ctx context.Context, d *Desired, p *Plan, ls *liveSta
 	if from := p.applied.Spec.KubernetesVersion; from != c.Spec.KubernetesVersion {
 		p.Changes = append(p.Changes, Change{Action: ActKubernetes, Detail: from + " → " + c.Spec.KubernetesVersion})
 	}
+	if p.handover != nil && (p.has(ActTalos) || p.has(ActKubernetes)) {
+		p.Problems = append(p.Problems, fmt.Sprintf("apply the upgrades before %s takes over from %s", p.handover.to, p.handover.from))
+	}
+	holder := liveEndpointHolder(c, ls)
 	for _, h := range sortedKeys(ls.kube) {
-		if c.NodeIndex(h) >= 0 {
+		if c.NodeIndex(h) >= 0 || p.rejoinSource(h) {
 			continue
 		}
 		ch := Change{Action: ActRemove, Target: h, Detail: "drain, delete and reset"}
+		switch {
+		case p.handsOver(h):
+			ch.Detail = "drain, delete and power off"
+		case h == holder:
+			p.Problems = append(p.Problems, fmt.Sprintf("%s holds the API endpoint without a VIP; give the control plane that replaces it network.addresses %s, or add a VIP", h, config.EndpointHost(c.Spec.ControlPlane.Endpoint)))
+		}
 		if !opts.AllowRemoval {
 			ch.Blocked = "needs --allow-removal"
 		}
 		p.removes = append(p.removes, h)
 		p.Changes = append(p.Changes, ch)
+	}
+	if p.handover != nil {
+		p.removes = append(slices.DeleteFunc(p.removes, p.handsOver), p.handover.from)
 	}
 	m.planDisks(ctx, d, p, ls, opts)
 	if ls.api && len(p.Problems) == 0 {
@@ -398,6 +439,13 @@ func sortedKeys[V any](m map[string]V) []string {
 	return out
 }
 
+func (ls *liveState) pin() string {
+	if ls.apiAt != "" {
+		return ls.apiAt
+	}
+	return ls.endpoint
+}
+
 func (ls *liveState) inMaintenance() bool {
 	for _, ln := range ls.nodes {
 		if ln.maint {
@@ -429,14 +477,33 @@ func (m *Manager) observe(ctx context.Context, d *Desired) *liveState {
 			break
 		}
 	}
-	if kc, err := m.KubeClientFor(c.Metadata.Name, m.followEndpoint(d, ls.endpoint)); err == nil {
+	read := func(kubeconfig []byte) bool {
+		kc, err := m.KubeClientFor(c.Metadata.Name, kubeconfig)
+		if err != nil {
+			return false
+		}
 		call, cancel := context.WithTimeout(ctx, 10*time.Second)
 		nodes, err := kc.Nodes(call)
 		cancel()
-		if err == nil {
-			ls.api = true
-			for _, kn := range nodes {
-				ls.kube[kn.Name] = kn
+		if err != nil {
+			return false
+		}
+		ls.api = true
+		for _, kn := range nodes {
+			ls.kube[kn.Name] = kn
+		}
+		return true
+	}
+	if !read(m.followEndpoint(d, ls.endpoint)) && c.Spec.ControlPlane.VIP == "" {
+		for _, n := range c.ControlPlanes() {
+			ln := ls.nodes[n.Hostname]
+			if !ln.member || ln.addr == config.EndpointHost(c.Spec.ControlPlane.Endpoint) {
+				continue
+			}
+			at := config.EndpointAt(c.Spec.ControlPlane.Endpoint, ln.addr)
+			if kc, err := kubeconfigAt(d.Kubeconfig, at); err == nil && read(kc) {
+				ls.apiAt = at
+				break
 			}
 		}
 	}
@@ -447,10 +514,10 @@ func (m *Manager) observe(ctx context.Context, d *Desired) *liveState {
 
 func (m *Manager) observeNode(ctx context.Context, n config.Node, talosconfig []byte, lans *lanScans, off bool) *liveNode {
 	ln := &liveNode{}
-	if m.memberAt(ctx, ln, n, n.TargetIP(), talosconfig) {
+	if m.memberAt(ctx, ln, n, n.TargetIP(), talosconfig) || ln.rejoin != nil {
 		return ln
 	}
-	if n.TargetIP() != n.IP && m.memberAt(ctx, ln, n, n.IP, talosconfig) {
+	if n.TargetIP() != n.IP && (m.memberAt(ctx, ln, n, n.IP, talosconfig) || ln.rejoin != nil) {
 		return ln
 	}
 	if off {
@@ -484,7 +551,7 @@ func (m *Manager) observeNode(ctx context.Context, n config.Node, talosconfig []
 			ln.settle(s, s.IP)
 			return ln
 		}
-		if s.State != talos.StateMaintenance && m.memberAt(ctx, ln, n, s.IP, talosconfig) {
+		if s.State != talos.StateMaintenance && (m.memberAt(ctx, ln, n, s.IP, talosconfig) || ln.rejoin != nil) {
 			return ln
 		}
 	}
@@ -502,13 +569,27 @@ func (m *Manager) memberAt(ctx context.Context, ln *liveNode, n config.Node, ip 
 	if stage, err := tc.Stage(call); err != nil || stage == "maintenance" {
 		return false
 	}
-	if h, err := tc.Hostname(call); err != nil || h != n.Hostname {
+	h, err := tc.Hostname(call)
+	if err != nil {
 		return false
 	}
-	ln.member, ln.addr, ln.err = true, ip, nil
-	if prov, err := tc.MachineConfigProvider(call); err == nil {
-		ln.live = config.LiveOf(prov)
+	if n.MAC != "" {
+		has, err := tc.HasMAC(call, n.MAC)
+		if err == nil && !has || err != nil && h != n.Hostname {
+			return false
+		}
+	} else if h != n.Hostname {
+		return false
 	}
+	var live config.LiveConfig
+	if prov, err := tc.MachineConfigProvider(call); err == nil {
+		live = config.LiveOf(prov)
+	}
+	if h != n.Hostname || live.Role != "" && live.Role != n.Role {
+		ln.rejoin, ln.err = &liveMachine{hostname: h, role: live.Role, addr: ip}, nil
+		return false
+	}
+	ln.member, ln.addr, ln.err, ln.live = true, ip, nil, live
 	img, cancelImg := context.WithTimeout(ctx, 20*time.Second)
 	defer cancelImg()
 	ln.image, ln.err = readNodeImage(img, ip, talosconfig)
@@ -592,7 +673,7 @@ func appliedSpec(d *config.Cluster, ls *liveState) *config.Cluster {
 		}
 	}
 	for _, h := range sortedKeys(ls.kube) {
-		if d.NodeIndex(h) >= 0 {
+		if ln := ls.nodes[h]; d.NodeIndex(h) >= 0 && (ln == nil || ln.rejoin == nil || ln.rejoin.hostname != h) {
 			continue
 		}
 		a.Spec.Nodes = append(a.Spec.Nodes, undeclaredNode(h, ls.kube[h]))
@@ -712,6 +793,9 @@ func (m *Manager) Converge(ctx context.Context, d *Desired, p *Plan, opts Conver
 		if ch.Action == ActRemove && !opts.AllowRemoval {
 			return fmt.Errorf("plan removes %s; pass --allow-removal", ch.Target)
 		}
+		if ch.Action == ActRejoin && !opts.AllowRemoval {
+			return fmt.Errorf("plan resets and reinstalls %s; pass --allow-removal", ch.Target)
+		}
 		if ch.Action == ActWipe && !opts.AllowWipe {
 			return fmt.Errorf("plan wipes %s on %s; pass --allow-wipe", ch.Detail, ch.Target)
 		}
@@ -730,8 +814,21 @@ func (m *Manager) Converge(ctx context.Context, d *Desired, p *Plan, opts Conver
 	if err := m.adopt(ctx, d, p.applied, true); err != nil {
 		return err
 	}
-	if err := m.ApplyAddresses(ctx, d, p, sink); err != nil {
+	if err := m.ApplyAddresses(ctx, d, p.movesNow(false), sink); err != nil {
 		return err
+	}
+	if len(p.rejoins) > 0 || p.handover != nil {
+		if err := sink.Run("snapshot", func() error { return m.safetySnapshot(ctx, name, "pre-swap", sink) }); err != nil {
+			return err
+		}
+	}
+	if err := m.evictLonghorn(ctx, d, p.resets(), sink); err != nil {
+		return err
+	}
+	for _, r := range p.rejoins {
+		if err := m.rejoin(ctx, d, r, sink); err != nil {
+			return fmt.Errorf("rejoin %s: %w", r.node.Hostname, err)
+		}
 	}
 	for _, n := range p.adds {
 		if err := m.AddNode(ctx, name, n, sink); err != nil {
@@ -745,6 +842,11 @@ func (m *Manager) Converge(ctx context.Context, d *Desired, p *Plan, opts Conver
 		cur, _, err := m.LoadCluster(name)
 		if err != nil {
 			return err
+		}
+		for _, ch := range p.movesNow(true) {
+			if i := cur.NodeIndex(ch.node.Hostname); i >= 0 {
+				cur.Spec.Nodes[i].Network = interim(ch.node).Network
+			}
 		}
 		if err := m.ApplyConfigs(ctx, cur, "", sink); err != nil {
 			return err
@@ -767,9 +869,16 @@ func (m *Manager) Converge(ctx context.Context, d *Desired, p *Plan, opts Conver
 		}
 	}
 	for _, h := range p.removes {
-		if err := m.RemoveNode(ctx, name, h, sink); err != nil {
+		successor := ""
+		if p.handsOver(h) {
+			successor = p.handover.to
+		}
+		if err := m.removeNode(ctx, name, h, successor, sink); err != nil {
 			return fmt.Errorf("remove %s: %w", h, err)
 		}
+	}
+	if err := m.ApplyAddresses(ctx, d, p.movesNow(true), sink); err != nil {
+		return err
 	}
 	return m.ApplyPlatform(ctx, name, sink)
 }
@@ -804,8 +913,8 @@ func (m *Manager) Track(ctx context.Context, d *Desired) (bool, error) {
 	}
 	m.Register(d)
 	ls := m.observe(ctx, d)
-	if ls.endpoint != "" {
-		m.pinEndpoint(name, ls.endpoint)
+	if at := ls.pin(); at != "" {
+		m.pinEndpoint(name, at)
 	}
 	if !ls.exists {
 		if row, err := m.Store.GetCluster(name); err == nil && Live(row.State) {

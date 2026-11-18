@@ -106,15 +106,20 @@ type etcdMemberHealth struct {
 	id      uint64
 	name    string
 	healthy bool
+	learner bool
 }
 
 func etcdTolerance(members []etcdMemberHealth, alarms []string) error {
+	if len(alarms) == 0 && len(members) == 2 {
+		return errors.New("etcd has 2 members and loses quorum when one goes down; add or remove a control plane first")
+	}
+	return etcdHealthy(members, alarms)
+}
+
+func etcdHealthy(members []etcdMemberHealth, alarms []string) error {
 	const why = "every member must be healthy before a control plane goes down"
 	if len(alarms) > 0 {
 		return fmt.Errorf("etcd alarm %s; %s", strings.Join(alarms, ", "), why)
-	}
-	if len(members) == 2 {
-		return errors.New("etcd has 2 members and loses quorum when one goes down; add or remove a control plane first")
 	}
 	for _, mm := range members {
 		if mm.name == "" {
@@ -133,25 +138,33 @@ func (m *Manager) etcdTolerates(ctx context.Context, c *config.Cluster, n config
 		return fmt.Errorf("etcd check: %w", err)
 	}
 	defer tc.Close()
+	members, alarms, err := etcdMembers(ctx, tc, c.ControlPlanes(), talosconfig)
+	if err != nil {
+		return err
+	}
+	return etcdTolerance(members, alarms)
+}
+
+func etcdMembers(ctx context.Context, tc *talos.Client, cps []config.Node, talosconfig []byte) ([]etcdMemberHealth, []string, error) {
 	call, cancel := context.WithTimeout(ctx, rpcTimeout)
 	defer cancel()
 	peers, err := tc.EtcdPeers(call)
 	if err != nil {
-		return fmt.Errorf("etcd members: %w", err)
+		return nil, nil, fmt.Errorf("etcd members: %w", err)
 	}
 	alarms, err := tc.EtcdAlarms(call)
 	if err != nil {
-		return fmt.Errorf("etcd alarms: %w", err)
+		return nil, nil, fmt.Errorf("etcd alarms: %w", err)
 	}
 	members := make([]etcdMemberHealth, 0, len(peers))
 	for _, p := range peers {
-		h := etcdMemberHealth{id: p.ID, name: p.Hostname}
+		h := etcdMemberHealth{id: p.ID, name: p.Hostname, learner: p.Learner}
 		if p.Hostname != "" {
-			h.healthy = etcdServiceHealthy(ctx, peerAddress(p, c.ControlPlanes()), talosconfig)
+			h.healthy = etcdServiceHealthy(ctx, peerAddress(p, cps), talosconfig)
 		}
 		members = append(members, h)
 	}
-	return etcdTolerance(members, alarms)
+	return members, alarms, nil
 }
 
 func etcdServiceHealthy(ctx context.Context, ip string, talosconfig []byte) bool {

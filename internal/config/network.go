@@ -15,6 +15,10 @@ type Network struct {
 	Discovery   *bool    `yaml:"discovery,omitempty" json:"discovery,omitempty"`
 }
 
+func (n Node) Installable() bool {
+	return n.InstallDisk.Path != "" || n.InstallDisk.Selector != nil
+}
+
 func (n Node) TargetIP() string {
 	if n.Network != nil && len(n.Network.Addresses) > 0 {
 		if pfx, err := netip.ParsePrefix(n.Network.Addresses[0]); err == nil {

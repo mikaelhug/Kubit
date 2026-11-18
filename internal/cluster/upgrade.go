@@ -21,9 +21,7 @@ func orderedNodes(c *config.Cluster) []config.Node {
 
 func declared(c *config.Cluster) *config.Cluster {
 	out := *c
-	out.Spec.Nodes = slices.DeleteFunc(slices.Clone(c.Spec.Nodes), func(n config.Node) bool {
-		return n.InstallDisk.Path == "" && n.InstallDisk.Selector == nil
-	})
+	out.Spec.Nodes = slices.DeleteFunc(slices.Clone(c.Spec.Nodes), func(n config.Node) bool { return !n.Installable() })
 	return &out
 }
 
@@ -102,7 +100,7 @@ func (m *Manager) UpgradeTalos(ctx context.Context, want *config.Cluster, sink S
 	}
 	var staged *config.Generated
 	if reimage {
-		if staged, err = config.Generate(declared(c), bundle, m.installers(next)); err != nil {
+		if staged, err = config.Generate(c, bundle, m.installers(next)); err != nil {
 			return err
 		}
 	}

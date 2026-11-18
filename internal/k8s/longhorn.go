@@ -3,13 +3,17 @@ package k8s
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"sort"
 	"strconv"
+	"time"
 
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/apimachinery/pkg/watch"
 )
 
 const longhornNamespace = "longhorn-system"
@@ -194,4 +198,118 @@ func (c *Client) AddLonghornDisk(ctx context.Context, node, name, path string, r
 	}
 	_, err = dyn.Resource(longhornNodeGVR).Namespace(longhornNamespace).Patch(ctx, node, types.MergePatchType, patch, metav1.PatchOptions{})
 	return err
+}
+
+func (c *Client) SetLonghornEviction(ctx context.Context, node string, evict bool) (bool, error) {
+	dyn, err := c.dynClient()
+	if err != nil {
+		return false, err
+	}
+	patch, err := json.Marshal(map[string]any{"spec": map[string]any{"allowScheduling": !evict, "evictionRequested": evict}})
+	if err != nil {
+		return false, err
+	}
+	_, err = dyn.Resource(longhornNodeGVR).Namespace(longhornNamespace).Patch(ctx, node, types.MergePatchType, patch, metav1.PatchOptions{})
+	if apierrors.IsNotFound(err) {
+		return false, nil
+	}
+	return err == nil, err
+}
+
+func (c *Client) DeleteLonghornNode(ctx context.Context, node string) error {
+	dyn, err := c.dynClient()
+	if err != nil {
+		return err
+	}
+	err = dyn.Resource(longhornNodeGVR).Namespace(longhornNamespace).Delete(ctx, node, metav1.DeleteOptions{})
+	if apierrors.IsNotFound(err) {
+		return nil
+	}
+	return err
+}
+
+func (c *Client) WaitLonghornEmpty(ctx context.Context, nodes []string, stall time.Duration, progress func(left int)) error {
+	dyn, err := c.dynClient()
+	if err != nil {
+		return err
+	}
+	res := dyn.Resource(longhornNodeGVR).Namespace(longhornNamespace)
+	left := map[string]int{}
+	total := func() int {
+		sum := 0
+		for _, r := range left {
+			sum += r
+		}
+		return sum
+	}
+	lowest, since := -1, time.Now()
+	moved := func() bool {
+		t := total()
+		if lowest >= 0 && t >= lowest {
+			return false
+		}
+		lowest, since = t, time.Now()
+		if progress != nil {
+			progress(t)
+		}
+		return true
+	}
+	for {
+		list, err := res.List(ctx, metav1.ListOptions{})
+		if err != nil {
+			return err
+		}
+		for _, n := range nodes {
+			left[n] = 0
+		}
+		for _, u := range list.Items {
+			if _, ok := left[u.GetName()]; ok {
+				left[u.GetName()] = longhornNodeOf(u, 100).Replicas
+			}
+		}
+		moved()
+		if total() == 0 {
+			return nil
+		}
+		w, err := res.Watch(ctx, metav1.ListOptions{ResourceVersion: list.GetResourceVersion()})
+		if err != nil {
+			return err
+		}
+		if err := func() error {
+			defer w.Stop()
+			timer := time.NewTimer(time.Until(since.Add(stall)))
+			defer timer.Stop()
+			for {
+				select {
+				case <-ctx.Done():
+					return ctx.Err()
+				case <-timer.C:
+					return fmt.Errorf("no Longhorn replica moved in %s; %d remain", stall, total())
+				case ev, ok := <-w.ResultChan():
+					if !ok {
+						return nil
+					}
+					u, isObj := ev.Object.(*unstructured.Unstructured)
+					if !isObj {
+						continue
+					}
+					if _, want := left[u.GetName()]; !want {
+						continue
+					}
+					left[u.GetName()] = longhornNodeOf(*u, 100).Replicas
+					if ev.Type == watch.Deleted {
+						left[u.GetName()] = 0
+					}
+					if moved() {
+						timer.Reset(time.Until(since.Add(stall)))
+					}
+					if total() == 0 {
+						return nil
+					}
+				}
+			}
+		}(); err != nil || total() == 0 {
+			return err
+		}
+	}
 }

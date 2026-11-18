@@ -279,6 +279,39 @@ func (m *Manager) bootstrap(ctx context.Context, cp config.Node, talosconfig []b
 	return nil
 }
 
+func (m *Manager) waitEtcdVoter(ctx context.Context, n config.Node, talosconfig []byte, sink Sink) error {
+	tc, err := talos.Dial(ctx, n.TargetIP(), talosconfig)
+	if err != nil {
+		return err
+	}
+	defer tc.Close()
+	sink.Emit(Info, "etcd", n.Hostname, "waiting to become a voting etcd member")
+	err = talos.Retry(ctx, voterTimeout, 5*time.Second, func() error {
+		call, cancel := context.WithTimeout(ctx, 15*time.Second)
+		defer cancel()
+		peers, err := tc.EtcdPeers(call)
+		if err != nil {
+			return talos.NotReady(err.Error())
+		}
+		i := slices.IndexFunc(peers, func(p talos.EtcdPeer) bool { return p.Hostname == n.Hostname })
+		switch {
+		case i < 0:
+			return talos.NotReady("not an etcd member yet")
+		case peers[i].Learner:
+			return talos.NotReady("etcd learner")
+		}
+		if ok, err := tc.ServiceHealthy(call, "etcd"); err != nil || !ok {
+			return talos.NotReady("etcd not healthy yet")
+		}
+		return nil
+	})
+	if err != nil {
+		return fmt.Errorf("etcd: %w", err)
+	}
+	sink.Emit(Info, "etcd", n.Hostname, "voting etcd member")
+	return nil
+}
+
 func (m *Manager) waitEtcdMembers(ctx context.Context, tc *talos.Client, want int) error {
 	return talos.Retry(ctx, bootstrapTimeout, 5*time.Second, func() error {
 		call, cancel := context.WithTimeout(ctx, 15*time.Second)

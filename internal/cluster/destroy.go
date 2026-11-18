@@ -65,7 +65,10 @@ func (m *Manager) Destroy(ctx context.Context, d *Desired, confirm, holder strin
 			return err
 		}
 	}
-	if err := sink.Run("maintenance", func() error { return waitMaintenance(ctx, c.Spec.Nodes, missed, sink) }); err != nil {
+	if err := sink.Run("maintenance", func() error {
+		_, err := waitMaintenance(ctx, c.Spec.Nodes, missed, sink)
+		return err
+	}); err != nil {
 		return err
 	}
 	if len(missed) > 0 {
@@ -111,7 +114,8 @@ func wipeNode(ctx context.Context, addr string, talosconfig []byte) error {
 	return tc.WipeToMaintenance(call)
 }
 
-func waitMaintenance(ctx context.Context, nodes []config.Node, skip []string, sink Sink) error {
+func waitMaintenance(ctx context.Context, nodes []config.Node, skip []string, sink Sink) (map[string]string, error) {
+	found := map[string]string{}
 	pending := map[string]config.Node{}
 	for _, n := range nodes {
 		if !slices.Contains(skip, n.Hostname) {
@@ -124,6 +128,7 @@ func waitMaintenance(ctx context.Context, nodes []config.Node, skip []string, si
 		for h, n := range pending {
 			if ip, ok := findMaintenance(ctx, n, lans); ok {
 				sink.Emit(Done, "maintenance", h, "maintenance mode at %s", ip)
+				found[h] = ip
 				delete(pending, h)
 			}
 		}
@@ -135,15 +140,15 @@ func waitMaintenance(ctx context.Context, nodes []config.Node, skip []string, si
 			for h := range pending {
 				left = append(left, h)
 			}
-			return fmt.Errorf("not seen in maintenance mode after %s: %s", maintenanceTimeout, strings.Join(left, ", "))
+			return found, fmt.Errorf("not seen in maintenance mode after %s: %s", maintenanceTimeout, strings.Join(left, ", "))
 		}
 		select {
 		case <-ctx.Done():
-			return ctx.Err()
+			return found, ctx.Err()
 		case <-time.After(10 * time.Second):
 		}
 	}
-	return nil
+	return found, nil
 }
 
 func findMaintenance(ctx context.Context, n config.Node, lans *lanScans) (string, bool) {

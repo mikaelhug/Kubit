@@ -33,6 +33,9 @@ The console writes only to the served repos and never commits:
   `spec.nodes` with the next free hostnames. Both go through a review of the exact result first
   ([Discovery](operations.md#discovery)).
 - **Remove** on a node's page deletes the node from `spec.nodes`.
+- **Take over control plane** on a worker's page renames it (next free `<cluster>-cp-NN`),
+  makes it a control plane, deletes the replaced control plane and, when that one holds the
+  endpoint without a VIP, gives the worker its addresses.
 - **Enable / Disable** on an Add-ons card sets `spec.platform.<add-on>.enabled` (MetalLB asks
   for its range); Storage offers it for Longhorn when no StorageClass exists.
 - **Replicas** on Storage › Longhorn sets `platform.longhorn.replicas` (*Auto* removes it); each
@@ -151,6 +154,7 @@ workloads|pods|namespaces|network|storage|storage/longhorn`, `nodes`,
 result without writing), `POST design/checks` (the same with the VIP and address probes), `POST repos` (same body, writes a new repo), `GET dirs?path=` (subfolders, for *Browse*), `POST clusters/{n}/nodes`
 (`{machines: [{mac, role}], hash}`), `clusters/{n}/repo` (directory and git state), `DELETE clusters/{n}/nodes/{hostname}?hash=`,
 `GET|PUT clusters/{n}/nodes/{hostname}/network` (`{static, address, gateway, nameservers, hash}`),
+`POST clusters/{n}/nodes/{hostname}/takeover` (`{hostname, replaces, hash}`),
 `PUT clusters/{n}/nodes/{hostname}/storage` (`{systemDisk, hash}`; only for a node awaiting install),
 `PUT clusters/{n}/platform/{add-on}` (`{enabled, range, repository, imageAutomation, replicas, hash}`), `PUT clusters/{n}/versions`
 (`{talosVersion, kubernetesVersion, hash}`, or `{talosVersion, hostnames, hash}` for those nodes),

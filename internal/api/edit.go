@@ -6,10 +6,8 @@ import (
 	"errors"
 	"fmt"
 	"log"
-	"net"
 	"net/http"
 	"net/netip"
-	"net/url"
 	"os"
 	"path/filepath"
 	"slices"
@@ -34,6 +32,7 @@ func (s *Server) editRoutes() {
 	r.HandleFunc("DELETE /api/v1/clusters/{name}/nodes/{hostname}", s.handleRemoveNode)
 	r.HandleFunc("GET /api/v1/clusters/{name}/nodes/{hostname}/network", s.handleNodeNetwork)
 	r.HandleFunc("PUT /api/v1/clusters/{name}/nodes/{hostname}/network", s.handleNodeNetworkPut)
+	r.HandleFunc("POST /api/v1/clusters/{name}/nodes/{hostname}/takeover", s.handleTakeOver)
 	r.HandleFunc("POST /api/v1/clusters/{name}/apply", s.handleApply)
 	r.HandleFunc("GET /api/v1/clusters/{name}/apply", s.handleApplyRun)
 	r.HandleFunc("POST /api/v1/clusters/{name}/destroy", s.handleDestroy)
@@ -501,6 +500,58 @@ func (s *Server) handleRemoveNode(w http.ResponseWriter, r *http.Request) {
 	writeHash(w, dir)
 }
 
+func (s *Server) handleTakeOver(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Replaces string `json:"replaces"`
+		Hostname string `json:"hostname"`
+		Hash     string `json:"hash"`
+	}
+	if !decode(w, r, &req) {
+		return
+	}
+	ns, err := s.nodeOf(r)
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+	c, n := ns.c, ns.n
+	if n.Role != config.RoleWorker {
+		writeErr(w, conflict(n.Hostname+" is already a control plane."))
+		return
+	}
+	replaces := req.Replaces
+	if cps := c.ControlPlanes(); replaces == "" && len(cps) == 1 {
+		replaces = cps[0].Hostname
+	}
+	if ep, ok := c.EndpointNode(); replaces == "" && ok {
+		replaces = ep.Hostname
+	}
+	i := c.NodeIndex(replaces)
+	if i < 0 || c.Spec.Nodes[i].Role != config.RoleControlPlane {
+		writeErr(w, invalid(errors.New("choose the control plane to replace")))
+		return
+	}
+	hostname := strings.TrimSpace(req.Hostname)
+	if hostname == "" || hostname == replaces || hostname != n.Hostname && c.NodeIndex(hostname) >= 0 {
+		writeErr(w, invalid(fmt.Errorf("hostname %q is taken", hostname)))
+		return
+	}
+	var nn *config.NodeNetwork
+	if old := c.Spec.Nodes[i]; endpointFollows(c, old) && old.Network != nil {
+		next := *old.Network
+		if n.Network != nil {
+			next = *n.Network
+		}
+		next.Addresses = old.Network.Addresses
+		nn = &next
+	}
+	if err := repo.TakeOverControlPlane(ns.dir, req.Hash, n.Hostname, replaces, hostname, nn); err != nil {
+		writeErr(w, editErr(err))
+		return
+	}
+	writeHash(w, ns.dir)
+}
+
 type nodeNetworkView struct {
 	Hostname        string              `json:"hostname"`
 	Role            config.Role         `json:"role"`
@@ -611,12 +662,7 @@ func (s *Server) handleNodeNetworkPut(w http.ResponseWriter, r *http.Request) {
 	}
 	endpoint := ""
 	if endpointFollows(c, n) && target != config.EndpointHost(c.Spec.ControlPlane.Endpoint) {
-		u, _ := url.Parse(c.Spec.ControlPlane.Endpoint)
-		port := u.Port()
-		if port == "" {
-			port = "6443"
-		}
-		endpoint = "https://" + net.JoinHostPort(target, port)
+		endpoint = config.EndpointAt(c.Spec.ControlPlane.Endpoint, target)
 	}
 	if err := repo.SetNodeNetwork(dir, req.Hash, n.Hostname, nn, endpoint); err != nil {
 		writeErr(w, editErr(err))

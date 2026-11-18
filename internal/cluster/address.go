@@ -43,6 +43,7 @@ type addrChange struct {
 	live   config.Addressing
 	peerID uint64
 	stale  string
+	after  bool
 }
 
 func takenTargets(ctx context.Context, nodes []config.Node, ls *liveState) []string {
@@ -89,13 +90,16 @@ func (m *Manager) planAddresses(ctx context.Context, p *Plan, d *Desired, ls *li
 	c := d.Cluster
 	declaredHost := config.EndpointHost(c.Spec.ControlPlane.Endpoint)
 	liveCPs := len(p.applied.ControlPlanes())
+	if p.handover != nil {
+		liveCPs--
+	}
 	for _, n := range c.Spec.Nodes {
 		ln := ls.nodes[n.Hostname]
 		if !ln.member || !ln.live.Found {
 			continue
 		}
 		declared := n.Addressing()
-		ch := addrChange{node: n, from: ln.addr, to: n.TargetIP(), live: ln.live.Addressing}
+		ch := addrChange{node: n, from: ln.addr, to: n.TargetIP(), live: ln.live.Addressing, after: p.takesOver(n.Hostname)}
 		switch {
 		case ln.live.Addressing.Equal(declared):
 			if ln.addr == n.IP {
@@ -115,7 +119,7 @@ func (m *Manager) planAddresses(ctx context.Context, p *Plan, d *Desired, ls *li
 		p.Changes = append(p.Changes, Change{Action: ActAddress, Target: n.Hostname, Detail: ch.describe()})
 		cp := n.Role == config.RoleControlPlane
 		switch {
-		case ch.kind == addrMove && addressInUse(ctx, ch.to, addressProbe):
+		case ch.kind == addrMove && !ch.after && addressInUse(ctx, ch.to, addressProbe):
 			p.Problems = append(p.Problems, fmt.Sprintf("%s: %s already answers on the network", n.Hostname, ch.to))
 		case cp && (ch.kind == addrMove || ch.kind == addrRelease) && liveCPs == 2:
 			p.Problems = append(p.Problems, fmt.Sprintf("%s: with two control planes, etcd loses quorum while one moves; add a third first", n.Hostname))
@@ -171,21 +175,31 @@ func (m *Manager) planPeerRepairs(ctx context.Context, p *Plan, d *Desired, ls *
 	}
 }
 
+func (p *Plan) movesNow(after bool) []addrChange {
+	return slices.DeleteFunc(slices.Clone(p.moves), func(ch addrChange) bool { return ch.after != after })
+}
+
+func (p *Plan) movesTo(host string) bool {
+	return slices.ContainsFunc(p.moves, func(ch addrChange) bool {
+		return ch.kind == addrMove && ch.to == host && ch.node.Role == config.RoleControlPlane
+	})
+}
+
 func (p *Plan) moving(hostname string) bool {
 	return slices.ContainsFunc(p.moves, func(ch addrChange) bool { return ch.moves() && ch.node.Hostname == hostname })
 }
 
-func (m *Manager) ApplyAddresses(ctx context.Context, d *Desired, p *Plan, sink Sink) error {
-	if len(p.moves) == 0 {
+func (m *Manager) ApplyAddresses(ctx context.Context, d *Desired, moves []addrChange, sink Sink) error {
+	if len(moves) == 0 {
 		return nil
 	}
 	name := d.Cluster.Metadata.Name
-	if slices.ContainsFunc(p.moves, func(ch addrChange) bool { return ch.moves() && ch.node.Role == config.RoleControlPlane }) {
+	if slices.ContainsFunc(moves, func(ch addrChange) bool { return ch.moves() && ch.node.Role == config.RoleControlPlane }) {
 		if err := sink.Run("address", func() error { return m.safetySnapshot(ctx, name, "pre-move", sink) }); err != nil {
 			return err
 		}
 	}
-	for _, ch := range addressOrder(p.moves, config.EndpointHost(d.Cluster.Spec.ControlPlane.Endpoint)) {
+	for _, ch := range addressOrder(moves, config.EndpointHost(d.Cluster.Spec.ControlPlane.Endpoint)) {
 		step := "address:" + ch.node.Hostname
 		if err := sink.Run(step, func() error { return m.applyAddress(ctx, d, ch, step, sink) }); err != nil {
 			return fmt.Errorf("%s: %w", ch.node.Hostname, err)
@@ -225,6 +239,7 @@ func (m *Manager) applyAddress(ctx context.Context, d *Desired, ch addrChange, s
 	if i < 0 {
 		return fmt.Errorf("%s is not a member", host)
 	}
+	c.Spec.Nodes[i].Network = ch.node.Network
 	current := c.Spec.Nodes[i]
 	current.IP = ch.from
 	cp := ch.node.Role == config.RoleControlPlane

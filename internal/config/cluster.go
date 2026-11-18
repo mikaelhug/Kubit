@@ -442,6 +442,14 @@ func EndpointHost(endpoint string) string {
 	return u.Hostname()
 }
 
+func EndpointAt(endpoint, host string) string {
+	port := "6443"
+	if u, err := url.Parse(endpoint); err == nil && u.Port() != "" {
+		port = u.Port()
+	}
+	return "https://" + net.JoinHostPort(host, port)
+}
+
 func (c *Cluster) EndpointNode() (Node, bool) {
 	u, err := url.Parse(c.Spec.ControlPlane.Endpoint)
 	if err != nil || u.Hostname() == "" || u.Hostname() == c.Spec.ControlPlane.VIP {

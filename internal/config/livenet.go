@@ -45,6 +45,7 @@ func (a Addressing) String() string {
 
 type LiveConfig struct {
 	Addressing   Addressing
+	Role         Role
 	Endpoint     string
 	VIP          string
 	PodCIDRs     []string
@@ -62,6 +63,12 @@ func ReadLive(cfg []byte) (LiveConfig, error) {
 
 func LiveOf(p coreconfig.Provider) LiveConfig {
 	var live LiveConfig
+	if m := p.Machine(); m != nil {
+		live.Role = RoleWorker
+		if m.Type().IsControlPlane() {
+			live.Role = RoleControlPlane
+		}
+	}
 	if k := p.K8sClusterConfig(); k != nil && k.ClusterEndpoint() != nil {
 		live.Endpoint = k.ClusterEndpoint().String()
 	}

@@ -8,7 +8,7 @@ import { applyRuns, loadApplyRun, plans } from '../../store'
 import { useLive } from '../../useLive'
 import type { ClusterCtx } from './ClusterPage'
 
-const symbol: Record<string, string> = { create: '+', add: '+', remove: '−' }
+const symbol: Record<string, string> = { create: '+', add: '+', remove: '−', rejoin: '±' }
 
 export function Changes({ ctx }: { ctx: ClusterCtx }) {
   const { name } = ctx
@@ -23,7 +23,7 @@ export function Changes({ ctx }: { ctx: ClusterCtx }) {
   const running = !!run?.running
   useEffect(() => { loadApplyRun(name) }, [name])
   const checking = summary?.state === 'checking'
-  const removals = plan?.changes.some((c) => c.blocked && c.action === 'remove') ?? false
+  const removals = plan?.changes.some((c) => c.blocked && (c.action === 'remove' || c.action === 'rejoin')) ?? false
   const wipes = plan?.changes.filter((c) => c.action === 'wipe').length ?? 0
   const applicable = !!plan && summary?.state === 'ready' && plan.changes.length > 0 && !running
   const replan = () => { setError(null); api.replan(name).catch((e) => setError(e.message)) }
@@ -47,7 +47,7 @@ export function Changes({ ctx }: { ctx: ClusterCtx }) {
         <ConfirmDialog title={`Apply ${name}`} action="Apply" tone={removals || wipes ? 'danger' : 'primary'} onClose={() => setConfirm(false)}
           impact={impactOf(plan) || removals || wipes ? <>
             {impactOf(plan) && <span>{impactOf(plan)}</span>}
-            {removals && <label class="flex items-center gap-2"><input type="checkbox" checked={allowRemoval} onChange={(e) => setAllowRemoval((e.target as HTMLInputElement).checked)} />Drain, delete and reset removed nodes</label>}
+            {removals && <label class="flex items-center gap-2"><input type="checkbox" checked={allowRemoval} onChange={(e) => setAllowRemoval((e.target as HTMLInputElement).checked)} />Drain, delete and reset removed and rejoined nodes</label>}
             {wipes > 0 && <label class="flex items-center gap-2"><input type="checkbox" checked={allowWipe} onChange={(e) => setAllowWipe((e.target as HTMLInputElement).checked)} />Erase {wipes === 1 ? 'the listed data disk' : `${wipes} listed data disks`}</label>}
           </> : null}
           onConfirm={() => api.apply(name, { allowRemoval, allowWipe }, plan.hash).then(() => setConfirm(false)).catch((e) => { setError(e.message); setConfirm(false) })} />

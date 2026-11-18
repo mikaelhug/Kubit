@@ -101,6 +101,11 @@ inside its prefix that is not its own address; no network or broadcast address; 
 owned by two nodes (across `ip` and targets); the VIP and the pod and service CIDRs stay
 clear; without a VIP, `controlPlane.endpoint` must follow a control plane that moves.
 
+**Identity.** A node with `mac` is that machine. A changed `hostname` or `role` for the same
+`mac` rejoins it: the next apply resets and reinstalls it as declared (with
+`--allow-removal`). To replace the control plane that holds the endpoint without a VIP, see
+[Replacing the endpoint control plane](operations.md#plan-and-apply).
+
 **Versions.** Kubernetes is cluster-wide. Each node runs its own Talos version:
 `nodes[].talosVersion`, else `spec.talosVersion`, with that version's config contract and
 installer. *Update* on the Nodes tab writes the version on the selected nodes; a node

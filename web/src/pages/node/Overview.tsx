@@ -3,13 +3,14 @@ import { fmt, type ClusterSpec, type Inventory, type NodeDetail, type NodeRow, t
 import { Elapsed } from '../../components/Time'
 import { identityRows } from '../../components/Machine'
 import { RemoveNode } from '../../components/RemoveNode'
+import { TakeOverControlPlane } from '../../components/TakeOverControlPlane'
 import { KeyValue, Meter, Notice, Pill, Section } from '../../components/ui'
 import { kindLabel, modelName, roleLabel, systemDiskSplit } from '../../machine'
 import { statuses } from '../../store'
 
 type Row = [string, ComponentChildren]
 
-export function OverviewTab({ inv, invErr, k8s, k8sErr, node, spec, storage }: { inv: Inventory | null; invErr: string | null; k8s: NodeDetail | null; k8sErr: string | null; node: NodeRow | null; spec?: NodeSpec; storage?: ClusterSpec['spec']['storage'] }) {
+export function OverviewTab({ inv, invErr, k8s, k8sErr, node, spec, nodes, storage }: { inv: Inventory | null; invErr: string | null; k8s: NodeDetail | null; k8sErr: string | null; node: NodeRow | null; spec?: NodeSpec; nodes?: NodeSpec[]; storage?: ClusterSpec['spec']['storage'] }) {
   if (!node) return <div class="text-muted">Loading</div>
   const rows: Row[] = [
     ['Kind', kindLabel[node.kind]],
@@ -35,7 +36,10 @@ export function OverviewTab({ inv, invErr, k8s, k8sErr, node, spec, storage }: {
               <span class="label">Cluster</span>
               <span><a href={`/clusters/${node.cluster}/nodes`} class="hover:underline">{node.cluster}</a><span class="text-muted"> · {roleLabel(role ?? '')}</span></span>
             </div>
-            <span class="ml-auto"><RemoveNode cluster={node.cluster} hostname={spec.hostname} label="Remove from cluster" /></span>
+            <span class="ml-auto flex items-center gap-2">
+              {spec.role !== 'controlplane' && nodes && <TakeOverControlPlane cluster={node.cluster} hostname={spec.hostname} nodes={nodes} />}
+              <RemoveNode cluster={node.cluster} hostname={spec.hostname} label="Remove from cluster" />
+            </span>
           </div>
         )}
       </div>

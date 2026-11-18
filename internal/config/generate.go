@@ -78,6 +78,9 @@ func Generate(c *Cluster, bundle *secrets.Bundle, installer func(Node) string) (
 
 	out := &Generated{Secrets: bundle, Nodes: make(map[string][]byte, len(c.Spec.Nodes))}
 	for _, n := range c.Spec.Nodes {
+		if !n.Installable() {
+			continue
+		}
 		in, err := inputFor(c.NodeTalosVersion(n))
 		if err != nil {
 			return nil, fmt.Errorf("node %s: %w", n.Hostname, err)

@@ -17,6 +17,7 @@ import (
 const (
 	wipeStep         = "wipe"
 	longhornDiskStep = "longhorn disks"
+	evictStep        = "longhorn evict"
 	volumeTimeout    = 3 * time.Minute
 )
 
@@ -55,7 +56,7 @@ func (m *Manager) planDisks(ctx context.Context, d *Desired, p *Plan, ls *liveSt
 	wg.Wait()
 	slices.SortFunc(p.wipes, func(a, b diskWipe) int { return strings.Compare(a.host+a.path, b.host+b.path) })
 	if ls.api && c.Spec.Platform.Longhorn.Enabled {
-		m.planLonghornDisks(ctx, d, p)
+		m.planLonghorn(ctx, d, p)
 	}
 }
 
@@ -90,7 +91,7 @@ func dataDiskState(ctx context.Context, n config.Node, ip string, talosconfig []
 	return wipes, problems
 }
 
-func (m *Manager) planLonghornDisks(ctx context.Context, d *Desired, p *Plan) {
+func (m *Manager) planLonghorn(ctx context.Context, d *Desired, p *Plan) {
 	c := d.Cluster
 	kc, err := m.KubeClientFor(c.Metadata.Name, m.liveKubeconfig(d))
 	if err != nil {
@@ -114,6 +115,98 @@ func (m *Manager) planLonghornDisks(ctx context.Context, d *Desired, p *Plan) {
 			p.longhornDisks = append(p.longhornDisks, longhornDisk{host: n.Hostname, mount: mount})
 			p.Changes = append(p.Changes, Change{Action: ActLonghornDisk, Target: n.Hostname, Detail: mount})
 		}
+	}
+	p.planEviction(lh)
+}
+
+func (p *Plan) planEviction(lh *k8s.Longhorn) {
+	resets := p.resets()
+	held, free, others, need := int64(0), int64(0), 0, lh.Replicas
+	replicas := map[string]int{}
+	for _, ln := range lh.Nodes {
+		if slices.Contains(resets, ln.Name) {
+			held += ln.Scheduled
+			if ln.Replicas > 0 {
+				replicas[ln.Name] = ln.Replicas
+			}
+			continue
+		}
+		free += ln.Headroom
+		if ln.Capacity > 0 {
+			others++
+		}
+	}
+	if len(replicas) == 0 {
+		return
+	}
+	for _, v := range lh.Volumes {
+		need = max(need, v.Replicas)
+	}
+	if held > free {
+		p.Problems = append(p.Problems, fmt.Sprintf("Longhorn: %s free on the other nodes for %s of replicas on %s", HumanBytes(uint64(free)), HumanBytes(uint64(held)), strings.Join(sortedKeys(replicas), ", ")))
+	}
+	if others < need {
+		p.Problems = append(p.Problems, fmt.Sprintf("Longhorn: volumes keep %d replicas but only %d other nodes take them", need, others))
+	}
+	source := map[string]string{}
+	for _, r := range p.rejoins {
+		source[r.node.Hostname] = r.from.hostname
+	}
+	for i, ch := range p.Changes {
+		host := ch.Target
+		switch ch.Action {
+		case ActRejoin:
+			host = source[ch.Target]
+		case ActRemove:
+		default:
+			continue
+		}
+		if n := replicas[host]; n > 0 {
+			p.Changes[i].Detail = fmt.Sprintf("evict %d Longhorn replicas, %s", n, ch.Detail)
+		}
+	}
+}
+
+func (m *Manager) evictLonghorn(ctx context.Context, d *Desired, hosts []string, sink Sink) error {
+	if len(hosts) == 0 || !d.Cluster.Spec.Platform.Longhorn.Enabled {
+		return nil
+	}
+	return sink.Run(evictStep, func() error {
+		kc, err := m.KubeClientFor(d.Cluster.Metadata.Name, m.liveKubeconfig(d))
+		if err != nil {
+			return err
+		}
+		var evicting []string
+		for _, h := range hosts {
+			found, err := kc.SetLonghornEviction(ctx, h, true)
+			if err != nil {
+				revertEviction(ctx, kc, evicting)
+				return fmt.Errorf("%s: %w", h, err)
+			}
+			if found {
+				evicting = append(evicting, h)
+			}
+		}
+		if len(evicting) == 0 {
+			return nil
+		}
+		sink.Emit(Info, evictStep, "", "evicting Longhorn replicas from %s", strings.Join(evicting, ", "))
+		err = kc.WaitLonghornEmpty(ctx, evicting, evictStall, func(left int) {
+			sink.Emit(Info, evictStep, "", "%d replicas left", left)
+		})
+		if err != nil {
+			revertEviction(ctx, kc, evicting)
+			return err
+		}
+		return nil
+	})
+}
+
+func revertEviction(ctx context.Context, kc *k8s.Client, hosts []string) {
+	cctx, cancel := cleanupCtx(ctx)
+	defer cancel()
+	for _, h := range hosts {
+		_, _ = kc.SetLonghornEviction(cctx, h, false)
 	}
 }
 

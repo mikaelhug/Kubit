@@ -122,7 +122,7 @@ func applyCmd() *cobra.Command {
 			return nil
 		}),
 	}
-	cmd.Flags().BoolVar(&allowRemoval, "allow-removal", false, "remove nodes that are no longer declared (drain, delete, reset)")
+	cmd.Flags().BoolVar(&allowRemoval, "allow-removal", false, "remove nodes that are no longer declared and reinstall rejoined ones (drain, delete, reset)")
 	cmd.Flags().BoolVar(&allowWipe, "allow-wipe", false, "wipe data disks that hold another format")
 	cmd.Flags().BoolVarP(&yes, "yes", "y", false, "apply without asking")
 	cmd.Flags().StringVar(&reviewed, "plan", "", "apply only if the plan still has this hash (from kubit plan)")
@@ -154,7 +154,7 @@ func confirm(in io.Reader, out io.Writer) (bool, error) {
 	return strings.EqualFold(strings.TrimSpace(line), "y") || strings.EqualFold(strings.TrimSpace(line), "yes"), nil
 }
 
-var planSymbol = map[string]string{cluster.ActCreate: "+", cluster.ActAdd: "+", cluster.ActRemove: "-"}
+var planSymbol = map[string]string{cluster.ActCreate: "+", cluster.ActAdd: "+", cluster.ActRemove: "-", cluster.ActRejoin: "±"}
 
 func printPlan(w io.Writer, p *cluster.Plan) {
 	for _, pr := range p.Problems {
