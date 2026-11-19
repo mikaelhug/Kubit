@@ -115,7 +115,7 @@ function Waiting({ machines }: { machines: NodeRow[] }) {
 function PxePanel() {
   const { data: st } = useLive(() => api.pxe(), [], [['', 'pxe']], { onError: 'silent' })
   if (!st) return null
-  if (!st.running) return <Notice tone={st.error ? 'warn' : 'muted'}><span class="flex flex-col gap-2"><span>{st.error ? `Network boot: ${st.error}` : 'Network boot is off.'} Start it with:</span><Code text={st.command ?? 'sudo kubit pxe'} /></span></Notice>
+  if (!st.running) return <Notice tone={st.error ? 'warn' : 'muted'}><span class="flex flex-col gap-2"><span>{st.error ? `Network boot: ${st.error}` : 'Network boot is off.'} Start it with:</span><Code text={st.command ?? 'sudo kubit pxe'} />{st.interface && <span class="text-[12px] text-muted">{st.interface} is the interface to your router.</span>}</span></Notice>
   const boots = st.boots ?? []
   return (
     <Section title="Network boot">

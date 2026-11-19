@@ -2,4 +2,4 @@
 
 package cluster
 
-func DefaultGateway() string { return "" }
+func defaultRoute() (string, string) { return "", "" }

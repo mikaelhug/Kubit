@@ -15,7 +15,9 @@ import (
 	"time"
 
 	"github.com/fsnotify/fsnotify"
+	"github.com/mikaelhug/kubit/internal/cluster"
 	"github.com/mikaelhug/kubit/internal/httpx"
+	"github.com/mikaelhug/kubit/internal/repo"
 )
 
 func (s *Server) pxeRoutes() {
@@ -25,14 +27,19 @@ func (s *Server) pxeRoutes() {
 
 const pxeStatusWait = 2 * time.Second
 
-func (s *Server) pxeCommand() string {
+func (s *Server) pxeCommand(iface string) string {
 	bin := "kubit"
 	if p, err := os.Executable(); err == nil {
 		bin = p
 	}
 	cmd := "sudo " + shellArg(bin) + " pxe"
+	if iface != "" {
+		cmd += " --iface " + shellArg(iface)
+	}
 	for _, r := range s.servedRepos() {
-		cmd += " " + shellArg(r.Dir)
+		if _, err := os.Stat(filepath.Join(r.Dir, repo.ClusterFile)); err == nil {
+			cmd += " " + shellArg(r.Dir)
+		}
 	}
 	return cmd
 }
@@ -81,7 +88,8 @@ func (s *Server) handlePXEStatus(w http.ResponseWriter, r *http.Request) {
 	statusURL := s.settings.PXEStatusURL
 	body, err := s.latestPXE(r.Context())
 	if err != nil {
-		off := map[string]any{"running": false, "statusUrl": statusURL, "command": s.pxeCommand()}
+		iface := cluster.DefaultInterface()
+		off := map[string]any{"running": false, "statusUrl": statusURL, "command": s.pxeCommand(iface), "interface": iface}
 		if !errors.Is(err, syscall.ECONNREFUSED) && !errors.Is(err, errPXEStopped) {
 			off["error"] = err.Error()
 		}
@@ -90,7 +98,8 @@ func (s *Server) handlePXEStatus(w http.ResponseWriter, r *http.Request) {
 	}
 	var st map[string]any
 	if err := json.Unmarshal(body, &st); err != nil {
-		writeJSON(w, http.StatusOK, map[string]any{"running": false, "statusUrl": statusURL, "error": "unexpected response from " + statusURL, "command": s.pxeCommand()})
+		iface := cluster.DefaultInterface()
+		writeJSON(w, http.StatusOK, map[string]any{"running": false, "statusUrl": statusURL, "error": "unexpected response from " + statusURL, "command": s.pxeCommand(iface), "interface": iface})
 		return
 	}
 	st["running"] = true
