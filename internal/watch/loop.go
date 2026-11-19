@@ -299,12 +299,12 @@ func (w *Watcher) apply(transitions []transition) {
 }
 
 type talosFacts struct {
-	version, stage, reach string
-	reachable             bool
+	version, stage, reach  string
+	reachable, maintenance bool
 }
 
 func talosFactsOf(n cluster.NodeStatus) talosFacts {
-	return talosFacts{version: n.TalosVersion, stage: n.Stage, reach: n.TalosReach, reachable: n.TalosReachable}
+	return talosFacts{version: n.TalosVersion, stage: n.Stage, reach: n.TalosReach, reachable: n.TalosReachable, maintenance: n.Maintenance}
 }
 
 func talosChanged(prev, cur *cluster.Status) bool {

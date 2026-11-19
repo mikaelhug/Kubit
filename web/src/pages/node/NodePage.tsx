@@ -71,6 +71,7 @@ function ReachPill({ node, inv, invErr }: { node: NodeRow; inv: Inventory | null
   const ns = st?.nodes.find((n) => n.hostname === node.hostname)
   const blind = st?.observer === 'offline' || ns?.talosReach === 'no-network'
   if (blind) return <Pill tone="muted" title={st?.observerError || ns?.talosError}>Kubit cannot reach the network</Pill>
+  if (ns?.maintenance) return <Pill tone="warn">Talos maintenance</Pill>
   if (ns) return <span class="flex items-center gap-2"><Pill tone={ns.talosReachable ? 'good' : 'bad'} title={ns.talosError}>{ns.talosReachable ? `Talos ${ns.talosVersion || ''}`.trim() : 'Talos unreachable'}</Pill><SeenAgo contact={st?.lastContactAt} observed={st?.observedAt} blind={!ns.talosReachable} /></span>
   if (inv) return <Pill tone="good">Talos {inv.talosVersion}</Pill>
   if (invErr) return <Pill tone="bad" title={invErr}>Talos not answering</Pill>

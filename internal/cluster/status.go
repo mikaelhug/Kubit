@@ -63,6 +63,7 @@ type NodeStatus struct {
 	Off            bool                `json:"off,omitempty"`
 	TalosError     string              `json:"talosError,omitempty"`
 	TalosReach     string              `json:"talosReach,omitempty"`
+	Maintenance    bool                `json:"maintenance,omitempty"`
 	Registered     bool                `json:"registered"`
 	SeenAt         string              `json:"seenAt,omitempty"`
 	Stage          string              `json:"stage"`
@@ -183,7 +184,7 @@ func (m *Manager) Status(ctx context.Context, name string) (*Status, error) {
 	for i := range st.Nodes {
 		ns := &st.Nodes[i]
 		seen := m.offSeen(name, ns.Hostname, ns.TalosReachable)
-		ns.Off = !ns.TalosReachable && (seen || ns.offMark)
+		ns.Off = !ns.TalosReachable && !ns.Maintenance && (seen || ns.offMark)
 	}
 	for _, cp := range c.ControlPlanes() {
 		if live, ok := lives[cp.Hostname]; ok {
@@ -268,6 +269,11 @@ func (m *Manager) probeNodes(ctx context.Context, c *config.Cluster, talosconfig
 				if Classify(err) == ReachNoNetwork {
 					ns.TalosReach = "no-network"
 					ns.TalosError = ShortNet(err)
+				}
+				if n.MAC != "" && answeredUntrusted(err) {
+					if mc, err := m.Store.GetMachine(n.MAC); err == nil && mc.Kind() == store.KindMaintenance {
+						ns.Maintenance = true
+					}
 				}
 				return
 			}
@@ -494,4 +500,9 @@ func (m *Manager) etcdStatus(ctx context.Context, name string, cps []config.Node
 		break
 	}
 	return e
+}
+
+// gRPC hands back a failed TLS handshake as status text only.
+func answeredUntrusted(err error) bool {
+	return strings.Contains(err.Error(), "x509: ")
 }

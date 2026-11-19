@@ -63,6 +63,7 @@ const stages: Record<string, string> = { booting: 'starting', rebooting: 'restar
 
 export function talosHealth(n: NodeStatus): [Tone, string] | null {
   if (n.off) return ['muted', 'off']
+  if (n.maintenance) return ['warn', 'maintenance']
   if (!n.talosReachable) return ['bad', 'unreachable']
   if (n.stage && n.stage !== 'running') return ['warn', stages[n.stage] ?? n.stage]
   return null

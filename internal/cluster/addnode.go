@@ -13,11 +13,15 @@ func (m *Manager) AddNode(ctx context.Context, name string, n config.Node, sink 
 		return err
 	}
 	for _, existing := range c.Spec.Nodes {
-		if existing.Hostname == n.Hostname || existing.IP == n.IP {
-			return fmt.Errorf("node %s/%s already in cluster %s", n.Hostname, n.IP, name)
+		if existing.Hostname != n.Hostname && existing.IP == n.IP {
+			return fmt.Errorf("%s already has %s in cluster %s", existing.Hostname, n.IP, name)
 		}
 	}
-	c.Spec.Nodes = append(c.Spec.Nodes, n)
+	if i := c.NodeIndex(n.Hostname); i >= 0 {
+		c.Spec.Nodes[i] = n
+	} else {
+		c.Spec.Nodes = append(c.Spec.Nodes, n)
+	}
 	if err := declared(c).Validate(); err != nil {
 		return err
 	}

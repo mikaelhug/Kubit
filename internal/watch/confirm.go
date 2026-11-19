@@ -107,7 +107,7 @@ func badFacts(name string, cur *cluster.Status) map[string]Event {
 		out[factKey(kind, node)] = Event{Cluster: name, Node: node, Severity: sev, Kind: kind, Message: msg}
 	}
 	for _, n := range cur.Nodes {
-		if n.Off {
+		if n.Off || n.Maintenance {
 			continue
 		}
 		if !n.TalosReachable {

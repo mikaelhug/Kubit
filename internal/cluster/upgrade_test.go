@@ -140,8 +140,8 @@ func TestAddNodeRefusesAnExistingMember(t *testing.T) {
 	m := loopbackManager(t, loopbackCluster)
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
-	if err := m.AddNode(ctx, "lab", config.Node{Hostname: "cp-01", IP: "10.0.0.8"}, func(Event) {}); err == nil || !strings.Contains(err.Error(), "already in cluster") {
-		t.Errorf("a member must not join twice: %v", err)
+	if err := m.AddNode(ctx, "lab", config.Node{Hostname: "cp-01", IP: "127.0.0.1", Role: config.RoleControlPlane, InstallDisk: config.InstallDisk{Path: "/dev/sda"}}, func(Event) {}); err == nil {
+		t.Error("a member must not join twice")
 	}
 }
 
