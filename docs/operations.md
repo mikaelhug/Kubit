@@ -251,7 +251,7 @@ Notes:
   off); control planes keep LoadBalancer announcements when they run workloads.
 - Every add-on has resource requests; releases are `atomic`.
 - **Traefik** replaces ingress-nginx: IngressClass `traefik` (default) plus a
-  compatibility class `nginx`, Gateway API CRDs v1.6.2 shipped with Kubit as a local Helm
+  compatibility class `nginx`, Gateway API CRDs v1.6.3 shipped with Kubit as a local Helm
   chart (`gateway-api` in `kube-system`) whose CRDs carry `helm.sh/resource-policy: keep`,
   so turning Traefik off never deletes Gateways or routes.
 - **Longhorn** runs only on data disks or `data-system` (labelled at machine-config
@@ -299,7 +299,7 @@ live only in the daemon's memory.
 Off until `spec.backup` is declared. Then `kubit apply` gives every control plane Talos
 API access for the `os:etcd:backup` role from namespace `talos-backup` (a config change,
 no reboot) and installs [talos-backup](https://github.com/siderolabs/talos-backup)
-(`ghcr.io/siderolabs/talos-backup:v0.1.0-beta.2`): a Talos `ServiceAccount`, a Secret with
+(`ghcr.io/siderolabs/talos-backup:v0.1.0`): a Talos `ServiceAccount`, a Secret with
 the S3 credentials and a CronJob on `schedule` that streams an etcd snapshot, encrypts it
 for `ageRecipients` and uploads it to `s3://bucket/prefix` (prefix defaults to the cluster
 name; `compression` adds zstd). The S3 credentials live in the repo's secrets, never in

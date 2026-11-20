@@ -95,6 +95,12 @@
         "digest": "f9edd5ca699ff0f5eab14df6e4feefa15f7597a9b56f0b1c01f6089b1eecbaf1",
         "kubeVersion": ">=1.25.0-0",
         "gatewayAPI": "v1.6.2"
+      },
+      {
+        "version": "42.4.1",
+        "digest": "80ea7246b74d5bcd1f86ac598feca6ba516a110dc0ad9e95dfda28d933b4acdb",
+        "kubeVersion": ">=1.30.0-0",
+        "gatewayAPI": "v1.6.3"
       }
     ]
   }

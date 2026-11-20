@@ -170,9 +170,9 @@ function MenuList({ anchor, items, onClose }: { anchor: HTMLElement; items: Menu
   }
   const r = anchor.getBoundingClientRect()
   const up = r.bottom + 4 + items.length * menuRow + 8 > window.innerHeight && r.top > items.length * menuRow + 8
-  const place = up ? { bottom: window.innerHeight - r.top + 4 } : { top: r.bottom + 4 }
+  const place = up ? { bottom: `${window.innerHeight - r.top + 4}px` } : { top: `${r.bottom + 4}px` }
   return createPortal(
-    <div ref={list} role="menu" class="panel fixed z-50 min-w-[180px] py-1 shadow-lg shadow-black/20" style={{ ...place, right: Math.max(8, window.innerWidth - r.right) }} onKeyDown={keys}>
+    <div ref={list} role="menu" class="panel fixed z-50 min-w-[180px] py-1 shadow-lg shadow-black/20" style={{ ...place, right: `${Math.max(8, window.innerWidth - r.right)}px` }} onKeyDown={keys}>
       {items.map((it) => (
         <button key={it.label} type="button" role="menuitem" class={`w-full text-left px-3 py-1.5 text-[13px] whitespace-nowrap outline-none hover:bg-panel-2 focus:bg-panel-2 ${it.danger ? 'text-bad' : ''}`} onClick={() => { onClose(false); it.onSelect() }}>{it.label}</button>
       ))}

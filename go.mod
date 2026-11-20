@@ -1,6 +1,6 @@
 module github.com/mikaelhug/kubit
 
-go 1.26.11
+go 1.27.4
 
 require (
 	filippo.io/age v1.3.2
@@ -8,14 +8,14 @@ require (
 	github.com/coder/websocket v1.8.15
 	github.com/cosi-project/runtime v1.17.1
 	github.com/fsnotify/fsnotify v1.10.1
-	github.com/insomniacslk/dhcp v0.0.0-20260901064844-234b97448fae
+	github.com/insomniacslk/dhcp v0.0.0-20261014062924-c6bb46ad3f3a
 	github.com/pin/tftp/v3 v3.2.0
 	github.com/pmezard/go-difflib v1.0.1-0.20181226105442-5d4384ee4fb2
 	github.com/siderolabs/crypto v0.6.6
 	github.com/siderolabs/talos/pkg/machinery v1.14.6
 	github.com/spf13/cobra v1.10.2
 	go.etcd.io/bbolt v1.5.0
-	go.yaml.in/yaml/v4 v4.0.0-rc.8
+	go.yaml.in/yaml/v4 v4.0.0
 	golang.org/x/crypto v0.59.0
 	golang.org/x/net v0.62.0
 	golang.org/x/sys v0.50.0

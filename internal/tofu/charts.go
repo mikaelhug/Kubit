@@ -13,7 +13,7 @@ import (
 //go:embed charts.json
 var chartsJSON []byte
 
-const TalosBackupVersion = "v0.1.0-beta.2"
+const TalosBackupVersion = "v0.1.0"
 
 type Step struct {
 	Version     string `json:"version"`

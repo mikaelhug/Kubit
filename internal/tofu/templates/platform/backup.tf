@@ -5,7 +5,6 @@ locals {
       { name = "BUCKET", value = var.backup.bucket },
       { name = "CLUSTER_NAME", value = var.backup.cluster },
       { name = "S3_PREFIX", value = var.backup.prefix },
-      { name = "AGE_X25519_PUBLIC_KEY", value = try(var.backup.age_recipients[0], "") },
       { name = "AGE_RECIPIENT_PUBLIC_KEY", value = join(",", var.backup.age_recipients) },
       { name = "USE_PATH_STYLE", value = tostring(var.backup.path_style) },
       { name = "ENABLE_COMPRESSION", value = tostring(var.backup.compression) },

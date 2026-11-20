@@ -148,7 +148,7 @@ export function Sparkline({ points, max, height = 56, format, label, span, tone 
         <span class="label">{label}</span>
         <span class="text-[13px]">{last ? <><strong>{format(last.v!)}</strong>{max ? <span class="text-muted"> / {format(max)} · {Math.round((last.v! / max) * 100)}%</span> : null}</> : '—'}</span>
       </div>
-      <canvas ref={ref} class="w-full" style={{ height }} />
+      <canvas ref={ref} class="w-full" style={{ height: `${height}px` }} />
     </div>
   )
 }

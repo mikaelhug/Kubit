@@ -25,7 +25,7 @@ metadata:
   annotations:
     helm.sh/resource-policy: keep
     api-approved.kubernetes.io: https://github.com/kubernetes-sigs/gateway-api/pull/4530
-    gateway.networking.k8s.io/bundle-version: v1.6.2
+    gateway.networking.k8s.io/bundle-version: v1.6.3
     gateway.networking.k8s.io/channel: standard
   labels:
     gateway.networking.k8s.io/policy: Direct
@@ -1406,7 +1406,7 @@ metadata:
   annotations:
     helm.sh/resource-policy: keep
     api-approved.kubernetes.io: https://github.com/kubernetes-sigs/gateway-api/pull/4530
-    gateway.networking.k8s.io/bundle-version: v1.6.2
+    gateway.networking.k8s.io/bundle-version: v1.6.3
     gateway.networking.k8s.io/channel: standard
   name: gatewayclasses.gateway.networking.k8s.io
 spec:
@@ -1923,7 +1923,7 @@ metadata:
   annotations:
     helm.sh/resource-policy: keep
     api-approved.kubernetes.io: https://github.com/kubernetes-sigs/gateway-api/pull/4530
-    gateway.networking.k8s.io/bundle-version: v1.6.2
+    gateway.networking.k8s.io/bundle-version: v1.6.3
     gateway.networking.k8s.io/channel: standard
   name: gateways.gateway.networking.k8s.io
 spec:
@@ -5219,7 +5219,7 @@ metadata:
   annotations:
     helm.sh/resource-policy: keep
     api-approved.kubernetes.io: https://github.com/kubernetes-sigs/gateway-api/pull/4530
-    gateway.networking.k8s.io/bundle-version: v1.6.2
+    gateway.networking.k8s.io/bundle-version: v1.6.3
     gateway.networking.k8s.io/channel: standard
   name: grpcroutes.gateway.networking.k8s.io
 spec:
@@ -7296,7 +7296,7 @@ metadata:
   annotations:
     helm.sh/resource-policy: keep
     api-approved.kubernetes.io: https://github.com/kubernetes-sigs/gateway-api/pull/4530
-    gateway.networking.k8s.io/bundle-version: v1.6.2
+    gateway.networking.k8s.io/bundle-version: v1.6.3
     gateway.networking.k8s.io/channel: standard
   name: httproutes.gateway.networking.k8s.io
 spec:
@@ -14220,7 +14220,7 @@ metadata:
   annotations:
     helm.sh/resource-policy: keep
     api-approved.kubernetes.io: https://github.com/kubernetes-sigs/gateway-api/pull/4530
-    gateway.networking.k8s.io/bundle-version: v1.6.2
+    gateway.networking.k8s.io/bundle-version: v1.6.3
     gateway.networking.k8s.io/channel: standard
   name: listenersets.gateway.networking.k8s.io
 spec:
@@ -14999,7 +14999,7 @@ metadata:
   annotations:
     helm.sh/resource-policy: keep
     api-approved.kubernetes.io: https://github.com/kubernetes-sigs/gateway-api/pull/4530
-    gateway.networking.k8s.io/bundle-version: v1.6.2
+    gateway.networking.k8s.io/bundle-version: v1.6.3
     gateway.networking.k8s.io/channel: standard
   name: referencegrants.gateway.networking.k8s.io
 spec:
@@ -15355,7 +15355,7 @@ metadata:
   annotations:
     helm.sh/resource-policy: keep
     api-approved.kubernetes.io: https://github.com/kubernetes-sigs/gateway-api/pull/4530
-    gateway.networking.k8s.io/bundle-version: v1.6.2
+    gateway.networking.k8s.io/bundle-version: v1.6.3
     gateway.networking.k8s.io/channel: standard
   name: tcproutes.gateway.networking.k8s.io
 spec:
@@ -16652,7 +16652,7 @@ metadata:
   annotations:
     helm.sh/resource-policy: keep
     api-approved.kubernetes.io: https://github.com/kubernetes-sigs/gateway-api/pull/4530
-    gateway.networking.k8s.io/bundle-version: v1.6.2
+    gateway.networking.k8s.io/bundle-version: v1.6.3
     gateway.networking.k8s.io/channel: standard
   name: tlsroutes.gateway.networking.k8s.io
 spec:
@@ -18780,7 +18780,7 @@ metadata:
   annotations:
     helm.sh/resource-policy: keep
     api-approved.kubernetes.io: https://github.com/kubernetes-sigs/gateway-api/pull/4530
-    gateway.networking.k8s.io/bundle-version: v1.6.2
+    gateway.networking.k8s.io/bundle-version: v1.6.3
     gateway.networking.k8s.io/channel: standard
   name: udproutes.gateway.networking.k8s.io
 spec:
@@ -20075,7 +20075,7 @@ apiVersion: admissionregistration.k8s.io/v1
 kind: ValidatingAdmissionPolicy
 metadata:
   annotations:
-    gateway.networking.k8s.io/bundle-version: v1.6.2
+    gateway.networking.k8s.io/bundle-version: v1.6.3
     gateway.networking.k8s.io/channel: standard
   name: "safe-upgrades.gateway.networking.k8s.io"
 spec:
@@ -20088,9 +20088,9 @@ spec:
       resources:   ["*"]
   validations:
     - expression: "object.spec.group != 'gateway.networking.k8s.io' || oldObject == null || (
-        has(object.metadata.annotations) && object.metadata.annotations.exists(k, k == 'gateway.networking.k8s.io/channel') && 
+        has(object.metadata.annotations) && object.metadata.annotations.exists(k, k == 'gateway.networking.k8s.io/channel') &&
         object.metadata.annotations['gateway.networking.k8s.io/channel'] == 'standard' ) || (
-        oldObject != null && has(oldObject.metadata.annotations) && oldObject.metadata.annotations.exists(k, k == 'gateway.networking.k8s.io/channel') && 
+        oldObject != null && has(oldObject.metadata.annotations) && oldObject.metadata.annotations.exists(k, k == 'gateway.networking.k8s.io/channel') &&
         oldObject.metadata.annotations['gateway.networking.k8s.io/channel'] == 'experimental' )"
       message: "Installing experimental CRDs on top of standard channel CRDs is prohibited by default. Uninstall ValidatingAdmissionPolicy safe-upgrades.gateway.networking.k8s.io to install experimental CRDs on top of standard channel CRDs."
       reason: Invalid
@@ -20112,7 +20112,7 @@ apiVersion: admissionregistration.k8s.io/v1
 kind: ValidatingAdmissionPolicyBinding
 metadata:
   annotations:
-    gateway.networking.k8s.io/bundle-version: v1.6.2
+    gateway.networking.k8s.io/bundle-version: v1.6.3
     gateway.networking.k8s.io/channel: standard
   name: safe-upgrades.gateway.networking.k8s.io
 spec:

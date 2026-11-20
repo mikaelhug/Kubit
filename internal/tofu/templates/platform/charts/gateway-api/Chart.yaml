@@ -2,5 +2,5 @@ apiVersion: v2
 name: gateway-api
 description: Gateway API standard-channel CRDs, vendored by Kubit
 type: application
-version: 1.6.2
-appVersion: v1.6.2
+version: 1.6.3
+appVersion: v1.6.3

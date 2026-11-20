@@ -8,7 +8,7 @@
 
 Talos Linux · plan and apply · a live web console
 
-![Go](https://img.shields.io/badge/Go-1.26-00ADD8?logo=go&logoColor=white)
+![Go](https://img.shields.io/badge/Go-1.27-00ADD8?logo=go&logoColor=white)
 ![Talos Linux](https://img.shields.io/badge/Talos%20Linux-v1.14-ff7300)
 ![Kubernetes](https://img.shields.io/badge/Kubernetes-v1.37-326ce5?logo=kubernetes&logoColor=white)
 [![License](https://img.shields.io/badge/license-LGPL--2.1+-blue)](LICENSE)
@@ -47,7 +47,7 @@ serves every cluster repo inside it), then *Open Console*. *Install Command Line
 Settings › Privacy & Security once. The app tells you about new releases and installs one
 when you choose *Install* ([Releasing](docs/releasing.md)).
 
-On Linux, or to build it yourself, you need Go 1.26+, Node 20+ and git:
+On Linux, or to build it yourself, you need Go 1.27+, Node 20+ and git:
 
 ```sh
 git clone https://github.com/mikaelhug/Kubit.git
