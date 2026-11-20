@@ -8,7 +8,7 @@ export type RunKind = 'apply' | 'destroy' | 'restart' | 'shutdown' | 'power-on' 
 export interface PlanSummary { cluster: string; state: PlanState; hash?: string; changes: number; oneTime: number; problems: number; plannedAt?: string; holder?: string; run?: RunKind; error?: string }
 export interface ApplyLine { ts: string; level: 'info' | 'warn' | 'error' | 'done'; step: string; node?: string; message: string }
 export interface ApplyRun { kind?: RunKind; running: boolean; started?: string; finished?: string; error?: string; lines: ApplyLine[] }
-export interface HealthEvent { id: number; ts: string; cluster: string; node?: string; severity: 'info' | 'warn' | 'critical'; kind: string; message: string; open: boolean }
+export interface HealthEvent { id: number; ts: string; cluster: string; node?: string; severity: 'info' | 'warn' | 'critical'; kind: string; message: string; detail?: string; open: boolean }
 export interface Sample { ts: string; node?: string; cpuMilli: number; cpuCap: number; memBytes: number; memCap: number; pods: number; ready: boolean; reachable: boolean }
 export interface SOPSKey { recipient: string }
 export interface DirListing { path: string; parent?: string; dirs: { name: string; git?: boolean; cluster?: boolean }[] }
@@ -95,6 +95,7 @@ export interface Status {
   network: { podCIDRs?: string[]; serviceCIDRs?: string[]; cni: { name?: string; policies: boolean } }
   loadBalancer: { enabled: boolean; pool?: string[]; ip?: string }
   backup?: { schedule: string; lastSchedule?: string; lastSuccess?: string; failed?: boolean }
+  flux?: FluxObject[]
 }
 export interface Service { id: string; state: string; healthy: boolean; unknown?: boolean; last: string }
 

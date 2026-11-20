@@ -25,7 +25,7 @@ export function EventRow({ e, runbook }: { e: HealthEvent; runbook?: boolean }) 
       <div class="flex items-center gap-3 px-4 py-2 text-[13px]">
         <StatusDot tone={severityTone(e.severity)} />
         <span class="text-muted text-[12px] whitespace-nowrap shrink-0">{fmt.when(e.ts)}</span>
-        <span class={`min-w-0 truncate ${e.open || e.severity === 'info' ? '' : 'text-muted'}`} title={e.message}>{e.message}</span>
+        <span class={`min-w-0 truncate ${e.open || e.severity === 'info' ? '' : 'text-muted'}`} title={e.detail || e.message}>{e.message}</span>
         <span class="ml-auto mono text-[11px] text-muted">{e.kind}</span>
         {rb && <button class={`btn btn-sm ${open ? 'border-accent' : ''}`} onClick={() => setOpen(!open)}>{open ? 'Hide' : 'What to do'}</button>}
       </div>

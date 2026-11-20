@@ -45,6 +45,7 @@ type Status struct {
 	Network           LiveNetwork      `json:"network"`
 	LoadBalancer      k8s.LoadBalancer `json:"loadBalancer"`
 	Backup            *k8s.Backup      `json:"backup,omitempty"`
+	Flux              []k8s.FluxObject `json:"flux,omitempty"`
 	Observer          string           `json:"observer,omitempty"`
 	ObserverError     string           `json:"observerError,omitempty"`
 	LastContactAt     string           `json:"lastContactAt,omitempty"`

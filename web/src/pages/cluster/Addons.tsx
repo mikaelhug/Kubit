@@ -4,7 +4,7 @@ import { ErrorBox, Notice, Pending, Pill, Section, StatusDot } from '../../compo
 import { stateTone } from '../../tone'
 import { useLive } from '../../useLive'
 import { AddonToggle } from '../../components/AddonToggle'
-import { BuildList, FluxSync } from './AddonPanels'
+import { BuildList, FluxSync, fluxLabel } from './AddonPanels'
 import type { ClusterCtx } from './ClusterPage'
 
 const stateText: Record<AddonStatus['state'], string> = { disabled: 'disabled', pending: 'enabled, not applied yet', deploying: 'deploying', ready: 'ready', degraded: 'degraded', failed: 'release failed', orphaned: 'disabled in cluster.yaml, still installed' }
@@ -20,6 +20,7 @@ export function Addons({ ctx }: { ctx: ClusterCtx }) {
   const declaredRepo = cluster.spec.spec.platform.flux?.repository
   const { data: sync } = useLive(() => api.flux(name), [name], [[name, 'flux']], { onError: 'null', enabled: isInstalled('flux') })
   const { data: buildList } = useLive(() => api.builds(name), [name], [[name, 'workloads']], { onError: 'null', enabled: isInstalled('builds') })
+  const failing = status?.flux ?? []
   const source = sync?.find((o) => o.kind === 'GitRepository' && o.name === 'flux-system')
   const pool = status?.loadBalancer.pool?.join(', ')
   const installed = addons ? addonCatalog.filter((d) => stateOf(d.key) !== 'disabled') : []
@@ -29,11 +30,12 @@ export function Addons({ ctx }: { ctx: ClusterCtx }) {
       <Section title="Platform add-ons">
         <ErrorBox error={error} />
         {longhornWaits && <Notice tone="warn">Nodes lack the Talos extensions Longhorn needs.</Notice>}
+        {failing.length > 0 && <Notice tone="bad">{failing.length === 1 ? `Flux cannot reconcile ${fluxLabel(failing[0])}.` : `Flux cannot reconcile ${failing.length} objects.`}</Notice>}
         {drift && <Notice tone="warn">cluster.yaml differs from what is installed. <a class="underline" href={`/clusters/${name}/changes`}>Review changes</a></Notice>}
         {!addons && !error && <div class="panel p-4 text-[13px] text-muted">Loading</div>}
         {installed.length > 0 && (
-          <div class="grid grid-cols-1 lg:grid-cols-2 gap-3 items-start">
-            {installed.map((d) => {
+          <div class="grid grid-cols-1 lg:grid-cols-2 gap-3 items-start">{[0, 1].map((col) => <div key={col} class="flex flex-col gap-3">
+            {installed.filter((_, i) => i % 2 === col).map((d) => {
               const a = addons?.find((x) => x.key === d.key)
               const link = d.key === 'traefik' && status?.loadBalancer.ip ? `http://${status.loadBalancer.ip}` : undefined
               const st = a?.state ?? (addons ? 'disabled' : null)
@@ -44,6 +46,7 @@ export function Addons({ ctx }: { ctx: ClusterCtx }) {
                     <div class="flex items-center gap-2">
                       <span class="font-medium">{d.name}</span>
                       {st && <Pill tone={stateTone(st)}>{stateText[st]}</Pill>}
+                      {d.key === 'flux' && failing.length > 0 && <Pill tone="bad">{failing.length} failing</Pill>}
                       <span class="ml-auto inline-flex gap-1">
                         {link && <a href={link} target="_blank" rel="noreferrer" class="btn btn-sm">Open ↗</a>}
                         {d.key === 'backup' ? <a href={`/clusters/${name}/backups`} class="btn btn-sm">Backups</a> : <AddonToggle cluster={name} info={d} platform={cluster.spec.spec.platform} />}
@@ -60,12 +63,12 @@ export function Addons({ ctx }: { ctx: ClusterCtx }) {
                         {a.release?.values && a.release.values.length > 0 && <><span class="text-muted">Values</span><span class="mono truncate" title={a.release.values.join(', ')}>{a.release.values.join(', ')}</span></>}
                       </div>
                     )}
-                    {a?.key === 'flux' && sync && sync.length > 0 && <FluxSync objects={sync} />}
+                    {a?.key === 'flux' && sync && sync.length > 0 && <FluxSync objects={sync} failing={failing} />}
                     {a?.key === 'builds' && buildList && buildList.length > 0 && <BuildList cluster={name} builds={buildList} />}
                   </div>
                 </div>
               )
-            })}
+            })}</div>)}
           </div>
         )}
         {available.length > 0 && (

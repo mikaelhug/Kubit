@@ -35,6 +35,12 @@ export function runbookFor(kind: string, c: Ctx): Runbook | null {
         { text: 'Bring back the down control planes.', link: nodes },
         { text: 'Majority lost for good: kubit etcd restore.', link: backups },
       ] }
+    case 'flux.failing':
+      return { title: 'Flux cannot reconcile', steps: [
+        { text: "Read Flux's error.", link: { label: 'Add-ons', href: `/clusters/${c.cluster}/addons` } },
+        { text: 'Rejected by Kubernetes (a shrunk volume, an immutable field): revert the change in the repository and push.' },
+        { text: 'Source fails: check the repository URL and deploy key.', link: { label: 'Settings', href: `/clusters/${c.cluster}/settings?view=apps` } },
+      ] }
     case 'cert.expiring':
       return { title: 'Credential expiring', steps: [
         { text: 'Renew it before it expires.', link: { label: 'Certificates', href: `/clusters/${c.cluster}/repository?view=certs` } },

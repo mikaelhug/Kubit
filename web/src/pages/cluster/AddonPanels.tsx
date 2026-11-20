@@ -8,20 +8,30 @@ import { stateTone, type Tone } from '../../tone'
 const readyTone = (o: FluxObject): Tone => o.suspended ? 'muted' : o.ready === 'True' ? 'good' : o.ready === 'False' ? 'bad' : 'warn'
 const shortRevision = (r?: string) => r?.replace(/(^|@)sha\d+:([0-9a-f]{7})[0-9a-f]*/, '$1$2') ?? ''
 
-export function FluxSync({ objects }: { objects: FluxObject[] }) {
+const fluxKey = (o: FluxObject) => `${o.kind}/${o.namespace}/${o.name}`
+const fluxName = (o: FluxObject) => o.namespace === 'flux-system' ? o.name : `${o.namespace}/${o.name}`
+export const fluxLabel = (o: FluxObject) => `${o.kind} ${fluxName(o)}`
+
+export function FluxSync({ objects, failing }: { objects: FluxObject[]; failing: FluxObject[] }) {
   return (
     <div class="flex flex-col gap-1 text-[12px] mt-1 pt-2 border-t border-border">
-      {objects.map((o) => (
-        <div key={`${o.kind}/${o.namespace}/${o.name}`} class="flex flex-col min-w-0">
-          <div class="flex items-center gap-2 min-w-0">
-            <span class="inline-flex shrink-0"><StatusDot tone={readyTone(o)} pulse={o.ready === 'Unknown' && !o.suspended} /></span>
-            <span class="text-muted shrink-0">{o.kind}</span>
-            <span class="mono truncate min-w-0" title={`${o.namespace}/${o.name}`}>{o.namespace === 'flux-system' ? o.name : `${o.namespace}/${o.name}`}</span>
-            <span class="ml-auto text-muted shrink-0" title={o.reason}>{o.suspended ? 'suspended' : <Ago iso={o.since} />}</span>
+      {objects.map((o) => {
+        const failed = failing.find((f) => fluxKey(f) === fluxKey(o))
+        const error = (failed?.message || (o.ready === 'False' ? o.message : ''))?.trim()
+        return (
+          <div key={fluxKey(o)} class="flex flex-col min-w-0">
+            <div class="flex items-center gap-2 min-w-0">
+              <span class="inline-flex shrink-0"><StatusDot tone={failed ? 'bad' : readyTone(o)} pulse={o.ready === 'Unknown' && !o.suspended} /></span>
+              <span class="text-muted shrink-0">{o.kind}</span>
+              <span class="mono truncate min-w-0" title={`${o.namespace}/${o.name}`}>{fluxName(o)}</span>
+              <span class="ml-auto text-muted shrink-0" title={o.reason}>{o.suspended ? 'suspended' : <Ago iso={o.since} />}</span>
+            </div>
+            {error
+              ? <span class="pl-4 text-bad whitespace-pre-line break-words max-h-32 overflow-auto">{error}</span>
+              : <span class="mono truncate pl-4 text-muted" title={o.revision}>{shortRevision(o.revision)}</span>}
           </div>
-          <span class={`mono truncate pl-4 ${o.ready === 'False' ? 'text-bad' : 'text-muted'}`} title={o.message || o.revision}>{o.ready === 'False' ? o.message : shortRevision(o.revision)}</span>
-        </div>
-      ))}
+        )
+      })}
     </div>
   )
 }

@@ -16,7 +16,7 @@ import { useLive } from '../../useLive'
 import { updateText, updatesFor } from '../../versions'
 import type { ClusterCtx } from './ClusterPage'
 
-const recoveryKinds = new Set(['talos.back', 'node.ready', 'api.back', 'etcd.healthy', 'cert.renewed'])
+const recoveryKinds = new Set(['talos.back', 'node.ready', 'api.back', 'etcd.healthy', 'cert.renewed', 'flux.ready'])
 
 export function Overview({ ctx }: { ctx: ClusterCtx }) {
   const { status, cluster, name } = ctx

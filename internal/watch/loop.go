@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"log"
+	"maps"
 	"time"
 
 	"github.com/mikaelhug/kubit/internal/cluster"
@@ -228,6 +229,7 @@ func (w *Watcher) tick(ctx context.Context, name string) {
 		w.confirms[name] = c
 	}
 	w.mu.Unlock()
+	st.Flux = w.fluxFailing(ctx, name, prev, st)
 	if gap {
 		w.noteGap(now)
 	}
@@ -263,11 +265,13 @@ func (w *Watcher) tick(ctx context.Context, name string) {
 		for _, e := range Derive(name, prev, st) {
 			w.Alerts.Record(e)
 		}
-		facts := badFacts(name, st)
+		facts, flux := badFacts(name, st), fluxFacts(name, st)
+		maps.Copy(facts, flux)
 		if len(facts) > 0 && w.Manager.ApplyQuiet(ctx, name, quietAfterOperation) {
 			c.Reset()
 		} else {
 			w.apply(c.Apply(name, facts, offNodes(st)))
+			w.restate(c, flux)
 		}
 		st.Health, st.OpenAlerts = w.health(name, st, c)
 	}
@@ -285,6 +289,15 @@ func (w *Watcher) tick(ctx context.Context, name string) {
 	}
 	if w.OnStatus != nil {
 		w.OnStatus(name, st)
+	}
+}
+
+func (w *Watcher) restate(c *confirm, facts map[string]Event) {
+	for key, ev := range facts {
+		if c.open[key] {
+			ev.Notify = false
+			w.Alerts.Raise(ev)
+		}
 	}
 }
 

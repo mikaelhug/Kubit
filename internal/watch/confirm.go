@@ -9,7 +9,7 @@ import (
 
 const confirmAfter = 3
 
-var confirmedKinds = map[string]string{"talos.unreachable": "talos.back", "api.unreachable": "api.back", "etcd.unhealthy": "etcd.healthy", "node.notready": "node.ready"}
+var confirmedKinds = map[string]string{"talos.unreachable": "talos.back", "api.unreachable": "api.back", "etcd.unhealthy": "etcd.healthy", "node.notready": "node.ready", fluxFailing: "flux.ready"}
 
 type confirm struct {
 	started bool
@@ -83,7 +83,7 @@ func splitKey(key string) (kind, node string) {
 }
 
 func recovery(name, kind, node string) Event {
-	msg := map[string]string{"talos.back": node + ": Talos API reachable again", "api.back": "Kubernetes API reachable again", "etcd.healthy": "etcd healthy again", "node.ready": node + " is Ready"}
+	msg := map[string]string{"talos.back": node + ": Talos API reachable again", "api.back": "Kubernetes API reachable again", "etcd.healthy": "etcd healthy again", "node.ready": node + " is Ready", "flux.ready": fluxName(node) + " is no longer failing"}
 	rk := confirmedKinds[kind]
 	return Event{Cluster: name, Node: node, Severity: "info", Kind: rk, Message: msg[rk]}
 }

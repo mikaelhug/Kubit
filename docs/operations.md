@@ -281,13 +281,15 @@ Discovery page shows boots as they happen without polling.
 `kubit serve` observes every ready cluster (15 s, `--watch-interval`) and keeps samples in
 memory: every tick for 30 minutes and one per minute for a day. The Overview's capacity
 trend shows 5 minutes by default, and 30 minutes, 1, 6 or 24 hours. Alerts are conditions: `talos.unreachable`, `node.notready`,
-`api.unreachable`, `etcd.unhealthy`, `cert.expiring` and `observer.offline` stay open
+`api.unreachable`, `etcd.unhealthy`, `flux.failing`, `cert.expiring` and `observer.offline` stay open
 while they hold and resolve themselves; there is nothing to acknowledge. A fault must
 hold for three ticks without a gap; a laptop that slept re-baselines instead of
 alerting. When the gateway is unreachable too, the observer is offline and cluster
 alerts pause. Alerts stay quiet while a `kubit apply` holds the cluster's
 `kube-system/kubit-apply` Lease and for 10 minutes after, and for nodes or a cluster that
-Kubit shut down. Changes (cordons, version
+Kubit shut down. `flux.failing` opens per Flux object whose Ready condition is False,
+except suspended objects and dependents waiting on another; a Flux retry in progress keeps it
+open, and it marks the cluster degraded, not down. Changes (cordons, version
 steps, removed nodes, etcd membership and leader) are logged as events.
 
 The webhook gets each raise at or above `alerts.minSeverity` and its resolution.

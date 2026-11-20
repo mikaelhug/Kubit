@@ -20,6 +20,7 @@ type Event struct {
 	Severity string `json:"severity"`
 	Kind     string `json:"kind"`
 	Message  string `json:"message"`
+	Detail   string `json:"detail,omitempty"`
 	Open     bool   `json:"open"`
 	Notify   bool   `json:"-"`
 	Recovers string `json:"-"`
@@ -45,12 +46,12 @@ func (a *Alerts) Raise(e Event) bool {
 	a.mu.Lock()
 	if i := a.openIndex(e.Cluster, e.Node, e.Kind); i >= 0 {
 		open := &a.events[e.Cluster][i]
-		if open.Severity == e.Severity && open.Message == e.Message {
+		if open.Severity == e.Severity && open.Message == e.Message && open.Detail == e.Detail {
 			a.mu.Unlock()
 			return false
 		}
 		rose := rank[e.Severity] > rank[open.Severity]
-		open.Severity, open.Message = e.Severity, e.Message
+		open.Severity, open.Message, open.Detail = e.Severity, e.Message, e.Detail
 		updated := *open
 		a.mu.Unlock()
 		a.publish(updated, rose && e.Notify)
