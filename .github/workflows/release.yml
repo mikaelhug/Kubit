@@ -34,7 +34,7 @@ jobs:
           [[ $GITHUB_REF_NAME =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "::error::$GITHUB_REF_NAME is not vX.Y.Z"; exit 1; }
           [ "$(git describe --tags --exact-match --match 'v[0-9]*.[0-9]*.[0-9]*')" = "$GITHUB_REF_NAME" ]
 
-      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+      - uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7.1.0
         with:
           go-version-file: go.mod
 
