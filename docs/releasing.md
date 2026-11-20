@@ -7,7 +7,7 @@ Kubit ships as `Kubit.app`, a menu bar app that runs the daemon. A GitHub Releas
 
 Kubit has its own semver, independent of Talos. Releases are annotated `vX.Y.Z` tags on
 `main`; `make build` and the app stamp `git describe --match 'v[0-9]*.[0-9]*.[0-9]*'`.
-A weekly release is a minor when any dependency moved a minor, else a patch.
+A weekly release is a minor when any dependency moved a minor or a major, else a patch.
 
 ## Build
 
@@ -40,35 +40,45 @@ release notes are the tag's message.
 
 ## Weekly dependency release
 
-`.github/workflows/weekly.yml` runs Mondays at 07:00 UTC. `hack/deps.sh` applies every
-patch and minor update and lists the rest for review:
+`.github/workflows/weekly.yml` runs Mondays at 07:00 UTC. `hack/deps.sh` runs twice: with
+`DEPS_MAJORS=1` it applies every update it can verify (*latest*), without it only patches and
+minors (*safe*). Both are validated; the release takes *latest* when it passes, else *safe*.
 
-| Component | Source | Verified by | Applied | Review |
-|---|---|---|---|---|
-| Go toolchain (`go` in go.mod) | go.dev | go.dev checksums | patch | minor |
-| Talos machinery | Go proxy | sumdb | patch; a minor from its `.1` | major |
-| `k8s.io/*` | Go proxy | sumdb | latest patch of machinery's Kubernetes minor | |
-| Other direct Go modules | Go proxy | sumdb, `go mod verify` | patch, minor | prereleases, pseudo-versions |
-| npm (`web/`) | npm | lockfile integrity, `npm audit signatures` | within the ranges in package.json | outside them |
-| OpenTofu | GitHub releases | cosign signature of `SHA256SUMS` from OpenTofu's release workflow | patch, minor | major |
-| Providers | OpenTofu registry | provider signatures, `tofu providers lock` | within the `~>` constraints | major |
-| Helm charts | chart repo `index.yaml` | digest, `helm template` at Kubit's Kubernetes version | latest patch of each newer minor, as a step in `internal/tofu/charts.json` | major |
-| buildkit image | GitHub releases | `docker buildx imagetools inspect` | patch, minor | major |
-| SOPS format, talos-backup, Gateway API, pinned actions | GitHub | | | always |
+| Component | Source | Verified by | Safe | Latest adds | Review |
+|---|---|---|---|---|---|
+| Go toolchain (`go` in go.mod) | go.dev | go.dev checksums | patch | minor | |
+| Talos machinery | Go proxy | sumdb | patch; a minor from its `.1` | major from its `.1` | |
+| `k8s.io/*` | Go proxy | sumdb | latest patch of machinery's Kubernetes minor | | |
+| Other direct Go modules | Go proxy | sumdb, `go mod verify` | patch, minor | prereleases, pseudo-versions | |
+| npm (`web/`) | npm | lockfile integrity, `npm audit signatures` | within the ranges in package.json | outside them | |
+| OpenTofu | GitHub releases | cosign signature of `SHA256SUMS` from OpenTofu's release workflow | patch, minor | major | |
+| Providers | OpenTofu registry | provider signatures, `tofu providers lock` | within the `~>` constraints | major, as a new `~>` | |
+| Helm charts | chart repo `index.yaml` | digest, `helm template` at Kubit's Kubernetes version | latest patch of each newer minor, as a step in `internal/tofu/charts.json` | major | digest mismatch, no render |
+| Gateway API | GitHub releases | asset digest | the version Traefik's newest step needs | | digest mismatch |
+| buildkit image | GitHub releases | `docker buildx imagetools inspect` | patch, minor | major | |
+| talos-backup image | GitHub releases | | | latest release | |
+| Pinned actions | GitHub releases | pinned by commit SHA | | latest release | |
+| SOPS format | GitHub releases | | | | always |
 
 The jobs:
 
-1. **prepare** commits the changes with a `Bump: <component> <from> <to>` line per change and
-   hands the commit to the next jobs as a git bundle. Nothing is pushed.
-2. **validate** builds and tests the commit on macOS: `make build`, `make test`, the web tests,
-   the OpenTofu template tests (`-tags integration`), the Swift tests and an app build.
-3. **ship** tags `vX.Y.Z` at the commit, pushes the tag and fast-forwards `main` through the
-   `AUTOMATION_SSH_KEY` deploy key, so the tag starts the release workflow. It fails when
+1. **prepare** runs both passes, commits each with a `Bump: <component> <from> <to>` line per
+   change and hands the commits to the next jobs as a git bundle. *safe* is dropped when it
+   equals *latest*. Nothing is pushed.
+2. **validate** builds and tests each commit on macOS: `make build`, `make test`, the web
+   tests, the OpenTofu template tests (`-tags integration`), the Swift tests and an app build.
+   A failing *latest* fails the run, so a major that breaks the build is visible.
+3. **choose** picks *latest* if it passed, else *safe*.
+4. **ship** tags `vX.Y.Z` at the chosen commit, pushes the tag and fast-forwards `main` through
+   the `AUTOMATION_SSH_KEY` deploy key, so the tag starts the release workflow. It fails when
    `main` moved during the run. It runs on schedule, or on a manual run with `ship`.
-4. **review** keeps one open issue, *Dependency review*, with the majors and report-only items,
-   and closes it when the list is empty.
-5. **prune** deletes earlier successful weekly runs in which validate, ship and review were all
+5. **review** keeps one open issue, *Dependency review*, and closes it when the list is empty.
+   When *latest* did not ship, the issue lists what *safe* left out and links the failed run.
+6. **prune** deletes earlier successful weekly runs in which validate, ship and review were all
    skipped. A run cannot delete itself, so an empty run goes the week after.
+
+A green build does not prove a major works on a cluster: the tests do not run a cluster.
+Roll a broken release back with *Rollback a weekly release*.
 
 Nothing ships until `main` carries a `vX.Y.Z` tag.
 

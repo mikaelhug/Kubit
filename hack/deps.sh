@@ -19,6 +19,7 @@ major() { strip_v "$1" | cut -d. -f1; }
 minor() { strip_v "$1" | cut -d. -f2; }
 newer() { [ "$(strip_v "$1")" != "$(strip_v "$2")" ] && [ "$(printf '%s\n%s\n' "$(strip_v "$1")" "$(strip_v "$2")" | sort -V | tail -1)" = "$(strip_v "$1")" ]; }
 stable() { [[ $(strip_v "$1") =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; }
+majors() { [ "${DEPS_MAJORS:-}" = 1 ]; }
 
 kind() {
 	if [ "$(major "$1")" != "$(major "$2")" ]; then echo major
@@ -45,7 +46,8 @@ pick() {
 			best=$cand
 		fi
 	done
-	if [ -n "$top" ]; then report "$name" "$cur" "$top" major; fi
+	if [ -n "$top" ] && majors; then best=$top
+	elif [ -n "$top" ]; then report "$name" "$cur" "$top" major; fi
 	echo "$best"
 }
 
@@ -57,7 +59,8 @@ go_toolchain() {
 	best=""
 	for v in "${all[@]}"; do
 		stable "$v" && newer "$v" "$cur" || continue
-		if [ "$(kind "$cur" "$v")" = patch ]; then best=$v
+		if [ "$(kind "$cur" "$v")" = patch ] || majors; then
+			if [ -z "$best" ] || newer "$v" "$best"; then best=$v; fi
 		else report go "$cur" "$v" "$(kind "$cur" "$v")"; fi
 	done
 	if [ -n "$best" ] && ! blocked go "$best"; then
@@ -76,7 +79,7 @@ machinery() {
 		stable "$v" && newer "$v" "$cur" || continue
 		blocked "$mod" "$v" && continue
 		case $(kind "$cur" "$v") in
-		major) report "$mod" "$cur" "$v" major ;;
+		major) if majors; then [ "$(strip_v "$v" | cut -d. -f3)" -ge 1 ] && best=$v; else report "$mod" "$cur" "$v" major; fi ;;
 		minor) [ "$(strip_v "$v" | cut -d. -f3)" -ge 1 ] && best=$v ;;
 		patch) best=$v ;;
 		esac
@@ -102,12 +105,12 @@ go_modules() {
 	local path cur upd
 	while IFS=$'\t' read -r path cur upd; do
 		case $path in github.com/siderolabs/talos/* | k8s.io/*) continue ;; esac
-		if [[ $cur =~ -[0-9]{14}-[0-9a-f]{12}$ ]]; then
-			if [ -n "$upd" ]; then report "$path" "$cur" "$upd" pseudo-version; fi
+		[ -z "$upd" ] && continue
+		if [[ $cur =~ -[0-9]{14}-[0-9a-f]{12}$ ]] && ! majors; then
+			report "$path" "$cur" "$upd" pseudo-version
 			continue
 		fi
-		[ -z "$upd" ] && continue
-		if ! stable "$cur" || ! stable "$upd"; then
+		if { ! stable "$cur" || ! stable "$upd"; } && ! majors; then
 			report "$path" "$cur" "$upd" prerelease
 			continue
 		fi
@@ -120,7 +123,7 @@ go_modules() {
 
 npm_packages() {
 	echo "npm"
-	local outdated name cur want latest
+	local outdated name cur want latest beyond=()
 	(cd web && npm ci --no-audit --no-fund >/dev/null)
 	outdated=$(cd web && npm outdated --json || true)
 	[ -z "$outdated" ] && return 0
@@ -129,10 +132,17 @@ npm_packages() {
 			applied "npm:$name" "$cur" "$want"
 		fi
 		if [ "$latest" != "$want" ] && newer "$latest" "$want"; then
-			report "npm:$name" "$want" "$latest" "$(kind "$want" "$latest")"
+			if majors && ! blocked "npm:$name" "$latest"; then
+				beyond+=("$name@^$latest")
+				applied "npm:$name" "$want" "$latest"
+			else
+				report "npm:$name" "$want" "$latest" "$(kind "$want" "$latest")"
+			fi
 		fi
 	done < <(echo "$outdated" | jq -r 'to_entries[] | [.key, .value.current, .value.wanted, .value.latest] | @tsv')
-	(cd web && npm update --save && npm ci && npm audit signatures)
+	(cd web && npm update --save)
+	if [ ${#beyond[@]} -gt 0 ]; then (cd web && npm install --no-audit --no-fund "${beyond[@]}"); fi
+	(cd web && npm ci && npm audit signatures)
 }
 
 opentofu() {
@@ -182,15 +192,25 @@ opentofu() {
 
 providers() {
 	echo "Providers"
-	local lock=internal/tofu/templates/platform/.terraform.lock.hcl before after p was now
+	local lock=internal/tofu/templates/platform/.terraform.lock.hcl tf=internal/tofu/templates/platform/versions.tf before after p was now latest
+	provider_latest() { curl -fsSL "https://registry.opentofu.org/v1/providers/$1/versions" | jq -r '.versions[].version' | newest_stable; }
 	before=$(awk '/^provider/{p=$2} /version *=/{print p, $3}' "$lock" | tr -d '"')
+	if majors; then
+		while read -r p was; do
+			p=${p#registry.opentofu.org/}
+			latest=$(provider_latest "$p")
+			if [ -n "$latest" ] && [ "$(kind "$was" "$latest")" = major ] && ! blocked "provider:$p" "$latest"; then
+				sed -i.bak "\#source *= *\"$p\"#{n;s#version *= *\"[^\"]*\"#version = \"~> $(major "$latest").0\"#;}" "$tf"
+				rm -f "$tf.bak"
+			fi
+		done <<<"$before"
+	fi
 	TOFU=$1 hack/tofu-lock.sh
 	after=$(awk '/^provider/{p=$2} /version *=/{print p, $3}' "$lock" | tr -d '"')
 	while read -r p now; do
 		was=$(echo "$before" | awk -v p="$p" '$1 == p {print $2}')
 		if [ "$was" != "$now" ]; then applied "provider:${p#registry.opentofu.org/}" "$was" "$now"; fi
-		local latest
-		latest=$(curl -fsSL "https://registry.opentofu.org/v1/providers/${p#registry.opentofu.org/}/versions" | jq -r '.versions[].version' | newest_stable)
+		latest=$(provider_latest "${p#registry.opentofu.org/}")
 		if [ -n "$latest" ] && [ "$(kind "$now" "$latest")" = major ]; then report "provider:${p#registry.opentofu.org/}" "$now" "$latest" major; fi
 	done <<<"$after"
 }
@@ -212,7 +232,7 @@ charts() {
 		for v in "${versions[@]}"; do
 			newer "$v" "$last" || continue
 			blocked "chart:$name" "$v" && continue
-			[ "$(kind "$last" "$v")" = major ] && { top=$v; continue; }
+			if [ "$(kind "$last" "$v")" = major ] && ! majors; then top=$v; continue; fi
 			local later
 			later=$(printf '%s\n' "${versions[@]}" | grep -E "^v?$(major "$v")\.$(minor "$v")\.[0-9]+$" | sort -V | tail -1)
 			[ "$v" = "$later" ] || continue
@@ -291,8 +311,8 @@ buildkit() {
 	applied buildkit "$cur" "$best"
 }
 
-report_only() {
-	echo "Report only"
+pinned() {
+	echo "Pinned"
 	local cur latest
 	cur=$(sed -n 's/^const Version = "\(.*\)"$/\1/p' internal/sops/sops.go)
 	latest=$(gh_api repos/getsops/sops/releases/latest | jq -r .tag_name)
@@ -300,19 +320,43 @@ report_only() {
 	local backup
 	backup=$(sed -n 's/^const TalosBackupVersion = "\(.*\)"$/\1/p' internal/tofu/charts.go)
 	if [ -n "$backup" ]; then
-		latest=$(gh_api 'repos/siderolabs/talos-backup/releases?per_page=20' | jq -r '.[0].tag_name')
-		if [ "$latest" != "$backup" ]; then report talos-backup "$backup" "$latest" image; fi
+		if majors; then
+			latest=$(gh_api repos/siderolabs/talos-backup/releases/latest | jq -r .tag_name)
+		else
+			latest=$(gh_api 'repos/siderolabs/talos-backup/releases?per_page=20' | jq -r '.[0].tag_name')
+		fi
+		if [ "$latest" != "$backup" ] && majors && ! blocked talos-backup "$latest"; then
+			sed -i.bak "s/^const TalosBackupVersion = \"$backup\"$/const TalosBackupVersion = \"$latest\"/" internal/tofu/charts.go
+			sed -i.bak "s/talos-backup:$backup/talos-backup:$latest/" docs/operations.md
+			rm -f internal/tofu/charts.go.bak docs/operations.md.bak
+			applied talos-backup "$backup" "$latest"
+		elif [ "$latest" != "$backup" ]; then
+			report talos-backup "$backup" "$latest" image
+		fi
 	fi
-	local line action pin tag
+	local line action pin tag ahead sha ref
 	while read -r line; do
 		action=${line%@*}
 		pin=$(echo "$line" | sed -n 's/.*# \(v[0-9.]*\).*/\1/p')
 		tag=$(gh_api "repos/$action/releases/latest" | jq -r .tag_name)
 		[ -n "$pin" ] && stable "$tag" || continue
+		ahead=""
 		if [[ $pin != *.* ]]; then
-			if [ "$(major "$tag")" -gt "$(major "$pin")" ]; then report "action:$action" "$pin" "$tag" major; fi
+			[ "$(major "$tag")" -gt "$(major "$pin")" ] && ahead=major
 		elif newer "$tag" "$pin"; then
-			report "action:$action" "$pin" "$tag" "$(kind "$pin" "$tag")"
+			ahead=$(kind "$pin" "$tag")
+		fi
+		[ -n "$ahead" ] || continue
+		if majors && ! blocked "action:$action" "$tag"; then
+			ref=$(gh_api "repos/$action/git/ref/tags/$tag")
+			sha=$(jq -r .object.sha <<<"$ref")
+			if [ "$(jq -r .object.type <<<"$ref")" = tag ]; then sha=$(gh_api "repos/$action/git/tags/$sha" | jq -r .object.sha); fi
+			[[ $sha =~ ^[0-9a-f]{40}$ ]] || { report "action:$action" "$pin" "$tag" "tag not found"; continue; }
+			sed -i.bak "s|uses: $action@[0-9a-f]\{40\} # $pin\$|uses: $action@$sha # $tag|" .github/workflows/*.yml
+			rm -f .github/workflows/*.yml.bak
+			applied "action:$action" "$pin" "$tag"
+		else
+			report "action:$action" "$pin" "$tag" "$ahead"
 		fi
 	done < <(grep -ho 'uses: [^ ]*@[0-9a-f]\{40\} # v[0-9.]*' .github/workflows/*.yml | sed 's/^uses: //' | sort -u)
 }
@@ -332,7 +376,7 @@ opentofu
 charts
 gateway_api
 buildkit
-report_only
+pinned
 
 sort -u -o "$changes" "$changes"
 sort -u -o "$review" "$review"
